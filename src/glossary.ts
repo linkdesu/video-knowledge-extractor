@@ -26,7 +26,8 @@ export function applyGlossary(text: string, glossary: Record<string, string>): s
   let out = text;
   for (const [from, to] of Object.entries(glossary)) {
     if (/^[A-Za-z0-9 ._+-]+$/.test(from)) {
-      out = out.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), to);
+      const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "gi"), to);
     } else {
       out = out.split(from).join(to);
     }
