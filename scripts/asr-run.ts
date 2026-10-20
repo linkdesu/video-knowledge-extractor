@@ -13,6 +13,8 @@ type Args = {
   limit?: number;
   glossary?: string;
   hotwords: boolean;
+  engine: "paraformer" | "zipformer";
+  clusters?: number;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -35,6 +37,8 @@ function parseArgs(argv: string[]): Args {
     limit: limitRaw ? Number(limitRaw) : undefined,
     glossary: flags.get("glossary"),
     hotwords: flags.has("hotwords"),
+    engine: (flags.get("engine") ?? "paraformer") as "paraformer" | "zipformer",
+    clusters: flags.get("clusters") ? Number(flags.get("clusters")) : undefined,
   };
 }
 
@@ -59,7 +63,7 @@ const args = parseArgs(process.argv.slice(2));
 const glossary = await loadGlossary(args.glossary);
 const adapter: AsrAdapter = args.provider === "dashscope"
   ? new DashScopeAdapter()
-  : new SherpaAdapter();
+  : new SherpaAdapter({ mode: args.engine, numClusters: args.clusters });
 
 const startedAt = new Date().toISOString();
 const t0 = performance.now();

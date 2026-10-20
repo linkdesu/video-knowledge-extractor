@@ -26,17 +26,33 @@ const api = sherpa as unknown as {
 
 export type SherpaModelPaths = {
   paraformer: string;
-  tokens: string;
+  paraformerTokens: string;
+  zipformerEncoder: string;
+  zipformerDecoder: string;
+  zipformerJoiner: string;
+  zipformerTokens: string;
+  zipformerBpe: string;
   segmentation: string;
   embedding: string;
   punctuation: string;
+};
+
+export type SherpaAdapterOptions = {
+  mode?: "paraformer" | "zipformer";
+  numClusters?: number;
+  paths?: SherpaModelPaths;
 };
 
 export function sherpaPathsFromEnv(): SherpaModelPaths {
   const root = process.env.SHERPA_MODEL_ROOT ?? `${process.env.HOME}/.cache/video-notes/models`;
   return {
     paraformer: process.env.SHERPA_PARAFORMER_MODEL ?? `${root}/sherpa-onnx-paraformer-zh-2024-03-09/model.int8.onnx`,
-    tokens: process.env.SHERPA_TOKENS ?? `${root}/sherpa-onnx-paraformer-zh-2024-03-09/tokens.txt`,
+    paraformerTokens: process.env.SHERPA_TOKENS ?? `${root}/sherpa-onnx-paraformer-zh-2024-03-09/tokens.txt`,
+    zipformerEncoder: `${root}/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/encoder-epoch-20-avg-1.int8.onnx`,
+    zipformerDecoder: `${root}/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/decoder-epoch-20-avg-1.int8.onnx`,
+    zipformerJoiner: `${root}/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/joiner-epoch-20-avg-1.int8.onnx`,
+    zipformerTokens: `${root}/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/tokens.txt`,
+    zipformerBpe: `${root}/sherpa-onnx-zipformer-multi-zh-hans-2023-9-2/bpe.vocab`,
     segmentation: process.env.SHERPA_SEGMENTATION_MODEL ?? `${root}/sherpa-onnx-pyannote-segmentation-3-0/model.onnx`,
     embedding: process.env.SHERPA_EMBEDDING_MODEL ?? `${root}/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`,
     punctuation: process.env.SHERPA_PUNCT_MODEL ?? `${root}/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx`,
@@ -97,10 +113,22 @@ export function cleanupSpeakers(
 
 export class SherpaAdapter implements AsrAdapter {
   id = "sherpa";
-  model = "paraformer-zh-2024-03-09 + pyannote-segmentation-3.0 + CAM++ zh";
+  model: string;
   capabilities = { hotwords: false, diarization: true };
+  private mode: "paraformer" | "zipformer";
+  private numClusters: number;
 
-  constructor(private paths: SherpaModelPaths = sherpaPathsFromEnv()) {}
+  constructor(options: SherpaAdapterOptions = {}) {
+    this.mode = options.mode ?? (process.env.SHERPA_ASR_MODE === "zipformer" ? "zipformer" : "paraformer");
+    this.numClusters = options.numClusters ?? Number(process.env.SHERPA_NUM_CLUSTERS ?? -1);
+    this.paths = options.paths ?? sherpaPathsFromEnv();
+    this.model = this.mode === "zipformer"
+      ? "zipformer-multi-zh-hans-2023-9-2 + pyannote-segmentation-3.0 + CAM++ zh"
+      : "paraformer-zh-2024-03-09 + pyannote-segmentation-3.0 + CAM++ zh";
+    this.capabilities.hotwords = this.mode === "zipformer";
+  }
+
+  private paths: SherpaModelPaths;
 
   async transcribe(audioPath: string, options: AsrOptions = {}): Promise<AsrRun> {
     const notes: string[] = [];
@@ -116,7 +144,7 @@ export class SherpaAdapter implements AsrAdapter {
     const diarizer = new api.OfflineSpeakerDiarization({
       segmentation: { pyannote: { model: this.paths.segmentation, windowShiftRatio: 0.1 } },
       embedding: { model: this.paths.embedding, numThreads: 2 },
-      clustering: { numClusters: -1, threshold: 0.85 },
+      clustering: { numClusters: this.numClusters, threshold: 0.85 },
       minDurationOn: 0.25,
       minDurationOff: 0.5,
     });
@@ -130,16 +158,42 @@ export class SherpaAdapter implements AsrAdapter {
     const speakers = [...new Set(utterances.map((u) => u.speaker))].sort((a, b) => a - b);
     const speakerName = new Map(speakers.map((s, i) => [s, `S${i + 1}`]));
 
+    const modelConfig = this.mode === "zipformer"
+      ? {
+          transducer: {
+            encoder: this.paths.zipformerEncoder,
+            decoder: this.paths.zipformerDecoder,
+            joiner: this.paths.zipformerJoiner,
+          },
+          tokens: this.paths.zipformerTokens,
+          modelingUnit: "bpe",
+          bpeVocab: this.paths.zipformerBpe,
+          numThreads: 4,
+          provider: "cpu",
+          debug: 0,
+        }
+      : {
+          paraformer: { model: this.paths.paraformer },
+          tokens: this.paths.paraformerTokens,
+          numThreads: 4,
+          provider: "cpu",
+          debug: 0,
+        };
     const recognizer = new api.OfflineRecognizer({
       featConfig: { sampleRate: 16000, featureDim: 80 },
-      modelConfig: {
-        paraformer: { model: this.paths.paraformer },
-        tokens: this.paths.tokens,
-        numThreads: 4,
-        provider: "cpu",
-        debug: 0,
-      },
+      modelConfig,
+      decodingMethod: this.mode === "zipformer" ? "modified_beam_search" : "greedy_search",
+      hotwordsScore: 2.0,
     });
+
+    const glossary = options.glossary;
+    let hotwords: string | undefined;
+    if (options.hotwords && this.mode === "zipformer" && glossary) {
+      hotwords = process.env.SHERPA_HOTWORDS ?? [...new Set(Object.values(glossary.replace))]
+        .filter(Boolean)
+        .map((t) => t)
+        .join(" / ");
+    }
 
     let punct: { addPunct(text: string): string } | null = null;
     t0 = performance.now();
@@ -150,12 +204,16 @@ export class SherpaAdapter implements AsrAdapter {
     }
     timings.punctuationModel = (performance.now() - t0) / 1000;
 
-    const glossary = options.glossary;
     let glossaryMode: AsrRun["glossaryMode"] = "none";
     if (options.hotwords && glossary) {
       const hasReplace = Object.keys(glossary.replace).length > 0;
-      notes.push("paraformer 不支持热词（sherpa-onnx 仅 transducer 支持 contextual biasing），术语表只做字面替换");
-      glossaryMode = hasReplace ? "replace" : "none";
+      if (this.mode === "zipformer") {
+        glossaryMode = hotwords ? "hotwords" : "none";
+        notes.push(`热词上下文已启用: ${hotwords || "(无术语)"}`);
+      } else {
+        notes.push("paraformer 不支持热词（sherpa-onnx 仅 transducer 支持 contextual biasing），术语表只做字面替换");
+        glossaryMode = hasReplace ? "replace" : "none";
+      }
     }
 
     t0 = performance.now();
@@ -165,7 +223,7 @@ export class SherpaAdapter implements AsrAdapter {
       const u = utterances[i]!;
       const startSample = Math.max(0, Math.floor((u.start - pad) * wave.sampleRate));
       const endSample = Math.min(samples.length, Math.ceil((u.end + pad) * wave.sampleRate));
-      const stream = recognizer.createStream();
+      const stream = recognizer.createStream(hotwords);
       stream.acceptWaveform({ sampleRate: wave.sampleRate, samples: samples.subarray(startSample, endSample) });
       recognizer.decode(stream);
       const raw = (recognizer.getResult(stream).text ?? "").trim();
