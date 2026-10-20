@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
-import { runRaw } from "./util";
-import { extractFrame } from "./video";
+import { runRaw } from "../../src/util";
+import { extractFrame } from "../../src/video";
 
 export type FrameHash = { time: number; hash: bigint };
 export type Keyframe = { file: string; time: number; score: number; hash?: string };

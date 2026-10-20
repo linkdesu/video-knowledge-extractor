@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { chatJson, LLM_MODEL } from "./llm";
 import type { Cue } from "./transcript";
-import type { Keyframe } from "./frames";
-import { hamming56 } from "./frames";
+import type { Keyframe } from "../scripts/deprecated/frames";
+import { hamming56 } from "../scripts/deprecated/frames";
 import { fmtTime, pool } from "./util";
 
 export type NoteSection = {

@@ -4,7 +4,7 @@ import { probeVideo, resolveVideo, extractAudio, detectSilences, planChunks, ext
 import type { Chunk } from "./video";
 import { transcribeChunk } from "./asr";
 import { buildTranscript, toSrt } from "./transcript";
-import { extractKeyframes } from "./frames";
+import { extractKeyframes } from "../scripts/deprecated/frames";
 import { buildNotes } from "./notes";
 import { loadGlossary } from "./glossary";
 import { toHtml, toMarkdown } from "./render";
