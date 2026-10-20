@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { Chunk } from "./video";
+import type { Chunk } from "../video";
 
 const BASE = (process.env.ASR_BASE_URL ?? "http://127.0.0.1:9527/v1").replace(/\/$/, "");
 const KEY = process.env.ASR_API_KEY ?? "1234";

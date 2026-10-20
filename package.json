@@ -5,5 +5,8 @@
   "version": "0.1.0",
   "scripts": {
     "extract": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "1.13.8"
   }
 }
