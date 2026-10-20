@@ -3,3 +3,4 @@ runs/
 tmp/probe/
 *.wav
 .DS_Store
+.verify/
