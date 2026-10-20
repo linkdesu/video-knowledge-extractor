@@ -5,3 +5,4 @@ tmp/probe/
 .DS_Store
 .verify/
 .env
+tmp/
