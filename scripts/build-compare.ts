@@ -92,9 +92,8 @@ button.on{border-color:var(--a);color:var(--a)}
 <table><thead><tr><th>方案</th><th>模型</th><th>耗时</th><th>峰值内存</th><th>说话人</th><th>片段</th><th>字数</th><th>术语模式</th><th>词频</th></tr></thead><tbody>${tableRows}</tbody></table>
 ${pending ? `<div class="note">B（DashScope）尚未运行：等待 Link 的 API key。适配器已用 mock 自测通过。C（FunASR）本轮未做。</div>` : ""}
 <div class="toolbar">
-<button class="on" data-side="A">A 本地 sherpa</button>
-<button data-side="B">B 云端 DashScope</button>
-<span id="variant"></span>
+<button id="gloss">显示术语表版本</button>
+<span style="color:var(--muted);font-size:12px">A 栏切换无术语表 / 术语表（B 待运行）</span>
 </div>
 <div class="cols" id="cols"></div>
 </main>
@@ -103,12 +102,12 @@ const DATA=${JSON.stringify(data)};
 const VIDEO=${JSON.stringify(videoUrl)};
 const SPEAKERS=["s1","s2","s3","s4","s5"];
 const byKey=Object.fromEntries(DATA.map(d=>[d.key,d]));
-let side="A", variant="base";
+let variant="base";
 function draw(){
-  const keys=Object.keys(byKey);
   const cols=document.getElementById("cols");
   cols.innerHTML=["A","B"].map(s=>{
-    const k2=s==="A"?["sherpa","sherpa-glossary"].find(k=>k.endsWith(variant==="gloss"?"glossary":"")):["dashscope","dashscope-glossary"].find(k=>k.endsWith(variant==="gloss"?"glossary":""));
+    const list=s==="A"?["sherpa","sherpa-glossary"]:["dashscope","dashscope-glossary"];
+    const k2=list.find(k=>variant==="gloss"?k.endsWith("glossary"):!k.endsWith("glossary"));
     const dd=byKey[k2];
     if(!dd) return '<div class="panel"><h2>'+s+' · 待运行</h2><div class="pending">等待 API key / 运行</div></div>';
     const rows=dd.rows.map(r=>{
@@ -120,8 +119,7 @@ function draw(){
 }
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function fmt(s){return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0")}
-document.querySelectorAll("[data-side]").forEach(b=>b.onclick=()=>{side=b.dataset.side;document.querySelectorAll("[data-side]").forEach(x=>x.classList.toggle("on",x===b));draw()});
-const v=document.createElement("button");v.textContent="术语表版本";v.onclick=()=>{variant=variant==="base"?"gloss":"base";v.classList.toggle("on");draw()};document.querySelector(".toolbar").append(v);
+document.getElementById("gloss").onclick=()=>{variant=variant==="base"?"gloss":"base";document.getElementById("gloss").classList.toggle("on",variant==="gloss");draw()};
 draw();
 </script></body></html>`;
 
