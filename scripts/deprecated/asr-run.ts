@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { SherpaAdapter } from "../src/asr/sherpa";
-import { DashScopeAdapter } from "../src/asr/dashscope";
-import { loadGlossary } from "../src/glossary";
-import type { AsrAdapter, AsrRun } from "../src/asr/types";
-import { srtTime } from "../src/util";
+import { SherpaAdapter } from "../../src/asr/sherpa";
+import { DashScopeAdapter } from "../../src/asr/dashscope";
+import { loadGlossary } from "../../src/glossary";
+import type { AsrAdapter, AsrRun } from "../../src/asr/types";
+import { srtTime } from "../../src/util";
 
 type Args = {
   provider: string;

@@ -1,4 +1,4 @@
-import { DashScopeAdapter } from "../src/asr/dashscope";
+import { DashScopeAdapter } from "../../src/asr/dashscope";
 
 const result = {
   transcripts: [
