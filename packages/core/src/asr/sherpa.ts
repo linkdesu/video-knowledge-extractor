@@ -1,3 +1,4 @@
+/// <reference path="../types/sherpa-onnx-node.d.ts" />
 import { existsSync } from "node:fs";
 import * as sherpa from "sherpa-onnx-node";
 

@@ -2,6 +2,13 @@
 
 把一部长视频变成可按主题阅读、可跳转到原片时间点的文字笔记。本地运行的工具：识别、说话人分离在本地跑，主题分析与笔记只经过你配置的一个 OpenAI 兼容端点。
 
+## 仓库结构
+
+仓库是 bun workspaces 管理的 monorepo，turbo 在根目录调度 typecheck 与测试。
+
+- `packages/core` 是 `@video-notes/core` 库，流水线、ASR、LLM 客户端、配置、缓存都在这里，单一入口导出。
+- `apps/cli` 是 `vnote` 命令行，只做参数解析与终端输出，通过 `workspace:*` 依赖 core。
+
 ## 流水线
 
 `vnote extract <视频>` 一次跑完三步，串行执行：
@@ -46,7 +53,7 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 ## 命令与开发
 
-开发期用 `bun run vnote extract <视频>`，或 `bun link` 之后直接用 `vnote`。没有 `--out`：输出目录在首次生成时确定，之后不再随参数变化。`--limit <秒>` 只处理前 N 秒，供开发期冒烟。
+开发期在仓库根目录跑 `bun run vnote extract <视频>`；在 `apps/cli` 里 `bun link` 之后可直接用 `vnote`。没有 `--out`，输出目录在首次生成时确定，之后不再随参数变化。`--limit <秒>` 只处理前 N 秒，供开发期冒烟。
 
 环境变量（也可写进 `.env`）：
 
@@ -58,8 +65,10 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 | `VNOTE_MODEL_DIR` | 本地模型目录，默认 `~/.cache/video-notes/models` |
 
 ```bash
+bun install
+bun run vnote extract <视频>
 bun run typecheck
-bun test
+bun run test
 ```
 
 ## 当前状态
@@ -69,5 +78,5 @@ bun test
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0009 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现。
+- `docs/adr/`：0001–0010 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局。
 - `tmp/` 与 `runs/` 不进 git。

@@ -1,0 +1,16 @@
+{
+  "name": "vnote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "vnote": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "vnote": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@video-notes/core": "workspace:*"
+  }
+}

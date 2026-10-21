@@ -6,4 +6,5 @@ tmp/probe/
 .verify/
 .env
 tmp/
+.turbo/
 artifacts/
