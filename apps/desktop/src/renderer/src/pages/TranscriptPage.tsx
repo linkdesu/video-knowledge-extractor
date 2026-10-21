@@ -80,6 +80,7 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
               转写模型 <b style={{ color: "#c4b5fd" }}>{detail.asrModel}</b> ·{" "}
             </>
           ) : null}
+          {detail.asrEngine === "remote" ? "远程 ASR（不含说话人分离）" : "本地"} ·{" "}
           {utterances.length} 条 · {speakers.length} 位说话人
         </>
       }
@@ -96,6 +97,11 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
       detail={
         <>
           <Player ref={playerRef} mediaUrl={detail.mediaUrl} onTime={setT} />
+          {detail.asrEngine === "remote" ? (
+            <p className="vn-hint" style={{ marginTop: 14 }}>
+              远程 ASR 不含说话人分离。
+            </p>
+          ) : null}
           <div className="vn-card" style={{ marginTop: 14 }}>
             <div
               style={{

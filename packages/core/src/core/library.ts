@@ -6,7 +6,8 @@ import { readVideoIndex } from "./paths";
 import { isSafeDirName } from "./outputs";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
-import { loadVideoData, readVideoData } from "./video-data";
+import { isVideoLocked } from "./lock";
+import { loadVideoData, projectRunState, readVideoData } from "./video-data";
 import type { VideoData } from "./video-data";
 
 /** 库卡片状态；规则见 ADR-0014 第 6 节。 */
@@ -22,6 +23,8 @@ export type LibraryVideo = {
   importedAt: string | null;
   /** 源文件字节数；旧目录或未生成时为 null。 */
   sizeBytes: number | null;
+  /** 源视频分辨率；旧文档缺失为 null，卡片省略。 */
+  resolution: { width: number; height: number } | null;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
@@ -74,7 +77,9 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
   const outputDir = resolve(root, entry.outputDir);
   let data: VideoData | undefined;
   try {
-    data = readVideoData(outputDir);
+    const raw = readVideoData(outputDir);
+    // 摘要与详情共用同一投影：列表不再直接用原始 generating/queued 算状态
+    if (raw !== undefined) data = projectRunState(raw, { locked: isVideoLocked(outputDir) });
   } catch (err) {
     // 单个视频的 video.json 损坏不阻断列表：该卡按 failed、计数 0，标题/目录沿用 index.json
     if (propagateParseError) throw err;
@@ -86,6 +91,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       durationSeconds: null,
       importedAt: null,
       sizeBytes: null,
+      resolution: null,
       topicCount: 0,
       clipCount: 0,
       updatedAt: null,
@@ -101,6 +107,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       durationSeconds: data.video.durationSeconds,
       importedAt: data.importedAt,
       sizeBytes: data.sourceBytes,
+      resolution: data.resolution,
       topicCount: data.topics.length,
       clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
       updatedAt: data.updatedAt,
@@ -136,6 +143,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
     durationSeconds: null,
     importedAt: null,
     sizeBytes: null,
+    resolution: null,
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),

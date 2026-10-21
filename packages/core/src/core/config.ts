@@ -14,6 +14,13 @@ export const ASR_MODEL_ID = "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25
 export const DIARIZATION_MODEL_ID = "sherpa-onnx-pyannote-segmentation-3-0+campplus-zh";
 export const PUNCTUATION_MODEL_ID = "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12";
 
+/** 远程 ASR 块切分限额：窗口内无停顿就在 300s 硬切，绝不发出超时长请求（ADR-0015）。 */
+export const REMOTE_CHUNK_TARGET_SECONDS = 280;
+export const REMOTE_CHUNK_MIN_SECONDS = 240;
+export const REMOTE_CHUNK_MAX_SECONDS = 300;
+/** 远程 ASR 缓存适配器版本，参与缓存键（ADR-0015）。 */
+export const REMOTE_ADAPTER_VERSION = 1;
+
 export const CACHE_DIRNAME = ".cache";
 
 export type EnvRecord = Record<string, string | undefined>;
@@ -40,9 +47,20 @@ const LLM_ENV = {
   model: ["VNOTE_LLM_MODEL", "IDEALSOFT_API_MODEL"],
 } as const;
 
+export const ASR_ENV = {
+  provider: ["VNOTE_ASR_PROVIDER"],
+  baseUrl: ["VNOTE_ASR_BASE_URL"],
+  model: ["VNOTE_ASR_MODEL"],
+  apiKey: ["VNOTE_ASR_API_KEY"],
+} as const;
+
 export type LlmCredentials = { baseUrl: string; apiKey: string; model?: string };
 
-function firstValue(env: EnvRecord, names: readonly string[]): string | undefined {
+export type LlmEnv = { baseUrl?: string; apiKey?: string; model?: string };
+export type AsrEnv = { provider?: string; baseUrl?: string; model?: string; apiKey?: string };
+
+/** 设置默认值、locked、凭据解析共用：规范名优先、trim、空串视为未设置（ADR-0009、ADR-0015）。 */
+export function envValue(env: EnvRecord, names: readonly string[]): string | undefined {
   for (const name of names) {
     const value = env[name]?.trim();
     if (value !== undefined && value !== "") return value;
@@ -50,11 +68,27 @@ function firstValue(env: EnvRecord, names: readonly string[]): string | undefine
   return undefined;
 }
 
-/** base 或 key 缺失 → undefined；model 缺失仍是有效凭据（交给 /models 发现）。 */
+export function llmEnv(env: EnvRecord = process.env): LlmEnv {
+  return {
+    baseUrl: envValue(env, LLM_ENV.baseUrl),
+    apiKey: envValue(env, LLM_ENV.apiKey),
+    model: envValue(env, LLM_ENV.model),
+  };
+}
+
+export function asrEnv(env: EnvRecord = process.env): AsrEnv {
+  return {
+    provider: envValue(env, ASR_ENV.provider),
+    baseUrl: envValue(env, ASR_ENV.baseUrl),
+    model: envValue(env, ASR_ENV.model),
+    apiKey: envValue(env, ASR_ENV.apiKey),
+  };
+}
+
 export function llmCredentialsFromEnv(env: EnvRecord = process.env): LlmCredentials | undefined {
-  const baseUrl = firstValue(env, LLM_ENV.baseUrl);
-  const apiKey = firstValue(env, LLM_ENV.apiKey);
+  const baseUrl = envValue(env, LLM_ENV.baseUrl);
+  const apiKey = envValue(env, LLM_ENV.apiKey);
   if (baseUrl === undefined || apiKey === undefined) return undefined;
-  const model = firstValue(env, LLM_ENV.model);
+  const model = envValue(env, LLM_ENV.model);
   return model === undefined ? { baseUrl, apiKey } : { baseUrl, apiKey, model };
 }

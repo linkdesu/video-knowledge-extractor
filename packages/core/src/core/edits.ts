@@ -1,5 +1,5 @@
-import { join, resolve } from "node:path";
-import { isVideoLockHeldByForeign, isVideoLocked } from "./lock";
+import { join, resolve, isAbsolute } from "node:path";
+import { acquireVideoLock, isVideoLockHeldByForeign, isVideoLocked, type VideoLock } from "./lock";
 import { ensureDir, writeFileAtomic } from "./paths";
 import { renderIndexMarkdown, renderTopicMarkdown } from "./render";
 import { readVideoData, writeVideoData } from "./video-data";
@@ -196,4 +196,55 @@ export function setTopicProgress(outputDir: string, topicId: string, patch: Topi
     if (patch.clips !== undefined) topic.clips = patch.clips;
     if (patch.dirName !== undefined) topic.dirName = patch.dirName;
   }, { update: false });
+}
+
+/**
+ * 结算一次中断/失败运行的主题（ADR-0015 §7）：该运行 `generating` 的主题按
+ * `startedAt` 结算 `elapsedSeconds` 并标 `failed`，`queued` 的主题标 `failed`
+ * （保留已有 `elapsedSeconds`），`runToken` 清 null。幂等：重复调用（token 已
+ * 清）不匹配、不写。
+ *
+ * 流水线仍持锁时的失败结算入口：不取锁（非重入锁再取必失败）、不校验锁
+ * 持有者（调用方即持有者），读改写落盘。空/相对目录、文档缺失、token
+ * 不匹配都返回 false 不写。
+ */
+export function settleRunWhileLocked(outputDir: string, runToken: string, message: string): boolean {
+  if (outputDir === "" || !isAbsolute(outputDir)) return false;
+  const data = readVideoData(outputDir);
+  if (data === undefined) return false;
+  if (data.runToken !== runToken) return false;
+  for (const t of data.topics) {
+    if (t.status === "generating" && t.startedAt !== null && t.elapsedSeconds === null) {
+      const started = Date.parse(t.startedAt);
+      if (Number.isFinite(started)) t.elapsedSeconds = Math.max(0, Math.round((Date.now() - started) / 100) / 10);
+    }
+  }
+  for (const t of data.topics) {
+    if (t.status !== "generating" && t.status !== "queued") continue;
+    t.status = "failed";
+    t.error = message;
+  }
+  data.runToken = null;
+  writeVideoData(outputDir, data);
+  return true;
+}
+
+/**
+ * 锁外恢复结算（ADR-0015 §7）：外部活锁不写；取锁失败不写；取到锁走
+ * `settleRunWhileLocked` 同一结算逻辑，finally 释放锁。
+ */
+export function recoverInterruptedRun(outputDir: string, runToken: string, message: string): boolean {
+  if (outputDir === "" || !isAbsolute(outputDir)) return false;
+  if (isVideoLockHeldByForeign(outputDir)) return false;
+  let lock: VideoLock;
+  try {
+    lock = acquireVideoLock(outputDir);
+  } catch {
+    return false;
+  }
+  try {
+    return settleRunWhileLocked(outputDir, runToken, message);
+  } finally {
+    lock.release();
+  }
 }

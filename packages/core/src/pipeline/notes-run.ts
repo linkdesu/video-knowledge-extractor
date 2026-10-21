@@ -1,4 +1,5 @@
 import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, slugify } from "../core/paths";
@@ -6,7 +7,7 @@ import { loadVideoData, readVideoData, writeVideoData } from "../core/video-data
 import type { TopicClip, TopicRecord, VideoData, VideoRef } from "../core/video-data";
 import { readVideoCorrections } from "../core/corrections-io";
 import { applyCorrections } from "../core/corrections";
-import { setTopicProgress } from "../core/edits";
+import { setTopicProgress, settleRunWhileLocked } from "../core/edits";
 import { renderIndexMarkdown } from "../core/render";
 import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/types";
 import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
@@ -143,7 +144,12 @@ export async function generateAll(
       noteCount += 1;
       for (const key of result.noteCacheKeys) if (before.has(key)) cacheHits.push(key);
     } catch (err) {
-      setTopicProgress(outputDir, id, { status: "failed", error: err instanceof Error ? err.message : String(err) });
+      // 当前主题标 failed 并补写 elapsedSeconds（从 startedAt 结算）；排队主题由流水线级结算处理
+      setTopicProgress(outputDir, id, {
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+        elapsedSeconds: Math.round((performance.now() - t0) / 100) / 10,
+      });
       throw err;
     }
   }
@@ -157,6 +163,7 @@ export async function runNotes(input: {
   endpoint: LlmEndpoint;
   cacheRoot: string;
   modelDir?: string;
+  runToken?: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
 }): Promise<{ noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
@@ -166,6 +173,10 @@ export async function runNotes(input: {
   const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
   const client = input.client ?? createLlmClient(input.endpoint);
   const lock = acquireVideoLock(input.outputDir);
+  // token 取锁后、写任何进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
+  const runToken = input.runToken ?? randomUUID();
+  const doc = readVideoData(input.outputDir);
+  if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken });
   const timings: Record<string, number> = {};
   const startedAt = performance.now();
   const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
@@ -181,6 +192,10 @@ export async function runNotes(input: {
     timings.total = t();
     writeIndexFromDoc(input.outputDir);
     return { noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
+  } catch (err) {
+    // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
+    settleRunWhileLocked(input.outputDir, runToken, "本次生成未完成");
+    throw err;
   } finally {
     lock.release();
   }
@@ -191,6 +206,7 @@ export async function runTopics(input: {
   outputDir: string;
   endpoint: LlmEndpoint;
   cacheRoot: string;
+  runToken?: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
 }): Promise<{ topicCount: number; noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
@@ -199,6 +215,10 @@ export async function runTopics(input: {
   const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
   const client = input.client ?? createLlmClient(input.endpoint);
   const lock = acquireVideoLock(input.outputDir);
+  // token 取锁后、写任何主题/进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
+  const runToken = input.runToken ?? randomUUID();
+  const doc = readVideoData(input.outputDir);
+  if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken });
   const timings: Record<string, number> = {};
   const startedAt = performance.now();
   const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
@@ -236,7 +256,9 @@ export async function runTopics(input: {
       };
     });
     data.topics = records;
-    writeVideoData(input.outputDir, data);
+    // 划主题后的整体写回不能覆盖已登记的 runToken：持锁后重读原始文档再写，避免投影快照把 token 抹掉导致失败结算失配
+    const docNow = readVideoData(input.outputDir);
+    writeVideoData(input.outputDir, docNow !== undefined ? { ...docNow, topics: records } : data);
 
     const dirNameOf = (id: TopicId) => {
       const topic = data.topics.find((x) => x.id === id);
@@ -248,6 +270,10 @@ export async function runTopics(input: {
     timings.total = t();
     writeIndexFromDoc(input.outputDir);
     return { topicCount: topics.length, noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
+  } catch (err) {
+    // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
+    settleRunWhileLocked(input.outputDir, runToken, "本次生成未完成");
+    throw err;
   } finally {
     lock.release();
   }

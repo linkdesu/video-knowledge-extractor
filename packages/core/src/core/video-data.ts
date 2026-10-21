@@ -44,6 +44,12 @@ export type VideoData = {
   sourceBytes: number | null;
   /** 这次转写用的 ASR 模型；字幕页照实显示 */
   asrModel: string | null;
+  /** 源视频分辨率；旧文档缺失为 null，卡片省略 */
+  resolution: { width: number; height: number } | null;
+  /** ASR 引擎；旧文档缺失为 null，字幕页按本地显示 */
+  asrEngine: "local" | "remote" | null;
+  /** 写这批主题的那次运行的 token；结算后 null（ADR-0015 §7） */
+  runToken: string | null;
   updatedAt: string;
 };
 
@@ -152,6 +158,21 @@ function parseNullableNumber(v: unknown, where: string): number | null {
   return (v as number | null) ?? null;
 }
 
+function parseResolution(v: unknown, where: string): { width: number; height: number } | null {
+  if (v === null || v === undefined) return null;
+  if (!isObject(v)) throw new Error(`${where} 非法`);
+  const width = readNumber(v.width, `${where}.width`);
+  const height = readNumber(v.height, `${where}.height`);
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) throw new Error(`${where} 的宽高必须是正的整数`);
+  return { width, height };
+}
+
+function parseAsrEngine(v: unknown, where: string): "local" | "remote" | null {
+  if (v === null || v === undefined) return null;
+  if (v !== "local" && v !== "remote") throw new Error(`${where} 只能是 local 或 remote`);
+  return v;
+}
+
 /** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
 export function readVideoData(outputDir: string): VideoData | undefined {
   let raw: string;
@@ -205,6 +226,9 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     importedAt: parsed.importedAt === undefined ? null : parseNullableString(parsed.importedAt, `${p}.importedAt`),
     sourceBytes: parsed.sourceBytes === undefined ? null : parseNullableNumber(parsed.sourceBytes, `${p}.sourceBytes`),
     asrModel: parsed.asrModel === undefined ? null : parseNullableString(parsed.asrModel, `${p}.asrModel`),
+    resolution: parseResolution(parsed.resolution, `${p}.resolution`),
+    asrEngine: parseAsrEngine(parsed.asrEngine, `${p}.asrEngine`),
+    runToken: parsed.runToken === undefined ? null : parseNullableString(parsed.runToken, `${p}.runToken`),
     updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
   };
 }
@@ -234,6 +258,9 @@ export function emptyVideoData(video: Video): VideoData {
     importedAt: null,
     sourceBytes: null,
     asrModel: null,
+    resolution: null,
+    asrEngine: null,
+    runToken: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -331,24 +358,35 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     importedAt: null,
     sourceBytes: null,
     asrModel: null,
+    resolution: null,
+    asrEngine: null,
+    runToken: null,
     updatedAt: new Date().toISOString(),
   };
 }
 
-/** 读文档；缺失时从旧目录迁移（结果不回写，等下次生成或编辑再落盘）。 */
+/**
+ * 读侧状态投影（ADR-0015 §7）：无活锁时 `generating`/`queued` 是中断运行的残留，
+ * 投影为 `failed("上次生成已中断")`（不动其余字段）；有活锁时原样返回。
+ * 纯函数：不改入参、不回写磁盘，有变化时返回换掉 `topics` 的新对象。
+ */
+export function projectRunState(data: VideoData, opts: { locked: boolean }): VideoData {
+  if (opts.locked) return data;
+  let changed = false;
+  const topics = data.topics.map((t) => {
+    if (t.status !== "generating" && t.status !== "queued") return t;
+    changed = true;
+    return { ...t, status: "failed" as const, error: "上次生成已中断" };
+  });
+  if (!changed) return data;
+  return { ...data, topics };
+}
+
+/** 读文档；缺失时从旧目录迁移（结果不回写，等下次生成或编辑再落盘）。状态走 `projectRunState`。 */
 export function loadVideoData(outputDir: string, ref: VideoRef): VideoData {
   const data = readVideoData(outputDir);
   if (data !== undefined) {
-    // 状态归一：`generating` 但没有存活 run.lock → 上次生成被中断
-    if (!isVideoLocked(outputDir)) {
-      for (const t of data.topics) {
-        if (t.status === "generating") {
-          t.status = "failed";
-          t.error = "上次生成已中断";
-        }
-      }
-    }
-    return data;
+    return projectRunState(data, { locked: isVideoLocked(outputDir) });
   }
   const video: Video = {
     id: ref.id,

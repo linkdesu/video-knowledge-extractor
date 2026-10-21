@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
+import { asrEnv, envValue, llmEnv, llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
 
 const saved: Record<string, string | undefined> = {};
 function withEnv(partial: Record<string, string | undefined>, fn: () => void): void {
@@ -101,5 +101,48 @@ describe("llmCredentialsFromEnv", () => {
         expect(llmCredentialsFromEnv()).toEqual({ baseUrl: "https://p", apiKey: "k-test-p", model: "m-test-p" });
       },
     );
+  });
+});
+
+
+describe("envValue", () => {
+  test("规范名优先，trim，空串视为未设置", () => {
+    const env = { A: "  value-a  ", B: "value-b" };
+    expect(envValue(env, ["A", "B"])).toBe("value-a");
+  });
+
+  test("规范名是空白时回落到别名", () => {
+    const env = { A: "   ", B: "value-b" };
+    expect(envValue(env, ["A", "B"])).toBe("value-b");
+  });
+
+  test("全部空白或未设置返回 undefined", () => {
+    expect(envValue({ A: "" }, ["A", "B"])).toBeUndefined();
+    expect(envValue({}, ["A"])).toBeUndefined();
+  });
+});
+
+describe("llmEnv 与 asrEnv", () => {
+  test("llmEnv 按变量表取分字段值", () => {
+    const env = {
+      VNOTE_LLM_BASE_URL: "https://vnote",
+      IDEALSOFT_API_KEY: "k-idealsoft",
+      VNOTE_LLM_MODEL: "m-vnote",
+    };
+    expect(llmEnv(env)).toEqual({ baseUrl: "https://vnote", apiKey: "k-idealsoft", model: "m-vnote" });
+  });
+
+  test("未设置的字段是 undefined", () => {
+    expect(llmEnv({})).toEqual({ baseUrl: undefined, apiKey: undefined, model: undefined });
+  });
+
+  test("asrEnv 按变量表取分字段值", () => {
+    const env = {
+      VNOTE_ASR_PROVIDER: "remote",
+      VNOTE_ASR_BASE_URL: "https://asr",
+      VNOTE_ASR_MODEL: "m-asr",
+      VNOTE_ASR_API_KEY: "k-asr",
+    };
+    expect(asrEnv(env)).toEqual({ provider: "remote", baseUrl: "https://asr", model: "m-asr", apiKey: "k-asr" });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { planChunks } from "./audio";
+import { parseProbeJson, planChunks } from "./audio";
 import type { Silence } from "./audio";
 
 // 90 分钟视频，每 30s 一个 0.5s 停顿：中点在 0.25、30.25、…、5399.75。
@@ -51,5 +51,88 @@ describe("planChunks", () => {
   test("正好 10 分钟：1 块（到上限不切）", () => {
     const chunks = planChunks(600, []);
     expect(chunks).toEqual([{ index: 1, start: 0, end: 600 }]);
+  });
+});
+
+describe("planChunks hardMax", () => {
+  test("无停顿 350s：{target:100, min:50, max:150, hardMax} 在 150/300 硬切，不发出超限块", () => {
+    const chunks = planChunks(350, [], { target: 100, min: 50, max: 150, hardMax: true });
+    expect(chunks).toEqual([
+      { index: 1, start: 0, end: 150 },
+      { index: 2, start: 150, end: 300 },
+      { index: 3, start: 300, end: 350 },
+    ]);
+    for (const c of chunks) expect(c.end - c.start).toBeLessThanOrEqual(150);
+  });
+
+  test("hardMax 下停顿在窗口外也不取（必然超限），仍按 max 切", () => {
+    // 唯一停顿在 249.75 秒：窗口 [50,150] 之外，hardMax 必须硬切 150 而不是等到 249.75。
+    const chunks = planChunks(300, [{ start: 249.5, end: 250 }], { target: 100, min: 50, max: 150, hardMax: true });
+    expect(chunks).toEqual([
+      { index: 1, start: 0, end: 150 },
+      { index: 2, start: 150, end: 300 },
+    ]);
+  });
+
+  test("hardMax 下窗口内有停顿仍优先在停顿处切", () => {
+    const chunks = planChunks(350, [{ start: 120, end: 120.5 }], { target: 100, min: 50, max: 150, hardMax: true });
+    expect(chunks).toEqual([
+      { index: 1, start: 0, end: 120.25 },
+      { index: 2, start: 120.25, end: 270.25 },
+      { index: 3, start: 270.25, end: 350 },
+    ]);
+  });
+
+  test("默认（无 limits 参数）行为不变：窗口外取停顿等 MAX，绝不硬切", () => {
+    const chunks = planChunks(350, [], { target: 100, min: 50, max: 150 });
+    expect(chunks).toEqual([
+      { index: 1, start: 0, end: 150 },
+      { index: 2, start: 150, end: 300 },
+      { index: 3, start: 300, end: 350 },
+    ]);
+    // 停顿在 249.75：默认模式第一块等停顿切 249.75（超过 150 也不硬切），与 hardMax 的 150 不同。
+    const withSilence = planChunks(350, [{ start: 249.5, end: 250 }], { target: 100, min: 50, max: 150 });
+    expect(withSilence).toEqual([
+      { index: 1, start: 0, end: 249.75 },
+      { index: 2, start: 249.75, end: 350 },
+    ]);
+  });
+});
+
+describe("parseProbeJson", () => {
+  test("有视频流：取宽高与时长", () => {
+    const raw = JSON.stringify({ streams: [{ width: 886, height: 1920 }], format: { duration: "12.5" } });
+    const r = parseProbeJson(raw);
+    expect(r.duration).toBe(12.5);
+    expect(r.width).toBe(886);
+    expect(r.height).toBe(1920);
+  });
+
+  test("无视频流：宽高为 null，不报错", () => {
+    expect(parseProbeJson(JSON.stringify({ streams: [], format: { duration: "5" } }))).toEqual({
+      duration: 5,
+      width: null,
+      height: null,
+    });
+    expect(parseProbeJson(JSON.stringify({ format: { duration: "5" } }))).toEqual({
+      duration: 5,
+      width: null,
+      height: null,
+    });
+  });
+
+  test("非法宽高（负数/非整数/字符串）：按 null 处理", () => {
+    const base = { streams: [{}], format: { duration: "1" } };
+    const r1 = parseProbeJson(JSON.stringify({ ...base, streams: [{ width: -5, height: 10 }] }));
+    expect(r1).toEqual({ duration: 1, width: null, height: 10 });
+    const r2 = parseProbeJson(JSON.stringify({ ...base, streams: [{ width: 10.5, height: 10 }] }));
+    expect(r2).toEqual({ duration: 1, width: null, height: 10 });
+    const r3 = parseProbeJson(JSON.stringify({ ...base, streams: [{ width: "abc", height: 10 }] }));
+    expect(r3).toEqual({ duration: 1, width: null, height: 10 });
+  });
+
+  test("坏 JSON 与缺失时长：报错", () => {
+    expect(() => parseProbeJson("not json")).toThrow();
+    expect(() => parseProbeJson(JSON.stringify({ streams: [] }))).toThrow();
   });
 });

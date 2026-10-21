@@ -18,6 +18,12 @@ function fakeHandle(): { handle: JobHandle; cancelCalled: () => boolean } {
 
 const config = { notesRoot: "/notes", cacheRoot: "/cache", modelDir: "/models" };
 
+const job = {
+  runToken: "tok-1",
+  endpoint: { baseUrl: "https://llm.test", apiKey: "k", model: "m" },
+  asr: { provider: "local", modelDir: "/models" },
+} as const;
+
 function makeQueue(handles: JobHandle[]) {
   const snapshots: JobSnapshot[] = [];
   const launched: JobRequest[] = [];
@@ -53,8 +59,8 @@ describe("JobQueue 串行", () => {
     const h1 = fakeHandle();
     const h2 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle, h2.handle]);
-    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config });
-    const id2 = queue.enqueue({ kind: "notes", videoId: "v2", sourcePath: "", outputDir: "/out/2", config, topicIds: ["t1"] });
+    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, ...job });
+    const id2 = queue.enqueue({ kind: "notes", videoId: "v2", sourcePath: "", outputDir: "/out/2", config, topicIds: ["t1"], ...job });
 
     expect(statesOf(snapshots).get(id1)).toBe("running");
     expect(statesOf(snapshots).get(id2)).toBe("queued");
@@ -68,10 +74,10 @@ describe("JobQueue 串行", () => {
   test("kind 在每个快照上都带着，launch 收到冻结的完整请求", () => {
     const h1 = fakeHandle();
     const { queue, snapshots, launched } = makeQueue([h1.handle]);
-    const id = queue.enqueue({ kind: "topics", videoId: "v1", sourcePath: "", outputDir: "/out/1", config });
+    const id = queue.enqueue({ kind: "topics", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, ...job });
 
     expect(snapshots.map((s) => s.kind)).toEqual(["topics", "topics"]);
-    expect(launched[0]).toEqual({ kind: "topics", videoId: "v1", sourcePath: "", outputDir: "/out/1", config });
+    expect(launched[0]).toEqual({ kind: "topics", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, ...job });
     expect(snapshots.at(-1)?.state).toBe("running");
     expect(queue.active()?.state).toBe("running");
 
@@ -85,8 +91,8 @@ describe("JobQueue 串行", () => {
     const h1 = fakeHandle();
     const h2 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle, h2.handle]);
-    const id1 = queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, topicIds: ["t1"] });
-    const id2 = queue.enqueue({ kind: "topics", videoId: "v2", sourcePath: "", outputDir: "/out/2", config });
+    const id1 = queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, topicIds: ["t1"], ...job });
+    const id2 = queue.enqueue({ kind: "topics", videoId: "v2", sourcePath: "", outputDir: "/out/2", config, ...job });
 
     expect(statesOf(snapshots).get(id1)).toBe("running");
     expect(statesOf(snapshots).get(id2)).toBe("queued");
@@ -101,8 +107,8 @@ describe("JobQueue 串行", () => {
     const h1 = fakeHandle();
     const h2 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle, h2.handle]);
-    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config });
-    const id2 = queue.enqueue({ kind: "extract", videoId: "v2", sourcePath: "/s/2.mp4", outputDir: null, config });
+    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, ...job });
+    const id2 = queue.enqueue({ kind: "extract", videoId: "v2", sourcePath: "/s/2.mp4", outputDir: null, config, ...job });
 
     queue.cancel(id1);
     // 运行中取消不立即落终态：等 worker exit
@@ -120,8 +126,8 @@ describe("JobQueue 串行", () => {
     const h1 = fakeHandle();
     const h2 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle, h2.handle]);
-    queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config });
-    const id2 = queue.enqueue({ kind: "notes", videoId: "v2", sourcePath: "", outputDir: "/out/2", config });
+    queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, ...job });
+    const id2 = queue.enqueue({ kind: "notes", videoId: "v2", sourcePath: "", outputDir: "/out/2", config, ...job });
 
     queue.cancel(id2);
     const cancelled = snapshots.filter((s) => s.jobId === id2);
@@ -139,8 +145,8 @@ describe("JobQueue 串行", () => {
     const h1 = fakeHandle();
     const h2 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle, h2.handle]);
-    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config });
-    const id2 = queue.enqueue({ kind: "extract", videoId: "v2", sourcePath: "/s/2.mp4", outputDir: null, config });
+    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, ...job });
+    const id2 = queue.enqueue({ kind: "extract", videoId: "v2", sourcePath: "/s/2.mp4", outputDir: null, config, ...job });
 
     queue.fail("炸了");
     expect(statesOf(snapshots).get(id1)).toBe("failed");
@@ -151,7 +157,7 @@ describe("JobQueue 串行", () => {
   test("终态只能落一次：终态后的 done/error/cancel 不再改变状态", () => {
     const h1 = fakeHandle();
     const { queue } = makeQueue([h1.handle]);
-    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config });
+    const id1 = queue.enqueue({ kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, ...job });
 
     queue.fail("先失败");
     queue.finish(doneResult);
@@ -163,7 +169,7 @@ describe("JobQueue 串行", () => {
   test("progress 的 topicId/topicPercent 透传到 running 快照", () => {
     const h1 = fakeHandle();
     const { queue, snapshots } = makeQueue([h1.handle]);
-    queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, topicIds: ["t1"] });
+    queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, topicIds: ["t1"], ...job });
 
     queue.progress({ step: "generate-notes", done: 2, total: 5, detail: "主题A", topicId: "t1", topicPercent: 40 });
     const running = snapshots.filter((s) => s.state === "running").at(-1);

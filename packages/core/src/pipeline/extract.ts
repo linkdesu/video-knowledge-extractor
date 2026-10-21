@@ -1,18 +1,20 @@
 import { statSync } from "node:fs";
-import { probeVideoDurations, extractAudio } from "../core/audio";
-import { ASR_MODEL_ID, modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
+import { randomUUID } from "node:crypto";
+import { probeVideo, extractAudio } from "../core/audio";
+import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections } from "../core/corrections";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { cleanupStaleOutputs } from "../core/outputs";
-import { loadVideoData, writeVideoData } from "../core/video-data";
+import { emptyVideoData, readVideoData, writeVideoData } from "../core/video-data";
+import { settleRunWhileLocked } from "../core/edits";
 import type { TopicRecord } from "../core/video-data";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
 import type { CorrectionList, Note, Topic, TopicId, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
+import { createAsrEngine, type AsrConfig } from "../asr/engine";
 import { correctionsFor, generateAll, writeIndexFromDoc } from "./notes-run";
 import { segmentTopics } from "./segment-topics";
-import { transcribeVideo } from "./transcribe";
 
 export type ExtractInput = {
   videoPath: string;
@@ -25,6 +27,12 @@ export type ExtractInput = {
   /** 缓存根目录；缓存落在 `<cacheRoot>/<videoId>/`（ADR-0014）。 */
   cacheRoot: string;
   client?: LlmClient;
+  /** ASR 引擎配置；缺省用本地引擎（modelDir）。 */
+  asr?: AsrConfig;
+  /** 本次运行的 token；缺省 core 生成 randomUUID。 */
+  runToken?: string;
+  /** 新视频拿得到目录后的接收屏障：async，等 main 的 ACK 才继续。 */
+  onPrepared?: (info: { videoId: Video["id"]; outputDir: string; runToken: string }) => Promise<void>;
   onProgress?: (p: Progress) => void;
 };
 
@@ -49,33 +57,42 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
   const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
   const before = client.usage?.() ?? emptyUsage();
 
-  const { duration } = await probeVideoDurations(input.videoPath);
-  const video = openVideo(input.videoPath, duration, notesRoot);
+  const probe = await probeVideo(input.videoPath);
+  const video = openVideo(input.videoPath, probe.duration, notesRoot);
   const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
   // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑
   const lock = acquireVideoLock(video.outputDir);
+  // token 取锁后、写任何主题前先落盘（缺省 core 生成 randomUUID）
+  const runToken = input.runToken ?? randomUUID();
+  const asr = input.asr ?? { provider: "local", modelDir };
+  const engine = createAsrEngine(asr);
   try {
+    let data = readVideoData(video.outputDir);
+    if (data === undefined) data = { ...emptyVideoData(video), runToken };
+    else data.runToken = runToken;
+    writeVideoData(video.outputDir, data);
+    // 接收屏障：等 main 的 ACK 才继续（超时由调用方处理，不写主题）
+    if (input.onPrepared !== undefined) {
+      await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
+    }
     const wavPath = `${cacheDir}/audio.wav`;
     await extractAudio(video.sourcePath, wavPath, input.limitSeconds);
     timings.audio = t();
 
-    const run = await transcribeVideo({
+    const run = await engine.run({
       video,
       wavPath,
       cacheDir,
-      modelDir,
       ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
     });
     for (const [k, v] of Object.entries(run.timings)) timings[k] = t();
     timings.transcribe = t();
 
-    // 落 video.json：原始转写（纠错在生成/渲染时应用，不在文档里二次替换）+ chunks + asrModel/importedAt/sourceBytes
-    const data = loadVideoData(
-      video.outputDir,
-      { id: video.id, title: video.title, sourcePath: video.sourcePath, durationSeconds: video.durationSeconds },
-    );
+    // 落 video.json：原始转写（纠错在生成/渲染时应用）+ chunks + asrModel/resolution/asrEngine（token 已在取锁后落盘）
     if (data.importedAt === null) data.importedAt = new Date().toISOString();
-    data.asrModel = ASR_MODEL_ID;
+    data.asrModel = run.modelId;
+    data.asrEngine = run.engine;
+    data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
     data.sourceBytes = statSync(input.videoPath).size;
     data.chunks = run.chunks;
     data.transcript = run.transcript;
@@ -168,6 +185,10 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       },
       staleRemoved,
     };
+  } catch (err) {
+    // 仍持锁时结算：只有该次运行写的主题变 failed，token 清 null，再把错误抛给调用方
+    settleRunWhileLocked(video.outputDir, runToken, "本次生成未完成");
+    throw err;
   } finally {
     lock.release();
   }

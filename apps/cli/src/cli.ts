@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { cacheRoot, loadDotenvFiles, notesRoot, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
+import { cacheRoot, defaultSettings, loadDotenvFiles, modelDir, notesRoot, resolveAsr, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
 import type { Progress, StepName } from "@video-notes/core";
 
 const USAGE = `用法:
@@ -84,10 +84,20 @@ async function main(): Promise<void> {
         "未配置 LLM 端点：请设置 VNOTE_LLM_BASE_URL 或 IDEALSOFT_API_URL，以及 VNOTE_LLM_API_KEY 或 IDEALSOFT_API_KEY（也可写进 .env）",
       );
     }
+    // ADR-0015 §5：CLI 走同一 ASR 边界（env key，不依赖 Electron），只配远程时也能转写
+    const asrSetting = resolveAsr(defaultSettings(process.env), undefined, process.env);
+    const asr =
+      asrSetting.value === undefined
+        ? { provider: "local" as const, modelDir: modelDir() }
+        : asrSetting.value.provider === "local"
+          ? { provider: "local" as const, modelDir: modelDir() }
+          : asrSetting.value;
+    console.error(`ASR: ${asr.provider === "local" ? "本地" : "远程"}`);
     const result = await runExtract({
       videoPath,
       endpoint,
       cacheRoot: cacheRoot(),
+      asr,
       onProgress: printProgress,
       ...(limitSeconds !== undefined ? { limitSeconds } : {}),
     });

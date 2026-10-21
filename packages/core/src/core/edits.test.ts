@@ -7,10 +7,12 @@ import {
   deleteUtterance,
   mergeTopics,
   renameSpeaker,
+  recoverInterruptedRun,
   setTopicProgress,
   setTopicSelected,
+  settleRunWhileLocked,
 } from "./edits";
-import { emptyVideoData, writeVideoData } from "./video-data";
+import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { TopicRecord, VideoData } from "./video-data";
 import { renderTopicMarkdown } from "./render";
 import type { SpeakerId, TopicId, Video } from "./types";
@@ -303,5 +305,109 @@ describe("setTopicSelected / setTopicProgress", () => {
     expect(t.keyPoints).toEqual(["要点X"]);
     expect({ ...t.clips[0]! }).toEqual({ file: "x.mp4", start: 1, end: 2, segmentIndexes: [0] } as { file: string; start: number; end: number; segmentIndexes: number[] });
     expect(t.dirName).toBe("topic-a-renamed");
+  });
+});
+
+/** 写一个带 token 与三个状态主题的文档：generating（带 startedAt）、queued、done。 */
+function settleFixture(): { dir: string; token: string } {
+  const { dir, data } = makeFixture();
+  data.topics = [
+    topic({ id: "gen" as TopicId, status: "generating", startedAt: new Date(Date.now() - 7200_000).toISOString() }),
+    topic({ id: "q" as TopicId, status: "queued" }),
+    topic({ id: "done" as TopicId, status: "done", elapsedSeconds: 5 }),
+  ];
+  data.runToken = "tok-abc";
+  writeVideoData(dir, data);
+  return { dir, token: "tok-abc" };
+}
+
+describe("settleRunWhileLocked（锁内结算）", () => {
+  test("持锁成功：不再次取锁，generating/queued → failed，elapsed 结算，token 清 null", () => {
+    const { dir } = settleFixture();
+    holdSelfLock(dir);
+    expect(settleRunWhileLocked(dir, "tok-abc", "本次生成未完成")).toBe(true);
+    // 没有重新取锁：本进程锁文件仍在
+    expect(existsSync(join(dir, ".vnote-run.lock"))).toBe(true);
+    const d = readVideoData(dir)!;
+    const gen = d.topics.find((t) => t.id === "gen")!;
+    expect(gen.status).toBe("failed");
+    expect(gen.error).toBe("本次生成未完成");
+    // 7200s 前开始：elapsed 结算（秒级容差）
+    expect(gen.elapsedSeconds).toBeGreaterThanOrEqual(7190);
+    expect(gen.elapsedSeconds).toBeLessThanOrEqual(7230);
+    expect(d.topics.find((t) => t.id === "q")!.status).toBe("failed");
+    expect(d.topics.find((t) => t.id === "done")!.status).toBe("done");
+    expect(d.runToken).toBeNull();
+  });
+
+  test("queued 主题保留已有 elapsedSeconds（不覆盖）", () => {
+    const { dir } = settleFixture();
+    const d = readVideoData(dir)!;
+    d.topics.find((t) => t.id === "q")!.elapsedSeconds = 3;
+    writeVideoData(dir, d);
+    expect(settleRunWhileLocked(dir, "tok-abc", "m")).toBe(true);
+    expect(readVideoData(dir)!.topics.find((t) => t.id === "q")!.elapsedSeconds).toBe(3);
+  });
+
+  test("token 不匹配不写", () => {
+    const { dir } = settleFixture();
+    expect(settleRunWhileLocked(dir, "other-token", "m")).toBe(false);
+    const d = readVideoData(dir)!;
+    expect(d.runToken).toBe("tok-abc");
+    expect(d.topics.find((t) => t.id === "gen")!.status).toBe("generating");
+  });
+
+  test("幂等：结算后重复调用不写（token 已清）", () => {
+    const { dir } = settleFixture();
+    expect(settleRunWhileLocked(dir, "tok-abc", "m")).toBe(true);
+    const after = JSON.stringify(readVideoData(dir));
+    expect(settleRunWhileLocked(dir, "tok-abc", "m")).toBe(false);
+    expect(JSON.stringify(readVideoData(dir))).toBe(after);
+  });
+
+  test("空/相对目录不写", () => {
+    expect(settleRunWhileLocked("", "tok-abc", "m")).toBe(false);
+    expect(settleRunWhileLocked("relative/path", "tok-abc", "m")).toBe(false);
+  });
+
+  test("文档缺失不写", () => {
+    const dir = mkdtemp();
+    expect(settleRunWhileLocked(dir, "tok-abc", "m")).toBe(false);
+  });
+});
+
+describe("recoverInterruptedRun（锁外恢复）", () => {
+  test("外部活锁不写（也不取锁）", () => {
+    const { dir } = settleFixture();
+    holdLock(dir);
+    expect(recoverInterruptedRun(dir, "tok-abc", "本次生成已取消")).toBe(false);
+    const d = readVideoData(dir)!;
+    expect(d.runToken).toBe("tok-abc");
+    expect(d.topics.find((t) => t.id === "gen")!.status).toBe("generating");
+  });
+
+  test("取锁失败不写（本进程活锁）", () => {
+    const { dir } = settleFixture();
+    holdSelfLock(dir);
+    expect(recoverInterruptedRun(dir, "tok-abc", "m")).toBe(false);
+    expect(readVideoData(dir)!.runToken).toBe("tok-abc");
+  });
+
+  test("空/相对目录不写", () => {
+    expect(recoverInterruptedRun("", "tok-abc", "m")).toBe(false);
+    expect(recoverInterruptedRun("relative", "tok-abc", "m")).toBe(false);
+  });
+
+  test("无锁：取锁结算并释放（token 匹配写、不匹配不写）", () => {
+    const { dir, token } = settleFixture();
+    expect(recoverInterruptedRun(dir, token, "本次生成已取消")).toBe(true);
+    expect(existsSync(join(dir, ".vnote-run.lock"))).toBe(false);
+    const d = readVideoData(dir)!;
+    expect(d.runToken).toBeNull();
+    expect(d.topics.find((t) => t.id === "gen")!.status).toBe("failed");
+    expect(d.topics.find((t) => t.id === "gen")!.error).toBe("本次生成已取消");
+    const f2 = settleFixture();
+    expect(recoverInterruptedRun(f2.dir, "nope", "m")).toBe(false);
+    expect(readVideoData(f2.dir)!.runToken).toBe("tok-abc");
   });
 });
