@@ -1,0 +1,37 @@
+{
+  "note": "React Bits Pro items vendored by scripts/vendor-reactbits.ts. Starter items are creative components (-tw variant), pro items are App UI blocks.",
+  "items": [
+    {
+      "registry": "starter",
+      "name": "luminous-type-tw"
+    },
+    {
+      "registry": "pro",
+      "name": "app-shell-1"
+    },
+    {
+      "registry": "pro",
+      "name": "app-shell-6"
+    },
+    {
+      "registry": "pro",
+      "name": "monitoring-9"
+    },
+    {
+      "registry": "pro",
+      "name": "data-table-3"
+    },
+    {
+      "registry": "pro",
+      "name": "settings-form-1"
+    },
+    {
+      "registry": "pro",
+      "name": "empty-state-5"
+    },
+    {
+      "registry": "pro",
+      "name": "bento-29"
+    }
+  ]
+}
