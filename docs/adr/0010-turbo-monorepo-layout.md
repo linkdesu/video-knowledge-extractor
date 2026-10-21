@@ -28,3 +28,5 @@
 - 两个安装根由同一份 `bun.lock` 解析，native addon 只装一份；turbo 感知 bun workspaces，依赖图自动建立。
 - `sherpa-onnx-node` 归 core 所有，Electron 主进程将来仍要按 Electron ABI 重建，或让 CLI 子进程承担转写与切片（ADR-0007）。
 - 没有 `test` 脚本的包会被 `turbo run test` 跳过，不会报错；新包忘了加测试脚本时 CI 不会暴露。
+- `vnote --version` 读 `apps/cli/package.json` 的 `version`，升级版本时以那一份为准；根与 core 的 `version` 字段不参与输出。
+- 共享的 `tsconfig.base.json` 列在 turbo 的 `globalDependencies`，改它会让两个包的 typecheck 与测试缓存一起失效。
