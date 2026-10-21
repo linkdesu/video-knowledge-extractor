@@ -69,12 +69,15 @@ export function openVideo(sourcePath: string, durationSeconds: number, root: str
   const index = readVideoIndex(root);
   const existing = index.videos.find((v) => v.id === id);
   if (existing !== undefined) {
+    if (existing.sourcePath !== resolved) {
+      writeVideoIndex({ videos: index.videos.map((v) => (v.id === id ? { ...v, sourcePath: resolved } : v)) }, root);
+    }
     return { id, title: existing.title, sourcePath: resolved, durationSeconds, outputDir: resolve(root, existing.outputDir) };
   }
   const title = basename(resolved, extname(resolved));
   const outputDir = videoDirName(resolved);
   mkdirSync(resolve(root, outputDir), { recursive: true });
-  const entry: VideoIndexEntry = { id, title, outputDir };
+  const entry: VideoIndexEntry = { id, title, outputDir, sourcePath: resolved };
   writeVideoIndex({ videos: [...index.videos, entry] }, root);
   return { id, title, sourcePath: resolved, durationSeconds, outputDir: resolve(root, outputDir) };
 }

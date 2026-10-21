@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { Correction, CorrectionList } from "./types";
-import { readJsonFile } from "./paths";
+import { readJsonFile, writeFileAtomic } from "./paths";
 
 export type CorrectionFileEntry = { wrong: string; right: string };
 
@@ -26,4 +26,22 @@ export function loadCorrections(root: string, videoDir: string): CorrectionList 
     global: globalFile === undefined ? [] : parseCorrections(globalFile, globalPath),
     video: videoFile === undefined ? [] : parseCorrections(videoFile, videoPath),
   };
+}
+
+/** 视频专属词表的读取：缺文件是空表，格式错抛错（与 `loadCorrections` 的 video 分支同口径）。 */
+export function readVideoCorrections(videoDir: string): CorrectionFileEntry[] {
+  const path = resolve(videoDir, "corrections.json");
+  const file = readJsonFile<unknown>(path);
+  if (file === undefined) return [];
+  parseCorrections(file, path);
+  const rows = file as CorrectionFileEntry[]; // parseCorrections 已逐条校验，形状可信
+  return rows;
+}
+
+/** 保存前用 `parseCorrections` 校验（空 wrong/right 报错），再原子写；返回写入的条目。 */
+export function saveVideoCorrections(videoDir: string, entries: CorrectionFileEntry[]): CorrectionFileEntry[] {
+  const path = resolve(videoDir, "corrections.json");
+  parseCorrections(entries, path);
+  writeFileAtomic(path, `${JSON.stringify(entries, null, 2)}\n`);
+  return entries;
 }

@@ -7,6 +7,7 @@
  * | topic-candidates   | 分块纠错后字幕键、块提示词文本哈希、合并提示词文本哈希、端点模型名 |
  * | note               | 主题（标题/摘要/时间段）、该主题的纠错后字幕、系统提示词文本哈希、端点模型名、词表内容 |
  */
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -24,7 +25,7 @@ export type CacheKey = {
 export type CacheInputs = Record<string, string | number | boolean>;
 
 export function sha256(bytes: Uint8Array | string): string {
-  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export function hashJson(value: unknown): string {

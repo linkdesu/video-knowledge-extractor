@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { CLIP_PREROLL_SECONDS } from "./config";
 import { run } from "./exec";
@@ -35,6 +35,15 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+/** 从切片文件名解析时间段（`<序号>-<HH>-<MM>-<SS>-<HH>-<MM>-<SS>.mp4`）；序号不参与解析，分钟/秒位越界或非法名字返回 undefined。 */
+export function parseClipFileName(name: string): Segment | undefined {
+  const m = /^\d{2}-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})\.mp4$/.exec(name);
+  if (m === null) return undefined;
+  const [sh, sm, ss, eh, em, es] = m.slice(1).map(Number) as [number, number, number, number, number, number];
+  if (sm > 59 || ss > 59 || em > 59 || es > 59) return undefined;
+  return { start: sh * 3600 + sm * 60 + ss, end: eh * 3600 + em * 60 + es };
+}
+
 /** 重编码保证帧精确，避免重跑覆盖用户看过的文件。 */
 export async function cutClip(input: { videoPath: string; segment: Segment; outPath: string }): Promise<void> {
   const { videoPath, segment, outPath } = input;
@@ -44,32 +53,43 @@ export async function cutClip(input: { videoPath: string; segment: Segment; outP
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   ensureDir(dirname(outPath));
-  await run(
-    [
-      "ffmpeg",
-      "-y",
-      "-ss",
-      String(segment.start),
-      "-t",
-      String(segment.end - segment.start),
-      "-i",
-      videoPath,
-      "-map",
-      "0:v:0",
-      "-map",
-      "0:a?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "23",
-      "-c:a",
-      "aac",
-      "-movflags",
-      "+faststart",
-      outPath,
-    ],
-    { label: "切主题切片" },
-  );
+  // ffmpeg 先写临时文件再 rename：中途被杀只会留下 .part，不会污染最终文件
+  const partPath = `${outPath}.part-${process.pid}.mp4`;
+  try {
+    await run(
+      [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        String(segment.start),
+        "-t",
+        String(segment.end - segment.start),
+        "-i",
+        videoPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        partPath,
+      ],
+      { label: "切主题切片" },
+    );
+    renameSync(partPath, outPath);
+  } finally {
+    try {
+      unlinkSync(partPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
 }

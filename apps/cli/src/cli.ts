@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { llmCredentialsFromEnv, loadDotenvFiles, notesRoot, resolveLlmEndpoint, runExtract } from "@video-notes/core";
+import { loadDotenvFiles, notesRoot, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
 import type { Progress, StepName } from "@video-notes/core";
 
 const USAGE = `用法:
@@ -78,13 +78,12 @@ async function main(): Promise<void> {
   if (command === "extract") {
     const { videoPath, limitSeconds } = parseExtractArgs(rest);
     if (!existsSync(videoPath)) throw new Error(`视频文件不存在: ${videoPath}`);
-    const creds = llmCredentialsFromEnv();
-    if (creds === undefined) {
+    const endpoint = await resolveEndpointFromEnv();
+    if (endpoint === undefined) {
       throw new Error(
         "未配置 LLM 端点：请设置 VNOTE_LLM_BASE_URL 或 IDEALSOFT_API_URL，以及 VNOTE_LLM_API_KEY 或 IDEALSOFT_API_KEY（也可写进 .env）",
       );
     }
-    const endpoint = await resolveLlmEndpoint(creds);
     const result = await runExtract({
       videoPath,
       endpoint,
