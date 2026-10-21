@@ -6,8 +6,9 @@
 
 仓库是 bun workspaces 管理的 monorepo，turbo 在根目录调度 typecheck 与测试。
 
-- `packages/core` 是 `@video-notes/core` 库，流水线、ASR、LLM 客户端、配置、缓存都在这里，单一入口导出。
+- `packages/core` 是 `@video-notes/core` 库，流水线、ASR、LLM 客户端、配置、缓存都在这里。主入口导出流水线与配置，`@video-notes/core/storage` 子路径只导出库读取、纠错词表与配置，供不跑流水线的进程使用。
 - `apps/cli` 是 `vnote` 命令行，只做参数解析与终端输出，通过 `workspace:*` 依赖 core。
+- `apps/desktop` 是 Electron 桌面端，只做界面、IPC 与进程管理，同样通过 `workspace:*` 依赖 core。
 
 ## 流水线
 
@@ -58,6 +59,17 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 开发期在仓库根目录跑 `bun run vnote extract <视频>`；在 `apps/cli` 里 `bun link` 之后可直接用 `vnote`。没有 `--out`，输出目录在首次生成时确定，之后不再随参数变化。`--limit <秒>` 只处理前 N 秒，供开发期冒烟。
 
+桌面端：
+
+```bash
+cd apps/desktop
+bun run dev      # electron-vite 开发模式
+bun run build    # 产出 out/，不做签名与安装包
+bun run start    # 启动构建产物
+```
+
+桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
+
 环境变量（也可写进 `.env`）：
 
 | 变量 | 作用 |
@@ -76,10 +88,10 @@ bun run test
 
 ## 当前状态
 
-`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。模型首次启动下载（ADR-0004）、主题编辑的界面、Electron 界面尚未实现；模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
+`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。Electron 桌面端已能导入、看库、看主题与切片、编辑纠错词表、重跑与取消；打包、签名与 DMG 尚未实现。模型首次启动下载（ADR-0004）与主题编辑（改主题名、合并、拆分）尚未实现，模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
 
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0011 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理。
+- `docs/adr/`：0001–0012 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core。
 - `tmp/` 与 `runs/` 不进 git。

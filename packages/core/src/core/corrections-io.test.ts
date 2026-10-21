@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadCorrections, parseCorrections } from "./corrections-io";
+import { loadCorrections, parseCorrections, readVideoCorrections, saveVideoCorrections } from "./corrections-io";
 
 function tempRoot(): string {
   return mkdtempSync(resolve(tmpdir(), "vnote-corrections-"));
@@ -41,5 +41,43 @@ describe("loadCorrections", () => {
     writeFileSync(resolve(videoDir, "corrections.json"), JSON.stringify([{ wrong: "SKQ", right: "skill 文件" }]));
     const list = loadCorrections(root, videoDir);
     expect(list.video).toEqual([{ from: "SKQ", to: "skill 文件" }]);
+  });
+});
+
+describe("readVideoCorrections", () => {
+  test("缺文件是空表", () => {
+    const dir = resolve(tempRoot(), "video");
+    expect(readVideoCorrections(dir)).toEqual([]);
+  });
+
+  test("读取并校验词条", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    writeFileSync(resolve(dir, "corrections.json"), JSON.stringify([{ wrong: "SKQ", right: "skill" }]));
+    expect(readVideoCorrections(dir)).toEqual([{ wrong: "SKQ", right: "skill" }]);
+  });
+
+  test("格式错抛错而不是当成空表", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    writeFileSync(resolve(dir, "corrections.json"), JSON.stringify([{ wrong: "SKQ" }]));
+    expect(() => readVideoCorrections(dir)).toThrow("第 1 条");
+  });
+});
+
+describe("saveVideoCorrections", () => {
+  test("写入后再读回一致", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    const saved = saveVideoCorrections(dir, [{ wrong: "SKQ", right: "skill" }]);
+    expect(saved).toEqual([{ wrong: "SKQ", right: "skill" }]);
+    expect(readVideoCorrections(dir)).toEqual([{ wrong: "SKQ", right: "skill" }]);
+  });
+
+  test("空 wrong 保存前报错，文件不落盘", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    expect(() => saveVideoCorrections(dir, [{ wrong: "", right: "skill" }])).toThrow("第 1 条");
+    expect(readVideoCorrections(dir)).toEqual([]);
   });
 });

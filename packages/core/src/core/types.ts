@@ -22,8 +22,8 @@ export type Video = {
   outputDir: string;
 };
 
-/** notes 根目录 `index.json` 的一条：id ↔ 输出目录 ↔ 显示标题。 */
-export type VideoIndexEntry = Pick<Video, "id" | "title" | "outputDir">;
+/** notes 根目录 `index.json` 的一条：id ↔ 输出目录 ↔ 显示标题；`sourcePath` 供界面重跑时复用（旧条目可能没有）。 */
+export type VideoIndexEntry = Pick<Video, "id" | "title" | "outputDir"> & { sourcePath?: string };
 
 export type VideoIndex = { videos: VideoIndexEntry[] };
 

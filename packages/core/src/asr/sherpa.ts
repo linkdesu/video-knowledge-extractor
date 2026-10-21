@@ -95,6 +95,4 @@ export function createTranscriber(paths: SherpaPaths, opts?: { numThreads?: numb
   };
 }
 
-export function readWav(path: string): { samples: Float32Array; sampleRate: number } {
-  return sherpa.readWave(path);
-}
+export { readWav } from "../core/wav";

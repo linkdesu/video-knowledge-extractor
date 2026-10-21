@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipFileName, planClips } from "./clips";
+import { clipFileName, parseClipFileName, planClips } from "./clips";
 import type { Segment } from "./types";
 
 describe("planClips", () => {
@@ -51,5 +51,31 @@ describe("clipFileName", () => {
 
   test("起点钳到 0 的切片从 00-00-00 开始", () => {
     expect(clipFileName({ start: 0, end: 90 }, 2)).toBe("02-00-00-00-00-01-30.mp4");
+  });
+});
+
+describe("parseClipFileName", () => {
+  test("从文件名解析起止时间", () => {
+    expect(parseClipFileName("01-00-12-30-00-18-00.mp4")).toEqual({ start: 750, end: 1080 });
+  });
+
+  test("小时位可大于 59", () => {
+    expect(parseClipFileName("02-01-01-01-01-01-02.mp4")).toEqual({ start: 3661, end: 3662 });
+  });
+
+  test("分钟或秒位越界返回 undefined", () => {
+    expect(parseClipFileName("01-00-70-00-00-10-00.mp4")).toBeUndefined();
+    expect(parseClipFileName("01-00-00-00-00-61-00.mp4")).toBeUndefined();
+  });
+
+  test("非法名字返回 undefined", () => {
+    expect(parseClipFileName("坏名字.mp4")).toBeUndefined();
+    expect(parseClipFileName("1-00-12-30-00-18-00.mp4")).toBeUndefined();
+    expect(parseClipFileName("01-00-12-30-00-18-00")).toBeUndefined();
+  });
+
+  test("与 clipFileName 互逆", () => {
+    const name = clipFileName({ start: 2, end: 110 }, 3);
+    expect(parseClipFileName(name)).toEqual({ start: 2, end: 110 });
   });
 });

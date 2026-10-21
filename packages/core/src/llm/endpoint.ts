@@ -1,4 +1,4 @@
-import type { LlmCredentials } from "../core/config";
+import { llmCredentialsFromEnv, type LlmCredentials } from "../core/config";
 import { redact } from "./openai";
 import type { LlmEndpoint } from "../core/steps";
 
@@ -154,4 +154,11 @@ export async function resolveLlmEndpoint(
     );
   }
   return { baseUrl: creds.baseUrl, apiKey: creds.apiKey, model: picked };
+}
+
+/** env（含 .env 加载后的进程 env）到端点的一站解析：无凭据返回 undefined，发现失败才抛错。 */
+export function resolveEndpointFromEnv(env: Record<string, string | undefined> = process.env): Promise<LlmEndpoint | undefined> {
+  const creds = llmCredentialsFromEnv(env);
+  if (creds === undefined) return Promise.resolve(undefined);
+  return resolveLlmEndpoint(creds);
 }
