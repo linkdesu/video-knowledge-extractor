@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { llmCredentialsFromEnv, notesRoot } from "./core/config";
-import { loadDotenvFiles } from "./core/env";
-import type { Progress, StepName } from "./core/steps";
-import { resolveLlmEndpoint } from "./llm/endpoint";
-import { runExtract } from "./pipeline/extract";
+import { llmCredentialsFromEnv, loadDotenvFiles, notesRoot, resolveLlmEndpoint, runExtract } from "@video-notes/core";
+import type { Progress, StepName } from "@video-notes/core";
 
 const USAGE = `用法:
   vnote extract <视频> [--limit <秒>]    把视频转写成笔记（三步流水线）

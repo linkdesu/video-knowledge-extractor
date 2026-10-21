@@ -5,5 +5,5 @@ tmp/probe/
 .DS_Store
 .verify/
 .env
-tmp/
+.turbo/
 artifacts/

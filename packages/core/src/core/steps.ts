@@ -18,7 +18,7 @@ export type LlmEndpoint = {
 
 export type ChatMessage = { role: "system" | "user"; content: string };
 
-/** 端点的一次补全调用；实现见 `src/llm/openai.ts`。 */
+/** 端点的一次补全调用；实现见 `llm/openai.ts`。 */
 export type LlmClient = {
   model: string;
   chat(messages: ChatMessage[], opts?: { json?: boolean; temperature?: number }): Promise<string>;
