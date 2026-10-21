@@ -16,6 +16,14 @@ export type LlmEndpoint = {
   model: string;
 };
 
+export type ChatMessage = { role: "system" | "user"; content: string };
+
+/** 端点的一次补全调用；实现见 `src/llm/openai.ts`。 */
+export type LlmClient = {
+  model: string;
+  chat(messages: ChatMessage[], opts?: { json?: boolean; temperature?: number }): Promise<string>;
+};
+
 /** 第一步：把视频语音变成字幕行，并给出说话人和每行的起止时间。 */
 export type TranscribeInput = {
   video: Video;
@@ -35,6 +43,10 @@ export type SegmentTopicsInput = {
   transcript: Transcript;
   chunks: Chunk[];
   endpoint: LlmEndpoint;
+  /** 缓存根目录；每块候选与全局合并各存一份（ADR-0006）。 */
+  cacheDir: string;
+  /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
+  client?: LlmClient;
   onProgress?: (p: Progress) => void;
 };
 
@@ -54,11 +66,17 @@ export type GenerateNotesInput = {
   /** 生成笔记时随请求传给模型的正确写法。 */
   corrections: CorrectionList;
   endpoint: LlmEndpoint;
+  /** 缓存根目录；每主题的笔记与切片各自落盘（ADR-0006）。 */
+  cacheDir: string;
+  /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
+  client?: LlmClient;
   onProgress?: (p: Progress) => void;
 };
 
 export type GenerateNotesResult = {
   notes: Note[];
+  /** 本视频的 `index.md` 内容。 */
+  indexMarkdown: string;
 };
 
 export type GenerateNotes = (input: GenerateNotesInput) => Promise<GenerateNotesResult>;

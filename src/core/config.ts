@@ -1,11 +1,7 @@
-/**
- * 全局常量。数值来自 ADR，改动前先改 ADR。
- */
+import type { LlmEndpoint } from "./steps";
 
-/** 切片起点在时间段起点之前前移的秒数；前移后重叠的时间段合成一个切片。 */
 export const CLIP_PREROLL_SECONDS = 3;
 
-/** 分块目标 10–15 分钟，只在语音停顿处切，末块除外（ADR-0001）。 */
 export const CHUNK_TARGET_SECONDS = 13 * 60;
 export const CHUNK_MIN_SECONDS = 10 * 60;
 export const CHUNK_MAX_SECONDS = 15 * 60;
@@ -18,8 +14,17 @@ export const ASR_MODEL_ID = "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25
 export const DIARIZATION_MODEL_ID = "sherpa-onnx-pyannote-segmentation-3-0+campplus-zh";
 export const PUNCTUATION_MODEL_ID = "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12";
 
-/** 主题分析与生成笔记的提示词版本，参与缓存键（ADR-0006）。 */
-export const PROMPT_VERSION = 1;
-
-/** notes 根目录：存放各视频输出目录与 `index.json`（ADR-0002）。 */
 export const NOTES_ROOT = process.env.VNOTE_HOME ?? `${process.env.HOME}/Documents/video-notes`;
+
+export const CACHE_DIRNAME = ".cache";
+
+export const MODEL_DIR = process.env.VNOTE_MODEL_DIR ?? `${process.env.HOME}/.cache/video-notes/models`;
+
+/** OpenAI 兼容端点（ADR-0005）：三个变量缺一即视为未配置。 */
+export function llmSettingsFromEnv(env: Record<string, string | undefined> = process.env): LlmEndpoint | undefined {
+  const baseUrl = env.VNOTE_LLM_BASE_URL;
+  const apiKey = env.VNOTE_LLM_API_KEY;
+  const model = env.VNOTE_LLM_MODEL;
+  if (!baseUrl || !apiKey || !model) return undefined;
+  return { baseUrl, apiKey, model };
+}

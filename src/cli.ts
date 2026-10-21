@@ -1,16 +1,24 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { NOTES_ROOT } from "./core/config";
+import type { Progress, StepName } from "./core/steps";
 import { runExtract } from "./pipeline/extract";
 
 const USAGE = `用法:
-  vnote extract <视频> [--out <目录>]    把视频转写成笔记（三步流水线）
+  vnote extract <视频> [--limit <秒>]    把视频转写成笔记（三步流水线）
   vnote --help                           显示本帮助
   vnote --version                        显示版本号
 
-产物根目录（NOTES_ROOT）: ${NOTES_ROOT}
+产物根目录: ${NOTES_ROOT}
 可用环境变量 VNOTE_HOME 覆盖该目录。
+LLM 端点: VNOTE_LLM_BASE_URL、VNOTE_LLM_API_KEY、VNOTE_LLM_MODEL。
 `;
+
+const STEP_LABELS: Record<StepName, string> = {
+  transcribe: "转写",
+  "segment-topics": "主题分析",
+  "generate-notes": "生成笔记",
+};
 
 async function printVersion(): Promise<void> {
   const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as { version: string };
@@ -22,17 +30,21 @@ function usageError(): never {
   process.exit(1);
 }
 
-function parseExtractArgs(args: string[]): { videoPath: string; outDir?: string } {
+type ExtractArgs = { videoPath: string; limitSeconds?: number };
+
+function parseExtractArgs(args: string[]): ExtractArgs {
   let videoPath: string | undefined;
-  let outDir: string | undefined;
+  let limitSeconds: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === undefined) continue;
-    if (arg === "--out") {
+    if (arg === "--limit") {
       i++;
       const value = args[i];
-      if (value === undefined) throw new Error("--out 缺少参数值");
-      outDir = value;
+      if (value === undefined) throw new Error("--limit 缺少参数值");
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`--limit 需要正数秒数: ${value}`);
+      limitSeconds = parsed;
     } else if (arg.startsWith("-")) {
       throw new Error(`未知参数: ${arg}`);
     } else if (videoPath !== undefined) {
@@ -42,7 +54,14 @@ function parseExtractArgs(args: string[]): { videoPath: string; outDir?: string 
     }
   }
   if (videoPath === undefined) usageError();
-  return { videoPath, ...(outDir !== undefined ? { outDir } : {}) };
+  return { videoPath, ...(limitSeconds !== undefined ? { limitSeconds } : {}) };
+}
+
+function printProgress(p: Progress): void {
+  const label = STEP_LABELS[p.step];
+  const detail = p.detail === undefined ? "" : ` ${p.detail}`;
+  process.stderr.write(`\r[${label}] ${p.done}/${p.total}${detail}\x1b[K`);
+  if (p.done >= p.total) process.stderr.write("\n");
 }
 
 async function main(): Promise<void> {
@@ -56,9 +75,21 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "extract") {
-    const { videoPath, outDir } = parseExtractArgs(rest);
+    const { videoPath, limitSeconds } = parseExtractArgs(rest);
     if (!existsSync(videoPath)) throw new Error(`视频文件不存在: ${videoPath}`);
-    await runExtract({ videoPath, outDir });
+    const result = await runExtract({
+      videoPath,
+      onProgress: printProgress,
+      ...(limitSeconds !== undefined ? { limitSeconds } : {}),
+    });
+    console.log(`视频: ${result.video.title}`);
+    console.log(`产物: ${result.video.outputDir}`);
+    console.log(`主题: ${result.topics.length}，笔记: ${result.notes.length}`);
+    const timing = Object.entries(result.timings)
+      .map(([step, seconds]) => `${step} ${seconds.toFixed(2)}s`)
+      .join("，");
+    console.log(`耗时: ${timing}`);
+    if (result.cacheHits.length > 0) console.log(`缓存命中: ${result.cacheHits.join(", ")}`);
     return;
   }
   process.stderr.write(`未知命令: ${command}\n\n`);
@@ -67,7 +98,7 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   if (err instanceof Error) {
-    process.stderr.write(`错误: ${err.message}\n`);
+    process.stderr.write(`\n错误: ${err.message}\n`);
     process.exit(1);
   }
   throw err;
