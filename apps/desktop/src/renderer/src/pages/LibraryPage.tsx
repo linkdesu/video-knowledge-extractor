@@ -188,6 +188,11 @@ export function LibraryPage({
                   <div className="vn-meta">
                     <span>{importLabel(v.importedAt)}</span>
                     <span>{v.sizeBytes !== null ? fmtBytes(v.sizeBytes) : "—"}</span>
+                    {v.resolution !== null ? (
+                      <span data-testid="video-resolution">
+                        {v.resolution.width}×{v.resolution.height}
+                      </span>
+                    ) : null}
                     {v.topicCount > 0 ? <span>{v.topicCount} 个主题</span> : null}
                   </div>
                   <div className="vn-row vn-between" style={{ marginTop: 12 }}>

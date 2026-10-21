@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { LlmClient } from "../core/steps";
@@ -19,6 +19,7 @@ function makeVideo(outputDir: string, mutate: (d: Record<string, unknown>) => vo
     importedAt: "2026-01-01T00:00:00.000Z",
     sourceBytes: 1234,
     asrModel: "whisper-x",
+    runToken: null,
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
   mutate(d);
@@ -222,5 +223,122 @@ describe("runTopics", () => {
     const index = readFileSync(join(out, "index.md"), "utf8");
     expect(index).toContain("[切片](./foo/01-00-00-07-00-00-20.mp4)");
     expect(index).toContain("[切片](./foo-2/01-00-00-27-00-00-40.mp4)");
+  });
+});
+
+describe("中断结算（runToken 与锁内结算）", () => {
+  test("runNotes 普通失败：完成主题保持 done，当前主题 failed+补写 elapsed，token 清 null，锁释放", async () => {
+    const out = join(tmpdir(), "rn-fail-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [
+          { start: 0, end: 30, speakerId: "s1", text: "A 内容" },
+          { start: 300, end: 330, speakerId: "s1", text: "B 内容" },
+        ],
+      };
+      d.topics = [
+        topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "done" }),
+        topicRecord({ id: "topicB", title: "B", segments: [{ start: 300, end: 330 }], dirName: "b", status: "done" }),
+      ];
+    });
+    // 预置主题 A 的切片文件（cutClip 短路，不依赖 ffmpeg）；B 在切前就失败
+    mkdirSync(join(out, "a"), { recursive: true });
+    writeFileSync(join(out, "a", "01-00-00-00-00-00-30.mp4"), "aclip");
+
+    let call = 0;
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async () => {
+        call += 1;
+        if (call === 1) return JSON.stringify({ keyPoints: ["要点A"] });
+        throw new Error("LLM 爆炸");
+      },
+    };
+    await expect(
+      runNotes({ outputDir: out, topicIds: ["topicA", "topicB"], endpoint, cacheRoot: join(out, ".cache"), client, runToken: "tok-123" }),
+    ).rejects.toThrow("LLM 爆炸");
+
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { runToken: string | null; topics: Array<Record<string, unknown>> };
+    const a = json.topics.find((t) => t.id === "topicA") as Record<string, unknown>;
+    const b = json.topics.find((t) => t.id === "topicB") as Record<string, unknown>;
+    // 完成的主题 A 保持 done（结算只动 generating/queued）
+    expect(a.status).toBe("done");
+    expect(a.error).toBeNull();
+    // 当前主题 B：generateAll 标 failed + 补写 elapsedSeconds
+    expect(b.status).toBe("failed");
+    expect(b.error).toBe("LLM 爆炸");
+    expect(typeof b.elapsedSeconds).toBe("number");
+    // token 清 null
+    expect(json.runToken).toBeNull();
+    // 锁释放
+    expect(existsSync(join(out, ".vnote-run.lock"))).toBe(false);
+  });
+
+  test("runNotes 成功：token 不清（下一次运行覆盖）", async () => {
+    const out = join(tmpdir(), "rn-ok-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
+      };
+      d.topics = [topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "done" })];
+    });
+    mkdirSync(join(out, "a"), { recursive: true });
+    writeFileSync(join(out, "a", "01-00-00-00-00-00-30.mp4"), "aclip");
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点A"] }) };
+    await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client, runToken: "tok-keep" });
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { runToken: string | null };
+    expect(json.runToken).toBe("tok-keep");
+  });
+
+  test("runTopics 失败：划主题成功后逐主题生成失败，结算后磁盘终态", async () => {
+    const out = join(tmpdir(), "rt-fail-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [
+          { start: 10, end: 20, speakerId: "s1", text: "第一段" },
+          { start: 30, end: 40, speakerId: "s1", text: "第二段" },
+        ],
+      };
+      d.chunks = [{ index: 0, start: 0, end: 60 }];
+      d.topics = [];
+    });
+    // 预置两个新主题的切片（cutClip 短路）
+    mkdirSync(join(out, "foo"), { recursive: true });
+    writeFileSync(join(out, "foo", "01-00-00-07-00-00-20.mp4"), "c1");
+    mkdirSync(join(out, "foo-2"), { recursive: true });
+    writeFileSync(join(out, "foo-2", "01-00-00-27-00-00-40.mp4"), "c2");
+
+    let call = 0;
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (_m, opts) => {
+        if (!opts?.json) throw new Error("需要 json");
+        call += 1;
+        if (call === 1) return JSON.stringify({ topics: [{ title: "foo", summary: "s", segments: [{ start: 10, end: 40 }] }] });
+        if (call === 2)
+          return JSON.stringify({
+            topics: [
+              { title: "foo", summary: "s1", segments: [{ start: 10, end: 20 }] },
+              { title: "foo", summary: "s2", segments: [{ start: 30, end: 40 }] },
+            ],
+          });
+        throw new Error("笔记爆炸");
+      },
+    };
+    await expect(runTopics({ outputDir: out, endpoint, cacheRoot: join(out, ".cache"), client, runToken: "tok-t" })).rejects.toThrow("笔记爆炸");
+
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { runToken: string | null; topics: Array<Record<string, unknown>> };
+    // 两个新主题：一个由 generateAll 标 failed（补写 elapsed），一个由流水线结算 failed
+    expect(json.topics.filter((t) => t.status === "failed").length).toBe(2);
+    expect(json.topics.every((t) => t.status === "failed")).toBe(true);
+    expect(json.topics.map((t) => t.error).sort()).toEqual(["本次生成未完成", "笔记爆炸"]);
+    // 补写 elapsedSeconds 的那个
+    const withElapsed = json.topics.find((t) => t.error === "笔记爆炸") as Record<string, unknown>;
+    expect(typeof withElapsed.elapsedSeconds).toBe("number");
+    expect(json.runToken).toBeNull();
+    expect(existsSync(join(out, ".vnote-run.lock"))).toBe(false);
   });
 });

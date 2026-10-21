@@ -464,6 +464,26 @@ textarea {
   font-size: 13px;
   color: var(--vn-muted);
 }
+.vn-select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  color: var(--vn-fg);
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--vn-dim) 50%),
+    linear-gradient(135deg, var(--vn-dim) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+.vn-select:focus {
+  border-color: rgba(139, 92, 246, 0.6);
+}
 
 .vn-table {
   width: 100%;
@@ -487,6 +507,7 @@ textarea {
 }
 
 .vn-progress {
+  position: relative;
   height: 6px;
   border-radius: 99px;
   background: rgba(255, 255, 255, 0.07);
@@ -499,6 +520,39 @@ textarea {
   background: var(--vn-grad);
   border-radius: 99px;
   transition: width 0.4s;
+}
+.vn-progress i.indeterminate {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  animation: vn-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes vn-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+.vn-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.vn-model {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.vn-model-name {
+  font-size: 13px;
+  color: var(--vn-fg);
 }
 .vn-elapsed {
   display: flex;

@@ -1,4 +1,4 @@
-/** renderer 与 main 之间的线上契约。core 内部类型不直接穿过 IPC（ADR-0012、ADR-0014）。 */
+/** renderer 与 main 之间的线上契约。core 内部类型不直接穿过 IPC（ADR-0012、ADR-0014、ADR-0015）。 */
 
 export type VideoId = string;
 
@@ -65,6 +65,8 @@ export type TopicInfo = {
   error: string | null;
 };
 
+export type VideoResolution = { width: number; height: number };
+
 export type LibraryVideo = {
   id: VideoId;
   title: string;
@@ -76,6 +78,8 @@ export type LibraryVideo = {
   importedAt: string | null;
   /** 源文件字节数；旧目录没有记录时为 null。 */
   sizeBytes: number | null;
+  /** 源视频分辨率；旧文档没有记录时为 null，卡片省略该项（ADR-0015 §6）。 */
+  resolution: VideoResolution | null;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
@@ -90,26 +94,85 @@ export type VideoDetail = {
   transcript: TranscriptInfo | null;
   /** 生成这份字幕时用的 ASR 模型；旧目录为 null。 */
   asrModel: string | null;
+  /** 生成这份字幕时用的引擎；旧目录为 null，界面按本地显示（ADR-0015 §5）。 */
+  asrEngine: "local" | "remote" | null;
   topics: TopicInfo[];
   corrections: CorrectionEntry[];
 };
 
+/** 密钥来源：环境变量、系统密钥库、没有。 */
+export type KeySource = "env" | "stored" | "none";
+
+export type AsrProvider = "local" | "remote";
+
 export type LlmStatus = {
   configured: boolean;
+  /** 只回显 origin+pathname；userinfo/query/fragment 在设置层被拒绝。 */
   baseUrl: string | null;
-  /** 显式配置的模型名（VNOTE_LLM_MODEL / IDEALSOFT_API_MODEL）。 */
+  /** 显式配置的模型名；留空为 null。 */
   model: string | null;
-  /** 启动时 GET /models 发现并选中的模型名；显式配置或发现失败时为 null。 */
+  /** GET /models 发现并选中的模型名；显式配置或发现失败时为 null。 */
   discoveredModel: string | null;
-  /** 模型发现失败的脱敏消息；成功或未尝试时为 null。 */
+  hasKey: boolean;
+  keySource: KeySource;
+  keyStorageAvailable: boolean;
+  locked: { baseUrl: boolean; model: boolean };
   error: string | null;
 };
 
 export type AsrStatus = {
-  /** 固定为本地 sherpa-onnx；桌面端不支持在界面切换远端 ASR。 */
-  provider: "sherpa-onnx";
-  modelId: string;
-  modelPresent: boolean;
+  provider: AsrProvider;
+  providerLocked: boolean;
+  local: { modelId: string; ready: boolean; missing: string[] };
+  remote: {
+    baseUrl: string;
+    model: string;
+    hasKey: boolean;
+    keySource: KeySource;
+    keyStorageAvailable: boolean;
+    locked: { baseUrl: boolean; model: boolean };
+    error: string | null;
+  };
+};
+
+export type ModelFileStatus = {
+  path: string;
+  present: boolean;
+  bytes: number | null;
+  expectedBytes: number;
+  sha256: string;
+  /** null = 未校验；true/false = 本进程内校验过。 */
+  verified: boolean | null;
+};
+
+export type ModelBundleStatus = {
+  id: "asr" | "diarization" | "speaker-embedding" | "punctuation";
+  title: string;
+  /** unverified = 文件齐、字节数对，但本进程还没算过 sha256。 */
+  state: "ready" | "unverified" | "missing" | "invalid";
+  files: ModelFileStatus[];
+};
+
+export type DownloadSnapshot = {
+  state: "idle" | "downloading" | "verifying" | "installing" | "done" | "failed" | "cancelled";
+  bundleId: string | null;
+  /** 当前包；总长未知时 totalBytes=0、percent=null。 */
+  receivedBytes: number;
+  totalBytes: number;
+  percent: number | null;
+  message: string | null;
+};
+
+export type ModelsStatus = {
+  modelDir: string;
+  locked: boolean;
+  ready: boolean;
+  bundles: ModelBundleStatus[];
+  totalBytes: number;
+  presentBytes: number;
+  /** 测试/截图用的 VNOTE_DISABLE_MODEL_DOWNLOAD=1。 */
+  autoDownloadDisabled: boolean;
+  download: DownloadSnapshot;
 };
 
 export type SettingsStatus = {
@@ -119,11 +182,24 @@ export type SettingsStatus = {
   cacheBytes: number;
   llm: LlmStatus;
   asr: AsrStatus;
+  /** 模型摘要；完整状态走 models:status。 */
+  models: { ready: boolean; totalBytes: number; presentBytes: number; autoDownloadDisabled: boolean };
+  /** 坏配置已被隔离时的可读原因（ADR-0015 §3）。 */
+  settingsFileError: string | null;
   ffmpeg: boolean;
   /** `ffmpeg -version` 第一行的版本号；未安装时为 null。 */
   ffmpegVersion: string | null;
   /** 被环境变量覆盖（因此设置页不可改）的字段。 */
-  locked: { notesRoot: boolean; cacheRoot: boolean; modelDir: boolean };
+  locked: {
+    notesRoot: boolean;
+    cacheRoot: boolean;
+    modelDir: boolean;
+    llmBaseUrl: boolean;
+    llmModel: boolean;
+    asrProvider: boolean;
+    asrBaseUrl: boolean;
+    asrModel: boolean;
+  };
   appVersion: string;
 };
 
@@ -131,11 +207,28 @@ export type SettingsPatch = {
   notesRoot?: string;
   cacheRoot?: string;
   modelDir?: string;
+  llm?: { baseUrl?: string; model?: string };
+  asr?: { provider?: AsrProvider; remote?: { baseUrl?: string; model?: string } };
 };
+
+/** 密钥补丁：只上行，永不下行；两者同传会被拒绝。 */
+export type SecretPatch = { apiKey?: string; clearApiKey?: boolean };
+
+export type LlmUpdatePatch = { baseUrl?: string; model?: string } & SecretPatch;
+export type AsrUpdatePatch = { provider?: AsrProvider; remote?: { baseUrl?: string; model?: string } } & SecretPatch;
 
 export type DirectoryKind = "notes" | "cache" | "model";
 
 export type TestLlmResult = { ok: boolean; model: string | null; message: string };
+
+export type TestAsrResult = { ok: boolean; modelsFound: number | null; message: string };
+
+export type ImportModelsResult = {
+  canceled: boolean;
+  installed: string[];
+  rejected: { bundleId: string; reason: string }[];
+  status: ModelsStatus;
+};
 
 export type ExtractTarget =
   | { kind: "new"; sourcePath: string }
@@ -198,9 +291,18 @@ export type VnoteApi = {
   onJob(listener: (job: JobSnapshot) => void): () => void;
   settings(): Promise<SettingsStatus>;
   updateSettings(patch: SettingsPatch): Promise<SettingsStatus>;
+  updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus>;
+  updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus>;
   pickDirectory(kind: DirectoryKind): Promise<string | null>;
   clearCache(): Promise<{ freedBytes: number }>;
   testLlm(): Promise<TestLlmResult>;
+  testAsr(): Promise<TestAsrResult>;
+  models(): Promise<ModelsStatus>;
+  downloadModels(): Promise<ModelsStatus>;
+  cancelModelDownload(): Promise<ModelsStatus>;
+  importModels(): Promise<ImportModelsResult>;
+  verifyModels(): Promise<ModelsStatus>;
+  onModelDownload(listener: (snapshot: DownloadSnapshot) => void): () => void;
   reveal(outputDir: string): Promise<void>;
 };
 
@@ -225,8 +327,17 @@ export const IPC = {
   jobEvent: "extract:event",
   settings: "settings:status",
   updateSettings: "settings:update",
+  updateLlm: "settings:llm-update",
+  updateAsr: "settings:asr-update",
   pickDirectory: "settings:pick-dir",
   clearCache: "settings:clear-cache",
   testLlm: "settings:test-llm",
+  testAsr: "settings:test-asr",
+  models: "models:status",
+  downloadModels: "models:download",
+  cancelModelDownload: "models:cancel",
+  importModels: "models:import",
+  verifyModels: "models:verify",
+  modelEvent: "models:event",
   reveal: "shell:reveal",
 } as const;

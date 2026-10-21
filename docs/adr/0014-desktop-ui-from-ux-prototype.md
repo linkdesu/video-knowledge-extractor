@@ -260,6 +260,8 @@ core 仍是唯一业务逻辑所在。新增模块与函数（全部从 `@video-
 - 卡片的分辨率（`886×1920`）：没有记录该字段，卡片只显示导入时间与文件大小。
 - 「视频预览」的播放控件（开发者调试用的原型假播放器）：真实实现是原生 `<video>`，播放/暂停/进度由浏览器控件提供。
 
+前四项已由 [ADR-0015](./0015-prototype-deferred-features.md) 补齐（远程 ASR 为 OpenAI 兼容转录接口，提供方文案与本节原始设想不同，理由见 ADR-0015 §5、§10）；最后一项仍然成立。
+
 ### 9. 删除清单（先减后加）
 
 删除：`components/SettingsPanel.tsx`、`components/NoteView.tsx`、`components/CorrectionsEditor.tsx`、`rbp/blocks/bento-29.tsx`、`rbp/react-bits/luminous-type.tsx`、`app-shell-6` 里的 `TopicTree`/`NoteView`/原生播放器三栏旧实现、`app-shell-1` 的统计块与导入按钮、旧 `data-table-3` 的演示表头/保存栏逻辑（保留行原语）。`reactbits.json` 去掉 `bento-29` 与 `luminous-type-tw`。renderer 不再依赖 `react-markdown`/`remark-gfm`（笔记页只渲染要点列表与切片），从 `apps/desktop/package.json` 移除。

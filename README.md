@@ -51,9 +51,13 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 ## 平台与模型
 
-首发 macOS Apple Silicon。首次启动下载识别、说话人分离与标点模型，下载支持断点续传，落盘后校验 sha256；也允许手动放入模型目录，供离线或受限网络使用（手动导入同样过 sha256 校验）。Windows 暂不验证、不承诺可用。
+首发 macOS Apple Silicon，Windows 暂不验证、不承诺可用。
 
-主题分析与笔记走你配置的一个 OpenAI 兼容端点。`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录；端点变量两个名字都认，按字段独立取值并允许混用，规范名优先：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`。模型名可留空：`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 没设时，代码调 `GET <base>/models` 按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。
+本地 ASR 的模型是四个包（识别、说话人分离、声纹、标点），合计约 1.1 GB，放在模型目录里（默认 `~/.cache/video-notes/models`，用 `VNOTE_MODEL_DIR` 覆盖）。桌面端在本地 ASR 模式下模型未就绪时首次启动自动下载，`VNOTE_DISABLE_MODEL_DOWNLOAD=1` 停用自动下载（供测试与截图）。下载支持断点续传，每个文件落盘后按内置清单的 sha256 与字节数校验；校验失败删除未完成文件，本次下载失败且不再自动重试，可在设置页手动「下载模型」。设置页也可以「导入模型」（从本地目录、归档或单文件导入，同样过 sha256 校验）与「校验模型」；手动放进模型目录的文件显示「未校验」，点校验后生效。模型的下载、导入、校验与视频生成任务互斥：视频任务运行中拒绝安装与导入，模型操作进行中拒绝视频入队。
+
+转写默认走本地引擎；也可以用 `VNOTE_ASR_PROVIDER=remote` 或设置页切换到远程 ASR（OpenAI 兼容转录接口）。远程转写没有说话人分离，全部字幕归说话人1；端点不返回逐句时间戳时直接报「不能用于字幕」，不伪造整块字幕。
+
+主题分析与笔记走你配置的一个 OpenAI 兼容端点。`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录；端点变量两个名字都认，按字段独立取值并允许混用，规范名优先：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`。端点地址与模型名也可以在设置页修改；LLM 密钥仍走环境变量（含 `.env`）或桌面端系统密钥库（safeStorage，绝不落盘明文），密钥库不可用时只能用环境变量。模型名可留空：`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 没设时，代码调 `GET <base>/models` 按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。
 
 ## 命令与开发
 
@@ -80,6 +84,10 @@ bun run start    # 启动构建产物
 | `VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` | OpenAI 兼容端点，两个变量都设才生效；两组名字都认，按字段取值，规范名优先 |
 | `VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` | 模型名，可留空，留空时调 `GET <base>/models` 自动发现 |
 | `VNOTE_MODEL_DIR` | 本地模型目录，默认 `~/.cache/video-notes/models` |
+| `VNOTE_ASR_PROVIDER` | 转写提供方，`local`（默认）或 `remote` |
+| `VNOTE_ASR_BASE_URL` / `VNOTE_ASR_MODEL` / `VNOTE_ASR_API_KEY` | 远程 ASR（OpenAI 兼容转录接口）的端点、模型名与密钥 |
+| `VNOTE_DISABLE_MODEL_DOWNLOAD` | 设 `1` 停用首次启动自动下载（测试与截图用） |
+| `VNOTE_USER_DATA` | 只在开发/验收时用：覆盖 Electron `userData`（settings.json 与密钥库的位置），避免截图改动真实配置 |
 | `REACTBITS_LICENSE_KEY` | 只在开发期拉取 RBP 源码时用；不进 lockfile、不进 `components.json`，界面运行时不读 |
 
 ```bash
@@ -91,10 +99,12 @@ bun run test
 
 ## 当前状态
 
-`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。Electron 桌面端已能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消，设置页显示启动时实际发现的模型名；打包、签名与 DMG 尚未实现。模型首次启动下载（ADR-0004）与主题编辑（改主题名、合并、拆分）尚未实现，模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
+ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部命中缓存。ADR-0014 延后的四项能力按 [ADR-0015](docs/adr/0015-prototype-deferred-features.md) 补齐：远程 ASR 走 OpenAI 兼容转录接口（设置页或 `VNOTE_ASR_*` 配置）、卡片显示探测到的清晰度、设置页可编辑 LLM 字段（密钥走系统密钥库）、模型首次启动自动下载与本地导入（断点续传、sha256 校验）。Electron 桌面端能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消。
+
+尚未实现：打包、签名与 DMG；主题的结构编辑（改主题名、合并、拆分、调整时间段）。
 
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0013 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上。
+- `docs/adr/`：0001–0015 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）。
 - `tmp/` 与 `runs/` 不进 git。

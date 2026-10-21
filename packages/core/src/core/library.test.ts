@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listLibrary, readLibraryVideo } from "./library";
@@ -238,5 +238,85 @@ describe("readLibraryVideo", () => {
     ];
     writeVideoData(outputDir, base);
     expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("needs-rerun");
+  });
+});
+
+describe("resolution 透传与中断状态投影", () => {
+  test("卡片透传文档的 resolution；无文档/旧目录为 null", () => {
+    const { root, id } = fixture();
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    data.topics = [
+      {
+        id: "topic-1" as TopicId,
+        title: "t",
+        summary: "s",
+        segments: [{ start: 1, end: 2 }],
+        dirName: "t",
+        status: "done",
+        selected: false,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    data.resolution = { width: 1920, height: 886 };
+    writeVideoData(outputDir, data);
+    expect(listLibrary(root).find((v) => v.id === id)!.resolution).toEqual({ width: 1920, height: 886 });
+    // 没有 video.json 的旧目录：resolution null
+    expect(listLibrary(root).find((v) => v.id === "vid-missing")!.resolution).toBeNull();
+  });
+
+  test("无活锁时列表与详情一致：generating/queued 都按 failed 投影", () => {
+    const { root, id } = fixture();
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    data.topics = [
+      {
+        id: "topic-1" as TopicId,
+        title: "g",
+        summary: "s",
+        segments: [{ start: 1, end: 2 }],
+        dirName: "g",
+        status: "generating",
+        selected: false,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+      {
+        id: "topic-2" as TopicId,
+        title: "q",
+        summary: "s",
+        segments: [{ start: 3, end: 4 }],
+        dirName: "q",
+        status: "queued",
+        selected: false,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    writeVideoData(outputDir, data);
+    // 列表（videoSummary）
+    const card = listLibrary(root).find((v) => v.id === id)!;
+    expect(card.status).toBe("needs-rerun");
+    // 详情（loadVideoData 投影）
+    const detail = readLibraryVideo(root, id)!;
+    expect(detail.data.topics.find((t) => t.id === "topic-1")!.status).toBe("failed");
+    expect(detail.data.topics.find((t) => t.id === "topic-1")!.error).toBe("上次生成已中断");
+    expect(detail.data.topics.find((t) => t.id === "topic-2")!.status).toBe("failed");
+    expect(detail.video.status).toBe(card.status);
+    // 磁盘未被回写：仍是 generating/queued
+    const raw = JSON.parse(readFileSync(join(outputDir, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    expect(raw.topics.map((t) => t.status).sort()).toEqual(["generating", "queued"]);
   });
 });

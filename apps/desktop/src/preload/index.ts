@@ -1,11 +1,17 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
+  AsrUpdatePatch,
   CorrectionEntry,
   DirectoryKind,
+  DownloadSnapshot,
   ExtractTarget,
+  ImportModelsResult,
   JobSnapshot,
+  LlmUpdatePatch,
+  ModelsStatus,
   SettingsPatch,
   SettingsStatus,
+  TestAsrResult,
   TestLlmResult,
   VnoteApi,
 } from "../shared/ipc";
@@ -46,6 +52,21 @@ const api: VnoteApi = {
   pickDirectory: (kind: DirectoryKind) => ipcRenderer.invoke(IPC.pickDirectory, kind) as Promise<string | null>,
   clearCache: () => ipcRenderer.invoke(IPC.clearCache) as Promise<{ freedBytes: number }>,
   testLlm: () => ipcRenderer.invoke(IPC.testLlm) as Promise<TestLlmResult>,
+  updateLlm: (patch: LlmUpdatePatch) => ipcRenderer.invoke(IPC.updateLlm, patch) as Promise<SettingsStatus>,
+  updateAsr: (patch: AsrUpdatePatch) => ipcRenderer.invoke(IPC.updateAsr, patch) as Promise<SettingsStatus>,
+  testAsr: () => ipcRenderer.invoke(IPC.testAsr) as Promise<TestAsrResult>,
+  models: () => ipcRenderer.invoke(IPC.models) as Promise<ModelsStatus>,
+  downloadModels: () => ipcRenderer.invoke(IPC.downloadModels) as Promise<ModelsStatus>,
+  cancelModelDownload: () => ipcRenderer.invoke(IPC.cancelModelDownload) as Promise<ModelsStatus>,
+  importModels: () => ipcRenderer.invoke(IPC.importModels) as Promise<ImportModelsResult>,
+  verifyModels: () => ipcRenderer.invoke(IPC.verifyModels) as Promise<ModelsStatus>,
+  onModelDownload: (listener: (snapshot: DownloadSnapshot) => void) => {
+    const listenerWrapper = (_event: Electron.IpcRendererEvent, snapshot: DownloadSnapshot): void => listener(snapshot);
+    ipcRenderer.on(IPC.modelEvent, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.modelEvent, listenerWrapper);
+    };
+  },
   reveal: (outputDir) => ipcRenderer.invoke(IPC.reveal, outputDir) as Promise<void>,
 };
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CACHE_DIRNAME } from "./config";
@@ -8,6 +8,7 @@ import {
   emptyVideoData,
   loadVideoData,
   migrateVideoData,
+  projectRunState,
   readVideoData,
   writeVideoData,
   type VideoData,
@@ -284,5 +285,127 @@ describe("旧目录迁移", () => {
     expect(loaded.topics).toHaveLength(1);
     expect(loaded.topics[0]!.title).toBe("旧标题");
     expect(existsSync(join(dir, "video.json"))).toBe(false);
+  });
+});
+
+function topicWith(status: string, extra: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: "t1" as TopicId,
+    title: "T",
+    summary: "",
+    segments: [{ start: 1, end: 2 }],
+    dirName: "t1",
+    status,
+    selected: false,
+    keyPoints: [],
+    clips: [],
+    startedAt: null,
+    elapsedSeconds: null,
+    error: null,
+    ...extra,
+  };
+}
+
+describe("附加字段（resolution/asrEngine/runToken）", () => {
+  test("旧文档缺三个字段读回为 null", () => {
+    const dir = mkdtemp();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [], utterances: [] },
+        chunks: [],
+        topics: [],
+        importedAt: null,
+        sourceBytes: null,
+        asrModel: "m",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    const d = readVideoData(dir);
+    expect(d).toBeDefined();
+    expect(d!.resolution).toBeNull();
+    expect(d!.asrEngine).toBeNull();
+    expect(d!.runToken).toBeNull();
+  });
+
+  test("非法 resolution 形状报错", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    writeVideoData(dir, { ...emptyVideoData(video), resolution: { width: -1, height: 10 } } as unknown as VideoData);
+    expect(() => readVideoData(dir)).toThrow(/宽高/);
+    writeFileSync(join(dir, "video.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, "video.json"), "utf8")), resolution: { width: "x" } }));
+    expect(() => readVideoData(dir)).toThrow(/width/);
+  });
+
+  test("非法 asrEngine 报错", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    writeVideoData(dir, { ...emptyVideoData(video), asrEngine: "cloud" } as unknown as VideoData);
+    expect(() => readVideoData(dir)).toThrow(/local 或 remote/);
+  });
+
+  test("写入后往返一致（非 null 值）", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    const d = emptyVideoData(video);
+    d.resolution = { width: 1920, height: 886 };
+    d.asrEngine = "remote";
+    d.runToken = "tok-123";
+    writeVideoData(dir, d);
+    const r = readVideoData(dir);
+    expect(r!.resolution).toEqual({ width: 1920, height: 886 });
+    expect(r!.asrEngine).toBe("remote");
+    expect(r!.runToken).toBe("tok-123");
+  });
+
+  test("emptyVideoData 与迁移文档的三个字段默认 null", () => {
+    const video = makeVideo(mkdtemp());
+    expect(emptyVideoData(video).resolution).toBeNull();
+    expect(emptyVideoData(video).asrEngine).toBeNull();
+    expect(emptyVideoData(video).runToken).toBeNull();
+    const dir = mkdtemp();
+    mkdirSync(join(dir, "前段"), { recursive: true });
+    writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
+    const migrated = migrateVideoData(dir, makeVideo(dir));
+    expect(migrated.resolution).toBeNull();
+    expect(migrated.asrEngine).toBeNull();
+    expect(migrated.runToken).toBeNull();
+  });
+});
+
+describe("projectRunState", () => {
+  test("有活锁原样返回（同一对象）", () => {
+    const d: VideoData = { ...emptyVideoData(makeVideo(mkdtemp())), topics: [topicWith("generating")] as never[] };
+    expect(projectRunState(d, { locked: true })).toBe(d);
+  });
+
+  test("无活锁 generating/queued → failed（不动其余字段），done/failed 不变", () => {
+    const d: VideoData = {
+      ...emptyVideoData(makeVideo(mkdtemp())),
+      topics: [
+        topicWith("generating", { startedAt: "2026-01-01T00:00:00Z", elapsedSeconds: 7, error: "old" }) as never,
+        topicWith("queued") as never,
+        topicWith("done") as never,
+        topicWith("failed") as never,
+      ],
+    };
+    const p = projectRunState(d, { locked: false });
+    expect(p).not.toBe(d);
+    expect(p.topics[0]!.status).toBe("failed");
+    expect(p.topics[0]!.error).toBe("上次生成已中断");
+    expect(p.topics[0]!.startedAt).toBe("2026-01-01T00:00:00Z");
+    expect(p.topics[0]!.elapsedSeconds).toBe(7);
+    expect(p.topics[1]!.status).toBe("failed");
+    expect(p.topics[2]!.status).toBe("done");
+    expect(p.topics[3]!.status).toBe("failed");
+    // 入参未被修改（纯函数）
+    expect(d.topics[0]!.status).toBe("generating");
+  });
+
+  test("无中断状态时返回同一对象", () => {
+    const d: VideoData = { ...emptyVideoData(makeVideo(mkdtemp())), topics: [topicWith("done")] as never[] };
+    expect(projectRunState(d, { locked: false })).toBe(d);
   });
 });

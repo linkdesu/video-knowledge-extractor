@@ -1,0 +1,148 @@
+import { randomUUID } from "node:crypto";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { saveSettings } from "@video-notes/core/storage";
+import type { SettingsPatch as CoreSettingsPatch, AppSettings } from "@video-notes/core/storage";
+import type { SecretPatch } from "../shared/ipc";
+import { writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
+
+/**
+ * 端点与密钥分属 settings.json 与 secrets.bin，两份文件之间进程崩溃会留下「新地址配旧 key」的半套。
+ * 事务语义（ADR-0015 §3）：先加密写 pending 记录，再幂等地 saveSettings → secrets.set/clear → 删 pending。
+ * 任一步失败保留 pending；启动时 replayCredentialTransaction 幂等重放。
+ * 密钥变更是三种互斥动作之一（set / clear / 无动作）：纯端点更新不触碰密钥，重放也不会误清。
+ */
+
+type SecretChange = { id: SecretId } & (
+  | { kind: "set"; value: string }
+  | { kind: "clear" }
+  | { kind: "none" }
+);
+
+type PendingTx = {
+  txId: string;
+  createdAt: string;
+  settings: CoreSettingsPatch;
+  secret: SecretChange;
+};
+
+const PENDING_FILE_NAME = "secrets.pending";
+
+function pendingPath(userData: string): string {
+  return join(userData, PENDING_FILE_NAME);
+}
+
+function writePending(userData: string, codec: SecretCodec, tx: PendingTx): void {
+  writeBinaryAtomic(pendingPath(userData), codec.encrypt(JSON.stringify(tx)));
+}
+
+function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | null; error: string | null } {
+  let cipher: Buffer;
+  try {
+    cipher = readFileSync(pendingPath(userData));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { tx: null, error: null };
+    return { tx: null, error: `pending 事务读取失败：${(err as Error).message}` };
+  }
+  let plain: string;
+  try {
+    plain = codec.decrypt(cipher);
+  } catch (err) {
+    // 保留原文件不静默丢弃（ADR-0015 §3）
+    return { tx: null, error: `pending 事务解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}` };
+  }
+  let parsed: Partial<PendingTx>;
+  try {
+    parsed = JSON.parse(plain) as Partial<PendingTx>;
+  } catch {
+    return { tx: null, error: "pending 事务内容不是合法 JSON（原文件已保留）" };
+  }
+  const settings = parsed.settings;
+  const secret = parsed.secret;
+  if (typeof parsed.txId !== "string" || typeof parsed.createdAt !== "string" || typeof settings !== "object" || settings === null || typeof secret !== "object" || secret === null) {
+    return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
+  }
+  if (secret.id !== "llm" && secret.id !== "asr") return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
+  if (secret.kind === "set") {
+    if (typeof secret.value !== "string") return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
+  } else if (secret.kind !== "clear" && secret.kind !== "none") {
+    return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
+  }
+  return {
+    tx: {
+      txId: parsed.txId,
+      createdAt: parsed.createdAt,
+      settings,
+      // 上面已逐一校验 id 与 kind 分支，这里直接断言
+      secret: secret as unknown as SecretChange,
+    },
+    error: null,
+  };
+}
+
+function applySecret(secret: SecretChange, store: SecretStore): void {
+  if (secret.kind === "clear") store.clear(secret.id);
+  else if (secret.kind === "set") store.set(secret.id, secret.value);
+}
+
+/**
+ * 提交一次「设置 + 密钥」更新。校验在写任何文件之前：
+ * apiKey 与 clearApiKey 同传拒绝；带 apiKey 时存储必须可用。
+ * 任一步失败保留 pending 并抛错，运行时保持旧值。
+ */
+export function commitCredentialUpdate(input: {
+  userData: string;
+  settingsFile: string;
+  codec: SecretCodec;
+  secretStore: SecretStore;
+  settingsPatch: CoreSettingsPatch;
+  secret: { id: SecretId; patch: SecretPatch };
+}): AppSettings {
+  const { userData, settingsFile, codec, secretStore, settingsPatch, secret } = input;
+  const { apiKey, clearApiKey } = secret.patch;
+  if (apiKey !== undefined && clearApiKey === true) {
+    throw new Error("不能同时保存和清除 API key");
+  }
+  if (apiKey !== undefined && !secretStore.available()) {
+    throw new Error("系统密钥存储不可用，请用环境变量配置密钥");
+  }
+  const change: SecretChange =
+    clearApiKey === true
+      ? { id: secret.id, kind: "clear" }
+      : apiKey !== undefined
+        ? { id: secret.id, kind: "set", value: apiKey }
+        : { id: secret.id, kind: "none" };
+  const tx: PendingTx = {
+    txId: randomUUID(),
+    createdAt: new Date().toISOString(),
+    settings: settingsPatch,
+    secret: change,
+  };
+  writePending(userData, codec, tx);
+  const settings = saveSettings(settingsFile, settingsPatch);
+  applySecret(change, secretStore);
+  // saveSettings 与密钥写入都成功才删 pending；上面任一步抛错则 pending 保留给重放
+  rmSync(pendingPath(userData), { force: true });
+  return settings;
+}
+
+/** 启动重放：读 pending → 幂等应用（saveSettings + 密钥写入）→ 删 pending。返回可暴露给设置页的错误，成功为 null。 */
+export function replayCredentialTransaction(input: {
+  userData: string;
+  settingsFile: string;
+  codec: SecretCodec;
+  secretStore: SecretStore;
+}): string | null {
+  const { userData, settingsFile, codec, secretStore } = input;
+  const { tx, error } = readPending(userData, codec);
+  if (tx === null) return error;
+  try {
+    saveSettings(settingsFile, tx.settings);
+    applySecret(tx.secret, secretStore);
+    rmSync(pendingPath(userData), { force: true });
+    return null;
+  } catch (err) {
+    // 重放失败：保留 pending，运行时保持旧值，错误暴露给设置页
+    return `有未完成的凭据更新（${err instanceof Error ? err.message : String(err)}）`;
+  }
+}

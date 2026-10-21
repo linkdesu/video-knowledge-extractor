@@ -8,14 +8,43 @@ import { run } from "./exec";
 /** 一段语音停顿区间。 */
 export type Silence = { start: number; end: number };
 
-/** 读视频时长（秒）。 */
-export async function probeVideoDurations(path: string): Promise<{ duration: number }> {
-  const { stdout } = await run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path], {
-    label: `ffprobe ${path}`,
-  });
-  const duration = Number.parseFloat(stdout.trim());
-  if (!Number.isFinite(duration)) throw new Error(`ffprobe ${path}: 无法解析时长 ${stdout.trim()}`);
-  return { duration };
+/** 读视频时长与首条视频流的分辨率；无视频流（纯音频）宽高为 null。 */
+export type ProbeResult = { duration: number; width: number | null; height: number | null };
+
+export async function probeVideo(path: string): Promise<ProbeResult> {
+  const { stdout } = await run(
+    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json", path],
+    { label: `ffprobe ${path}` },
+  );
+  return parseProbeJson(stdout);
+}
+
+/** 宽高只接受正的有限整数；没有视频流 → null，不报错；坏 JSON 报错。 */
+export function parseProbeJson(stdout: string): ProbeResult {
+  let json: unknown;
+  try {
+    json = JSON.parse(stdout.trim());
+  } catch (err) {
+    throw new Error(`ffprobe 输出不是合法 JSON：${(err as Error).message}`);
+  }
+  const rec = json as Record<string, unknown>;
+  const format = rec.format;
+  let duration = Number.NaN;
+  if (typeof format === "object" && format !== null && "duration" in format) {
+    duration = Number(format.duration);
+  }
+  if (!Number.isFinite(duration)) throw new Error(`ffprobe 无法解析时长：${stdout.trim()}`);
+  let width: number | null = null;
+  let height: number | null = null;
+  const streams = rec.streams;
+  const stream = Array.isArray(streams) ? streams[0] : undefined;
+  if (typeof stream === "object" && stream !== null) {
+    const w = Number("width" in stream ? stream.width : undefined);
+    const h = Number("height" in stream ? stream.height : undefined);
+    if (Number.isInteger(w) && w > 0) width = w;
+    if (Number.isInteger(h) && h > 0) height = h;
+  }
+  return { duration, width, height };
 }
 
 /** 抽单声道 16k 采样率 pcm_s16 wav；`limitSeconds` 只取前 N 秒（开发期冒烟用）。 */
@@ -49,27 +78,41 @@ export async function detectSilences(wavPath: string): Promise<Silence[]> {
   return silences;
 }
 
+export type ChunkLimits = {
+  target: number;
+  min: number;
+  max: number;
+  /** true 时窗口内没有停顿就按 `max` 硬切，绝不发出超时长请求（远程 ASR 用）。 */
+  hardMax?: boolean;
+};
+
 /**
  * 只在语音停顿处切块（ADR-0001）：
- * 到 `t+MAX` 还在说话就等下一个停顿，绝不硬切；整段没有停顿才回退到 `t+MAX`。
+ * 默认不硬切：到 `t+max` 还在说话就等下一个停顿，绝不硬切；整段没有停顿才回退到 `t+max`。
+ * `hardMax: true`（远程 ASR，ADR-0015）：窗口内没有停顿就在 `t+max` 硬切，绝不发出超时长请求。
  */
-export function planChunks(duration: number, silences: Silence[]): Chunk[] {
+export function planChunks(duration: number, silences: Silence[], limits?: ChunkLimits): Chunk[] {
+  const lim: ChunkLimits = limits ?? { target: CHUNK_TARGET_SECONDS, min: CHUNK_MIN_SECONDS, max: CHUNK_MAX_SECONDS };
+  const hardMax = lim.hardMax === true;
   const mids = silences.map((s) => (s.start + s.end) / 2).sort((a, b) => a - b);
   const cuts: number[] = [];
   let t = 0;
-  while (duration - t > CHUNK_MAX_SECONDS) {
-    const inWindow = mids.filter((m) => m >= t + CHUNK_MIN_SECONDS && m <= t + CHUNK_MAX_SECONDS);
-    const target = t + CHUNK_TARGET_SECONDS;
+  while (duration - t > lim.max) {
+    const inWindow = mids.filter((m) => m >= t + lim.min && m <= t + lim.max);
+    const target = t + lim.target;
     let cut: number;
     if (inWindow.length > 0) {
       cut = inWindow.reduce((best, m) => (Math.abs(m - target) < Math.abs(best - target) ? m : best));
+    } else if (hardMax) {
+      // hardMax：窗口外无停顿就在 max 硬切，绝不发出超时长请求。
+      cut = t + lim.max;
     } else {
       // 窗口内没有停顿：取第一个中点 >= t+MIN 的停顿（允许超过 MAX，但不能越过视频结尾）；
       // 连它都没有（停顿都在 t+MIN 之前，或整段没有停顿）才回退到 t+MAX。
-      cut = mids.find((m) => m >= t + CHUNK_MIN_SECONDS && m < duration) ?? t + CHUNK_MAX_SECONDS;
+      cut = mids.find((m) => m >= t + lim.min && m < duration) ?? t + lim.max;
     }
-    // 切点必须严格前进否则兜底 t+MAX，保证循环终止。
-    if (!(cut > t)) cut = t + CHUNK_MAX_SECONDS;
+    // 切点必须严格前进否则兜底 t+max，保证循环终止。
+    if (!(cut > t)) cut = t + lim.max;
     cuts.push(cut);
     t = cut;
   }

@@ -7,12 +7,27 @@ export { cacheRoot, notesRoot, modelDir, llmCredentialsFromEnv, ASR_MODEL_ID } f
 export { cacheDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
+  SETTINGS_VERSION,
   defaultSettings,
   loadSettings,
+  readSettingsFile,
+  readSettingsFileSafe,
+  resolveSettings,
   saveSettings,
+  markAutoDownloadAttempted,
   settingsLockedByEnv,
 } from "./core/settings";
-export type { AppSettings } from "./core/settings";
+export type {
+  AppSettings,
+  SettingsFile,
+  SettingsPatch,
+  LlmSettings,
+  AsrSettings,
+  AsrProvider,
+  LockedSettings,
+} from "./core/settings";
+export { resolveLlm, resolveAsr } from "./core/credentials";
+export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr } from "./core/credentials";
 export { cacheUsage, clearCache } from "./core/cache-usage";
 export { loadDotenvFiles } from "./core/env";
 export { videoIdFor } from "./core/paths";
@@ -26,6 +41,7 @@ export {
   emptyVideoData,
   migrateVideoData,
   loadVideoData,
+  projectRunState,
 } from "./core/video-data";
 export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
 export {
@@ -36,10 +52,12 @@ export {
   mergeTopics,
   setTopicSelected,
   setTopicProgress,
+  settleRunWhileLocked,
+  recoverInterruptedRun,
 } from "./core/edits";
 export type { TopicProgressPatch } from "./core/edits";
 export { renderTopicMarkdown, renderIndexMarkdown } from "./core/render";
-export { isVideoLocked } from "./core/lock";
+export { isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
 export {
   loadCorrections,
   parseCorrections,

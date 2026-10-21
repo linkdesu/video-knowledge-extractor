@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AsrConfig, LlmEndpoint } from "@video-notes/core";
 import type { JobKind, JobSnapshot, JobStep } from "../shared/ipc";
 
 /**
@@ -20,7 +21,14 @@ export type JobRequest = {
   kind: JobKind;
   videoId: string;
   sourcePath: string;
+  /** 可变：extract 在 prepared 回调里由 main 更新（新视频才有 outputDir）。 */
   outputDir: string | null;
+  /** 本次运行的 token：写入文档、取消/失败时按它结算（ADR-0015 §7）。 */
+  runToken: string;
+  /** 冻结解析好的 LLM 端点；公开 DTO 不带它。 */
+  endpoint: LlmEndpoint;
+  /** 冻结解析好的 ASR 引擎配置；含 key，只在 main/worker 私有消息里。 */
+  asr: AsrConfig;
   config: { notesRoot: string; cacheRoot: string; modelDir: string };
   topicIds?: string[];
 };
