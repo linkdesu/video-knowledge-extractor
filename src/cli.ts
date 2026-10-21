@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { NOTES_ROOT } from "./core/config";
+import { llmCredentialsFromEnv, notesRoot } from "./core/config";
+import { loadDotenvFiles } from "./core/env";
 import type { Progress, StepName } from "./core/steps";
+import { resolveLlmEndpoint } from "./llm/endpoint";
 import { runExtract } from "./pipeline/extract";
 
 const USAGE = `用法:
@@ -9,9 +11,10 @@ const USAGE = `用法:
   vnote --help                           显示本帮助
   vnote --version                        显示版本号
 
-产物根目录: ${NOTES_ROOT}
-可用环境变量 VNOTE_HOME 覆盖该目录。
-LLM 端点: VNOTE_LLM_BASE_URL、VNOTE_LLM_API_KEY、VNOTE_LLM_MODEL。
+.env 从 cwd 与 notes 根目录各读一份，shell 变量优先，cwd 优先于 notes 根目录。
+LLM 端点: VNOTE_LLM_BASE_URL / IDEALSOFT_API_URL、VNOTE_LLM_API_KEY / IDEALSOFT_API_KEY，
+两个名字都认，规范名优先；模型名可留空，留空时代码调 GET <base>/models 自选。
+可用环境变量 VNOTE_HOME 覆盖产物根目录。
 `;
 
 const STEP_LABELS: Record<StepName, string> = {
@@ -65,6 +68,7 @@ function printProgress(p: Progress): void {
 }
 
 async function main(): Promise<void> {
+  loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => notesRoot() });
   const [command, ...rest] = process.argv.slice(2);
   if (command === undefined || command === "--help" || command === "help") {
     console.log(USAGE);
@@ -77,13 +81,26 @@ async function main(): Promise<void> {
   if (command === "extract") {
     const { videoPath, limitSeconds } = parseExtractArgs(rest);
     if (!existsSync(videoPath)) throw new Error(`视频文件不存在: ${videoPath}`);
+    const creds = llmCredentialsFromEnv();
+    if (creds === undefined) {
+      throw new Error(
+        "未配置 LLM 端点：请设置 VNOTE_LLM_BASE_URL 或 IDEALSOFT_API_URL，以及 VNOTE_LLM_API_KEY 或 IDEALSOFT_API_KEY（也可写进 .env）",
+      );
+    }
+    const endpoint = await resolveLlmEndpoint(creds);
     const result = await runExtract({
       videoPath,
+      endpoint,
       onProgress: printProgress,
       ...(limitSeconds !== undefined ? { limitSeconds } : {}),
     });
     console.log(`视频: ${result.video.title}`);
     console.log(`产物: ${result.video.outputDir}`);
+    console.log(`模型: ${endpoint.model}`);
+    const usage = result.usage;
+    if (usage.calls > 0) {
+      console.log(`token: prompt ${usage.promptTokens}，completion ${usage.completionTokens}，total ${usage.totalTokens}（${usage.calls} 次调用）`);
+    }
     console.log(`主题: ${result.topics.length}，笔记: ${result.notes.length}`);
     const timing = Object.entries(result.timings)
       .map(([step, seconds]) => `${step} ${seconds.toFixed(2)}s`)

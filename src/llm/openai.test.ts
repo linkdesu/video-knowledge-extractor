@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type { Server } from "bun";
-import { createLlmClient, parseJsonLoose } from "./openai";
+import { createLlmClient, parseJsonLoose, redact } from "./openai";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
 
 type Received = {
@@ -105,6 +105,53 @@ describe("createLlmClient", () => {
     await expect(client.chat([{ role: "user", content: "hi" }])).rejects.toThrow();
     responseBody = JSON.stringify({ choices: [{ message: { content: "   " } }] });
     await expect(client.chat([{ role: "user", content: "hi" }])).rejects.toThrow();
+  });
+});
+
+describe("usage 累加", () => {
+  test("两次调用的 usage 字段累加，total 缺失时用 prompt+completion 补", async () => {
+    responseBody = JSON.stringify({
+      choices: [{ message: { content: "x" } }],
+      usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+    });
+    const client = freshClient();
+    await client.chat([{ role: "user", content: "1" }]);
+    await client.chat([{ role: "user", content: "2" }]);
+    expect(client.usage?.()).toEqual({ calls: 2, promptTokens: 10, completionTokens: 14, totalTokens: 24 });
+    responseBody = JSON.stringify({
+      choices: [{ message: { content: "x" } }],
+      usage: { prompt_tokens: 3, completion_tokens: 4 },
+    });
+    await client.chat([{ role: "user", content: "3" }]);
+    expect(client.usage?.()).toEqual({ calls: 3, promptTokens: 13, completionTokens: 18, totalTokens: 31 });
+  });
+
+  test("缺 usage 字段时计数不动，只加 calls", async () => {
+    responseBody = JSON.stringify({ choices: [{ message: { content: "x" } }] });
+    const client = freshClient();
+    await client.chat([{ role: "user", content: "1" }]);
+    await client.chat([{ role: "user", content: "2" }]);
+    expect(client.usage?.()).toEqual({ calls: 2, promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+  });
+});
+
+describe("redact", () => {
+  test("先脱敏再截断：key 跨在末尾窗口里也不漏", async () => {
+    status = 500;
+    responseBody = "x".repeat(290) + "k-test";
+    const client = freshClient();
+    const err = await client.chat([{ role: "user", content: "hi" }]).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("[redacted]");
+    expect((err as Error).message).not.toContain("test-secret");
+  });
+
+  test("短 key 也生效", () => {
+    expect(redact("invalid key: tiny", "tiny")).toBe("invalid key: [redacted]");
+  });
+
+  test("空串原样返回；多处出现全部替换", () => {
+    expect(redact("abc def", "")).toBe("abc def");
+    expect(redact("k k k", "k")).toBe("[redacted] [redacted] [redacted]");
   });
 });
 

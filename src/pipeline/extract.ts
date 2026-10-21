@@ -1,17 +1,19 @@
 import { extractAudio, probeVideoDurations } from "../core/audio";
-import { MODEL_DIR, NOTES_ROOT, llmSettingsFromEnv } from "../core/config";
+import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections } from "../core/corrections";
 import { loadCorrections } from "../core/corrections-io";
 import { ensureDir, openVideo, videoCacheDir } from "../core/paths";
-import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
+import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
 import type { Note, Topic, Video } from "../core/types";
+import { createLlmClient, emptyUsage } from "../llm/openai";
 import { generateNotes } from "./generate-notes";
 import { segmentTopics } from "./segment-topics";
 import { transcribeVideo } from "./transcribe";
 
 export type ExtractInput = {
   videoPath: string;
-  endpoint?: LlmEndpoint;
+  /** 必填：由 CLI 边界（env + .env + 模型发现）解析好传入。 */
+  endpoint: LlmEndpoint;
   /** 只处理视频前 N 秒。 */
   limitSeconds?: number;
   notesRoot?: string;
@@ -27,18 +29,17 @@ export type ExtractResult = {
   indexMarkdown: string;
   timings: Record<string, number>;
   cacheHits: string[];
+  usage: LlmUsage;
 };
 
 export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
-  const notesRoot = input.notesRoot ?? NOTES_ROOT;
-  const modelDir = input.modelDir ?? MODEL_DIR;
-  const endpoint = input.endpoint ?? llmSettingsFromEnv();
-  if (endpoint === undefined) {
-    throw new Error("未配置 LLM 端点：请设置 VNOTE_LLM_BASE_URL、VNOTE_LLM_API_KEY、VNOTE_LLM_MODEL（ADR-0005）");
-  }
+  const notesRoot = input.notesRoot ?? defaultNotesRoot();
+  const modelDir = input.modelDir ?? defaultModelDir();
+  const client = input.client ?? createLlmClient(input.endpoint);
   const timings: Record<string, number> = {};
   const startedAt = performance.now();
   const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
+  const before = client.usage?.() ?? emptyUsage();
 
   const { duration } = await probeVideoDurations(input.videoPath);
   const video = openVideo(input.videoPath, duration, notesRoot);
@@ -67,9 +68,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
   const { topics } = await segmentTopics({
     transcript,
     chunks: transcription.chunks,
-    endpoint,
+    endpoint: input.endpoint,
     cacheDir,
-    ...(input.client !== undefined ? { client: input.client } : {}),
+    client,
     ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
   });
   timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
@@ -81,13 +82,27 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     topics,
     selectedTopicIds: [],
     corrections,
-    endpoint,
+    endpoint: input.endpoint,
     cacheDir,
-    ...(input.client !== undefined ? { client: input.client } : {}),
+    client,
     ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
   });
   timings.notes = Math.round((performance.now() - notesStarted) / 10) / 100;
   timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
 
-  return { video, topics, notes, indexMarkdown, timings, cacheHits: transcription.cacheHits };
+  const after = client.usage?.() ?? before;
+  return {
+    video,
+    topics,
+    notes,
+    indexMarkdown,
+    timings,
+    cacheHits: transcription.cacheHits,
+    usage: {
+      calls: after.calls - before.calls,
+      promptTokens: after.promptTokens - before.promptTokens,
+      completionTokens: after.completionTokens - before.completionTokens,
+      totalTokens: after.totalTokens - before.totalTokens,
+    },
+  };
 }
