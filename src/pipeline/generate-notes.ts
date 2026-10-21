@@ -82,14 +82,16 @@ export function renderTopicMarkdown(
     if (lines[lines.length - 1] !== "") lines.push("");
     lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering?.path.split("/").pop() ?? ""})`);
     const inSeg = utterances.filter((u) => u.end > seg.start && u.start < seg.end).sort((a, b) => a.start - b.start);
-    const bySpeaker = new Map<SpeakerId, string[]>();
+    let turn: { speakerId: SpeakerId; texts: string[] } | undefined;
     for (const u of inSeg) {
-      const texts = bySpeaker.get(u.speakerId) ?? [];
-      texts.push(u.text);
-      bySpeaker.set(u.speakerId, texts);
+      if (turn !== undefined && turn.speakerId === u.speakerId) {
+        turn.texts.push(u.text);
+        continue;
+      }
+      if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
+      turn = { speakerId: u.speakerId, texts: [u.text] };
     }
-    // 段落按说话人首次出现顺序。
-    for (const [id, texts] of bySpeaker) lines.push(`**${speakerNames.get(id) ?? id}**: ${texts.join(" ")}`);
+    if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
   }
   return `${lines.join("\n")}\n`;
 }

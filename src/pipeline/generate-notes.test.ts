@@ -34,7 +34,7 @@ function makeThrowingClient(calls: number[]): LlmClient {
 }
 
 describe("renderTopicMarkdown", () => {
-  test("标题、摘要、要点、正文、时间段标题链接切片、说话人段落", () => {
+  test("标题、摘要、要点、正文按时间顺序、时间段标题链接切片", () => {
     const topic: Topic = {
       id: "t1" as never,
       title: "主题A",
@@ -74,8 +74,9 @@ describe("renderTopicMarkdown", () => {
         "**说话人1**: 开头",
         "",
         "### [00:02:00 - 00:02:30](01-00-00-12-00-02-30.mp4)",
-        "**说话人1**: 第一句 第三句",
+        "**说话人1**: 第一句",
         "**说话人2**: 第二句",
+        "**说话人1**: 第三句",
         "",
       ].join("\n"),
     );
