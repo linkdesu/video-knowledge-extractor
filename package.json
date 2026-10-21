@@ -12,6 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "dotenv": "^18.0.8",
     "sherpa-onnx-node": "1.13.8"
   },
   "devDependencies": {
