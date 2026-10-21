@@ -6,22 +6,31 @@ import { readVideoIndex } from "./paths";
 import { isSafeDirName } from "./outputs";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
+import { loadVideoData, readVideoData } from "./video-data";
+import type { VideoData } from "./video-data";
 
-export type LibraryClip = { file: string; start: number; end: number };
-export type LibraryTopic = { dirName: string; title: string; markdown: string; clips: LibraryClip[] };
+/** 库卡片状态；规则见 ADR-0014 第 6 节。 */
+export type LibraryVideoStatus = "done" | "in-progress" | "needs-rerun" | "failed";
+
 export type LibraryVideo = {
   id: VideoId;
   title: string;
   outputDir: string;
   sourcePath?: string;
+  durationSeconds: number | null;
+  /** 首次生成的 ISO 时间；旧目录或未生成时为 null。 */
+  importedAt: string | null;
+  /** 源文件字节数；旧目录或未生成时为 null。 */
+  sizeBytes: number | null;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
+  status: LibraryVideoStatus;
 };
+
 export type LibraryDetail = {
   video: LibraryVideo;
-  indexMarkdown: string;
-  topics: LibraryTopic[];
+  data: VideoData;
   corrections: CorrectionFileEntry[];
 };
 
@@ -36,36 +45,23 @@ function mtimeMs(path: string): number | undefined {
   }
 }
 
-function readMarkdown(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
 /** 主题目录的 mp4 切片：非法命名的文件跳过，不阻断列表。 */
-function listTopicClips(topicDir: string): LibraryClip[] {
+function listTopicClips(topicDir: string): { start: number; end: number }[] {
   let names: string[];
   try {
     names = readdirSync(topicDir);
   } catch {
     return [];
   }
-  const clips: LibraryClip[] = [];
+  const clips: { start: number; end: number }[] = [];
   for (const name of names) {
     const parsed = parseClipFileName(name);
-    if (parsed === undefined) continue;
-    const full = resolve(topicDir, name);
-    if (lstatSync(full).isFile()) clips.push({ file: name, start: parsed.start, end: parsed.end });
+    if (parsed !== undefined) {
+      const full = resolve(topicDir, name);
+      if (lstatSync(full).isFile()) clips.push(parsed);
+    }
   }
   return clips;
-}
-
-/** `topic.md` 第一个 `# ` 标题；没有就用目录名。 */
-function topicTitle(markdown: string, dirName: string): string {
-  const line = markdown.split("\n").find((l) => l.startsWith("# "));
-  return line !== undefined ? line.slice(2).trim() : dirName;
 }
 
 function dirIsDirectChild(root: string, dirName: string): boolean {
@@ -74,8 +70,44 @@ function dirIsDirectChild(root: string, dirName: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !rel.includes("/");
 }
 
-function videoSummary(root: string, entry: Entry): LibraryVideo {
+function videoSummary(root: string, entry: Entry, propagateParseError: boolean): LibraryVideo {
   const outputDir = resolve(root, entry.outputDir);
+  let data: VideoData | undefined;
+  try {
+    data = readVideoData(outputDir);
+  } catch (err) {
+    // 单个视频的 video.json 损坏不阻断列表：该卡按 failed、计数 0，标题/目录沿用 index.json
+    if (propagateParseError) throw err;
+    return {
+      id: entry.id as VideoId,
+      title: entry.title,
+      outputDir,
+      ...(entry.sourcePath !== undefined ? { sourcePath: entry.sourcePath } : {}),
+      durationSeconds: null,
+      importedAt: null,
+      sizeBytes: null,
+      topicCount: 0,
+      clipCount: 0,
+      updatedAt: null,
+      status: "failed",
+    };
+  }
+  if (data !== undefined) {
+    return {
+      id: entry.id as VideoId,
+      title: entry.title,
+      outputDir,
+      ...(entry.sourcePath !== undefined ? { sourcePath: entry.sourcePath } : {}),
+      durationSeconds: data.video.durationSeconds,
+      importedAt: data.importedAt,
+      sizeBytes: data.sourceBytes,
+      topicCount: data.topics.length,
+      clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
+      updatedAt: data.updatedAt,
+      status: deriveStatus(data),
+    };
+  }
+  // 没有 video.json：迁移口径的旧目录或空目录一律 in-progress，时长未知为 null
   let topicCount = 0;
   let clipCount = 0;
   let latest = mtimeMs(resolve(outputDir, "index.md"));
@@ -86,8 +118,11 @@ function videoSummary(root: string, entry: Entry): LibraryVideo {
     names = [];
   }
   for (const name of names) {
-    const md = readMarkdown(resolve(outputDir, name, "topic.md"));
-    if (md === undefined) continue;
+    try {
+      lstatSync(resolve(outputDir, name, "topic.md"));
+    } catch {
+      continue;
+    }
     topicCount += 1;
     clipCount += listTopicClips(resolve(outputDir, name)).length;
     const t = mtimeMs(resolve(outputDir, name, "topic.md"));
@@ -98,17 +133,31 @@ function videoSummary(root: string, entry: Entry): LibraryVideo {
     title: entry.title,
     outputDir,
     ...(entry.sourcePath !== undefined ? { sourcePath: entry.sourcePath } : {}),
+    durationSeconds: null,
+    importedAt: null,
+    sizeBytes: null,
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),
+    // 旧目录有笔记但没有 video.json：结构化字幕缺失，界面要能提示重跑
+    status: topicCount > 0 ? "needs-rerun" : "in-progress",
   };
+}
+
+/** 库卡片状态：没有 `video.json` 且没有旧主题目录 → `in-progress`，有旧主题目录 → `needs-rerun`；文档为空（无主题且无字幕）→ `in-progress`；有 `failed`/`needs-rerun` → `needs-rerun`；全部已勾选主题 `done` 且字幕非空 → `done`；其余 → `in-progress`。 */
+function deriveStatus(data: VideoData): LibraryVideoStatus {
+  if (data.topics.length === 0 && data.transcript.utterances.length === 0) return "in-progress";
+  if (data.topics.some((t) => t.status === "failed" || t.status === "needs-rerun")) return "needs-rerun";
+  const selectedDone = data.topics.filter((t) => t.selected).every((t) => t.status === "done");
+  if (selectedDone && data.transcript.utterances.length > 0) return "done";
+  return "in-progress";
 }
 
 export function listLibrary(root: string = notesRoot()): LibraryVideo[] {
   const index = readVideoIndex(root);
   const out: LibraryVideo[] = [];
   for (const entry of index.videos) {
-    out.push(videoSummary(root, entry));
+    out.push(videoSummary(root, entry, false));
   }
   return out;
 }
@@ -119,26 +168,13 @@ export function readLibraryVideo(root: string, id: string): LibraryDetail | unde
   if (entry === undefined || typeof entry.outputDir !== "string") return undefined;
   if (!dirIsDirectChild(root, entry.outputDir)) return undefined;
   const outputDir = resolve(root, entry.outputDir);
-  let names: string[] = [];
-  try {
-    names = readdirSync(outputDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-  } catch {
-    names = [];
-  }
-  const topics: LibraryTopic[] = [];
-  for (const name of names) {
-    const mdPath = resolve(outputDir, name, "topic.md");
-    const markdown = readMarkdown(mdPath);
-    if (markdown === undefined) continue;
-    topics.push({ dirName: name, title: topicTitle(markdown, name), markdown, clips: listTopicClips(resolve(outputDir, name)) });
-  }
-  topics.sort((a, b) => a.dirName.localeCompare(b.dirName));
+  const data = loadVideoData(outputDir, { id: entry.id as VideoId, title: entry.title, sourcePath: entry.sourcePath });
   let corrections: CorrectionFileEntry[] = [];
   const raw = readJsonFileShallow(resolve(outputDir, "corrections.json"));
   if (Array.isArray(raw)) {
     corrections = raw.filter(isCorrectionEntry);
   }
-  return { video: videoSummary(root, entry), indexMarkdown: readMarkdown(resolve(outputDir, "index.md")) ?? "", topics, corrections };
+  return { video: videoSummary(root, entry, true), data, corrections };
 }
 
 function readJsonFileShallow(path: string): unknown {

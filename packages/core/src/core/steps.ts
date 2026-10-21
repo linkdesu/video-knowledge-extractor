@@ -7,6 +7,10 @@ export type Progress = {
   done: number;
   total: number;
   detail?: string;
+  /** 当前正在处理的主题(逐主题进度,ADR-0014 桌面端进度条)。 */
+  topicId?: string;
+  /** 当前主题内部进度 0-100(切片段时按已完成段数计)。 */
+  topicPercent?: number;
 };
 
 /** 设置里只配一个 OpenAI 兼容端点，云端或本地由用户决定（ADR-0005）。 */
@@ -71,8 +75,8 @@ export type GenerateNotesInput = {
   video: Video;
   transcript: Transcript;
   topics: Topic[];
-  /** 用户选定要生成笔记的主题；默认全部。 */
-  selectedTopicIds: TopicId[];
+  /** 用户选定要生成笔记的主题的目录名,由调用方分配(重新分块/编辑时保持旧名,ADR-0014);不在 map 里的主题跳过。 */
+  dirNames: Map<TopicId, string>;
   /** 生成笔记时随请求传给模型的正确写法。 */
   corrections: CorrectionList;
   endpoint: LlmEndpoint;
@@ -81,12 +85,12 @@ export type GenerateNotesInput = {
   /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
+  /** 单主题内部进度(开始/切完片段),供调用方记回 `video.json` 的 startedAt 等字段。 */
+  onTopicProgress?: (p: { topicId: TopicId; percent: number; phase: "start" | "clips-done" }) => void;
 };
 
 export type GenerateNotesResult = {
   notes: Note[];
-  /** 本视频的 `index.md` 内容。 */
-  indexMarkdown: string;
   /** 本次实际写出的主题目录名（相对视频输出目录），顺序与写入一致。 */
   topicDirs: string[];
   /** 本次要点缓存命中的 cacheKey.hash 集合，命中与未命中都算「用过」。 */

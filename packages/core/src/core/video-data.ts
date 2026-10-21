@@ -1,0 +1,361 @@
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { parseClipFileName } from "./clips";
+import { isVideoLocked } from "./lock";
+import { writeJsonAtomic } from "./paths";
+import type { Chunk, Segment, SpeakerId, TopicId, Transcript, Utterance, Video, VideoId } from "./types";
+
+export const VIDEO_DATA_FILE = "video.json";
+export const VIDEO_DATA_VERSION = 1;
+
+export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-rerun";
+
+export type TopicClip = { file: string; start: number; end: number; segmentIndexes: number[] };
+
+export type TopicRecord = {
+  id: TopicId;
+  title: string;
+  summary: string;
+  /** 已排序，可多段、可不连续 */
+  segments: Segment[];
+  /** 主题目录名；合并后沿用被保留主题的目录 */
+  dirName: string;
+  status: TopicStatus;
+  /** 主题页勾选框 */
+  selected: boolean;
+  keyPoints: string[];
+  clips: TopicClip[];
+  /** 本主题开始生成的 ISO 时间 */
+  startedAt: string | null;
+  elapsedSeconds: number | null;
+  error: string | null;
+};
+
+export type VideoData = {
+  version: 1;
+  video: Video;
+  transcript: Transcript;
+  /** 分析分块；仅主题重跑要复用它，不能依赖可清除的缓存 */
+  chunks: Chunk[];
+  topics: TopicRecord[];
+  /** 首次生成的 ISO 时间；卡片「导入时间」 */
+  importedAt: string | null;
+  /** 源文件字节数；卡片文件大小 */
+  sourceBytes: number | null;
+  /** 这次转写用的 ASR 模型；字幕页照实显示 */
+  asrModel: string | null;
+  updatedAt: string;
+};
+
+/** 界面侧的调用方身份：文档缺失时从这里做旧目录迁移。 */
+export type VideoRef = {
+  id: VideoId;
+  title: string;
+  sourcePath?: string;
+  durationSeconds?: number;
+};
+
+function videoPath(outputDir: string): string {
+  return resolve(outputDir, VIDEO_DATA_FILE);
+}
+
+function readNumber(v: unknown, where: string): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${where} 的秒数不是有效数字`);
+  return v;
+}
+
+function readString(v: unknown, where: string): string {
+  if (typeof v !== "string") throw new Error(`${where} 不是字符串`);
+  return v;
+}
+
+function readStringArray(v: unknown, where: string): string[] {
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new Error(`${where} 不是字符串数组`);
+  return v;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseTopics(raw: unknown, where: string): TopicRecord[] {
+  if (!Array.isArray(raw)) throw new Error(`${where} 不是数组`);
+  const out: TopicRecord[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i];
+    const t = `topics[${i}]`;
+    if (!isObject(r)) throw new Error(`${t} 不是对象`);
+    out.push({
+      id: readString(r.id, `${t}.id`) as TopicId,
+      title: readString(r.title, `${t}.title`),
+      summary: readString(r.summary, `${t}.summary`),
+      segments: parseSegments(r.segments, `${t}.segments`),
+      dirName: readString(r.dirName, `${t}.dirName`),
+      status: readString(r.status, `${t}.status`) as TopicStatus,
+      selected: parseSelected(r.selected, `${t}.selected`),
+      keyPoints: readStringArray(r.keyPoints, `${t}.keyPoints`),
+      clips: parseClips(r.clips, `${t}.clips`),
+      startedAt: parseNullableString(r.startedAt, `${t}.startedAt`),
+      elapsedSeconds: parseNullableNumber(r.elapsedSeconds, `${t}.elapsedSeconds`),
+      error: parseNullableString(r.error, `${t}.error`),
+    });
+  }
+  return out;
+}
+
+
+function requireArray(v: unknown, where: string): unknown[] {
+  if (!Array.isArray(v)) throw new Error(`${where} 不是数组`);
+  return v;
+}
+function parseNumberArray(v: unknown, where: string): number[] {
+  if (!Array.isArray(v) || v.some((x) => typeof x !== "number")) throw new Error(`${where} 不是数字数组`);
+  return v as number[];
+}
+function parseClips(v: unknown, where: string): TopicClip[] {
+  return requireArray(v, where).map((c, i) => {
+    if (!isObject(c)) throw new Error(`${where}[${i}] 不是对象`);
+    return {
+      file: readString(c.file, `${where}[${i}].file`),
+      start: readNumber(c.start, `${where}[${i}].start`),
+      end: readNumber(c.end, `${where}[${i}].end`),
+      segmentIndexes: parseNumberArray(c.segmentIndexes, `${where}[${i}].segmentIndexes`),
+    };
+  });
+}
+function parseSegments(v: unknown, where: string): Segment[] {
+  return requireArray(v, where).map((s, i) => {
+    if (!isObject(s)) throw new Error(`${where}[${i}] 不是对象`);
+    return { start: readNumber(s.start, `${where}[${i}].start`), end: readNumber(s.end, `${where}[${i}].end`) };
+  });
+}
+
+function parseChunks(v: unknown, where: string): Chunk[] {
+  return requireArray(v, where).map((c, i) => {
+    if (!isObject(c)) throw new Error(`${where}[${i}] 不是对象`);
+    return { index: readNumber(c.index, `${where}[${i}].index`), start: readNumber(c.start, `${where}[${i}].start`), end: readNumber(c.end, `${where}[${i}].end`) };
+  });
+}
+
+function parseSelected(v: unknown, where: string): boolean {
+  if (typeof v !== "boolean") throw new Error(`${where} 不是布尔值`);
+  return v;
+}
+
+function parseNullableString(v: unknown, where: string): string | null {
+  if (v !== null && typeof v !== "string") throw new Error(`${where} 非法`);
+  return (v as string | null) ?? null;
+}
+
+function parseNullableNumber(v: unknown, where: string): number | null {
+  if (v !== null && typeof v !== "number") throw new Error(`${where} 非法`);
+  return (v as number | null) ?? null;
+}
+
+/** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
+export function readVideoData(outputDir: string): VideoData | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(videoPath(outputDir), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${VIDEO_DATA_FILE}（version ${VIDEO_DATA_VERSION}）：不是合法 JSON`);
+  }
+  const p = videoPath(outputDir);
+  if (!isObject(parsed)) throw new Error(`${p}：不是对象`);
+  if (parsed.version !== VIDEO_DATA_VERSION) throw new Error(`${p}：version 应为 ${VIDEO_DATA_VERSION}，实际 ${String(parsed.version)}`);
+  const video = parsed.video;
+  if (!isObject(video)) throw new Error(`${p}：video 不是对象`);
+  const v: Video = {
+    id: readString(video.id, `${p}.video.id`) as VideoId,
+    title: readString(video.title, `${p}.video.title`),
+    sourcePath: readString(video.sourcePath, `${p}.video.sourcePath`),
+    durationSeconds: readNumber(video.durationSeconds, `${p}.video.durationSeconds`),
+    outputDir: readString(video.outputDir, `${p}.video.outputDir`),
+  };
+  const transcript = parsed.transcript;
+  if (!isObject(transcript)) throw new Error(`${p}：transcript 不是对象`);
+  const speakers = requireArray(transcript.speakers, `${p}.transcript.speakers`);
+  const speakerList = speakers.map((s) => {
+    if (!isObject(s)) throw new Error(`${p}.transcript.speakers 项不是对象`);
+    return { id: readString(s.id, `${p}.transcript.speakers.id`) as SpeakerId, name: readString(s.name, `${p}.transcript.speakers.name`), color: readString(s.color, `${p}.transcript.speakers.color`) };
+  });
+  const utt = requireArray(transcript.utterances, `${p}.transcript.utterances`);
+  const utterances: Utterance[] = utt.map((u, i) => {
+    if (!isObject(u)) throw new Error(`${p}.transcript.utterances[${i}] 不是对象`);
+    return {
+      start: readNumber(u.start, `${p}.transcript.utterances[${i}].start`),
+      end: readNumber(u.end, `${p}.transcript.utterances[${i}].end`),
+      speakerId: readString(u.speakerId, `${p}.transcript.utterances[${i}].speakerId`) as SpeakerId,
+      text: readString(u.text, `${p}.transcript.utterances[${i}].text`),
+    };
+  });
+  return {
+    version: VIDEO_DATA_VERSION,
+    video: v,
+    transcript: { speakers: speakerList, utterances },
+    chunks: parseChunks(parsed.chunks, `${p}.chunks`),
+    topics: parseTopics(parsed.topics, p),
+    importedAt: parsed.importedAt === undefined ? null : parseNullableString(parsed.importedAt, `${p}.importedAt`),
+    sourceBytes: parsed.sourceBytes === undefined ? null : parseNullableNumber(parsed.sourceBytes, `${p}.sourceBytes`),
+    asrModel: parsed.asrModel === undefined ? null : parseNullableString(parsed.asrModel, `${p}.asrModel`),
+    updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
+  };
+}
+/** 盖 `updatedAt` ISO 时间（单调递增，同毫秒多次写也保证后写晚于先写）后原子写出，返回落盘文档。 */
+let lastStampMs = 0;
+function stampUpdatedAt(): string {
+  const now = Date.now();
+  const ms = Math.max(now, lastStampMs + 1);
+  lastStampMs = ms;
+  return new Date(ms).toISOString();
+}
+export function writeVideoData(outputDir: string, data: VideoData): VideoData {
+  mkdirSync(outputDir, { recursive: true });
+  const out = { ...data, updatedAt: stampUpdatedAt() };
+  writeJsonAtomic(videoPath(outputDir), out);
+  return out;
+}
+
+/** 新文档：无字幕、无主题（`updatedAt` 占位，真正落盘时由 `writeVideoData` 盖时间戳）。 */
+export function emptyVideoData(video: Video): VideoData {
+  return {
+    version: VIDEO_DATA_VERSION,
+    video,
+    transcript: { speakers: [], utterances: [] },
+    chunks: [],
+    topics: [],
+    importedAt: null,
+    sourceBytes: null,
+    asrModel: null,
+    updatedAt: "1970-01-01T00:00:00.000Z",
+  };
+}
+
+/**
+ * 从旧目录（markdown + 切片文件名）重建文档：标题取 `topic.md` 的 `# `，时间段取
+ * `### [HH:MM:SS - HH:MM:SS](file)` 标题（标题缺失时才用切片范围近似并记 error），
+ * 要点取 `## 要点` 列表，切片取目录里的 mp4 文件名，
+ * 字幕为空，状态 `done`（字幕缺失由库卡片按 `needs-rerun` 口径显示）。
+ */
+export function migrateVideoData(outputDir: string, video: Video): VideoData {
+  let names: string[] = [];
+  try {
+    names = readdirSync(outputDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    names = [];
+  }
+  const topics: TopicRecord[] = [];
+  for (const dirName of names) {
+    const dir = join(outputDir, dirName);
+    let md: string;
+    try {
+      md = readFileSync(join(dir, "topic.md"), "utf8");
+    } catch {
+      continue;
+    }
+    const titleLine = md.split("\n").find((l) => l.startsWith("# "));
+    // 标题里的 [HH:MM:SS - HH:MM:SS] 是原始段边界；切片名带前移且重叠会合一，反推不出
+    const lines = md.split("\n");
+    const segments: Segment[] = [];
+    const segRe = /^### \[(\d{2}):(\d{2}):(\d{2}) - (\d{2}):(\d{2}):(\d{2})\]/;
+    for (const line of lines) {
+      const m = segRe.exec(line);
+      if (m === null) continue;
+      const caps = m.slice(1);
+      const n = (i: number): number => Number(caps[i] ?? "0");
+      segments.push({ start: n(0) * 3600 + n(1) * 60 + n(2), end: n(3) * 3600 + n(4) * 60 + n(5) });
+    }
+    segments.sort((a, b) => a.start - b.start);
+    let error: string | null = null;
+    const keyPoints: string[] = [];
+    let inPoints = false;
+    for (const line of lines) {
+      if (line.startsWith("## ")) inPoints = line === "## 要点";
+      else if (inPoints && line.startsWith("- ")) keyPoints.push(line.slice(2));
+    }
+    let files: string[] = [];
+    try {
+      files = readdirSync(dir);
+    } catch {
+      files = [];
+    }
+    const clipRanges: { file: string; start: number; end: number }[] = [];
+    for (const name of files) {
+      const parsed = parseClipFileName(name);
+      if (parsed === undefined) continue;
+      clipRanges.push({ file: name, start: parsed.start, end: parsed.end });
+    }
+    clipRanges.sort((a, b) => a.start - b.start || a.file.localeCompare(b.file));
+    if (clipRanges.length > 0 && segments.length === 0) {
+      // 没有标题：只能用切片范围近似时间段（切片带前移，起点偏早），给主题记 error
+      for (const c of clipRanges) segments.push({ start: c.start, end: c.end });
+      error = "时间段按切片近似恢复";
+    }
+    // 切片名只有向下取整后的起止；覆盖某段当 `clip.start <= seg.start && clip.end >= seg.end - 0.4`
+    const clips: TopicClip[] = clipRanges.map((c) => {
+      const covered: number[] = [];
+      for (let s = 0; s < segments.length; s++) {
+        const seg = segments[s]!;
+        if (c.start <= seg.start && c.end >= seg.end - 0.4) covered.push(s);
+      }
+      return { file: c.file, start: c.start, end: c.end, segmentIndexes: covered };
+    });
+    topics.push({
+      id: dirName as TopicId,
+      title: titleLine !== undefined ? titleLine.slice(2).trim() : dirName,
+      summary: "",
+      segments,
+      dirName,
+      status: "done",
+      selected: false,
+      keyPoints,
+      clips,
+      startedAt: null,
+      elapsedSeconds: null,
+      error,
+    });
+  }
+  return {
+    version: VIDEO_DATA_VERSION,
+    video,
+    transcript: { speakers: [], utterances: [] },
+    chunks: [],
+    topics,
+    importedAt: null,
+    sourceBytes: null,
+    asrModel: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** 读文档；缺失时从旧目录迁移（结果不回写，等下次生成或编辑再落盘）。 */
+export function loadVideoData(outputDir: string, ref: VideoRef): VideoData {
+  const data = readVideoData(outputDir);
+  if (data !== undefined) {
+    // 状态归一：`generating` 但没有存活 run.lock → 上次生成被中断
+    if (!isVideoLocked(outputDir)) {
+      for (const t of data.topics) {
+        if (t.status === "generating") {
+          t.status = "failed";
+          t.error = "上次生成已中断";
+        }
+      }
+    }
+    return data;
+  }
+  const video: Video = {
+    id: ref.id,
+    title: ref.title,
+    sourcePath: ref.sourcePath ?? "",
+    durationSeconds: ref.durationSeconds ?? 0,
+    outputDir,
+  };
+  return migrateVideoData(outputDir, video);
+}

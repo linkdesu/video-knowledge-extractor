@@ -1,16 +1,18 @@
-import { extractAudio, probeVideoDurations } from "../core/audio";
-import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
+import { statSync } from "node:fs";
+import { probeVideoDurations, extractAudio } from "../core/audio";
+import { ASR_MODEL_ID, modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections } from "../core/corrections";
-import { loadCorrections } from "../core/corrections-io";
-import { ensureDir, openVideo, videoCacheDir } from "../core/paths";
+import { acquireVideoLock } from "../core/lock";
+import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
+import { cleanupStaleOutputs } from "../core/outputs";
+import { loadVideoData, writeVideoData } from "../core/video-data";
+import type { TopicRecord } from "../core/video-data";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
-import type { Note, Topic, Video } from "../core/types";
+import type { CorrectionList, Note, Topic, TopicId, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
-import { generateNotes } from "./generate-notes";
+import { correctionsFor, generateAll, writeIndexFromDoc } from "./notes-run";
 import { segmentTopics } from "./segment-topics";
 import { transcribeVideo } from "./transcribe";
-import { cleanupStaleOutputs } from "../core/outputs";
-import { acquireVideoLock } from "../core/lock";
 
 export type ExtractInput = {
   videoPath: string;
@@ -20,6 +22,8 @@ export type ExtractInput = {
   limitSeconds?: number;
   notesRoot?: string;
   modelDir?: string;
+  /** 缓存根目录；缓存落在 `<cacheRoot>/<videoId>/`（ADR-0014）。 */
+  cacheRoot: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
 };
@@ -47,7 +51,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
 
   const { duration } = await probeVideoDurations(input.videoPath);
   const video = openVideo(input.videoPath, duration, notesRoot);
-  const cacheDir = ensureDir(videoCacheDir(video.outputDir));
+  const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
   // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑
   const lock = acquireVideoLock(video.outputDir);
   try {
@@ -55,25 +59,39 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     await extractAudio(video.sourcePath, wavPath, input.limitSeconds);
     timings.audio = t();
 
-    const transcription = await transcribeVideo({
+    const run = await transcribeVideo({
       video,
       wavPath,
       cacheDir,
       modelDir,
       ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
     });
+    for (const [k, v] of Object.entries(run.timings)) timings[k] = t();
     timings.transcribe = t();
 
-    const corrections = loadCorrections(notesRoot, video.outputDir);
+    // 落 video.json：原始转写（纠错在生成/渲染时应用，不在文档里二次替换）+ chunks + asrModel/importedAt/sourceBytes
+    const data = loadVideoData(
+      video.outputDir,
+      { id: video.id, title: video.title, sourcePath: video.sourcePath, durationSeconds: video.durationSeconds },
+    );
+    if (data.importedAt === null) data.importedAt = new Date().toISOString();
+    data.asrModel = ASR_MODEL_ID;
+    data.sourceBytes = statSync(input.videoPath).size;
+    data.chunks = run.chunks;
+    data.transcript = run.transcript;
+    data.topics = [];
+    writeVideoData(video.outputDir, data);
+
+    const corrections: CorrectionList = correctionsFor(video.outputDir);
     const transcript = {
-      speakers: transcription.transcript.speakers,
-      utterances: applyCorrections(corrections, transcription.transcript.utterances),
+      speakers: run.transcript.speakers,
+      utterances: applyCorrections(corrections, run.transcript.utterances),
     };
 
     const topicsStarted = performance.now();
     const { topics } = await segmentTopics({
       transcript,
-      chunks: transcription.chunks,
+      chunks: run.chunks,
       endpoint: input.endpoint,
       cacheDir,
       client,
@@ -81,27 +99,55 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     });
     timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
 
+    // 每个新主题：分配目录名，写回 video.json（queued/selected），再逐主题生成
+    const used = new Set<string>();
+    const records: TopicRecord[] = topics.map((x) => {
+      const name = freshName(x.title, used);
+      used.add(name);
+      return {
+        id: x.id,
+        title: x.title,
+        summary: x.summary,
+        segments: x.segments,
+        dirName: name,
+        status: "queued",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      };
+    });
+    data.topics = records;
+    writeVideoData(video.outputDir, data);
+
     const notesStarted = performance.now();
-    const generated = await generateNotes({
-      video,
-      transcript,
-      topics,
-      selectedTopicIds: [],
+    const dirNameOf = (id: TopicId) => {
+      const topic = data.topics.find((x) => x.id === id);
+      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
+      return topic.dirName;
+    };
+    const r = await generateAll(
+      data,
+      records.map((x) => x.id),
+      dirNameOf,
       corrections,
-      endpoint: input.endpoint,
+      input.endpoint,
       cacheDir,
       client,
-      ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
-    });
+      input.onProgress,
+    );
     timings.notes = Math.round((performance.now() - notesStarted) / 10) / 100;
+
     // index.md 与全部主题目录都落盘后才清：删目录不会碰掉本次刚写的笔记
     // 清理失败只记耗时，不影响已生成的笔记与返回值
     const cleanupStarted = performance.now();
     const staleRemoved = cleanupStaleOutputs({
       outputDir: video.outputDir,
-      keep: generated.topicDirs,
+      keep: records.map((x) => x.dirName),
       cacheDir,
-      noteCacheKeys: generated.noteCacheKeys,
+      noteCacheKeys: r.cacheHits,
     });
     timings.cleanup = Math.round((performance.now() - cleanupStarted) / 10) / 100;
     timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
@@ -110,10 +156,10 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     return {
       video,
       topics,
-      notes: generated.notes,
-      indexMarkdown: generated.indexMarkdown,
+      notes: r.notes,
+      indexMarkdown: writeIndexFromDoc(video.outputDir),
       timings,
-      cacheHits: transcription.cacheHits,
+      cacheHits: run.cacheHits,
       usage: {
         calls: after.calls - before.calls,
         promptTokens: after.promptTokens - before.promptTokens,
@@ -125,4 +171,11 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
   } finally {
     lock.release();
   }
+}
+
+function freshName(title: string, used: Set<string>): string {
+  const base = slugify(title, "topic");
+  let name = base;
+  for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
+  return name;
 }

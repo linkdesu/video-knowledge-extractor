@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
 import type { Correction, CorrectionList } from "./types";
-import { readJsonFile, writeFileAtomic } from "./paths";
+import { readJsonFile, writeJsonAtomic } from "./paths";
 
-export type CorrectionFileEntry = { wrong: string; right: string };
+/** 词条可带来源与修改时间；旧文件缺字段时界面显示「手工」与文件 mtime（ADR-0014）。 */
+export type CorrectionFileEntry = { wrong: string; right: string; source?: "manual" | "from-subtitle"; updatedAt?: string };
 
 export function parseCorrections(value: unknown, source: string): Correction[] {
   if (!Array.isArray(value)) throw new Error(`${source}: 纠错词表必须是数组`);
@@ -12,6 +13,8 @@ export function parseCorrections(value: unknown, source: string): Correction[] {
     const { wrong, right } = row;
     if (typeof wrong !== "string" || wrong === "") throw new Error(`${source}: 第 ${i + 1} 条缺少 wrong`);
     if (typeof right !== "string" || right === "") throw new Error(`${source}: 第 ${i + 1} 条缺少 right`);
+    if (row.source !== undefined && row.source !== "manual" && row.source !== "from-subtitle") throw new Error(`${source}: 第 ${i + 1} 条 source 必须是 manual 或 from-subtitle`);
+    if (row.updatedAt !== undefined && typeof row.updatedAt !== "string") throw new Error(`${source}: 第 ${i + 1} 条 updatedAt 必须是字符串`);
     return { from: wrong, to: right };
   });
 }
@@ -38,10 +41,27 @@ export function readVideoCorrections(videoDir: string): CorrectionFileEntry[] {
   return rows;
 }
 
-/** 保存前用 `parseCorrections` 校验（空 wrong/right 报错），再原子写；返回写入的条目。 */
+/** 保存前用 `parseCorrections` 校验（空 wrong/right 报错），再原子写；调用方提供的元数据原样保留；返回写入的条目。 */
 export function saveVideoCorrections(videoDir: string, entries: CorrectionFileEntry[]): CorrectionFileEntry[] {
   const path = resolve(videoDir, "corrections.json");
   parseCorrections(entries, path);
-  writeFileAtomic(path, `${JSON.stringify(entries, null, 2)}\n`);
+  writeJsonAtomic(path, entries);
+  return entries;
+}
+
+/** 全局词表：缺文件是空表，格式错抛错。 */
+export function readGlobalCorrections(root: string): CorrectionFileEntry[] {
+  const path = resolve(root, "corrections.json");
+  const file = readJsonFile<unknown>(path);
+  if (file === undefined) return [];
+  parseCorrections(file, path);
+  return file as CorrectionFileEntry[];
+}
+
+/** 全局词表保存：校验后原子写 `<root>/corrections.json`。 */
+export function saveGlobalCorrections(root: string, entries: CorrectionFileEntry[]): CorrectionFileEntry[] {
+  const path = resolve(root, "corrections.json");
+  parseCorrections(entries, path);
+  writeJsonAtomic(path, entries);
   return entries;
 }

@@ -86,6 +86,11 @@ export function videoCacheDir(outputDir: string): string {
   return resolve(outputDir, CACHE_DIRNAME);
 }
 
+/** 新缓存位置 `<cacheRoot>/<videoId>/`（ADR-0014）。 */
+export function cacheDirFor(cacheRoot: string, videoId: VideoId): string {
+  return resolve(cacheRoot, videoId);
+}
+
 export function topicDirNames(topics: Pick<Topic, "id" | "title">[]): Map<TopicId, string> {
   const used = new Set<string>();
   const names = new Map<TopicId, string>();

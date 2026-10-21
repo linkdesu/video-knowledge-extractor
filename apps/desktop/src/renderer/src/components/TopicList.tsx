@@ -1,0 +1,220 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { JobSnapshot, TopicInfo } from "../../../shared/ipc";
+import { ProgressBar } from "@/rbp/blocks/monitoring-9";
+import { fmtClock, fmtElapsed } from "@/lib/format";
+
+type TopicListProps = {
+  topics: TopicInfo[];
+  selectedId: string | null;
+  job: JobSnapshot | null;
+  mergeMode: boolean;
+  mergePicked: ReadonlySet<string>;
+  onSelect: (topicId: string) => void;
+  onToggleSelected: (topicId: string, selected: boolean) => void;
+  onToggleMergePick: (topicId: string) => void;
+};
+
+/** 生成中主题进度：实时任务快照（step=generate-notes 且 topicId 命中）优先，
+ * 否则回退主题的 startedAt / elapsedSeconds。 */
+export function generatingProgress(
+  topic: TopicInfo,
+  job: JobSnapshot | null,
+  now: number,
+): { percent: number | null; elapsedSeconds: number } | null {
+  if (topic.status !== "generating") return null;
+  const liveJob =
+    job !== null &&
+    job.state === "running" &&
+    (job.step === "generate-notes" || job.kind === "notes") &&
+    job.topicId === topic.id
+      ? job
+      : null;
+  const startedIso = topic.startedAt;
+  const elapsedSeconds =
+    startedIso === null
+      ? (topic.elapsedSeconds ?? 0)
+      : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
+  const percent = liveJob !== null ? (liveJob.topicPercent ?? 0) : null;
+  return { percent, elapsedSeconds };
+}
+
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+const topicBase: React.CSSProperties = {
+  border: "1px solid var(--vn-line)",
+  borderRadius: 14,
+  padding: "12px 14px",
+  background: "rgba(255,255,255,0.02)",
+  transition: "0.16s",
+};
+
+function Row({
+  topic,
+  selected,
+  job,
+  now,
+  mergeMode,
+  mergePicked,
+  onSelect,
+  onToggleSelected,
+  onToggleMergePick,
+}: {
+  topic: TopicInfo;
+  selected: boolean;
+  job: JobSnapshot | null;
+  now: number;
+  mergeMode: boolean;
+  mergePicked: ReadonlySet<string>;
+  onSelect: (topicId: string) => void;
+  onToggleSelected: (topicId: string, selected: boolean) => void;
+  onToggleMergePick: (topicId: string) => void;
+}) {
+  const prog = generatingProgress(topic, job, now);
+  return (
+    <div
+      data-testid={`topic-card-${topic.id}`}
+      style={
+        selected
+          ? {
+              ...topicBase,
+              borderColor: "rgba(34,211,238,0.4)",
+              background: "linear-gradient(90deg,rgba(34,211,238,0.08),rgba(139,92,246,0.06))",
+            }
+          : topicBase
+      }
+    >
+      <label
+        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+      >
+        <input
+          type="checkbox"
+          checked={topic.selected}
+          onChange={(e) => onToggleSelected(topic.id, e.target.checked)}
+          aria-label={`生成笔记：${topic.title}`}
+        />
+        <span style={{ fontSize: 14, color: "var(--vn-fg)", flex: 1, minWidth: 0 }}>
+          {topic.title}
+        </span>
+      </label>
+      <div
+        style={{
+          color: "var(--vn-dim)",
+          fontSize: 11,
+          fontVariantNumeric: "tabular-nums",
+          marginTop: 4,
+        }}
+      >
+        {topic.segments.map((s) => `${fmtClock(s.start)}–${fmtClock(s.end)}`).join(" · ")}
+      </div>
+      <p
+        style={{
+          margin: "5px 0 0",
+          color: "var(--vn-muted)",
+          fontSize: 12,
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}
+      >
+        {topic.summary}
+      </p>
+      {mergeMode ? (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 11,
+            color: "var(--vn-dim)",
+            marginTop: 8,
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={mergePicked.has(topic.id)}
+            onChange={() => onToggleMergePick(topic.id)}
+            aria-label={`选入合并：${topic.title}`}
+          />
+          选入合并
+        </label>
+      ) : null}
+      {prog !== null ? (
+        <>
+          <div style={{ marginTop: 10 }}>
+            <ProgressBar percent={prog.percent ?? 0} />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 10.5,
+              color: "var(--vn-dim)",
+              marginTop: 4,
+            }}
+          >
+            <span>已用 {fmtElapsed(prog.elapsedSeconds)}</span>
+            {prog.percent !== null ? <span>{Math.round(prog.percent)}%</span> : null}
+          </div>
+        </>
+      ) : null}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+        <button
+          type="button"
+          className="vn-btn sm"
+          data-testid={`topic-view-${topic.id}`}
+          onClick={() => onSelect(topic.id)}
+        >
+          查看字幕
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 主题列表：勾选框 + 时间段 + 摘要 + 「查看字幕」按钮；
+// 合并模式下每个主题多一个「选入合并」勾选框。
+export function TopicList({
+  topics,
+  selectedId,
+  job,
+  mergeMode,
+  mergePicked,
+  onSelect,
+  onToggleSelected,
+  onToggleMergePick,
+}: TopicListProps) {
+  const anyGenerating = topics.some((t) => t.status === "generating");
+  const now = useNow(anyGenerating);
+  return (
+    <div className="vn-card" style={{ padding: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {topics.map((t) => (
+          <Row
+            key={t.id}
+            topic={t}
+            selected={t.id === selectedId}
+            job={job}
+            now={now}
+            mergeMode={mergeMode}
+            mergePicked={mergePicked}
+            onSelect={onSelect}
+            onToggleSelected={onToggleSelected}
+            onToggleMergePick={onToggleMergePick}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}

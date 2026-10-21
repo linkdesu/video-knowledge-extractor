@@ -67,16 +67,6 @@ const STRICT_PATCHES: Record<string, [string, string][]> = {
       "const current = next[r.id] ?? 0;\n          next[r.id] = current >= 97 ? r.progress! : current + 1;",
     ],
   ],
-  "blocks/settings-form-1.tsx": [
-    ["const [active, setActive] = useState(sections[0].id);", 'const [active, setActive] = useState(sections[0]?.id ?? "");'],
-    [
-      "const section = sections.find((s) => s.id === active) ?? sections[0];",
-      "const section = sections.find((s) => s.id === active) ?? sections[0]!;",
-    ],
-  ],
-  "blocks/bento-29.tsx": [
-    ["const claim = claims[index % claims.length];", "const claim = claims[index % claims.length]!;"],
-  ],
   "blocks/app-shell-6.tsx": [
     [
       "const doc = ALL_DOCS.find((item) => item.id === selectedId) ?? ALL_DOCS[0];\n  const title = titles[doc.id];",

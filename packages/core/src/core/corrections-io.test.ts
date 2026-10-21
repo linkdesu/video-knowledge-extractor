@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadCorrections, parseCorrections, readVideoCorrections, saveVideoCorrections } from "./corrections-io";
+import { loadCorrections, parseCorrections, readGlobalCorrections, readVideoCorrections, saveGlobalCorrections, saveVideoCorrections } from "./corrections-io";
 
 function tempRoot(): string {
   return mkdtempSync(resolve(tmpdir(), "vnote-corrections-"));
@@ -79,5 +79,47 @@ describe("saveVideoCorrections", () => {
     Bun.spawnSync(["mkdir", "-p", dir]);
     expect(() => saveVideoCorrections(dir, [{ wrong: "", right: "skill" }])).toThrow("第 1 条");
     expect(readVideoCorrections(dir)).toEqual([]);
+  });
+
+  test("调用方提供的元数据原样保留", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    const saved = saveVideoCorrections(dir, [{ wrong: "SKQ", right: "skill", source: "from-subtitle", updatedAt: "2026-10-21T00:00:00Z" }]);
+    expect(saved).toEqual([{ wrong: "SKQ", right: "skill", source: "from-subtitle", updatedAt: "2026-10-21T00:00:00Z" }]);
+    expect(readVideoCorrections(dir)).toEqual(saved);
+  });
+
+  test("非法 source 保存前报错", () => {
+    const dir = resolve(tempRoot(), "video");
+    Bun.spawnSync(["mkdir", "-p", dir]);
+    expect(() => saveVideoCorrections(dir, [{ wrong: "SKQ", right: "skill", source: "auto" as never }])).toThrow("source");
+  });
+});
+
+describe("全局词表读写", () => {
+  test("缺文件是空表", () => {
+    expect(readGlobalCorrections(tempRoot())).toEqual([]);
+  });
+
+  test("保存带元数据的词条后读回一致", () => {
+    const root = tempRoot();
+    const entries = [
+      { wrong: "SKQ", right: "skill", source: "manual" as const, updatedAt: "2026-10-21T00:00:00Z" },
+      { wrong: "ASR", right: "语音识别" },
+    ];
+    expect(saveGlobalCorrections(root, entries)).toEqual(entries);
+    expect(readGlobalCorrections(root)).toEqual(entries);
+  });
+
+  test("旧文件只有 wrong/right 也能读回，不补字段", () => {
+    const root = tempRoot();
+    writeFileSync(resolve(root, "corrections.json"), JSON.stringify([{ wrong: "SKQ", right: "skill" }]));
+    expect(readGlobalCorrections(root)).toEqual([{ wrong: "SKQ", right: "skill" }]);
+  });
+
+  test("空 right 保存前报错，文件不落盘", () => {
+    const root = tempRoot();
+    expect(() => saveGlobalCorrections(root, [{ wrong: "SKQ", right: "" }])).toThrow("第 1 条");
+    expect(readGlobalCorrections(root)).toEqual([]);
   });
 });

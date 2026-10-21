@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { basename, join, normalize, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   BrowserWindow,
@@ -14,28 +14,42 @@ import {
   type UtilityProcess,
 } from "electron";
 import {
-  listLibrary,
-  llmCredentialsFromEnv,
+  ASR_MODEL_ID,
+  cacheUsage,
+  clearCache,
   loadDotenvFiles,
-  modelDir,
-  notesRoot,
+  llmCredentialsFromEnv,
+  loadSettings,
+  listLibrary,
   readLibraryVideo,
+  readGlobalCorrections,
+  readVideoCorrections,
+  renameSpeaker,
+  deleteUtterance,
+  deleteTopicSegment,
+  mergeTopics,
   resolveEndpointFromEnv,
+  saveGlobalCorrections,
+  saveSettings,
   saveVideoCorrections,
+  setTopicSelected,
+  settingsLockedByEnv,
+  SETTINGS_FILE_NAME,
   videoIdFor,
 } from "@video-notes/core/storage";
-import type { LibraryDetail as CoreLibraryDetail, LibraryVideo as CoreLibraryVideo } from "@video-notes/core/storage";
+import type { AppSettings, CorrectionFileEntry, LibraryVideo as CoreLibraryVideo, LibraryDetail as CoreLibraryDetail, VideoRef } from "@video-notes/core/storage";
 import {
   IPC,
   type CorrectionEntry,
   type ExtractTarget,
-  type LibraryVideo,
-  type SettingsStatus,
-  type VideoDetail,
   type JobStep,
+  type SettingsPatch,
+  type SettingsStatus,
+  type TestLlmResult,
+  type VideoDetail,
 } from "../shared/ipc";
-import { JobQueue, type JobHandle } from "./jobs";
-import { createMediaHandler, encodeClipUrl, MEDIA_SCHEME } from "./media";
+import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
+import { createMediaHandler, encodeClipUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
 
 const APP_SCHEME = "vnote-app";
 const RENDERER_ROOT = join(__dirname, "../renderer");
@@ -46,9 +60,11 @@ protocol.registerSchemesAsPrivileged([
   { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-// 端点解析全在 main 完成（评审修订）：模型发现只发生一次，缓存键稳定；
-// 也避开 Finder 启动时 cwd 不可靠——cwd 与 notesRoot 都在启动时求值。
-const dotenvFiles = loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => notesRoot() });
+// 启动时读一次 settings.json；handler 都读这个可变对象，
+// settings:update 原地更新它，任务入队时按当时的值冻结
+const settings: AppSettings = loadSettings(join(app.getPath("userData"), SETTINGS_FILE_NAME));
+// .env 的查找根目录来自 settings（notes 根），所以必须先读 settings 再加载 dotenv
+loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => settings.notesRoot });
 const credentials = llmCredentialsFromEnv();
 
 /** 启动时解析好的端点；未配置或未解析成功时 undefined。 */
@@ -96,7 +112,7 @@ function killProcessTree(pid: number): void {
   }
 }
 
-function launchWorker(args: { jobId: string; videoId: string; sourcePath: string }): JobHandle {
+function launchWorker(jobId: string, job: JobRequest): JobHandle {
   // 每个任务 fork 一个全新 worker：worker 用 once(message) 启动，复用会让第二个任务收不到 start
   const proc = utilityProcess.fork(join(__dirname, "extract-worker.js"), [], {
     stdio: ["ignore", "ignore", "pipe"],
@@ -117,24 +133,31 @@ function launchWorker(args: { jobId: string; videoId: string; sourcePath: string
     if (state.cancelRequested) return;
     if (typeof raw !== "object" || raw === null || !("type" in raw)) return;
     if (raw.type === "progress" && "step" in raw) {
-      const p = raw as { type: string; step: string; done: number; total: number; detail?: string };
-      queue.progress({ step: p.step as JobStep, done: p.done, total: p.total, detail: p.detail ?? null });
+      const p = raw as { type: string; step: string; done: number; total: number; detail?: string; topicId?: string; topicPercent?: number };
+      queue.progress({
+        step: p.step as JobStep,
+        done: p.done,
+        total: p.total,
+        detail: p.detail ?? null,
+        topicId: typeof p.topicId === "string" ? p.topicId : null,
+        topicPercent: typeof p.topicPercent === "number" ? p.topicPercent : null,
+      });
     } else if (raw.type === "done" && "result" in raw) {
       state.resultDelivered = true;
       queue.finish(raw.result as Parameters<typeof queue.finish>[0]);
     } else if (raw.type === "error" && "message" in raw) {
       state.resultDelivered = true;
-      queue.fail(sanitizeError((raw as { message: string }).message));
+      queue.fail(sanitizeError(new Error((raw as { message: string }).message)));
     }
   });
   let exited = false;
   proc.on("exit", (code) => {
     exited = true;
     clearTimeout(state.killTimer);
-    workers.delete(args.jobId);
+    workers.delete(jobId);
     if (state.cancelRequested) {
       // 取消的终态必须等 exit 后才落：此时 ffmpeg 子进程已确认收尸
-      queue.cancelled(args.jobId);
+      queue.cancelled(jobId);
       return;
     }
     if (state.resultDelivered) return; // done/error 已经定了终态
@@ -145,11 +168,15 @@ function launchWorker(args: { jobId: string; videoId: string; sourcePath: string
     cancel() {
       if (state.cancelRequested) return;
       state.cancelRequested = true;
+      let posted = false;
       try {
         proc.postMessage({ type: "cancel" });
+        posted = true;
       } catch {
         // 进程已死：直接杀，exit 事件会定终态
-      if (proc.pid !== undefined) killProcessTree(proc.pid);
+      }
+      if (!posted) {
+        if (proc.pid !== undefined) killProcessTree(proc.pid);
         try {
           proc.kill();
         } catch {
@@ -178,20 +205,25 @@ function launchWorker(args: { jobId: string; videoId: string; sourcePath: string
       }
     },
   };
-  workers.set(args.jobId, state);
+  workers.set(jobId, state);
   proc.postMessage({
     type: "start",
-    videoPath: args.sourcePath,
-    notesRoot: notesRoot(),
-    modelDir: modelDir(),
-    // startExtract 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
+    kind: job.kind,
+    videoId: job.videoId,
+    videoPath: job.sourcePath,
+    outputDir: job.outputDir ?? "",
+    notesRoot: job.config.notesRoot,
+    cacheRoot: job.config.cacheRoot,
+    modelDir: job.config.modelDir,
+    topicIds: job.topicIds ?? [],
+    // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: endpoint ?? { baseUrl: "", apiKey: "", model: "" },
   });
   return state.handle;
 }
 
 const queue = new JobQueue({
-  launch: launchWorker,
+  launch: (jobId, job) => launchWorker(jobId, job),
   onChange: (snapshot) => {
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IPC.jobEvent, snapshot);
@@ -199,38 +231,123 @@ const queue = new JobQueue({
   },
 });
 
-function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
+function toVideoDto(v: CoreLibraryVideo) {
   return {
     id: v.id,
     title: v.title,
     outputDir: v.outputDir,
     sourcePath: v.sourcePath ?? null,
+    durationSeconds: v.durationSeconds ?? null,
+    importedAt: "importedAt" in v ? (v.importedAt ?? null) : null,
+    sizeBytes: "sizeBytes" in v ? (v.sizeBytes ?? null) : null,
     topicCount: v.topicCount,
     clipCount: v.clipCount,
     updatedAt: v.updatedAt,
+    status: v.status,
   };
+}
+
+const SPEAKER_COLORS = ["#6aa9ff", "#7ddc8f", "#ffb454", "#c792ea", "#ff7eb0", "#4dd0e1", "#f6c744", "#a3e635"];
+
+function speakerColor(id: string): string {
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return SPEAKER_COLORS[hash % SPEAKER_COLORS.length] ?? "#6aa9ff";
+}
+
+function fileMtimeIso(path: string): string | null {
+  try {
+    return new Date(statSync(path).mtimeMs).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function toCorrectionFile(e: CorrectionEntry): CorrectionFileEntry {
+  const entry: CorrectionFileEntry = { wrong: e.wrong, right: e.right };
+  if (e.source !== null) entry.source = e.source;
+  if (e.updatedAt !== null) entry.updatedAt = e.updatedAt;
+  return entry;
 }
 
 function toDetailDto(d: CoreLibraryDetail): VideoDetail {
+  const raw = d.data;
+  const video = d.video;
+  const mtimeIso = fileMtimeIso(join(video.outputDir, "corrections.json"));
   return {
-    video: toVideoDto(d.video),
-    indexMarkdown: d.indexMarkdown,
-    topics: d.topics.map((t) => ({
-      dirName: t.dirName,
+    video: toVideoDto(video),
+    mediaUrl: video.sourcePath === undefined || video.sourcePath === "" ? null : encodeSourceUrl(video.id),
+    asrModel: "asrModel" in raw ? (raw.asrModel ?? null) : null,
+    transcript:
+      raw.transcript.utterances.length === 0
+        ? null
+        : {
+            speakers: raw.transcript.speakers.map((s) => ({ id: s.id, name: s.name, color: speakerColor(s.id) })),
+            utterances: raw.transcript.utterances.map((u, i) => ({
+              index: i,
+              start: u.start,
+              end: u.end,
+              speakerId: u.speakerId,
+              text: u.text,
+            })),
+          },
+    topics: raw.topics.map((t) => ({
+      id: t.id,
       title: t.title,
-      markdown: t.markdown,
+      summary: t.summary,
+      segments: t.segments.map((s) => ({ start: s.start, end: s.end })),
+      dirName: t.dirName,
+      status: t.status,
+      selected: t.selected,
+      keyPoints: t.keyPoints,
       clips: t.clips.map((c) => ({
         file: c.file,
-        mediaUrl: encodeClipUrl(`${basename(d.video.outputDir)}/${t.dirName}/${c.file}`),
+        mediaUrl: encodeClipUrl(`${basename(video.outputDir)}/${t.dirName}/${c.file}`),
         startSeconds: c.start,
         endSeconds: c.end,
+        segmentIndexes: "segmentIndexes" in c ? c.segmentIndexes : [],
       })),
+      startedAt: t.startedAt,
+      elapsedSeconds: t.elapsedSeconds,
+      error: t.error,
     })),
-    corrections: d.corrections,
+    corrections: d.corrections.map((e) => ({
+      wrong: e.wrong,
+      right: e.right,
+      source: e.source ?? null,
+      updatedAt: e.updatedAt ?? mtimeIso,
+    })),
   };
 }
 
-async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
+/** 全局术语表：缺 updatedAt 显示「—」，不回落文件 mtime（评审修订）。 */
+function toGlossaryDto(entries: CorrectionFileEntry[]): CorrectionEntry[] {
+  return entries.map((e) => ({
+    wrong: e.wrong,
+    right: e.right,
+    source: e.source ?? null,
+    updatedAt: e.updatedAt ?? null,
+  }));
+}
+
+/** 编辑 handler 的公共前置：按 id 解析视频，失败用中文报错。 */
+function resolveVideo(videoId: string): CoreLibraryVideo {
+  const entry = listLibrary(settings.notesRoot).find((v) => v.id === videoId);
+  if (entry === undefined) throw new Error("该视频不在库中");
+  return entry;
+}
+
+function videoRefOf(entry: CoreLibraryVideo): VideoRef {
+  return { id: entry.id, title: entry.title, sourcePath: entry.sourcePath };
+}
+
+function detailDto(videoId: string): VideoDetail {
+  const detail = readLibraryVideo(settings.notesRoot, videoId);
+  if (detail === undefined) throw new Error("视频不存在");
+  return toDetailDto(detail);
+}
+
+async function ensurePipelineReady(): Promise<void> {
   await endpointReady;
   if (credentials === undefined) {
     throw new Error("未配置 LLM 端点：请在 .env 或环境变量里设置 base url 与 api key");
@@ -238,8 +355,14 @@ async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
   if (endpoint === undefined) {
     throw new Error(`模型发现失败：请在 .env 里显式指定 model（${endpointError}）`);
   }
+  if (queue.busy()) throw new Error("已有任务在运行，请等它结束再开始");
+}
+
+async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
+  await ensurePipelineReady();
   let videoId: string;
   let sourcePath: string;
+  let outputDir: string | null;
   if (target.kind === "new") {
     let st;
     try {
@@ -250,26 +373,37 @@ async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
     if (!st.isFile()) throw new Error("所选路径不是文件");
     videoId = videoIdFor(target.sourcePath);
     sourcePath = target.sourcePath;
+    outputDir = null;
   } else {
-    const entry = listLibrary().find((v) => v.id === target.videoId);
-    if (entry === undefined) throw new Error("该视频不在库中");
+    const entry = resolveVideo(target.videoId);
     if (target.sourcePath !== undefined && videoIdFor(target.sourcePath) !== target.videoId) {
       throw new Error("源文件与这个视频不符");
     }
     videoId = target.videoId;
     sourcePath = target.sourcePath ?? entry.sourcePath ?? "";
     if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
+    outputDir = entry.outputDir;
   }
-  return { jobId: queue.enqueue({ videoId, sourcePath }) };
+  return { jobId: queue.enqueue({ kind: "extract", videoId, sourcePath, outputDir, config: { ...settings } }) };
+}
+
+async function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
+  await ensurePipelineReady();
+  const entry = resolveVideo(videoId);
+  if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
+  return { jobId: queue.enqueue({ kind: "notes", videoId, sourcePath: entry.sourcePath ?? "", outputDir: entry.outputDir, config: { ...settings }, topicIds }) };
+}
+
+async function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
+  await ensurePipelineReady();
+  const entry = resolveVideo(videoId);
+  return { jobId: queue.enqueue({ kind: "topics", videoId, sourcePath: entry.sourcePath ?? "", outputDir: entry.outputDir, config: { ...settings } }) };
 }
 
 async function pickVideo(): Promise<string | null> {
   const res = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [
-      { name: "视频", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v", "ts", "flv"] },
-      { name: "所有文件", extensions: ["*"] },
-    ],
+    filters: [{ name: "视频", extensions: ["mp4", "mov", "m4v", "webm"] }],
   });
   return res.canceled ? null : (res.filePaths[0] ?? null);
 }
@@ -282,27 +416,96 @@ async function pickSource(videoId: string): Promise<string | null> {
 }
 
 function reveal(outputDir: string): void {
-  const root = resolve(notesRoot());
+  const root = resolve(settings.notesRoot);
   const dir = resolve(outputDir);
   if (dir !== root && !dir.startsWith(root + sep)) throw new Error("目录不在 notes 根目录内");
   if (!existsSync(dir)) throw new Error("目录不存在");
   shell.showItemInFolder(dir);
 }
 
-async function settings(): Promise<SettingsStatus> {
-  // 启动时的模型发现只做一次，设置页等它结束就能显示实际名字
-  await endpointReady;
+function ffmpegProbe(): { ok: boolean; version: string | null } {
   const ff = spawnSync("ffmpeg", ["-version"]);
+  if (ff.status !== 0) return { ok: false, version: null };
+  const first = ff.stdout.toString().split("\n")[0] ?? "";
+  const m = first.match(/^ffmpeg version (\S+)/);
+  return { ok: true, version: m?.[1] ?? null };
+}
+
+function llmStatus(): SettingsStatus["llm"] {
   return {
     configured: credentials !== undefined,
+    baseUrl: credentials?.baseUrl ?? null,
     model: credentials?.model ?? null,
     discoveredModel: credentials?.model === undefined ? (endpoint?.model ?? null) : null,
-    modelError: endpointError ?? null,
-    notesRoot: notesRoot(),
-    modelDir: modelDir(),
-    dotenvFiles,
-    ffmpeg: ff.status === 0,
+    error: endpointError ?? null,
   };
+}
+
+async function settingsStatus(): Promise<SettingsStatus> {
+  // 启动时的模型发现只做一次，设置页等它结束就能显示实际名字
+  await endpointReady;
+  const ff = ffmpegProbe();
+  return {
+    notesRoot: settings.notesRoot,
+    cacheRoot: settings.cacheRoot,
+    modelDir: settings.modelDir,
+    cacheBytes: cacheUsage(settings.cacheRoot).bytes,
+    llm: llmStatus(),
+    asr: { provider: "sherpa-onnx", modelId: ASR_MODEL_ID, modelPresent: existsSync(join(settings.modelDir, ASR_MODEL_ID)) },
+    ffmpeg: ff.ok,
+    ffmpegVersion: ff.version,
+    locked: settingsLockedByEnv(),
+    appVersion: app.getVersion(),
+  };
+}
+
+async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
+  if (queue.busy()) throw new Error("已有任务在运行，请等它结束再修改设置");
+  const clean: Partial<AppSettings> = {};
+  if (patch.notesRoot !== undefined) {
+    if (!isAbsolute(patch.notesRoot) || patch.notesRoot === "") throw new Error("设置 notesRoot 必须是非空绝对路径");
+    clean.notesRoot = patch.notesRoot;
+  }
+  if (patch.cacheRoot !== undefined) {
+    if (!isAbsolute(patch.cacheRoot) || patch.cacheRoot === "") throw new Error("设置 cacheRoot 必须是非空绝对路径");
+    clean.cacheRoot = patch.cacheRoot;
+  }
+  if (patch.modelDir !== undefined) {
+    if (!isAbsolute(patch.modelDir) || patch.modelDir === "") throw new Error("设置 modelDir 必须是非空绝对路径");
+    clean.modelDir = patch.modelDir;
+  }
+  Object.assign(settings, saveSettings(join(app.getPath("userData"), SETTINGS_FILE_NAME), clean));
+  return settingsStatus();
+}
+
+async function pickDirectory(): Promise<string | null> {
+  const res = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+  return res.canceled ? null : (res.filePaths[0] ?? null);
+}
+
+function clearCacheNow(): { freedBytes: number } {
+  return { freedBytes: clearCache(settings.cacheRoot, listLibrary(settings.notesRoot).map((v) => v.outputDir)) };
+}
+
+async function testLlm(): Promise<TestLlmResult> {
+  if (credentials === undefined) return { ok: false, model: null, message: "未配置 LLM 端点：请在 .env 或环境变量里设置 base url 与 api key" };
+  const url = `${credentials.baseUrl.replace(/\/$/, "")}/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${credentials.apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, model: null, message: `连接失败：HTTP ${res.status}` };
+    const body = (await res.json().catch(() => undefined)) as { data?: { id: string }[] } | undefined;
+    const model = body?.data?.[0]?.id ?? null;
+    return { ok: true, model, message: model === null ? "连接成功，但返回的模型列表为空" : `连接成功，已发现模型 ${model}` };
+  } catch (err) {
+    return { ok: false, model: null, message: sanitizeError(err) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 所有 IPC handler 统一过脱敏出口：key 绝不进 renderer 的异常消息
@@ -337,9 +540,15 @@ app.on("window-all-closed", () => {
 });
 
 void app.whenReady().then(async () => {
-  // 媒体协议 root 用启动时的 notesRoot() 闭包值，不走 env：
-  // Finder 启动时 env 可能还没被 .env 补全，闭包值才和 settings() 一致
-  protocol.handle(MEDIA_SCHEME, createMediaHandler(notesRoot()));
+  // 媒体协议 root 读 settings 当前值（env 启动时可能没被 .env 补全，settings 才和界面一致）；
+  // 源视频路径用当前 notes 根目录的库记录来校验
+  protocol.handle(
+    MEDIA_SCHEME,
+    createMediaHandler({
+      root: () => settings.notesRoot,
+      resolveSource: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.sourcePath,
+    }),
+  );
   // file:// 下 Chromium 拒绝执行 ES module；生产环境走自定义 standard scheme
   protocol.handle(APP_SCHEME, (request) => {
     const pathname = new URL(request.url).pathname;
@@ -351,29 +560,78 @@ void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(target).toString());
   });
 
-  ipcMain.handle(IPC.listLibrary, guard(() => listLibrary().map(toVideoDto)));
+  ipcMain.handle(IPC.listLibrary, guard(() => listLibrary(settings.notesRoot).map(toVideoDto)));
   ipcMain.handle(
     IPC.getVideo,
     guard((_e, videoId: string) => {
-      const detail = readLibraryVideo(notesRoot(), videoId);
+      const detail = readLibraryVideo(settings.notesRoot, videoId);
       if (detail === undefined) throw new Error("视频不存在");
       return toDetailDto(detail);
     }),
   );
   ipcMain.handle(
-    IPC.saveCorrections,
-    guard((_e, videoId: string, entries: CorrectionEntry[]) => {
-      const entry = listLibrary().find((v) => v.id === videoId);
-      if (entry === undefined) throw new Error("视频不存在");
-      return saveVideoCorrections(entry.outputDir, entries);
+    IPC.renameSpeaker,
+    guard((_e, videoId: string, speakerId: string, name: string) => {
+      const entry = resolveVideo(videoId);
+      renameSpeaker(entry.outputDir, speakerId, name);
+      return detailDto(videoId);
     }),
   );
+  ipcMain.handle(
+    IPC.deleteUtterance,
+    guard((_e, videoId: string, index: number) => {
+      const entry = resolveVideo(videoId);
+      deleteUtterance(entry.outputDir, index);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.deleteTopicSegment,
+    guard((_e, videoId: string, topicId: string, segmentIndex: number) => {
+      const entry = resolveVideo(videoId);
+      deleteTopicSegment(entry.outputDir, topicId, segmentIndex);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.mergeTopics,
+    guard((_e, videoId: string, topicIds: string[]) => {
+      const entry = resolveVideo(videoId);
+      mergeTopics(entry.outputDir, topicIds);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.setTopicSelected,
+    guard((_e, videoId: string, topicId: string, selected: boolean) => {
+      const entry = resolveVideo(videoId);
+      setTopicSelected(entry.outputDir, topicId, selected);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.saveCorrections,
+    guard((_e, videoId: string, entries: CorrectionEntry[]) => {
+      const entry = resolveVideo(videoId);
+      const saved = saveVideoCorrections(entry.outputDir, entries.map(toCorrectionFile));
+      const mtimeIso = fileMtimeIso(join(entry.outputDir, "corrections.json"));
+      return saved.map((e) => ({ wrong: e.wrong, right: e.right, source: e.source ?? null, updatedAt: e.updatedAt ?? mtimeIso }));
+    }),
+  );
+  ipcMain.handle(IPC.listGlossary, guard(() => toGlossaryDto(readGlobalCorrections(settings.notesRoot))));
+  ipcMain.handle(IPC.saveGlossary, guard((_e, entries: CorrectionEntry[]) => toGlossaryDto(saveGlobalCorrections(settings.notesRoot, entries.map(toCorrectionFile)))));
   ipcMain.handle(IPC.pickVideo, guard(() => pickVideo()));
   ipcMain.handle(IPC.pickSource, guard((_e, videoId: string) => pickSource(videoId)));
   ipcMain.handle(IPC.startExtract, guard((_e, target: ExtractTarget) => startExtract(target)));
+  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[]) => startNotes(videoId, topicIds)));
+  ipcMain.handle(IPC.rebuildTopics, guard((_e, videoId: string) => rebuildTopics(videoId)));
   ipcMain.handle(IPC.cancelExtract, guard((_e, jobId: string) => queue.cancel(jobId)));
   ipcMain.handle(IPC.activeJob, guard(() => queue.active() ?? null));
-  ipcMain.handle(IPC.settings, guard(() => settings()));
+  ipcMain.handle(IPC.settings, guard(() => settingsStatus()));
+  ipcMain.handle(IPC.updateSettings, guard((_e, patch: SettingsPatch) => updateSettings(patch)));
+  ipcMain.handle(IPC.pickDirectory, guard(() => pickDirectory()));
+  ipcMain.handle(IPC.clearCache, guard(() => clearCacheNow()));
+  ipcMain.handle(IPC.testLlm, guard(() => testLlm()));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
 
   const win = new BrowserWindow({

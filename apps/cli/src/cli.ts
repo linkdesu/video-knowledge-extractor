@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { loadDotenvFiles, notesRoot, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
+import { cacheRoot, loadDotenvFiles, notesRoot, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
 import type { Progress, StepName } from "@video-notes/core";
 
 const USAGE = `用法:
@@ -87,6 +87,7 @@ async function main(): Promise<void> {
     const result = await runExtract({
       videoPath,
       endpoint,
+      cacheRoot: cacheRoot(),
       onProgress: printProgress,
       ...(limitSeconds !== undefined ? { limitSeconds } : {}),
     });

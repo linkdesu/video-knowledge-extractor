@@ -1,15 +1,31 @@
 import { join, resolve } from "node:path";
 import { planClips, clipFileName, cutClip } from "../core/clips";
+import { CLIP_PREROLL_SECONDS } from "../core/config";
 import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
-import { ensureDir, topicDirNames, writeFileAtomic } from "../core/paths";
+import { ensureDir, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
 import type { GenerateNotesInput, GenerateNotesResult, LlmClient } from "../core/steps";
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
 import { createLlmClient, tryParseJson } from "../llm/openai";
+import { renderIndexMarkdown, renderTopicMarkdown } from "../core/render";
 
+export { renderIndexMarkdown, renderTopicMarkdown };
+
+/** planClips 前移后多个原段落可能并入同一切片;返回该切片覆盖的原段落下标(升序)。 */
+function clipSegmentIndexes(origSegments: { start: number; end: number }[], clip: { start: number; end: number }): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < origSegments.length; i++) {
+    const s = origSegments[i];
+    if (s === undefined) continue;
+    const shiftedStart = Math.max(0, s.start - CLIP_PREROLL_SECONDS);
+    if (shiftedStart < clip.end && s.end > clip.start) out.push(i);
+  }
+  return out;
+}
+/** 本次要处理的主题:只取调用方分配了目录名的;没分配目录名的跳过(ADR-0014)。 */
 function selectedTopics(input: GenerateNotesInput): Topic[] {
-  const { topics, selectedTopicIds } = input;
-  return selectedTopicIds.length === 0 ? topics : topics.filter((t) => selectedTopicIds.includes(t.id));
+  const { topics, dirNames } = input;
+  return topics.filter((t) => dirNames.has(t.id));
 }
 
 function topicUtterances(topic: Topic, all: Utterance[]): Utterance[] {
@@ -21,7 +37,6 @@ function hms(seconds: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }
-
 /** 要点提示词的纠错词表段：视频专属词条优先于全局（ADR-0005）。 */
 function correctionLines(input: GenerateNotesInput): string {
   return resolveCorrections(input.corrections)
@@ -68,66 +83,18 @@ async function keyPointsFor(
   return points;
 }
 
-/** 该主题的 `topic.md`；要点由调用方算好传入。 */
-export function renderTopicMarkdown(
-  topic: Topic,
-  utterances: Utterance[],
-  keyPoints: string[],
-  clips: Clip[],
-  speakerNames: Map<SpeakerId, string>,
-): string {
-  const lines: string[] = [`# ${topic.title}`, ""];
-  if (topic.summary.length > 0) lines.push(topic.summary, "");
-  lines.push("## 要点", ...keyPoints.map((p) => `- ${p}`), "", "## 正文");
-  for (const seg of [...topic.segments].sort((a, b) => a.start - b.start)) {
-    const covering = clips.find((c) => c.segment.start <= seg.start && seg.start < c.segment.end) ?? clips[0];
-    if (lines[lines.length - 1] !== "") lines.push("");
-    lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering?.path.split("/").pop() ?? ""})`);
-    const inSeg = utterances.filter((u) => u.end > seg.start && u.start < seg.end).sort((a, b) => a.start - b.start);
-    let turn: { speakerId: SpeakerId; texts: string[] } | undefined;
-    for (const u of inSeg) {
-      if (turn !== undefined && turn.speakerId === u.speakerId) {
-        turn.texts.push(u.text);
-        continue;
-      }
-      if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
-      turn = { speakerId: u.speakerId, texts: [u.text] };
-    }
-    if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-export function renderIndexMarkdown(video: Video, topics: Topic[], dirs: Map<TopicId, string>, notes: Note[]): string {
-  const lines: string[] = [`# ${video.title}`, ""];
-  const byId = new Map(notes.map((n) => [n.topicId, n]));
-  const ordered = [...topics].sort(
-    (a, b) => (a.segments[0]?.start ?? 0) - (b.segments[0]?.start ?? 0),
-  );
-  for (const topic of ordered) {
-    const dir = dirs.get(topic.id);
-    const note = byId.get(topic.id);
-    if (dir === undefined || note === undefined) continue;
-    let line = `- [${topic.title}](./${dir}/topic.md) — ${topic.summary}`;
-    for (const clip of note.clips) line += ` [切片](./${dir}/${clip.path.split("/").pop()})`;
-    lines.push(line);
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 export async function generateNotes(input: GenerateNotesInput): Promise<GenerateNotesResult> {
   const client = input.client ?? createLlmClient(input.endpoint);
   const selected = selectedTopics(input);
   const speakerNames = new Map(input.transcript.speakers.map((s) => [s.id, s.name]));
-  const dirs = topicDirNames(selected);
   const notes: Note[] = [];
   const topicDirs: string[] = [];
   const usedCacheKeys = new Set<string>();
   for (let i = 0; i < selected.length; i++) {
     const topic = selected[i];
     if (topic === undefined) continue;
-    input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title });
-    const dir = dirs.get(topic.id);
+    input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: 0 });
+    const dir = input.dirNames.get(topic.id);
     if (dir === undefined) continue;
     const topicDir = ensureDir(resolve(input.video.outputDir, dir));
     const utterances = topicUtterances(topic, input.transcript.utterances);
@@ -139,16 +106,17 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
       if (segment === undefined) continue;
       const name = clipFileName(segment, j + 1);
       await cutClip({ videoPath: input.video.sourcePath, segment, outPath: join(topicDir, name) });
-      clips.push({ topicId: topic.id, segment, path: join(topicDir, name) });
+      clips.push({ topicId: topic.id, segment, path: join(topicDir, name), segmentIndexes: clipSegmentIndexes(topic.segments, segment) });
+      input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / segments.length) * 100) });
     }
     const markdown = renderTopicMarkdown(topic, utterances, keyPoints, clips, speakerNames);
     writeFileAtomic(join(topicDir, "topic.md"), markdown);
     // 以 topic.md 真正落盘为「本主题已写出」的标记，崩溃时没写成功的目录不在此列
     topicDirs.push(dir);
     notes.push({ topicId: topic.id, markdown, clips });
+    input.onTopicProgress?.({ topicId: topic.id, percent: 100, phase: "clips-done" });
   }
   input.onProgress?.({ step: "generate-notes", done: selected.length, total: selected.length });
-  const indexMarkdown = renderIndexMarkdown(input.video, selected, dirs, notes);
-  writeFileAtomic(resolve(input.video.outputDir, "index.md"), indexMarkdown);
-  return { notes, indexMarkdown, topicDirs, noteCacheKeys: [...usedCacheKeys] };
+  // index.md 不再在这里写：调用方从完整文档重建（别的主题的条目要保留，ADR-0014）
+  return { notes, topicDirs, noteCacheKeys: [...usedCacheKeys] };
 }

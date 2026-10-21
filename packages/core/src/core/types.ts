@@ -78,6 +78,8 @@ export type Clip = {
   /** 切片实际覆盖的区间，已并入前移后的重叠。 */
   segment: Segment;
   path: string;
+  /** 该切片覆盖的 `TopicRecord.segments` 下标；渲染 `topic.md` 的段标题链接按它匹配。可选：渲染器缺省时回退到时间段重叠。 */
+  segmentIndexes?: number[];
 };
 
 /** 一个主题的产物：`topic.md` 正文加上该主题的切片。 */
