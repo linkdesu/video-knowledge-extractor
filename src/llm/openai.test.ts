@@ -1,0 +1,131 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import type { Server } from "bun";
+import { createLlmClient, parseJsonLoose } from "./openai";
+import type { LlmClient, LlmEndpoint } from "../core/steps";
+
+type Received = {
+  path: string;
+  method?: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+};
+
+let received: Received[] = [];
+let status = 200;
+let responseBody = "";
+let server: Server<undefined> | undefined;
+
+function startServer(): string {
+  server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      const headers: Record<string, string> = {};
+      req.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+      received.push({ path: url.pathname, method: req.method, headers, body: JSON.parse(await req.text()) });
+      return new Response(responseBody, { status, headers: { "content-type": "application/json" } });
+    },
+  });
+  return `http://127.0.0.1:${server.port}`;
+}
+
+afterAll(() => server?.stop(true));
+
+function freshClient(): LlmClient {
+  const base = startServer();
+  received = [];
+  const endpoint: LlmEndpoint = { baseUrl: `${base}/v1/`, apiKey: "k-test", model: "m-test" };
+  return createLlmClient(endpoint);
+}
+
+describe("createLlmClient", () => {
+  test("请求路径、鉴权头与请求体形状", async () => {
+    responseBody = JSON.stringify({ choices: [{ message: { content: "你好" } }] });
+    const client = freshClient();
+    const out = await client.chat(
+      [
+        { role: "system", content: "sys" },
+        { role: "user", content: "usr" },
+      ],
+      { json: true },
+    );
+    expect(out).toBe("你好");
+    expect(received.length).toBe(1);
+    const req = received[0];
+    expect(req).toBeDefined();
+    expect(req?.path).toBe("/v1/chat/completions");
+    expect(req?.method).toBe("POST");
+    expect(req?.headers["authorization"]).toBe("Bearer k-test");
+    expect(req?.headers["content-type"]).toBe("application/json");
+    expect(req?.body).toEqual({
+      model: "m-test",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "usr" },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    });
+  });
+
+  test("非 json 请求不带 response_format；temperature 透传", async () => {
+    responseBody = JSON.stringify({ choices: [{ message: { content: "x" } }] });
+    const client = freshClient();
+    await client.chat([{ role: "user", content: "hi" }], { temperature: 0.9 });
+    const req = received[0];
+    expect(req).toBeDefined();
+    expect(req?.body["response_format"]).toBeUndefined();
+    expect(req?.body["temperature"]).toBe(0.9);
+  });
+
+  test("非 2xx 抛出带状态码、body 末尾且长度有界的中文错误", async () => {
+    status = 500;
+    responseBody = JSON.stringify({ error: "boom" }) + " ".repeat(350);
+    const client = freshClient();
+    const promise = client.chat([{ role: "user", content: "hi" }]);
+    await expect(promise).rejects.toThrow(/500/);
+    // 客户端只取末尾 300 字符；padding 把 boom 挤出窗口，只断言长度有界
+    const err = await promise.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    expect(msg.length).toBeLessThanOrEqual(400);
+    expect(msg).toContain("500");
+    responseBody = JSON.stringify({ error: "boom" });
+    const err2 = await client.chat([{ role: "user", content: "hi" }]).catch((e: unknown) => e);
+    expect(err2).toBeInstanceOf(Error);
+    expect((err2 as Error).message).toContain("boom");
+  });
+
+  test("content 缺失或为空时抛错", async () => {
+    status = 200;
+    responseBody = JSON.stringify({ choices: [{ message: {} }] });
+    const client = freshClient();
+    await expect(client.chat([{ role: "user", content: "hi" }])).rejects.toThrow();
+    responseBody = JSON.stringify({ choices: [{ message: { content: "   " } }] });
+    await expect(client.chat([{ role: "user", content: "hi" }])).rejects.toThrow();
+  });
+});
+
+describe("parseJsonLoose", () => {
+  test("纯 JSON 直接解析", () => {
+    expect(parseJsonLoose<{ a: number }>("{\"a\": 1}")).toEqual({ a: 1 });
+  });
+
+  test("围栏 JSON 解析", () => {
+    const text = "```json\n{\"a\": 1}\n```";
+    expect(parseJsonLoose<{ a: number }>(text)).toEqual({ a: 1 });
+  });
+
+  test("散话包裹的 JSON 解析", () => {
+    const text = '好的，结果如下：\n{"topics": [{"title": "t"}]}\n以上。';
+    expect(parseJsonLoose<{ topics: { title: string }[] }>(text)).toEqual({
+      topics: [{ title: "t" }],
+    });
+  });
+
+  test("无法解析时抛出含前 200 字符的中文错误", () => {
+    expect(() => parseJsonLoose("这不是 JSON")).toThrow(/JSON 解析失败/);
+  });
+});

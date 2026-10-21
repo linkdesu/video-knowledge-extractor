@@ -1,17 +1,16 @@
 /**
  * 缓存键：步骤名 + 真实输入指纹，落盘为文件（ADR-0006）。
  *
- * 每一步必须把真实输入全部放进 inputs，漏一项就是“改了没生效”的假命中：
- *
  * | 步骤               | 必含输入                                                        |
  * | ------------------ | --------------------------------------------------------------- |
  * | transcribe         | 分块音频哈希、识别/分离/标点模型、单段上限                       |
- * | correct            | 转写键、纠错词表内容                                             |
- * | topic-candidates   | 分块纠错后字幕键、提示词版本、端点模型名                         |
- * | note               | 主题（标题/摘要/时间段）、该主题的纠错后字幕、提示词版本、端点模型名、词表内容 |
+ * | topic-candidates   | 分块纠错后字幕键、块提示词文本哈希、合并提示词文本哈希、端点模型名 |
+ * | note               | 主题（标题/摘要/时间段）、该主题的纠错后字幕、系统提示词文本哈希、端点模型名、词表内容 |
  */
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
-export type CacheStep = "transcribe" | "correct" | "topic-candidates" | "note";
+export type CacheStep = "transcribe" | "topic-candidates" | "note";
 
 declare const cacheBrand: unique symbol;
 
@@ -28,7 +27,6 @@ export function sha256(bytes: Uint8Array | string): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-/** 键序无关的 JSON 指纹，用于词表这类结构化输入。 */
 export function hashJson(value: unknown): string {
   return sha256(JSON.stringify(value, stableKeys));
 }
@@ -50,4 +48,22 @@ export function cacheKey(step: CacheStep, inputs: CacheInputs): CacheKey {
 /** 缓存文件路径：`<cacheDir>/<step>/<hash>.json`。 */
 export function cachePath(cacheDir: string, key: CacheKey): string {
   return `${cacheDir}/${key.step}/${key.hash}.json`;
+}
+
+export function readCache<T>(cacheDir: string, key: CacheKey): T | undefined {
+  try {
+    return JSON.parse(readFileSync(cachePath(cacheDir, key), "utf8")) as T;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+}
+
+/** 先写临时文件再 rename，缓存文件不会半截落盘（ADR-0002）。 */
+export function writeCache(cacheDir: string, key: CacheKey, value: unknown): void {
+  const path = cachePath(cacheDir, key);
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(value)}\n`);
+  renameSync(tmp, path);
 }

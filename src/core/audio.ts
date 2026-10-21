@@ -18,10 +18,11 @@ export async function probeVideoDurations(path: string): Promise<{ duration: num
   return { duration };
 }
 
-/** 抽单声道 16k 采样率 pcm_s16 wav。 */
-export async function extractAudio(videoPath: string, wavPath: string): Promise<void> {
+/** 抽单声道 16k 采样率 pcm_s16 wav；`limitSeconds` 只取前 N 秒（开发期冒烟用）。 */
+export async function extractAudio(videoPath: string, wavPath: string, limitSeconds?: number): Promise<void> {
+  const limitArgs = limitSeconds === undefined ? [] : ["-t", String(limitSeconds)];
   await run(
-    ["ffmpeg", "-y", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
+    ["ffmpeg", "-y", ...limitArgs, "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
     { label: `抽取音频 ${videoPath}` },
   );
 }
