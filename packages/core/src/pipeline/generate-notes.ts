@@ -1,8 +1,7 @@
-import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { planClips, clipFileName, cutClip } from "../core/clips";
 import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
-import { ensureDir, topicDirNames } from "../core/paths";
+import { ensureDir, topicDirNames, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
 import type { GenerateNotesInput, GenerateNotesResult, LlmClient } from "../core/steps";
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
@@ -47,6 +46,7 @@ async function keyPointsFor(
   client: LlmClient,
   topic: Topic,
   utterances: Utterance[],
+  usedCacheKeys: Set<string>,
 ): Promise<string[]> {
   const system = noteSystemPrompt(topic, utterances, input);
   const key = cacheKey("note", {
@@ -56,6 +56,8 @@ async function keyPointsFor(
     model: input.endpoint.model,
     corrections: hashJson(input.corrections),
   });
+  // 无论命中与否，这个键都是本次「用过」的，清理时不能删
+  usedCacheKeys.add(key.hash);
   const hit = readCache<KeyPoints>(input.cacheDir, key);
   if (hit !== undefined) return hit.keyPoints;
   const raw = await client.chat([{ role: "system", content: system }], { json: true });
@@ -119,6 +121,8 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
   const speakerNames = new Map(input.transcript.speakers.map((s) => [s.id, s.name]));
   const dirs = topicDirNames(selected);
   const notes: Note[] = [];
+  const topicDirs: string[] = [];
+  const usedCacheKeys = new Set<string>();
   for (let i = 0; i < selected.length; i++) {
     const topic = selected[i];
     if (topic === undefined) continue;
@@ -127,7 +131,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     if (dir === undefined) continue;
     const topicDir = ensureDir(resolve(input.video.outputDir, dir));
     const utterances = topicUtterances(topic, input.transcript.utterances);
-    const keyPoints = await keyPointsFor(input, client, topic, utterances);
+    const keyPoints = await keyPointsFor(input, client, topic, utterances, usedCacheKeys);
     const clips: Clip[] = [];
     const segments = planClips(topic.segments);
     for (let j = 0; j < segments.length; j++) {
@@ -138,11 +142,13 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
       clips.push({ topicId: topic.id, segment, path: join(topicDir, name) });
     }
     const markdown = renderTopicMarkdown(topic, utterances, keyPoints, clips, speakerNames);
-    writeFileSync(join(topicDir, "topic.md"), markdown);
+    writeFileAtomic(join(topicDir, "topic.md"), markdown);
+    // 以 topic.md 真正落盘为「本主题已写出」的标记，崩溃时没写成功的目录不在此列
+    topicDirs.push(dir);
     notes.push({ topicId: topic.id, markdown, clips });
   }
   input.onProgress?.({ step: "generate-notes", done: selected.length, total: selected.length });
   const indexMarkdown = renderIndexMarkdown(input.video, selected, dirs, notes);
-  writeFileSync(resolve(input.video.outputDir, "index.md"), indexMarkdown);
-  return { notes, indexMarkdown };
+  writeFileAtomic(resolve(input.video.outputDir, "index.md"), indexMarkdown);
+  return { notes, indexMarkdown, topicDirs, noteCacheKeys: [...usedCacheKeys] };
 }

@@ -103,6 +103,7 @@ async function main(): Promise<void> {
       .map(([step, seconds]) => `${step} ${seconds.toFixed(2)}s`)
       .join("，");
     console.log(`耗时: ${timing}`);
+    if (result.staleRemoved.length > 0) console.log(`清理旧主题: ${result.staleRemoved.length} 个（${result.staleRemoved.join(", ")}）`);
     if (result.cacheHits.length > 0) console.log(`缓存命中: ${result.cacheHits.join(", ")}`);
     return;
   }

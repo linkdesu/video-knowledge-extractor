@@ -87,6 +87,10 @@ export type GenerateNotesResult = {
   notes: Note[];
   /** 本视频的 `index.md` 内容。 */
   indexMarkdown: string;
+  /** 本次实际写出的主题目录名（相对视频输出目录），顺序与写入一致。 */
+  topicDirs: string[];
+  /** 本次要点缓存命中的 cacheKey.hash 集合，命中与未命中都算「用过」。 */
+  noteCacheKeys: string[];
 };
 
 export type GenerateNotes = (input: GenerateNotesInput) => Promise<GenerateNotesResult>;

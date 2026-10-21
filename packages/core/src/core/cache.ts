@@ -7,7 +7,7 @@
  * | topic-candidates   | 分块纠错后字幕键、块提示词文本哈希、合并提示词文本哈希、端点模型名 |
  * | note               | 主题（标题/摘要/时间段）、该主题的纠错后字幕、系统提示词文本哈希、端点模型名、词表内容 |
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type CacheStep = "transcribe" | "topic-candidates" | "note";
@@ -66,4 +66,40 @@ export function writeCache(cacheDir: string, key: CacheKey, value: unknown): voi
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value)}\n`);
   renameSync(tmp, path);
+}
+
+/** 删掉 note 缓存里本次没用到的条目；note 目录不存在返回空数组。 */
+export function sweepNoteCache(cacheDir: string, keep: ReadonlySet<string>): string[] {
+  const dir = `${cacheDir}/note`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const entry of entries) {
+    // 崩溃残留 `<hash>.json.<pid>.tmp`：writeCache 写临时文件后未 rename，没有复算价值，直接回收
+    if (entry.endsWith(".tmp")) {
+      if (entry.includes(".json.")) {
+        try {
+          unlinkSync(`${dir}/${entry}`);
+          removed.push(entry);
+        } catch {
+          // 删不掉留到下次
+        }
+      }
+      continue;
+    }
+    if (!entry.endsWith(".json")) continue;
+    const hash = entry.slice(0, -".json".length);
+    if (keep.has(hash)) continue;
+    try {
+      unlinkSync(`${dir}/${entry}`);
+      removed.push(entry);
+    } catch {
+      // 删不掉留到下次
+    }
+  }
+  return removed;
 }

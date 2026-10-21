@@ -9,6 +9,7 @@ import { createLlmClient, emptyUsage } from "../llm/openai";
 import { generateNotes } from "./generate-notes";
 import { segmentTopics } from "./segment-topics";
 import { transcribeVideo } from "./transcribe";
+import { cleanupStaleOutputs } from "../core/outputs";
 
 export type ExtractInput = {
   videoPath: string;
@@ -30,6 +31,8 @@ export type ExtractResult = {
   timings: Record<string, number>;
   cacheHits: string[];
   usage: LlmUsage;
+  /** 本次清掉的旧主题目录名。 */
+  staleRemoved: string[];
 };
 
 export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
@@ -76,7 +79,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
   timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
 
   const notesStarted = performance.now();
-  const { notes, indexMarkdown } = await generateNotes({
+  const generated = await generateNotes({
     video,
     transcript,
     topics,
@@ -88,14 +91,24 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
   });
   timings.notes = Math.round((performance.now() - notesStarted) / 10) / 100;
+  // index.md 与全部主题目录都落盘后才清：删目录不会碰掉本次刚写的笔记
+  // 清理失败只记耗时，不影响已生成的笔记与返回值
+  const cleanupStarted = performance.now();
+  const staleRemoved = cleanupStaleOutputs({
+    outputDir: video.outputDir,
+    keep: generated.topicDirs,
+    cacheDir,
+    noteCacheKeys: generated.noteCacheKeys,
+  });
+  timings.cleanup = Math.round((performance.now() - cleanupStarted) / 10) / 100;
   timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
 
   const after = client.usage?.() ?? before;
   return {
     video,
     topics,
-    notes,
-    indexMarkdown,
+    notes: generated.notes,
+    indexMarkdown: generated.indexMarkdown,
     timings,
     cacheHits: transcription.cacheHits,
     usage: {
@@ -104,5 +117,6 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       completionTokens: after.completionTokens - before.completionTokens,
       totalTokens: after.totalTokens - before.totalTokens,
     },
+    staleRemoved,
   };
 }
