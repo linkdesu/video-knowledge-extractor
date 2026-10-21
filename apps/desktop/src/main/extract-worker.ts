@@ -1,11 +1,16 @@
-import { killActiveChildren, runExtract } from "@video-notes/core";
+import { killActiveChildren, runExtract, runNotes, runTopics } from "@video-notes/core";
 import type { Progress } from "@video-notes/core";
 
 type StartMessage = {
   type: "start";
+  kind: "extract" | "notes" | "topics";
+  videoId: string;
   videoPath: string;
+  outputDir: string;
   notesRoot: string;
+  cacheRoot: string;
   modelDir: string;
+  topicIds: string[];
   endpoint: { baseUrl: string; apiKey: string; model?: string };
 };
 
@@ -54,8 +59,12 @@ function isCancelMessage(msg: unknown): boolean {
 
 function parseStart(raw: unknown): StartMessage | undefined {
   if (typeof raw !== "object" || raw === null || !("type" in raw) || raw.type !== "start") return undefined;
+  if (!("kind" in raw) || (raw.kind !== "extract" && raw.kind !== "notes" && raw.kind !== "topics")) return undefined;
+  if (!("videoId" in raw) || typeof raw.videoId !== "string") return undefined;
   if (!("videoPath" in raw) || typeof raw.videoPath !== "string") return undefined;
+  if (!("outputDir" in raw) || typeof raw.outputDir !== "string") return undefined;
   if (!("notesRoot" in raw) || typeof raw.notesRoot !== "string") return undefined;
+  if (!("cacheRoot" in raw) || typeof raw.cacheRoot !== "string") return undefined;
   if (!("modelDir" in raw) || typeof raw.modelDir !== "string") return undefined;
   if (!("endpoint" in raw)) return undefined;
   const { endpoint } = raw;
@@ -63,14 +72,30 @@ function parseStart(raw: unknown): StartMessage | undefined {
   if (!("baseUrl" in endpoint) || typeof endpoint.baseUrl !== "string") return undefined;
   if (!("apiKey" in endpoint) || typeof endpoint.apiKey !== "string") return undefined;
   const model = "model" in endpoint && typeof endpoint.model === "string" ? endpoint.model : undefined;
+  const rawTopicIds = "topicIds" in raw ? raw.topicIds : undefined;
+  const topicIds = Array.isArray(rawTopicIds) ? rawTopicIds.filter((v: unknown): v is string => typeof v === "string") : [];
   return {
     type: "start",
+    kind: raw.kind,
+    videoId: raw.videoId,
     videoPath: raw.videoPath,
+    outputDir: raw.outputDir,
     notesRoot: raw.notesRoot,
+    cacheRoot: raw.cacheRoot,
     modelDir: raw.modelDir,
+    topicIds,
     endpoint: { baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, ...(model === undefined ? {} : { model }) },
   };
 }
+
+type DoneResult = {
+  videoId: string;
+  outputDir: string | null;
+  topicCount: number;
+  noteCount: number;
+  cacheHits: string[];
+  timings: Record<string, number>;
+};
 
 async function run(start: StartMessage, parent: ParentPort): Promise<void> {
   const { baseUrl, apiKey, model } = start.endpoint;
@@ -84,28 +109,70 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
     parent.postMessage({ type: "error", message: "未配置 LLM 端点：模型发现失败，请在 .env 里显式指定 model" });
     return;
   }
-  try {
-    const result = await runExtract({
-      videoPath: start.videoPath,
-      endpoint: { baseUrl, apiKey, model },
-      notesRoot: start.notesRoot,
-      modelDir: start.modelDir,
-      onProgress: (p: Progress) =>
-        parent.postMessage({ type: "progress", step: p.step, done: p.done, total: p.total, detail: p.detail }),
-    });
+  const progress = (p: Progress) =>
     parent.postMessage({
-      type: "done",
-      result: {
-        videoId: result.video.id,
-        outputDir: result.video.outputDir,
-        topicCount: result.topics.length,
-        noteCount: result.notes.length,
-        cacheHits: result.cacheHits,
-        timings: result.timings,
-      },
+      type: "progress",
+      step: p.step,
+      done: p.done,
+      total: p.total,
+      detail: p.detail,
+      topicId: "topicId" in p ? p.topicId : undefined,
+      topicPercent: "topicPercent" in p ? p.topicPercent : undefined,
     });
+  try {
+    let result: DoneResult;
+    if (start.kind === "extract") {
+      const r = await runExtract({
+        videoPath: start.videoPath,
+        endpoint: { baseUrl, apiKey, model },
+        notesRoot: start.notesRoot,
+        modelDir: start.modelDir,
+        cacheRoot: start.cacheRoot,
+        onProgress: progress,
+      });
+      result = {
+        videoId: start.videoId,
+        outputDir: r.video.outputDir,
+        topicCount: r.topics.length,
+        noteCount: r.notes.length,
+        cacheHits: r.cacheHits,
+        timings: r.timings,
+      };
+    } else if (start.kind === "notes") {
+      const r = await runNotes({
+        outputDir: start.outputDir,
+        topicIds: start.topicIds,
+        endpoint: { baseUrl, apiKey, model },
+        cacheRoot: start.cacheRoot,
+        onProgress: progress,
+      });
+      result = {
+        videoId: start.videoId,
+        outputDir: start.outputDir,
+        topicCount: 0,
+        noteCount: r.noteCount,
+        cacheHits: r.cacheHits,
+        timings: r.timings,
+      };
+    } else {
+      const r = await runTopics({
+        outputDir: start.outputDir,
+        endpoint: { baseUrl, apiKey, model },
+        cacheRoot: start.cacheRoot,
+        onProgress: progress,
+      });
+      result = {
+        videoId: start.videoId,
+        outputDir: start.outputDir,
+        topicCount: r.topicCount,
+        noteCount: r.noteCount,
+        cacheHits: r.cacheHits,
+        timings: r.timings,
+      };
+    }
+    parent.postMessage({ type: "done", result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    parent.postMessage({ type: "error", message: message.includes(apiKey) ? "提取失败（详细信息已脱敏，见日志）" : message });
+    parent.postMessage({ type: "error", message: message.includes(apiKey) ? "任务失败（详细信息已脱敏，见日志）" : message });
   }
 }

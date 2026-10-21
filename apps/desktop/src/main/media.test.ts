@@ -1,72 +1,130 @@
 import { describe, expect, test } from "bun:test";
-import { decodeClipUrl, encodeClipUrl, parseRangeHeader, type ClipLocation } from "./media";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createMediaHandler, decodeClipUrl, decodeSourceUrl, encodeClipUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
 const ROOT = "/home/u/video-notes";
 // 测试用 fake realpath / stat：不碰真实文件系统，纯路径运算
 const fakeRealpath = (p: string) => p;
 const fakeStat = (p: string) => p.endsWith(".mp4");
 
-function loc(url: string): ClipLocation {
-  const out = decodeClipUrl(url, ROOT, fakeRealpath, fakeStat);
-  if ("code" in out) throw new Error(`expected location, got ${out.code}`);
-  return out;
-}
-
 describe("media url 编解码", () => {
   test("encode → decode 回环一致", () => {
-    const rel = "v-abc123/01-foo/01-00-12-30-00-18-00.mp4";
+    const rel = "vid-1/主题-01/clip-1.mp4";
     const url = encodeClipUrl(rel);
-    const out = loc(url);
-    expect(out.relativePath).toBe(rel);
+    const out = decodeClipUrl(url, ROOT, fakeRealpath, fakeStat);
+    if ("code" in out) throw new Error(`expected location, got ${out.code}`);
     expect(out.absolutePath).toBe(`${ROOT}/${rel}`);
   });
 
   test("拒绝 ..", () => {
-    const out = decodeClipUrl(encodeClipUrl("../secret.mp4"), ROOT, fakeRealpath, fakeStat);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("../../etc/passwd.mp4");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("拒绝绝对路径", () => {
-    const out = decodeClipUrl(encodeClipUrl("/etc/passwd.mp4"), ROOT, fakeRealpath, fakeStat);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("/etc/passwd.mp4");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("拒绝反斜杠", () => {
-    const out = decodeClipUrl(encodeClipUrl("v-a\\evil\\x.mp4"), ROOT, fakeRealpath, fakeStat);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("a\\b\\c.mp4");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("拒绝空段", () => {
-    const out = decodeClipUrl(encodeClipUrl("v-a//x.mp4"), ROOT, fakeRealpath, fakeStat);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("a//b.mp4");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("拒绝非 mp4 扩展名", () => {
-    const out = decodeClipUrl(encodeClipUrl("v-a/topic/x.mkv"), ROOT, fakeRealpath, fakeStat);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("a/b/c.txt");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("realpath 跑出 root 后拒绝", () => {
-    // 符号链接指向 root 外：realpath 展开后二次确认拦截
-    const out = decodeClipUrl(
-      encodeClipUrl("v-a/topic/x.mp4"),
-      ROOT,
-      (p) => (p.endsWith(".mp4") ? "/elsewhere/x.mp4" : p),
-      fakeStat,
-    );
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("forbidden");
+    const url = encodeClipUrl("a/b/c.mp4");
+    const escape = (p: string) => (p === `${ROOT}/a/b/c.mp4` ? "/etc" : p);
+    expect(decodeClipUrl(url, ROOT, escape, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
   test("文件不存在返回 not-found", () => {
-    const out = decodeClipUrl(encodeClipUrl("v-a/topic/x.mp4"), ROOT, fakeRealpath, () => false);
-    expect("code" in out).toBe(true);
-    if ("code" in out) expect(out.code).toBe("not-found");
+    const url = encodeClipUrl("a/b/missing.mp4");
+    expect(decodeClipUrl(url, ROOT, fakeRealpath, () => false)).toMatchObject({ code: "not-found" });
+  });
+});
+
+describe("源视频路由", () => {
+  const library: Record<string, string> = {
+    v1: "/home/u/videos/a.mp4",
+    v2: "/home/u/videos/b.m4v",
+    v3: "/home/u/videos/c.mov",
+    v4: "/home/u/videos/d.webm",
+    vbad: "/home/u/videos/e.txt",
+  };
+  const resolveSource = (id: string) => library[id];
+
+  test("库中已登记的 videoId：mp4/m4v/mov/webm 各自 content type 正确", () => {
+    expect(decodeSourceUrl(encodeSourceUrl("v1"), resolveSource, fakeRealpath, () => true)).toMatchObject({
+      absolutePath: "/home/u/videos/a.mp4",
+      contentType: "video/mp4",
+    });
+    const contentType = (id: string): string | undefined => {
+      const res = decodeSourceUrl(encodeSourceUrl(id), resolveSource, fakeRealpath, () => true);
+      return "code" in res ? undefined : res.contentType;
+    };
+    expect(contentType("v2")).toBe("video/mp4");
+    expect(contentType("v3")).toBe("video/quicktime");
+    expect(contentType("v4")).toBe("video/webm");
+  });
+
+  test("不在库里的 videoId：404", () => {
+    expect(decodeSourceUrl(encodeSourceUrl("nope"), resolveSource, fakeRealpath, () => true)).toMatchObject({ code: "not-found" });
+  });
+
+  test("非视频扩展名：403", () => {
+    expect(decodeSourceUrl(encodeSourceUrl("vbad"), resolveSource, fakeRealpath, () => true)).toMatchObject({ code: "forbidden" });
+  });
+
+  test("videoId 含非法字符：bad-url", () => {
+    expect(decodeSourceUrl("vnote-media://source/../../etc", resolveSource, fakeRealpath, () => true)).toMatchObject({ code: "bad-url" });
+  });
+
+  test("源文件不存在：not-found", () => {
+    expect(decodeSourceUrl(encodeSourceUrl("v1"), resolveSource, fakeRealpath, () => false)).toMatchObject({ code: "not-found" });
+  });
+
+  test("handler 按 url 前缀分发：源路由未登记 videoId → 404；已登记且文件存在 → 200", async () => {
+    const tmp = `${process.cwd()}/tmp-src-media-test`;
+    mkdirSync(tmp, { recursive: true });
+    const realSrc = `${tmp}/src.mp4`;
+    writeFileSync(realSrc, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
+    const resolveLive = (id: string) => (id === "v1" ? realSrc : undefined);
+    try {
+      const handler = createMediaHandler({ root: () => ROOT, resolveSource: resolveLive });
+      // 未登记的 videoId 只会走源路由（clip 路由永不返回 404），证明分发正确
+      const res = await handler(new Request(encodeSourceUrl("nope")));
+      expect(res.status).toBe(404);
+      // 已登记且文件存在：源路由解析出路径，200 + video/mp4
+      const res2 = await handler(new Request(encodeSourceUrl("v1")));
+      expect(res2.status).toBe(200);
+      expect(res2.headers.get("content-type")).toBe("video/mp4");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("clip 路由仍按 root 解析并 200 返回", async () => {
+    const root = `${process.cwd()}/tmp-media-test`;
+    mkdirSync(`${root}/vid-1/主题-01`, { recursive: true });
+    writeFileSync(`${root}/vid-1/主题-01/clip-1.mp4`, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
+    try {
+      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined });
+      const res = await handler(new Request(encodeClipUrl("vid-1/主题-01/clip-1.mp4")));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("video/mp4");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

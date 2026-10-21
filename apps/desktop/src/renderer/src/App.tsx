@@ -1,25 +1,48 @@
-import { useCallback, useEffect, useState } from "react";
-import type { JobSnapshot, LibraryVideo } from "../../shared/ipc";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { AppShell1 } from "./rbp/blocks/app-shell-1";
-import AppShell6 from "./rbp/blocks/app-shell-6";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  JobSnapshot,
+  LibraryVideo,
+  VideoDetail,
+} from "../../shared/ipc";
+import { AppFrame } from "./rbp/blocks/app-shell-1";
 import { JobProgress } from "./rbp/blocks/monitoring-9";
+import { VideoWorkspace } from "./pages/VideoWorkspace";
+import { LibraryPage } from "./pages/LibraryPage";
+import { GlossaryPage } from "./pages/GlossaryPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { ToastHost, showToast } from "./lib/toast";
+import { errMessage } from "./lib/format";
+
+// ADR-0014 §2：路由是可判别联合，存在 App 的 state 里，不引路由库。
+type Route =
+  | { name: "library" }
+  | { name: "video"; videoId: string; page: "transcript" | "topics" | "notes" }
+  | { name: "glossary" }
+  | { name: "settings" };
+
+const PAGE_LABEL: Record<"transcript" | "topics" | "notes", string> = {
+  transcript: "字幕",
+  topics: "主题",
+  notes: "笔记",
+};
 
 export function App() {
+  const [route, setRoute] = useState<Route>({ name: "library" });
   const [videos, setVideos] = useState<LibraryVideo[] | null>(null);
   const [libError, setLibError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [job, setJob] = useState<JobSnapshot | null>(null);
-  const [flashError, setFlashError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const routeRef = useRef(route);
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
 
-  const refreshLibrary = useCallback(async () => {
+  const refreshLibrary = useCallback(() => {
     setLibError(null);
-    try {
-      setVideos(await window.vnote.listLibrary());
-    } catch (err) {
-      setLibError(err instanceof Error ? err.message : String(err));
-    }
+    window.vnote
+      .listLibrary()
+      .then(setVideos)
+      .catch((err) => setLibError(errMessage(err)));
   }, []);
 
   useEffect(() => {
@@ -32,141 +55,211 @@ export function App() {
     window.vnote.activeJob().then((j) => {
       if (j !== null) setJob(j);
     });
+    // 生成中每个主题的 startedAt 由 core 落盘；运行中的进度事件按 1s 节流刷新详情，
+    // 让主题列表的「生成中 · 已用 mm:ss」跟着动，而不是等任务结束才更新。
+    let lastLiveRefresh = 0;
     off = window.vnote.onJob((j) => {
       setJob(j);
-      if (j.state === "succeeded") void refreshLibrary();
+      const r = routeRef.current;
+      if (j.state === "running" && r.name === "video" && r.videoId === j.videoId) {
+        const now = Date.now();
+        if (now - lastLiveRefresh >= 1000) {
+          lastLiveRefresh = now;
+          window.vnote
+            .getVideo(j.videoId)
+            .then(setDetail)
+            .catch(() => undefined);
+        }
+      }
+      if (j.state === "succeeded" || j.state === "failed" || j.state === "cancelled") {
+        void refreshLibrary();
+        const r = routeRef.current;
+        if (r.name === "video" && r.videoId === j.videoId) {
+          window.vnote
+            .getVideo(r.videoId)
+            .then(setDetail)
+            .catch(() => undefined);
+        }
+      }
     });
     return () => {
       off?.();
     };
   }, [refreshLibrary]);
 
-  const openVideo = useCallback((v: LibraryVideo) => setOpenId(v.id), []);
-
-  const importVideo = useCallback(async () => {
-    setFlashError(null);
-    try {
-      const sourcePath = await window.vnote.pickVideo();
-      if (sourcePath === null) return;
-      await window.vnote.startExtract({ kind: "new", sourcePath });
-    } catch (err) {
-      setFlashError(err instanceof Error ? err.message : String(err));
-    }
+  const importVideo = useCallback(() => {
+    window.vnote
+      .pickVideo()
+      .then((sourcePath) => {
+        if (sourcePath !== null) {
+          window.vnote.startExtract({ kind: "new", sourcePath });
+        }
+      })
+      .catch((err) => showToast(`导入失败：${errMessage(err)}`));
   }, []);
 
-  // 拖拽导入：路径已由 renderer 侧取好，这里只负责发起任务。
   const importPath = useCallback(
-    async (path: string) => {
-      setFlashError(null);
-      try {
-        await window.vnote.startExtract({ kind: "new", sourcePath: path });
-      } catch (err) {
-        setFlashError(err instanceof Error ? err.message : String(err));
-      }
+    (path: string) => {
+      window.vnote
+        .startExtract({ kind: "new", sourcePath: path })
+        .catch((err) => showToast(`导入失败：${errMessage(err)}`));
+    },
+    [],
+  );
+
+  const refreshDetail = useCallback((videoId: string) => {
+    window.vnote
+      .getVideo(videoId)
+      .then(setDetail)
+      .catch((err) => showToast(`刷新视频失败：${errMessage(err)}`));
+  }, []);
+
+  // 打开视频：进入目标页；详情在此拉取。
+  const openVideo = useCallback(
+    (videoId: string, page: "transcript" | "topics" | "notes") => {
+      setRoute({ name: "video", videoId, page });
+      setDetail(null);
+      window.vnote
+        .getVideo(videoId)
+        .then(setDetail)
+        .catch((err) => {
+          showToast(`打开视频失败：${errMessage(err)}`);
+          setRoute({ name: "library" });
+        });
     },
     [],
   );
 
   // 旧目录没有记录源路径，重跑前必须让用户重新选择。
-  const rerun = useCallback(async (v: LibraryVideo) => {
-    setFlashError(null);
-    try {
-      if (v.sourcePath === null) {
-        const sourcePath = await window.vnote.pickSource(v.id);
-        if (sourcePath === null) return;
-        await window.vnote.startExtract({ kind: "existing", videoId: v.id, sourcePath });
+  const rerun = useCallback(
+    (video: LibraryVideo) => {
+      const run = (sourcePath: string) =>
+        window.vnote
+          .startExtract({ kind: "existing", videoId: video.id, sourcePath })
+          .catch((err) => showToast(`重跑失败：${errMessage(err)}`));
+      if (video.sourcePath === null) {
+        window.vnote.pickVideo().then((sourcePath) => {
+          if (sourcePath !== null) void run(sourcePath);
+        });
       } else {
-        await window.vnote.startExtract({ kind: "existing", videoId: v.id });
+        void run(video.sourcePath);
       }
-    } catch (err) {
-      setFlashError(err instanceof Error ? err.message : String(err));
-    }
+    },
+    [],
+  );
+
+  const rebuild = useCallback((videoId: string) => {
+    window.vnote
+      .rebuildTopics(videoId)
+      .catch((err) => showToast(`重跑失败：${errMessage(err)}`));
   }, []);
 
-  const cancelJob = useCallback(async () => {
+  const cancelJob = useCallback(() => {
     if (job === null) return;
-    try {
-      await window.vnote.cancelExtract(job.jobId);
-    } catch (err) {
-      setFlashError(err instanceof Error ? err.message : String(err));
-    }
+    window.vnote
+      .cancelExtract(job.jobId)
+      .catch((err) => showToast(`取消失败：${errMessage(err)}`));
   }, [job]);
 
-  const busy = job !== null && (job.state === "queued" || job.state === "running");
-  const selected = openId === null ? null : videos?.find((v) => v.id === openId) ?? null;
+  const startNotes = useCallback(
+    (topicIds: string[]) => {
+      if (detail === null) return;
+      window.vnote
+        .startNotes(detail.video.id, topicIds)
+        .catch((err) => showToast(`生成笔记失败：${errMessage(err)}`));
+    },
+    [detail],
+  );
 
-  const libraryScreen =
-    videos === null && libError === null ? (
-      <div className="flex h-full items-center justify-center">
-        <div className="border border-dashed border-neutral-900/12 px-8 py-6 text-[14px]/[20px] text-neutral-900/80 dark:border-neutral-100/12 dark:text-neutral-100/80">
-          加载库中…
-        </div>
-      </div>
-    ) : libError !== null ? (
-      <div className="flex h-full items-center justify-center">
-        <div className="flex flex-col items-center gap-3 border border-dashed border-neutral-900/12 px-8 py-6 text-[14px]/[20px] text-neutral-900/80 dark:border-neutral-100/12 dark:text-neutral-100/80">
-          <span>加载库失败：{libError}</span>
-          <button
-            type="button"
-            onClick={() => void refreshLibrary()}
-            className="cursor-pointer rounded-[var(--rb-r-sm,6px)] border border-neutral-900/12 px-4 py-1.5 text-[13px]/[18px] text-neutral-900 hover:bg-neutral-900/5 dark:border-neutral-100/12 dark:text-neutral-100 dark:hover:bg-neutral-100/5"
-          >
-            重试
-          </button>
-        </div>
-      </div>
-    ) : (
-      <div className="h-full w-full" data-testid="library">
-        <AppShell1
-          videos={videos ?? []}
-          busy={busy}
-          onOpen={openVideo}
-          onImport={() => void importVideo()}
-          onImportPath={(path) => void importPath(path)}
-          onRerun={(v) => void rerun(v)}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-      </div>
-    );
+  const toLibrary = useCallback(() => setRoute({ name: "library" }), []);
+
+  // ADR-0014 §2：面包屑由路由推导；视频内三个页面仍高亮「视频库」，
+  // 面包屑「视频库」可点返回。
+  const navKey =
+    route.name === "glossary"
+      ? "glossary"
+      : route.name === "settings"
+        ? "settings"
+        : "library";
+  const activeVideo =
+    route.name === "video" ? (videos?.find((v) => v.id === route.videoId) ?? null) : null;
+  const videoTitle =
+    route.name === "video"
+      ? (detail !== null && detail.video.id === route.videoId
+          ? detail.video.title
+          : activeVideo?.title ?? "视频")
+      : "";
+
+  const crumb =
+    route.name === "library"
+      ? { parts: ["视频库"] }
+      : route.name === "glossary"
+        ? { parts: ["视频库", "术语表"] }
+        : route.name === "settings"
+          ? { parts: ["设置"] }
+          : {
+              parts: ["视频库", videoTitle, PAGE_LABEL[route.page]],
+              onBack: toLibrary,
+            };
 
   return (
-    <div className="flex h-full flex-col">
-      {selected === null ? (
-        libraryScreen
-      ) : (
-        <div key={selected.id} className="h-full min-h-0 flex-1" data-testid="video-view">
-          <AppShell6
-            video={selected}
-            busy={busy}
-            onBack={() => setOpenId(null)}
-            onRerun={(v) => void rerun(v)}
-            onReveal={() => void window.vnote.reveal(selected.outputDir)}
+    <>
+      <div aria-hidden="true" className="vn-aurora">
+        <i />
+        <i />
+        <i />
+      </div>
+      <AppFrame
+        active={navKey}
+        onNavigate={(key) => {
+          if (key === "glossary") setRoute({ name: "glossary" });
+          else if (key === "settings") setRoute({ name: "settings" });
+          else toLibrary();
+        }}
+        crumb={crumb}
+      >
+        {route.name === "video" ? (
+          <VideoWorkspace
+            key={route.videoId}
+            detail={detail}
+            page={route.page}
+            job={job}
+            onPage={(page: "transcript" | "topics" | "notes") =>
+              setRoute({ name: "video", videoId: route.videoId, page })
+            }
+            onBack={toLibrary}
+            onRefresh={() => refreshDetail(route.videoId)}
+            onStartNotes={startNotes}
+            onRebuildTopics={() => rebuild(route.videoId)}
           />
-        </div>
-      )}
+        ) : route.name === "library" ? (
+          <LibraryPage
+            videos={videos ?? []}
+            job={job}
+            loading={videos === null && libError === null}
+            loadError={libError}
+            onReload={() => void refreshLibrary()}
+            onOpenVideo={(v, page) => openVideo(v.id, page)}
+            onImport={() => void importVideo()}
+            onImportPath={(path) => void importPath(path)}
+            onRebuild={(id) => void rebuild(id)}
+            onRerun={(v) => void rerun(v)}
+          />
+        ) : route.name === "glossary" ? (
+          <GlossaryPage />
+        ) : (
+          <SettingsPage />
+        )}
+      </AppFrame>
 
-      {job !== null && (
-        <JobProgress job={job} onCancel={() => void cancelJob()} onClose={() => setJob(null)} />
-      )}
-
-      {flashError !== null && (
-        <div
-          role="alert"
-          className="fixed bottom-4 left-4 z-40 flex max-w-[min(28rem,calc(100vw-2rem))] items-start gap-3 rounded-[var(--rb-r-lg,10px)] border border-neutral-900/10 bg-neutral-50 px-4 py-3 text-[13px]/[18px] text-neutral-900 shadow-[0_12px_32px_-8px_rgb(0_0_0/0.55)] dark:border-neutral-100/14 dark:bg-neutral-900 dark:text-neutral-100"
-        >
-          <span className="min-w-0 flex-1">{flashError}</span>
-          <button
-            type="button"
-            onClick={() => setFlashError(null)}
-            aria-label="关闭"
-            className="shrink-0 cursor-pointer text-neutral-900/66 hover:text-neutral-900 dark:text-neutral-100/66 dark:hover:text-neutral-100"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-    </div>
+      {job !== null ? (
+        <JobProgress
+          job={job}
+          onCancel={() => void cancelJob()}
+          onClose={() => setJob(null)}
+        />
+      ) : null}
+      <ToastHost />
+    </>
   );
 }

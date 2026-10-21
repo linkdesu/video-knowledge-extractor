@@ -1,18 +1,28 @@
-export function formatUpdated(iso: string | null): string {
-  if (iso === null) return "时间未知";
+
+export function fmtClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+export function fmtElapsed(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** 词表「修改时间」：月-日 时:分，本地时区。 */
+export function fmtDateTime(iso: string | null): string {
+  if (iso === null) return "—";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "时间未知";
-  const ms = Date.now() - d.getTime();
-  const min = Math.floor(ms / 60_000);
-  if (min < 1) return "刚刚";
-  if (min < 60) return `${min} 分钟前`;
-  const hour = Math.floor(min / 60);
-  if (hour < 24) return `${hour} 小时前`;
-  const day = Math.floor(hour / 24);
-  if (day < 30) return `${day} 天前`;
-  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return `${date} ${time}`;
+  if (Number.isNaN(d.getTime())) return "—";
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
+export function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 export function videoName(sourcePath: string): string {

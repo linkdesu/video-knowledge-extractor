@@ -23,6 +23,11 @@ export function notesRoot(env: EnvRecord = process.env): string {
   return env.VNOTE_HOME ?? `${env.HOME ?? homedir()}/Documents/video-notes`;
 }
 
+/** 读时求值：缓存根目录，env 优先，默认在 notes 根下（ADR-0014）。 */
+export function cacheRoot(env: EnvRecord = process.env): string {
+  return env.VNOTE_CACHE_DIR ?? `${notesRoot(env)}/.cache`;
+}
+
 /** 读时求值：模块加载不再快照 env，.env 只要在调用前加载好（ADR-0009）。 */
 export function modelDir(env: EnvRecord = process.env): string {
   return env.VNOTE_MODEL_DIR ?? `${env.HOME ?? homedir()}/.cache/video-notes/models`;

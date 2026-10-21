@@ -9,11 +9,16 @@ export function encodeClipUrl(relativePath: string): string {
   return `${MEDIA_SCHEME}://clip/${Buffer.from(relativePath, "utf8").toString("base64url")}`;
 }
 
-export type ClipLocation = {
-  /** 相对 notesRoot 的路径。 */
-  relativePath: string;
+/** 源视频地址：只编码 videoId，路径由 handler 按库记录解析，url 本身不携带路径。 */
+export function encodeSourceUrl(videoId: string): string {
+  return `${MEDIA_SCHEME}://source/${videoId}`;
+}
+
+export type MediaLocation = {
   /** 校验过的绝对路径。 */
   absolutePath: string;
+  /** 该扩展名对应的 content type。 */
+  contentType: string;
 };
 
 export type UrlError =
@@ -22,6 +27,47 @@ export type UrlError =
   | { code: "forbidden"; message: string };
 
 const UNSAFE_SEGMENTS: Record<string, true> = { ".": true, "..": true };
+
+const SOURCE_EXTENSIONS: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+};
+
+/** 源视频只认库记录里登记的 sourcePath；videoId 不在库里直接 404。 */
+export function decodeSourceUrl(
+  url: string,
+  resolveSource: (videoId: string) => string | undefined,
+  realpath?: (p: string) => string,
+  statIsFile?: (p: string) => boolean,
+): MediaLocation | UrlError {
+  const m = url.match(`^${MEDIA_SCHEME}://source/([A-Za-z0-9]+)$`);
+  if (m === null || m[1] === undefined) return { code: "bad-url", message: "非法的媒体 url" };
+  const sourcePath = resolveSource(m[1]);
+  if (sourcePath === undefined) return { code: "not-found", message: "视频不在库中" };
+  const rp = realpath ?? ((p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  });
+  const real = rp(sourcePath);
+  const dot = real.lastIndexOf(".");
+  const ext = dot === -1 ? "" : real.slice(dot);
+  const contentType = SOURCE_EXTENSIONS[ext];
+  if (contentType === undefined) return { code: "forbidden", message: "源文件不是可播放的视频" };
+  const isFile = statIsFile ?? ((p: string) => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (!isFile(real)) return { code: "not-found", message: "源文件不存在" };
+  return { absolutePath: real, contentType };
+}
 
 /**
  * 解码 `vnote-media://clip/<base64url>`：
@@ -33,7 +79,7 @@ export function decodeClipUrl(
   root: string,
   realpath?: (p: string) => string,
   statIsFile?: (p: string) => boolean,
-): ClipLocation | UrlError {
+): MediaLocation | UrlError {
   const m = url.match(`^${MEDIA_SCHEME}://clip/([A-Za-z0-9_-]+)$`);
   if (m === null || m[1] === undefined) return { code: "bad-url", message: "非法的媒体 url" };
   const decoded = Buffer.from(m[1], "base64url").toString("utf8");
@@ -64,7 +110,7 @@ export function decodeClipUrl(
     }
   });
   if (!isFile(real)) return { code: "not-found", message: "文件不存在" };
-  return { relativePath: segments.join("/"), absolutePath: real };
+  return { absolutePath: real, contentType: "video/mp4" };
 }
 
 export type RangeSpec = { start: number; end: number };
@@ -81,24 +127,28 @@ export function parseRangeHeader(
   if (header === undefined || header === "") return undefined;
   const m = header.match(/^bytes=(\d*)-(\d*)$/);
   if (m === null) return "invalid";
-  const [, startRaw, endRaw] = m;
+  const startRaw = m[1];
+  const endRaw = m[2];
+  if (startRaw === undefined || endRaw === undefined) return "invalid";
   if (startRaw === "" && endRaw === "") return "invalid";
-  if (startRaw === "") {
-    // suffix：最后 N 字节
-    const n = Number(endRaw);
-    if (n === 0) return "unsatisfiable";
-    return { start: Math.max(0, fileSize - n), end: fileSize - 1 };
+  const start = startRaw === "" ? undefined : Number(startRaw);
+  const end = endRaw === "" ? undefined : Number(endRaw);
+  if (startRaw !== "" && (!Number.isInteger(start) || (start as number) < 0)) return "invalid";
+  if (endRaw !== "" && (!Number.isInteger(end) || (end as number) < 0)) return "invalid";
+  if (endRaw !== "" && startRaw !== "" && (end as number) < (start as number)) return "invalid";
+  if (endRaw !== "") {
+    const s = startRaw === "" ? 0 : (start as number);
+    if (s >= fileSize) return "unsatisfiable";
+    return { start: s, end: Math.min(end as number, fileSize - 1) };
   }
-  const start = Number(startRaw);
-  const end = endRaw === "" ? fileSize - 1 : Number(endRaw);
-  if (start >= fileSize) return "unsatisfiable";
-  if (start > end) return "invalid";
-  return { start, end: Math.min(end, fileSize - 1) };
+  const s = start as number;
+  if (s >= fileSize) return "unsatisfiable";
+  return { start: s, end: fileSize - 1 };
 }
 
 export type MediaDecision =
-  | { kind: "full"; absolutePath: string; size: number }
-  | { kind: "range"; absolutePath: string; range: RangeSpec; size: number }
+  | { kind: "full"; absolutePath: string; size: number; contentType: string }
+  | { kind: "range"; absolutePath: string; range: RangeSpec; size: number; contentType: string }
   | { kind: "range416"; size: number }
   | { kind: "error"; status: 404 | 403; message: string };
 
@@ -106,9 +156,8 @@ export type MediaDecision =
 export function decideMediaRequest(
   url: string,
   opts: {
-    root: string;
     header: string | undefined;
-    resolvePath: (url: string) => ClipLocation | UrlError;
+    resolvePath: (url: string) => MediaLocation | UrlError;
     stat: (path: string) => number;
   },
 ): MediaDecision {
@@ -117,13 +166,16 @@ export function decideMediaRequest(
   const size = opts.stat(loc.absolutePath);
   const range = parseRangeHeader(opts.header, size);
   if (range === "invalid" || range === "unsatisfiable") return { kind: "range416", size };
-  if (range !== undefined) return { kind: "range", absolutePath: loc.absolutePath, range, size };
-  return { kind: "full", absolutePath: loc.absolutePath, size };
+  if (range !== undefined) return { kind: "range", absolutePath: loc.absolutePath, range, size, contentType: loc.contentType };
+  return { kind: "full", absolutePath: loc.absolutePath, size, contentType: loc.contentType };
 }
 
 export const MEDIA_CONTENT_TYPE = "video/mp4";
 
-export function mediaResponse(decision: MediaDecision, streamOf: (path: string, range?: RangeSpec) => Readable): Response {
+export function mediaResponse(
+  decision: MediaDecision,
+  streamOf: (path: string, range?: RangeSpec) => Readable,
+): Response {
   if (decision.kind === "error") {
     return new Response(decision.message, {
       status: decision.status,
@@ -134,7 +186,7 @@ export function mediaResponse(decision: MediaDecision, streamOf: (path: string, 
     return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${decision.size}` } });
   }
   const headers: Record<string, string> = {
-    "Content-Type": MEDIA_CONTENT_TYPE,
+    "Content-Type": decision.contentType,
     "Accept-Ranges": "bytes",
   };
   let status = 200;
@@ -152,15 +204,18 @@ export function mediaResponse(decision: MediaDecision, streamOf: (path: string, 
   return new Response(Readable.toWeb(body) as unknown as ReadableStream, { status, headers });
 }
 
-// 协议 handler 本体。root 在 whenReady 注册时由 main 闭包注入，
-// 不走 env：env 在 Finder 启动时可能还没被 .env 补全，闭包值才和 settings() 一致。
-export function createMediaHandler(notesRootValue: string): (request: Request) => Promise<Response> {
+// 协议 handler 本体。root 与源路径解析都由 main 注入：
+// env 在 Finder 启动时可能还没被 .env 补全，settings 闭包值才和 settings() 一致。
+export function createMediaHandler(opts: {
+  root: () => string;
+  resolveSource: (videoId: string) => string | undefined;
+}): (request: Request) => Promise<Response> {
   return async (request: Request) => {
     const rangeHeader = request.headers.get("range");
+    const isSource = request.url.startsWith(`${MEDIA_SCHEME}://source/`);
     const decision = decideMediaRequest(request.url, {
-      root: notesRootValue,
       header: rangeHeader === null ? undefined : rangeHeader,
-      resolvePath: (u) => decodeClipUrl(u, notesRootValue),
+      resolvePath: (u) => (isSource ? decodeSourceUrl(u, opts.resolveSource) : decodeClipUrl(u, opts.root())),
       stat: (p) => {
         try {
           return statSync(p).size;
