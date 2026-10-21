@@ -42,7 +42,12 @@ export type VideoDetail = {
 
 export type SettingsStatus = {
   configured: boolean;
+  /** 显式配置的模型名（VNOTE_LLM_MODEL / IDEALSOFT_API_MODEL）。 */
   model: string | null;
+  /** 启动时 GET /models 发现并选中的模型名；显式配置或发现失败时为 null。 */
+  discoveredModel: string | null;
+  /** 模型发现失败的脱敏消息；成功或未尝试时为 null。 */
+  modelError: string | null;
   notesRoot: string;
   modelDir: string;
   dotenvFiles: string[];
@@ -84,6 +89,8 @@ export type VnoteApi = {
   saveCorrections(videoId: VideoId, entries: CorrectionEntry[]): Promise<CorrectionEntry[]>;
   pickVideo(): Promise<string | null>;
   pickSource(videoId: VideoId): Promise<string | null>;
+  /** 拖拽进来的 File 只有 renderer 侧引用，绝对路径要靠 preload 的 webUtils 取。 */
+  pathForFile(file: File): string;
   startExtract(target: ExtractTarget): Promise<{ jobId: string }>;
   cancelExtract(jobId: string): Promise<void>;
   activeJob(): Promise<JobSnapshot | null>;

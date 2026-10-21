@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   CorrectionEntry,
   ExtractTarget,
@@ -20,6 +20,7 @@ const api = {
     ipcRenderer.invoke(IPC.saveCorrections, videoId, entries) as Promise<CorrectionEntry[]>,
   pickVideo: () => ipcRenderer.invoke(IPC.pickVideo) as Promise<string | null>,
   pickSource: (videoId: string) => ipcRenderer.invoke(IPC.pickSource, videoId) as Promise<string | null>,
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
   startExtract: (target: ExtractTarget) => ipcRenderer.invoke(IPC.startExtract, target) as Promise<{ jobId: string }>,
   cancelExtract: (jobId: string) => ipcRenderer.invoke(IPC.cancelExtract, jobId) as Promise<void>,
   activeJob: () => ipcRenderer.invoke(IPC.activeJob) as Promise<JobSnapshot | null>,

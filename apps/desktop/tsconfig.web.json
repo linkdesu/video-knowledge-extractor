@@ -4,7 +4,8 @@
     "composite": false,
     "types": ["vite/client"],
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "paths": { "@/*": ["./src/renderer/src/*"] }
   },
   "include": ["src/renderer/src/**/*.ts", "src/renderer/src/**/*.tsx", "src/shared/**/*.ts"]
 }

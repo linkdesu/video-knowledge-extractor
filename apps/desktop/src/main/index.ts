@@ -289,11 +289,15 @@ function reveal(outputDir: string): void {
   shell.showItemInFolder(dir);
 }
 
-function settings(): SettingsStatus {
+async function settings(): Promise<SettingsStatus> {
+  // 启动时的模型发现只做一次，设置页等它结束就能显示实际名字
+  await endpointReady;
   const ff = spawnSync("ffmpeg", ["-version"]);
   return {
     configured: credentials !== undefined,
     model: credentials?.model ?? null,
+    discoveredModel: credentials?.model === undefined ? (endpoint?.model ?? null) : null,
+    modelError: endpointError ?? null,
     notesRoot: notesRoot(),
     modelDir: modelDir(),
     dotenvFiles,

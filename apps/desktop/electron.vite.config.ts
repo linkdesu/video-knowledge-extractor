@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 
@@ -33,7 +34,9 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(import.meta.dirname, "src/renderer"),
-    plugins: [react()],
+    // RBP 源码用 `@/lib/utils`，别名指向 renderer 源码根
+    resolve: { alias: { "@": resolve(import.meta.dirname, "src/renderer/src") } },
+    plugins: [react(), tailwindcss()],
     build: {
       rollupOptions: { input: resolve(import.meta.dirname, "src/renderer/index.html") },
     },
