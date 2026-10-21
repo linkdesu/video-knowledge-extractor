@@ -70,6 +70,8 @@ bun run start    # 启动构建产物
 
 桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
 
+界面是 React Bits Pro（RBP）源码组件加 Tailwind CSS 4：库、视频详情、提取进度、纠错词表、设置各落在一个 App UI 区块上，空态标题用 `luminous-type`，库统计用 `bento-29` 的计数补间（[ADR-0013](docs/adr/0013-react-bits-pro-renderer.md)）。RBP 源码落在 `apps/desktop/src/renderer/src/rbp/`，条目清单是 `apps/desktop/reactbits.json`。新增条目需要 `.env` 里的 `REACTBITS_LICENSE_KEY`，跑 `bun run rbp:vendor`（只在 `apps/desktop` 内）；重跑会覆盖已经改过的文件。
+
 环境变量（也可写进 `.env`）：
 
 | 变量 | 作用 |
@@ -78,6 +80,7 @@ bun run start    # 启动构建产物
 | `VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` | OpenAI 兼容端点，两个变量都设才生效；两组名字都认，按字段取值，规范名优先 |
 | `VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` | 模型名，可留空，留空时调 `GET <base>/models` 自动发现 |
 | `VNOTE_MODEL_DIR` | 本地模型目录，默认 `~/.cache/video-notes/models` |
+| `REACTBITS_LICENSE_KEY` | 只在开发期拉取 RBP 源码时用；不进 lockfile、不进 `components.json`，界面运行时不读 |
 
 ```bash
 bun install
@@ -88,10 +91,10 @@ bun run test
 
 ## 当前状态
 
-`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。Electron 桌面端已能导入、看库、看主题与切片、编辑纠错词表、重跑与取消；打包、签名与 DMG 尚未实现。模型首次启动下载（ADR-0004）与主题编辑（改主题名、合并、拆分）尚未实现，模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
+`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。Electron 桌面端已能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消，设置页显示启动时实际发现的模型名；打包、签名与 DMG 尚未实现。模型首次启动下载（ADR-0004）与主题编辑（改主题名、合并、拆分）尚未实现，模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
 
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0012 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core。
+- `docs/adr/`：0001–0013 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上。
 - `tmp/` 与 `runs/` 不进 git。
