@@ -8,3 +8,4 @@ tmp/probe/
 tmp/
 .turbo/
 artifacts/
+apps/desktop/out/
