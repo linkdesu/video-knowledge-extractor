@@ -22,6 +22,16 @@ export type ChatMessage = { role: "system" | "user"; content: string };
 export type LlmClient = {
   model: string;
   chat(messages: ChatMessage[], opts?: { json?: boolean; temperature?: number }): Promise<string>;
+  /** 本客户端自创建以来的累计用量；测试假客户端可以不实现。 */
+  usage?: () => LlmUsage;
+};
+
+/** token 计数快照；一次运行的用量取运行前后两次快照的差值（ADR-0009）。从未收到 usage 时各计数为 0。 */
+export type LlmUsage = {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 };
 
 /** 第一步：把视频语音变成字幕行，并给出说话人和每行的起止时间。 */

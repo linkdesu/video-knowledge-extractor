@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, resolve } from "node:path";
 import type { Topic, TopicId, Video, VideoId, VideoIndex, VideoIndexEntry } from "./types";
 import { sha256 } from "./cache";
-import { CACHE_DIRNAME, NOTES_ROOT } from "./config";
+import { CACHE_DIRNAME, notesRoot } from "./config";
 
 const MAX_SLUG_CHARS = 60;
 
@@ -43,18 +43,18 @@ export function writeJsonAtomic(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
-export function readVideoIndex(root: string = NOTES_ROOT): VideoIndex {
+export function readVideoIndex(root: string = notesRoot()): VideoIndex {
   const parsed = readJsonFile<VideoIndex>(resolve(root, "index.json"));
   if (parsed === undefined) return { videos: [] };
   if (!Array.isArray(parsed.videos)) throw new Error(`${root}/index.json: videos 不是数组`);
   return parsed;
 }
 
-export function writeVideoIndex(index: VideoIndex, root: string = NOTES_ROOT): void {
+export function writeVideoIndex(index: VideoIndex, root: string = notesRoot()): void {
   writeJsonAtomic(resolve(root, "index.json"), { videos: [...index.videos].sort((a, b) => a.id.localeCompare(b.id)) });
 }
 
-export function openVideo(sourcePath: string, durationSeconds: number, root: string = NOTES_ROOT): Video {
+export function openVideo(sourcePath: string, durationSeconds: number, root: string = notesRoot()): Video {
   const resolved = resolve(sourcePath);
   const id = videoIdFor(resolved);
   const index = readVideoIndex(root);

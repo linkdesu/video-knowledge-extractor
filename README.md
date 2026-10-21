@@ -42,16 +42,19 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 首发 macOS Apple Silicon。首次启动下载识别、说话人分离与标点模型，下载支持断点续传，落盘后校验 sha256；也允许手动放入模型目录，供离线或受限网络使用（手动导入同样过 sha256 校验）。Windows 暂不验证、不承诺可用。
 
+主题分析与笔记走你配置的一个 OpenAI 兼容端点。`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录；端点变量两个名字都认，按字段独立取值并允许混用，规范名优先：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`。模型名可留空：`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 没设时，代码调 `GET <base>/models` 按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。
+
 ## 命令与开发
 
 开发期用 `bun run vnote extract <视频>`，或 `bun link` 之后直接用 `vnote`。没有 `--out`：输出目录在首次生成时确定，之后不再随参数变化。`--limit <秒>` 只处理前 N 秒，供开发期冒烟。
 
-环境变量：
+环境变量（也可写进 `.env`）：
 
 | 变量 | 作用 |
 |---|---|
 | `VNOTE_HOME` | notes 根目录，默认 `~/Documents/video-notes` |
-| `VNOTE_LLM_BASE_URL`、`VNOTE_LLM_API_KEY`、`VNOTE_LLM_MODEL` | OpenAI 兼容端点，三个都设才生效 |
+| `VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` | OpenAI 兼容端点，两个变量都设才生效；两组名字都认，按字段取值，规范名优先 |
+| `VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` | 模型名，可留空，留空时调 `GET <base>/models` 自动发现 |
 | `VNOTE_MODEL_DIR` | 本地模型目录，默认 `~/.cache/video-notes/models` |
 
 ```bash
@@ -61,10 +64,10 @@ bun test
 
 ## 当前状态
 
-`vnote extract` 已按 ADR 0001–0008 跑通三步并落盘，重跑同一输入全部命中缓存。模型首次启动下载（ADR-0004）、主题编辑的界面、Electron 界面尚未实现；模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
+`vnote extract` 已按 ADR 0001–0009 跑通三步并落盘，重跑同一输入全部命中缓存。模型首次启动下载（ADR-0004）、主题编辑的界面、Electron 界面尚未实现；模型文件目前要手动放进 `VNOTE_MODEL_DIR`。
 
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0008 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式。
+- `docs/adr/`：0001–0009 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现。
 - `tmp/` 与 `runs/` 不进 git。

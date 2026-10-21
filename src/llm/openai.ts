@@ -1,11 +1,13 @@
-import type { ChatMessage, LlmClient, LlmEndpoint } from "../core/steps";
+import type { ChatMessage, LlmClient, LlmEndpoint, LlmUsage } from "../core/steps";
 const REQUEST_TIMEOUT_MS = 180_000;
 const DEFAULT_TEMPERATURE = 0.2;
 
 export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch): LlmClient {
   const doFetch = fetchImpl ?? fetch;
+  const acc = { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   return {
     model: endpoint.model,
+    usage: () => ({ ...acc }),
     async chat(messages: ChatMessage[], opts?: { json?: boolean; temperature?: number }): Promise<string> {
       const url = `${endpoint.baseUrl.replace(/\/+$/, "")}/chat/completions`;
       const body: Record<string, unknown> = {
@@ -25,17 +27,43 @@ export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch)
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`LLM 端点 ${endpoint.baseUrl} 返回 HTTP ${res.status}：${text.slice(-300)}`);
+        throw new Error(
+          redact(`LLM 端点 ${endpoint.baseUrl} 返回 HTTP ${res.status}：${redact(text, endpoint.apiKey).slice(-300)}`, endpoint.apiKey),
+        );
       }
-      const data = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: unknown } }[];
+        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
+      };
       const content = data.choices?.[0]?.message?.content;
       if (typeof content !== "string" || content.trim() === "") {
         throw new Error(`LLM 端点 ${endpoint.baseUrl} 返回了空的补全结果`);
+      }
+      acc.calls += 1;
+      const usage = data.usage;
+      if (usage !== undefined) {
+        const prompt = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0;
+        const completion = typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0;
+        const total = typeof usage.total_tokens === "number" ? usage.total_tokens : prompt + completion;
+        acc.promptTokens += prompt;
+        acc.completionTokens += completion;
+        acc.totalTokens += total;
       }
       return content;
     },
   };
 }
+
+export function emptyUsage(): LlmUsage {
+  return { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+}
+
+/** 把已知密钥从任意外部文本里抹掉。空串必须原样返回，否则 split 会在每字符间插入分隔符。 */
+export function redact(text: string, secret: string): string {
+  if (secret === "") return text;
+  return text.split(secret).join("[redacted]");
+}
+
 /** 模型输出常带围栏或前后散话。 */
 export function tryParseJson<T>(text: string): T | undefined {
   const stripped = text
