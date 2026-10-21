@@ -21,8 +21,17 @@ function tempCacheDir(): string {
 }
 let endpoint: LlmEndpoint = { baseUrl: "", apiKey: "k-test", model: "m-test" };
 
+let rawMerge: string | undefined;
+let rawChunk: string | undefined;
+
 function respond(body: Record<string, unknown>): string {
   const user = (body["messages"] as ChatMessage[]).find((m) => m.role === "user")?.content ?? "";
+  const content = (payload: string) => JSON.stringify({ choices: [{ message: { content: payload } }] });
+  if (user.startsWith("视频共")) {
+    if (rawMerge !== undefined) return content(rawMerge);
+  } else if (rawChunk !== undefined) {
+    return content(rawChunk);
+  }
   if (user.startsWith("视频共")) {
     const payload = JSON.stringify({
       topics: [
@@ -145,6 +154,33 @@ describe("segmentTopics", () => {
     const second = await segmentTopics(makeInput(cacheDir));
     expect(received.length).toBe(0);
     expect(second.topics).toEqual(first.topics);
+  });
+
+  test("分块回复不是 topics 数组时抛错并指明块号", async () => {
+    startServer();
+    rawChunk = JSON.stringify({ title: "裸主题", segments: [{ start: 1, end: 2 }] });
+    const promise = segmentTopics(makeInput(tempCacheDir()));
+    await expect(promise).rejects.toThrow(/第 1 块主题分析失败/);
+    rawChunk = undefined;
+  });
+
+  test("合并回复不是 topics 数组时抛错，且坏回复不进缓存", async () => {
+    startServer();
+    const cacheDir = tempCacheDir();
+    rawMerge = JSON.stringify({ title: "单个主题直接成了顶层对象", summary: "", segments: [{ start: 1, end: 2 }] });
+    await expect(segmentTopics(makeInput(cacheDir))).rejects.toThrow(/主题合并失败/);
+    rawMerge = undefined;
+    received = [];
+    const { topics } = await segmentTopics(makeInput(cacheDir));
+    expect(received.filter(isMergeReq).length).toBe(1);
+    expect(topics.length).toBe(1);
+  });
+
+  test("合并后没有一个有效时间段时抛错", async () => {
+    startServer();
+    rawMerge = JSON.stringify({ topics: [{ title: "空主题", summary: "", segments: [] }] });
+    await expect(segmentTopics(makeInput(tempCacheDir()))).rejects.toThrow(/没有一个带有效时间段/);
+    rawMerge = undefined;
   });
 
   test("无字幕行的块不发请求", async () => {

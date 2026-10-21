@@ -11,10 +11,24 @@ type RawTopic = {
 
 type RawResponse = { topics?: RawTopic[] };
 
+/** 模型偶尔把单个主题直接吐成顶层对象，这种回复不能当结果用，也不能进缓存。 */
+function topicsOf(raw: RawResponse | undefined): RawTopic[] | undefined {
+  return Array.isArray(raw?.topics) ? raw.topics : undefined;
+}
+
+function requireTopics(raw: RawResponse | undefined, text: string, label: string): RawTopic[] {
+  const topics = topicsOf(raw);
+  if (topics === undefined) {
+    throw new Error(`${label}失败：模型没有返回 topics 数组（返回开头：${text.slice(0, 200)}）`);
+  }
+  return topics;
+}
+
 const CHUNK_SYSTEM_PROMPT =
   "你是视频主题分析器。只输出 JSON，不要解释。" +
   "只使用给出的时间戳，每个时间段必须落在该块范围内。" +
   "主题数 1-4，title 不超过 20 字，summary 不超过 60 字。" +
+  "始终输出顶层对象，只有一个主题也要放进 topics 数组。" +
   '输出格式：{"topics":[{"title":string,"summary":string,"segments":[{"start":number,"end":number}]}]}';
 
 const MERGE_SYSTEM_PROMPT =
@@ -91,16 +105,16 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
         prompt: chunkPromptHash,
         model: input.endpoint.model,
       });
-      let raw: RawResponse | undefined = readCache<RawResponse>(input.cacheDir, key);
-      if (raw === undefined) {
+      let topics = topicsOf(readCache<RawResponse>(input.cacheDir, key));
+      if (topics === undefined) {
         const text = await client.chat([
           { role: "system", content: CHUNK_SYSTEM_PROMPT },
           { role: "user", content: `该块范围 [${chunk.start}-${chunk.end}]：\n${lines.join("\n")}` },
         ], { json: true });
-        raw = parseJsonLoose<RawResponse>(text);
-        writeCache(input.cacheDir, key, raw);
+        topics = requireTopics(parseJsonLoose<RawResponse>(text), text, `第 ${i + 1} 块主题分析`);
+        writeCache(input.cacheDir, key, { topics });
       }
-      candidates.push(...(Array.isArray(raw.topics) ? raw.topics : []));
+      candidates.push(...topics);
     }
     input.onProgress?.({ step: "segment-topics", done: i + 1, total: input.chunks.length });
   }
@@ -112,7 +126,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     prompt: hashJson(MERGE_SYSTEM_PROMPT),
     model: input.endpoint.model,
   });
-  let merged: RawResponse | undefined = readCache<RawResponse>(input.cacheDir, mergeKey);
+  let merged = topicsOf(readCache<RawResponse>(input.cacheDir, mergeKey));
   if (merged === undefined) {
     const compact = candidates.map((t) => ({
       title: typeof t.title === "string" ? t.title : "",
@@ -129,9 +143,13 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       ],
       { json: true },
     );
-    merged = parseJsonLoose<RawResponse>(text);
-    writeCache(input.cacheDir, mergeKey, merged);
+    merged = requireTopics(parseJsonLoose<RawResponse>(text), text, "主题合并");
+    writeCache(input.cacheDir, mergeKey, { topics: merged });
   }
 
-  return { topics: sanitizeTopics(merged.topics ?? [], maxEnd) };
+  const topics = sanitizeTopics(merged, maxEnd);
+  if (topics.length === 0) {
+    throw new Error(`主题合并失败：${candidates.length} 个候选主题里没有一个带有效时间段`);
+  }
+  return { topics };
 }
