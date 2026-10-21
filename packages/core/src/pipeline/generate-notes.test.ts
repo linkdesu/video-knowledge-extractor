@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cacheKey, cachePath, hashJson } from "../core/cache";
+import { OUTPUT_MANIFEST } from "../core/outputs";
 import type { LlmClient } from "../core/steps";
 import type { CorrectionList, SpeakerId, Transcript, Topic, Utterance, Video } from "../core/types";
 import { generateNotes, noteSystemPrompt, renderIndexMarkdown, renderTopicMarkdown } from "./generate-notes";
@@ -275,5 +276,24 @@ describe("generateNotes 要点缓存", () => {
       topic: hashJson(topic),
     });
     expect(cachePath("/cache", key)).toBe(cachePath("/cache", key2));
+  });
+});
+
+describe("generateNotes 中断", () => {
+  test("模型失败时旧的 index.md 与旧主题目录逐字保留，且不写 manifest", async () => {
+    const { input } = makeGenerateNotesFixture();
+    const oldIndex = ["# 旧标题", "", "- [旧主题](./永不过期/topic.md) — 旧摘要", ""].join("\n");
+    const oldTopicDir = join(input.video.outputDir, "永不过期");
+    mkdirSync(oldTopicDir, { recursive: true });
+    writeFileSync(join(oldTopicDir, "topic.md"), "# 旧主题\n");
+    writeFileSync(join(input.video.outputDir, "index.md"), oldIndex);
+
+    const calls: number[] = [];
+    await expect(generateNotes({ ...input, client: makeThrowingClient(calls) })).rejects.toThrow(/LLM 端点不可用/);
+    expect(calls.length).toBe(1);
+
+    expect(readFileSync(join(input.video.outputDir, "index.md"), "utf8")).toBe(oldIndex);
+    expect(readFileSync(join(oldTopicDir, "topic.md"), "utf8")).toBe("# 旧主题\n");
+    expect(existsSync(join(input.video.outputDir, OUTPUT_MANIFEST))).toBe(false);
   });
 });

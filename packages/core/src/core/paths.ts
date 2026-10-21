@@ -35,12 +35,21 @@ export function readJsonFile<T>(path: string): T | undefined {
   }
 }
 
-/** 覆盖整个文件：先写临时文件再 rename，磁盘上不留半截 JSON（ADR-0002）。 */
-export function writeJsonAtomic(path: string, value: unknown): void {
+/** 覆盖整个文件：先写临时文件再 rename，磁盘上不留半截文件（ADR-0002）。 */
+function writeAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(tmp, text);
   renameSync(tmp, path);
+}
+
+export function writeJsonAtomic(path: string, value: unknown): void {
+  writeAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** 与 `writeJsonAtomic` 相同的临时文件+rename 写法，原样写文本。 */
+export function writeFileAtomic(path: string, text: string): void {
+  writeAtomic(path, text);
 }
 
 export function readVideoIndex(root: string = notesRoot()): VideoIndex {
