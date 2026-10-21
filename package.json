@@ -3,10 +3,19 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
+  "bin": {
+    "vnote": "src/cli.ts"
+  },
   "scripts": {
-    "extract": "bun run src/cli.ts"
+    "vnote": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "sherpa-onnx-node": "1.13.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
   }
 }
