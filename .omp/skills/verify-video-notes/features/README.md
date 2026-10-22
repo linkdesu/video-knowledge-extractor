@@ -9,7 +9,7 @@ This directory is the maintained source for proving user-facing behavior of vide
 - The run gets an empty notes root (`VNOTE_HOME`) and an isolated `userData`; the real `~/Documents/video-notes` is never touched.
 - `doctor` passes and reports ffmpeg, models and the LLM endpoint as ready before any extraction journey.
 - Extraction journeys use a real speech video. The local fixture is `tmp/r26-e2e/short-30s.mp4` (30 s, 886×1920, 2 speakers, Chinese speech). `tmp/` is gitignored: a fresh clone does not have it. If it is missing, the journey reports a failure with the missing path — do not substitute a synthetic tone video, because ASR will produce no usable speech and the journal becomes a false pass.
-- The helper starts with `VNOTE_DISABLE_MODEL_DOWNLOAD=1`; local models must already exist at `~/.cache/video-notes/models` (or `--model-dir`).
+- The app never downloads models by itself (r28); local models must already exist at `~/.cache/video-notes/models` (or `--model-dir`).
 - Never drive an instance that this run did not start. Never start a second instance on the same `VNOTE_USER_DATA`.
 
 ## Driving conventions

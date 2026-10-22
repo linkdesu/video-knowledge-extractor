@@ -189,10 +189,14 @@ export type ModelsStatus = {
   bundles: ModelBundleStatus[];
   totalBytes: number;
   presentBytes: number;
-  /** 测试/截图用的 VNOTE_DISABLE_MODEL_DOWNLOAD=1。 */
-  autoDownloadDisabled: boolean;
   download: DownloadSnapshot;
 };
+
+/** 下载日志一行；at 是 main 收到 core 输出时的时间戳（ISO）。 */
+export type ModelLogEntry = { at: string; level: "info" | "warn" | "error"; text: string };
+
+/** 下载事件：进度快照 + 截至此刻的全部日志（有上限，旧行被裁掉）。 */
+export type ModelDownloadEvent = { snapshot: DownloadSnapshot; log: ModelLogEntry[] };
 
 export type SettingsStatus = {
   notesRoot: string;
@@ -202,7 +206,7 @@ export type SettingsStatus = {
   llm: LlmStatus;
   asr: AsrStatus;
   /** 模型摘要；完整状态走 models:status。 */
-  models: { ready: boolean; totalBytes: number; presentBytes: number; autoDownloadDisabled: boolean };
+  models: { ready: boolean; totalBytes: number; presentBytes: number };
   /** 坏配置已被隔离时的可读原因（ADR-0015 §3）。 */
   settingsFileError: string | null;
   /** 版本功能开关（r26）：云端 ASR 默认关闭，界面据此隐藏提供方切换。 */
@@ -256,6 +260,9 @@ export type AsrUpdatePatch = {
 export type DirectoryKind = "notes" | "cache" | "model";
 
 export type TestLlmResult = { ok: boolean; model: string | null; message: string };
+
+/** 「拉取模型」结果：成功时 models 为全部可选 id（未筛选），失败时 message 是可读原因。 */
+export type LlmModelListResult = { ok: boolean; models: string[]; message: string };
 
 export type TestAsrResult = { ok: boolean; modelsFound: number | null; message: string };
 
@@ -332,6 +339,8 @@ export type VnoteApi = {
   pickDirectory(kind: DirectoryKind): Promise<string | null>;
   clearCache(): Promise<{ freedBytes: number }>;
   testLlm(): Promise<TestLlmResult>;
+  /** 用当前生效的 base url + key 拉取 <base>/models，结果交给用户选择。 */
+  listLlmModels(): Promise<LlmModelListResult>;
   testAsr(): Promise<TestAsrResult>;
   models(): Promise<ModelsStatus>;
   downloadModels(): Promise<ModelsStatus>;
@@ -340,7 +349,7 @@ export type VnoteApi = {
   verifyModels(): Promise<ModelsStatus>;
   /** 端点发现落定（成功或失败）：重新拉一次 settings 即可拿到 discoveredModel。 */
   onLlmChanged(listener: () => void): () => void;
-  onModelDownload(listener: (snapshot: DownloadSnapshot) => void): () => void;
+  onModelDownload(listener: (event: ModelDownloadEvent) => void): () => void;
   reveal(outputDir: string): Promise<void>;
 };
 
@@ -371,6 +380,7 @@ export const IPC = {
   pickDirectory: "settings:pick-dir",
   clearCache: "settings:clear-cache",
   testLlm: "settings:test-llm",
+  listLlmModels: "settings:list-llm-models",
   testAsr: "settings:test-asr",
   models: "models:status",
   downloadModels: "models:download",

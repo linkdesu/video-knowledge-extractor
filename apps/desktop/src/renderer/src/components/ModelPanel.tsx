@@ -1,4 +1,5 @@
-import type { DownloadSnapshot, ModelsStatus } from "../../../shared/ipc";
+import { useEffect, useRef } from "react";
+import type { DownloadSnapshot, ModelLogEntry, ModelsStatus } from "../../../shared/ipc";
 import { fmtBytes } from "../lib/format";
 
 const STATE_LABEL: Record<"ready" | "unverified" | "missing" | "invalid", string> = {
@@ -28,6 +29,14 @@ const STATE_TEXT: Record<
   cancelled: "已取消",
 };
 
+type PanelProps = {
+  status: ModelsStatus;
+  snapshot: DownloadSnapshot | null;
+  /** 本次运行是否点击过「下载模型」；由父级在 ready / failed / cancelled 时清除。 */
+  started: boolean;
+  log: ModelLogEntry[];
+};
+
 type BusyProps = {
   onDownload: () => void;
   onCancel: () => void;
@@ -40,19 +49,25 @@ type BusyProps = {
 export function ModelPanel({
   status,
   snapshot,
+  started,
+  log,
   onDownload,
   onCancel,
   onImport,
   onVerify,
   busy,
   verifying,
-}: {
-  status: ModelsStatus;
-  snapshot: DownloadSnapshot | null;
-} & BusyProps) {
+}: PanelProps & BusyProps) {
   const snap = snapshot ?? status.download;
   const active =
     snap.state === "downloading" || snap.state === "verifying" || snap.state === "installing";
+  // 进度条从点击下载一直保留到模型真正就绪（含校验/解压阶段）；失败、取消后由父级清 started 收起。
+  const showProgress = started && !status.ready;
+  const logRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (el !== null) el.scrollTop = el.scrollHeight;
+  }, [log]);
   return (
     <div data-testid="model-panel">
       <div className="vn-models">
@@ -109,14 +124,14 @@ export function ModelPanel({
           {verifying ? "校验中…" : "校验模型"}
         </button>
       </div>
-      {active ? (
+      {showProgress ? (
         <div className="vn-progress" data-testid="model-download-progress" aria-hidden="true">
-          {snap.percent !== null ? (
+          {snap.state === "verifying" || snap.state === "installing" || snap.percent === null ? (
+            <i className="indeterminate" />
+          ) : (
             <i
               style={{ width: `${Math.max(0, Math.min(100, Math.round(snap.percent)))}%` }}
             />
-          ) : (
-            <i className="indeterminate" />
           )}
         </div>
       ) : null}
@@ -128,6 +143,18 @@ export function ModelPanel({
           {snap.message !== "" ? ` · ${snap.message}` : ""}
         </p>
       ) : null}
+      <div className="vn-model-log" data-testid="model-download-log" ref={logRef}>
+        {log.length === 0 ? (
+          <span className="vn-model-log-empty">暂无日志</span>
+        ) : (
+          log.map((line, i) => (
+            <div key={`${line.at}-${i}`} className={`vn-model-log-line ${line.level}`}>
+              <span className="vn-model-log-time">{line.at.slice(11, 19)}</span>
+              <span>{line.text}</span>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

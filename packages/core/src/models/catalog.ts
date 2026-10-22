@@ -97,7 +97,6 @@ export type ModelsStatus = {
   bundles: ModelBundleStatus[];
   totalBytes: number;
   presentBytes: number;
-  autoDownloadDisabled: boolean;
   download: DownloadSnapshot;
 };
 
@@ -207,7 +206,6 @@ export function modelStatus(modelDirArg: string, bundles: readonly ModelBundle[]
     bundles: bundleStatuses,
     totalBytes,
     presentBytes,
-    autoDownloadDisabled: process.env.VNOTE_DISABLE_MODEL_DOWNLOAD === "1",
     download: { state: "idle", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null },
   };
 }

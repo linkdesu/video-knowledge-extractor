@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, ftruncateSync, closeSync } from "node:fs";
 import { createWriteStream } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import type { DownloadSnapshot, ModelBundle, ModelsStatus } from "./catalog";
 import { MODEL_BUNDLES, modelStatus } from "./catalog";
 import { assertInsideModelDir, extractArchive, listStagedInstalls, streamSha256 } from "./extract";
@@ -15,6 +15,15 @@ export type FetchImpl = (
 ) => Promise<HttpResponse>;
 
 export type DownloadProgress = (snapshot: DownloadSnapshot) => void;
+export type DownloadLogLine = { level: "info" | "warn" | "error"; text: string };
+
+/** 进度日志字节数格式（与 renderer 的 fmtBytes 同规则；core 不依赖 renderer）。 */
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const mb = n / (1024 * 1024);
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
 
 type Sidecar = {
   url: string;
@@ -66,7 +75,7 @@ function partSize(path: string): number {
 export async function downloadBundle(
   modelDirArg: string,
   bundle: ModelBundle,
-  input: { fetchImpl?: FetchImpl; onProgress?: DownloadProgress; signal?: AbortSignal } = {},
+  input: { fetchImpl?: FetchImpl; onProgress?: DownloadProgress; onLog?: (line: DownloadLogLine) => void; signal?: AbortSignal } = {},
 ): Promise<ModelsStatus> {
   const fetchImpl: FetchImpl =
     input.fetchImpl ?? ((url, init) => fetch(url, init) as Promise<HttpResponse>);
@@ -91,6 +100,8 @@ export async function downloadBundle(
 
   const stagingDir = join(modelDir, ".downloads", `${bundle.id}.staging`);
   const totalBytes = (): number => sidecar.totalBytes ?? 0;
+  const log = (level: DownloadLogLine["level"], text: string): void => input.onLog?.({ level, text });
+  const loggedMilestones = new Set<number>();
   const emit = (state: DownloadSnapshot["state"], received: number, message: string | null): void => {
     input.onProgress?.({
       state,
@@ -101,13 +112,27 @@ export async function downloadBundle(
       message,
     });
   };
-
+  const manifestBytes = bundle.files.reduce((sum, f) => sum + f.bytes, 0);
+  const logProgress = (received: number): void => {
+    const total = totalBytes() > 0 ? totalBytes() : manifestBytes;
+    if (total <= 0) return;
+    const milestone = Math.floor(Math.min(100, (received * 100) / total) / 10) * 10;
+    if (milestone === 0 || loggedMilestones.has(milestone)) return;
+    loggedMilestones.add(milestone);
+    log("info", `下载 ${bundle.title} ${milestone}%（${received}/${total}）`);
+  };
+  log("info", `开始下载 ${bundle.title}（${fmtBytes(manifestBytes)}）`);
+  if (haveBytes > 0) log("info", `续传：从 ${haveBytes} 继续`);
   try {
-    await downloadWithResume(fetchImpl, part, sidecarPath, sidecar, haveBytes, signal, emit);
+    await downloadWithResume(fetchImpl, part, sidecarPath, sidecar, haveBytes, signal, emit, logProgress);
+    logProgress(partSize(part));
     emit("verifying", partSize(part), `校验 ${bundle.title}…`);
+    log("info", `校验 ${bundle.title} sha256`);
     if (bundle.source.kind === "tar.bz2") {
       rmSync(stagingDir, { recursive: true, force: true });
       mkdirSync(stagingDir, { recursive: true });
+      emit("verifying", partSize(part), `解压 ${bundle.title}…`);
+      log("info", `解压 ${basename(new URL(bundle.source.url).pathname)}`);
       await extractArchive(part, stagingDir, bundle);
       // staging 里就是清单相对路径本身，直接按清单校验
       await verifyBundle(stagingDir, [bundle]);
@@ -119,6 +144,7 @@ export async function downloadBundle(
     }
 
     emit("installing", partSize(part), `安装 ${bundle.title}…`);
+    log("info", `安装 ${bundle.title}`);
     await installBundle(modelDir, bundle, stagingDir, part);
 
     rmSync(part, { force: true });
@@ -127,6 +153,7 @@ export async function downloadBundle(
     // 校验结果写进进程内缓存，modelStatus 直接 ready
     await verifyBundle(modelDir, [bundle]);
     emit("done", totalBytes(), null);
+    log("info", `完成 ${bundle.title}`);
     return modelStatus(modelDirArg, [bundle]);
   } catch (err) {
     // hash/解包/安装失败：删 .part、sidecar 与 staging，下一次从零下载
@@ -154,6 +181,7 @@ async function downloadWithResume(
   startBytes: number,
   signal: AbortSignal,
   emit: (state: DownloadSnapshot["state"], received: number, message: string | null) => void,
+  onProgress: (received: number) => void,
 ): Promise<void> {
   emit("downloading", startBytes, null);
   const headers: Record<string, string> = {};
@@ -193,7 +221,7 @@ async function downloadWithResume(
   sidecar.etag = etag !== undefined ? etag : sidecar.etag;
   sidecar.lastModified = lastModified !== undefined ? lastModified : sidecar.lastModified;
   writeSidecar(sidecarPath, sidecar);
-  await pipeToBody(response.body, part, response.status === 206);
+  await pipeToBody(response.body, part, response.status === 206, startBytes, onProgress);
 }
 
 function truncatePart(part: string): void {
@@ -209,15 +237,26 @@ function truncatePart(part: string): void {
   }
 }
 
-async function pipeToBody(body: ReadableStream<Uint8Array>, file: string, append: boolean): Promise<void> {
+async function pipeToBody(
+  body: ReadableStream<Uint8Array>,
+  file: string,
+  append: boolean,
+  baseBytes: number,
+  onProgress: (received: number) => void,
+): Promise<void> {
   await new Promise<void>((resolvePipe, rejectPipe) => {
     const out = createWriteStream(file, { flags: append ? "a" : "w" });
     out.on("error", rejectPipe);
     out.on("finish", () => resolvePipe());
+    let received = baseBytes;
     (async (): Promise<void> => {
       for await (const chunk of body) {
-        if (chunk !== undefined && !out.write(Buffer.from(chunk))) {
-          await new Promise<void>((r) => out.once("drain", r));
+        if (chunk !== undefined) {
+          if (!out.write(Buffer.from(chunk))) {
+            await new Promise<void>((r) => out.once("drain", r));
+          }
+          received += chunk.length;
+          onProgress(received);
         }
       }
       out.end();
@@ -290,6 +329,7 @@ export async function downloadModels(
     bundles?: readonly ModelBundle[];
     fetchImpl?: FetchImpl;
     onProgress?: DownloadProgress;
+    onLog?: (line: DownloadLogLine) => void;
     signal?: AbortSignal;
   } = {},
 ): Promise<ModelsStatus> {

@@ -3,7 +3,7 @@
  * 只导出存储与配置相关 API（库、词表、端点解析、路径/配置），
  * 不导出 `runExtract` 流水线——桌面端按这个契约取数，流水线走 `@video-notes/core` 主入口。
  */
-export { cacheRoot, notesRoot, modelDir, llmCredentialsFromEnv, ASR_MODEL_ID } from "./core/config";
+export { cacheRoot, dataRoot, notesRoot, modelDir, llmCredentialsFromEnv, ASR_MODEL_ID } from "./core/config";
 export { cacheDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
@@ -14,7 +14,6 @@ export {
   readSettingsFileSafe,
   resolveSettings,
   saveSettings,
-  markAutoDownloadAttempted,
   settingsLockedByEnv,
 } from "./core/settings";
 export type {
@@ -32,6 +31,8 @@ export { resolveLlm, resolveAsr, resolveAsrFor } from "./core/credentials";
 export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr, AsrSecrets, VolcengineAuth } from "./core/credentials";
 export { cacheUsage, clearCache } from "./core/cache-usage";
 export { loadDotenvFiles } from "./core/env";
+export { migrateStorageLayout } from "./core/storage-layout";
+export type { StorageMigrationResult } from "./core/storage-layout";
 export { videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo } from "./core/library";
 export type { LibraryVideo, LibraryVideoStatus, LibraryDetail } from "./core/library";

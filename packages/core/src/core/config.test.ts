@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { asrEnv, envValue, llmEnv, llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { asrEnv, cacheRoot, dataRoot, envValue, llmEnv, llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
 
 beforeAll(() => {
   process.env.VNOTE_HOME = "/tmp/vnote-config-home";
@@ -37,8 +40,44 @@ describe("notesRoot", () => {
     expect(notesRoot(env)).toBe("/b");
   });
 
-  test("VNOTE_HOME 缺失时回落到 HOME 下的默认目录", () => {
+  test("VNOTE_HOME 缺失时回落到数据根", () => {
     expect(notesRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes");
+    expect(notesRoot({ VNOTE_DATA_ROOT: "/dr" })).toBe("/dr");
+  });
+});
+
+describe("dataRoot", () => {
+  test("优先级 VNOTE_DATA_ROOT > VNOTE_HOME > HOME 默认", () => {
+    expect(dataRoot({ VNOTE_DATA_ROOT: "/dr", VNOTE_HOME: "/home2", HOME: "/h" })).toBe("/dr");
+    expect(dataRoot({ VNOTE_HOME: "/home2", HOME: "/h" })).toBe("/home2");
+    expect(dataRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes");
+  });
+  test("VNOTE_DATA_ROOT 未设置时，VNOTE_HOME 决定根", () => {
+    expect(dataRoot({ VNOTE_HOME: "/notes" })).toBe("/notes");
+  });
+});
+
+
+describe("三个路径从同一数据根派生", () => {
+  test("VNOTE_DATA_ROOT 生效时 dataRoot、notesRoot、cacheRoot 都从它派生", () => {
+    const env: Record<string, string | undefined> = { VNOTE_DATA_ROOT: "/dr", HOME: "/h" };
+    expect(dataRoot(env)).toBe("/dr");
+    expect(notesRoot(env)).toBe("/dr");
+    expect(cacheRoot(env)).toBe("/dr/.cache");
+  });
+
+  test("VNOTE_HOME 存在时笔记根是 VNOTE_HOME，数据根仍是 VNOTE_DATA_ROOT", () => {
+    const env: Record<string, string | undefined> = { VNOTE_DATA_ROOT: "/dr", VNOTE_HOME: "/notes", HOME: "/h" };
+    expect(notesRoot(env)).toBe("/notes");
+    expect(dataRoot(env)).toBe("/dr");
+    expect(cacheRoot(env)).toBe("/dr/.cache");
+  });
+});
+
+describe("cacheRoot", () => {
+  test("VNOTE_CACHE_DIR 缺失时回落到 <数据根>/.cache", () => {
+    expect(cacheRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes/.cache");
+    expect(cacheRoot({ VNOTE_DATA_ROOT: "/dr" })).toBe("/dr/.cache");
   });
 });
 
@@ -50,8 +89,30 @@ describe("modelDir", () => {
     expect(modelDir(env)).toBe("/n");
   });
 
-  test("VNOTE_MODEL_DIR 缺失时回落到 HOME 下的默认目录", () => {
-    expect(modelDir({ HOME: "/h" })).toBe("/h/.cache/video-notes/models");
+  test("两个目录都不存在时（全新安装）返回 <数据根>/models", () => {
+    expect(modelDir({ HOME: "/h" })).toBe("/h/Documents/video-notes/models");
+  });
+
+  test("<数据根>/models 缺失且旧目录存在时回落到旧目录", () => {
+    const root = mkdtempSync(join(tmpdir(), "vnote-config-modeldir-"));
+    const home = join(root, "home");
+    const legacy = join(home, ".cache", "video-notes", "models");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "model.onnx"), "weights");
+    const env: Record<string, string | undefined> = { HOME: home, VNOTE_DATA_ROOT: join(root, "data") };
+    expect(modelDir(env)).toBe(legacy);
+  });
+
+  test("<数据根>/models 存在时优先于旧目录", () => {
+    const root = mkdtempSync(join(tmpdir(), "vnote-config-modeldir-"));
+    const home = join(root, "home");
+    const legacy = join(home, ".cache", "video-notes", "models");
+    mkdirSync(legacy, { recursive: true });
+    const data = join(root, "data");
+    const next = join(data, "models");
+    mkdirSync(next, { recursive: true });
+    const env: Record<string, string | undefined> = { HOME: home, VNOTE_DATA_ROOT: data };
+    expect(modelDir(env)).toBe(next);
   });
 });
 

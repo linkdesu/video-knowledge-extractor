@@ -53,7 +53,7 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 首发 macOS Apple Silicon，Windows 暂不验证、不承诺可用。
 
-本地 ASR 的模型是四个包（识别、说话人分离、声纹、标点），合计约 1.1 GB，放在模型目录里（默认 `~/.cache/video-notes/models`，用 `VNOTE_MODEL_DIR` 覆盖）。桌面端在本地 ASR 模式下模型未就绪时首次启动自动下载，`VNOTE_DISABLE_MODEL_DOWNLOAD=1` 停用自动下载（供测试与截图）。下载支持断点续传，每个文件落盘后按内置清单的 sha256 与字节数校验；校验失败删除未完成文件，本次下载失败且不再自动重试，可在设置页手动「下载模型」。设置页也可以「导入模型」（从本地目录、归档或单文件导入，同样过 sha256 校验）与「校验模型」；手动放进模型目录的文件显示「未校验」，点校验后生效。模型的下载、导入、校验与视频生成任务互斥：视频任务运行中拒绝安装与导入，模型操作进行中拒绝视频入队。
+本地 ASR 的模型是四个包（识别、说话人分离、声纹、标点），合计约 1.1 GB，放在模型目录里（默认 notes 根目录下的 `models/`，用 `VNOTE_MODEL_DIR` 覆盖；旧的 `~/.cache/video-notes/models` 启动时尝试搬进新位置，搬不动就继续使用旧目录）。模型下载不自动开始：在设置页点「下载模型」或「导入本地模型」后才会动网。下载支持断点续传，每个文件落盘后按内置清单的 sha256 与字节数校验；校验失败删除未完成文件，本次下载失败且不再自动重试。进度条与阶段日志（下载、校验、解压、安装）一直显示到模型真正「就绪」。设置页也可以「导入模型」（从本地目录、归档或单文件导入，同样过 sha256 校验）与「校验模型」；手动放进模型目录的文件显示「未校验」，点校验后生效。模型的下载、导入、校验与视频生成任务互斥：视频任务运行中拒绝安装与导入，模型操作进行中拒绝视频入队。
 
 转写默认走本地引擎；也可以用 `VNOTE_ASR_PROVIDER=remote` 或设置页切换到远程 ASR（OpenAI 兼容转录接口）。远程转写没有说话人分离，全部字幕归说话人1；端点不返回逐句时间戳时直接报「不能用于字幕」，不伪造整块字幕。
 
@@ -67,13 +67,13 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 ```bash
 cd apps/desktop
-bun run dev         # electron-vite 开发模式
+bun run dev         # electron-vite 开发模式；数据固定在 <repo>/tmp/dev-home（user-data/ 与 data/）
 bun run build       # 产出 out/
 bun run start       # 启动构建产物
 bun run package:mac # 打包 macOS arm64 未签名 .app 与 .dmg（release/）
 ```
 
-`package:mac` 先用最小 staging 复制 `out/` 与 `sherpa-onnx-node` 的原生包，再交给 `@electron/packager`（asar 内保留 `out/`，`**/node_modules/sherpa-onnx-*/**` 解包到 `app.asar.unpacked`），最后用 `hdiutil` 出 DMG（[ADR-0017](docs/adr/0017-mac-unsigned-package.md)）。产物 `apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app` 与 `Video Notes-<version>-arm64.dmg`，未签名、未公证；模型不内置（首次启动下载），ffmpeg 用系统或 Homebrew 安装。
+`package:mac` 先用最小 staging 复制 `out/` 与 `sherpa-onnx-node` 的原生包，再交给 `@electron/packager`（asar 内保留 `out/`，`**/node_modules/sherpa-onnx-*/**` 解包到 `app.asar.unpacked`），最后用 `hdiutil` 出 DMG（[ADR-0017](docs/adr/0017-mac-unsigned-package.md)）。产物 `apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app` 与 `Video Notes-<version>-arm64.dmg`，未签名、未公证；模型不内置（设置页手动下载或导入），ffmpeg 用系统或 Homebrew 安装。
 
 桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
 
@@ -83,13 +83,12 @@ bun run package:mac # 打包 macOS arm64 未签名 .app 与 .dmg（release/）
 
 | 变量 | 作用 |
 |---|---|
-| `VNOTE_HOME` | notes 根目录，默认 `~/Documents/video-notes` |
+| `VNOTE_HOME` / `VNOTE_DATA_ROOT` | 数据根目录，默认 `~/Documents/video-notes`；笔记就是根本身，缓存与模型在 `<根>/.cache`、`<根>/models` |
 | `VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` | OpenAI 兼容端点，两个变量都设才生效；两组名字都认，按字段取值，规范名优先 |
 | `VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` | 模型名，可留空，留空时调 `GET <base>/models` 自动发现 |
-| `VNOTE_MODEL_DIR` | 本地模型目录，默认 `~/.cache/video-notes/models` |
+| `VNOTE_MODEL_DIR` | 本地模型目录，默认 `<数据根>/models` |
 | `VNOTE_ASR_PROVIDER` | 转写提供方，`local`（默认）或 `remote` |
 | `VNOTE_ASR_BASE_URL` / `VNOTE_ASR_MODEL` / `VNOTE_ASR_API_KEY` | 远程 ASR（OpenAI 兼容转录接口）的端点、模型名与密钥 |
-| `VNOTE_DISABLE_MODEL_DOWNLOAD` | 设 `1` 停用首次启动自动下载（测试与截图用） |
 | `VNOTE_ENABLE_CLOUD_ASR` | 设 `1` 才在桌面端启用云端 ASR（OpenAI 兼容 / 火山）；默认只走本地 sherpa-onnx |
 | `VNOTE_FFMPEG_DIR` | 额外优先搜索 ffmpeg/ffprobe 的目录（打包后的 app 默认补 `/opt/homebrew/bin`、`/usr/local/bin`） |
 | `VNOTE_USER_DATA` | 只在开发/验收时用：覆盖 Electron `userData`（settings.json 与密钥库的位置），避免截图改动真实配置 |

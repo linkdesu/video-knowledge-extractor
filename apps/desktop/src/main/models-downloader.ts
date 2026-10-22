@@ -1,5 +1,5 @@
 import { MODEL_BUNDLES, acquireModelLock, downloadBundle, modelStatus, recoverModelDir } from "@video-notes/core";
-import type { DownloadSnapshot, ModelsStatus } from "@video-notes/core";
+import type { DownloadLogLine, DownloadSnapshot, ModelsStatus } from "@video-notes/core";
 
 /**
  * 模型下载器（ADR-0015 §4）：单个 in-flight；逐包下载，每包前 modelStatus 已 ready 则跳过；
@@ -8,7 +8,7 @@ import type { DownloadSnapshot, ModelsStatus } from "@video-notes/core";
 
 const QUIT_WAIT_MS = 2000;
 
-export type StartOptions = { onSnapshot: (s: DownloadSnapshot) => void; busy: () => boolean };
+export type StartOptions = { onSnapshot: (s: DownloadSnapshot) => void; onLog?: (line: DownloadLogLine) => void; busy: () => boolean };
 
 export type ModelDownloader = {
   busy(): boolean;
@@ -59,6 +59,7 @@ export function createModelDownloader(): ModelDownloader {
                 current = snap;
                 opts.onSnapshot(snap);
               },
+              onLog: opts.onLog,
             });
           }
           current = { state: "done", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null };
