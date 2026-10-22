@@ -464,26 +464,6 @@ textarea {
   font-size: 13px;
   color: var(--vn-muted);
 }
-.vn-select {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--vn-line);
-  border-radius: 10px;
-  padding: 9px 11px;
-  color: var(--vn-fg);
-  font-size: 13px;
-  outline: none;
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--vn-dim) 50%),
-    linear-gradient(135deg, var(--vn-dim) 50%, transparent 50%);
-  background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%;
-  background-size: 5px 5px;
-  background-repeat: no-repeat;
-}
-.vn-select:focus {
-  border-color: rgba(139, 92, 246, 0.6);
-}
 
 .vn-table {
   width: 100%;
@@ -724,4 +704,130 @@ textarea {
   .vn-cards2 {
     grid-template-columns: 1fr;
   }
+}
+
+/* 设置页 primitives（settings-form-3 改造，ADR-0022）。 */
+.vn-select-wrap {
+  position: relative;
+  width: 100%;
+}
+.vn-select-trigger {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  color: var(--vn-fg);
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.18s;
+}
+.vn-select-trigger:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+}
+.vn-select-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.vn-select-trigger[aria-expanded="true"] {
+  border-color: rgba(139, 92, 246, 0.6);
+}
+.vn-select-trigger:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.6);
+  outline-offset: 1px;
+}
+.vn-select-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vn-select-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--vn-dim);
+  flex-shrink: 0;
+}
+.vn-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  max-height: 264px;
+  overflow-y: auto;
+  background: #111420;
+  border: 1px solid var(--vn-line2);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.vn-select-list.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.vn-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--vn-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+.vn-select-option:hover,
+.vn-select-option[data-highlighted] {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--vn-fg);
+}
+.vn-select-option[aria-selected="true"] {
+  background: rgba(139, 92, 246, 0.14);
+  color: var(--vn-fg);
+}
+.vn-select-option-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vn-select-check {
+  color: var(--vn-violet);
+  flex-shrink: 0;
+}
+.vn-password {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vn-password > input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 40px;
+}
+.vn-btn-eye {
+  all: unset;
+  position: absolute;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--vn-dim);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: 0.18s;
+}
+.vn-btn-eye:hover {
+  color: var(--vn-fg);
+  background: rgba(255, 255, 255, 0.06);
 }
