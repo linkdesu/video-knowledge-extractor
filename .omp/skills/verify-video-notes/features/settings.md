@@ -44,15 +44,25 @@ Preconditions:
 
 ### Recipe: LLM save closed loop
 
-Precondition: the run's effective settings are not env-locked for LLM — the repo root `.env` must not set `IDEALSOFT_API_URL`/`IDEALSOFT_API_KEY` or `VNOTE_LLM_*` (see Gotchas). A locked run can only prove the model field (when `locked.model` is false) and UI state, never a baseUrl write.
+Two paths, decided by whether the run's LLM is env-locked (see Gotchas):
+
+- **env-locked** (the repo root `.env` or the shell sets `IDEALSOFT_API_URL`/`IDEALSOFT_API_KEY` or `VNOTE_LLM_*`): the endpoint is real but the input is read-only. Verify only "fetch + select model + save the model field" (when the model field itself is not locked): skip the base-url fill/press lines below and the baseUrl write assertions.
+- **not locked** (no `.env` / no LLM env): the endpoint is whatever you type. Use `$ENDPOINT` = an OpenAI-compatible endpoint the operator can use; when the verification machine has no usable endpoint, use a local mock instead, e.g. in a second terminal
+
+  ```bash
+  bun -e 'Bun.serve({ port: 9599, fetch: () => new Response(JSON.stringify({ data: [{ id: "mock-a" }] }), { headers: { "Content-Type": "application/json" } }) })'
+  ```
+
+  (returns `{"data":[{"id":"mock-a"}]}` for every request; then `$ENDPOINT=http://127.0.0.1:9599/v1`). Not locked you may also verify the baseUrl write (the fill/press lines below); everything else is identical.
 
 ```bash
 $V click-text '设置'
 $V wait "document.querySelector('[data-testid=settings-page]') !== null"
-$V fill '[data-testid=settings-llm-base-url]' 'https://llm.example.com/v1'
+# not locked only (env-locked: the input is read-only, skip these lines):
+$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"
 $V press Enter
 $V eval "document.querySelector('[data-testid=settings-llm-base-url]').value"
-# expected: "https://llm.example.com/v1"
+# expected: $ENDPOINT
 ```
 
 `fill` leaves focus on the input; `press Enter` saves the card (the same action as the 保存 button) — it does not merely blur. Pick the model through the DOM dropdown — never a native popup, never a dispatched change:
@@ -70,17 +80,17 @@ $V eval "document.querySelector('[data-testid=settings-llm-model]').value"
 $V snapshot settings-llm-model-open   # accessibility tree showing the listbox open with role=option rows
 ```
 
-On a metered connection type the model instead: `$V fill '[data-testid=settings-llm-model]' '<model>'` + `$V press Enter` (same local-draft path, no network). Then save and read back all three layers:
+On a metered connection type the model instead: `$V fill '[data-testid=settings-llm-model]' '<model>'` — a local draft only, no network. Do **not** press Enter here: Enter commits the card (the same action as the 保存 button), and this recipe's save is the 保存-button click below. Then save and read back:
 
 ```bash
 $V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
 $V click '[data-testid=settings-llm-save]'
-$V wait "window.vnote.settings().then(s => s.llm.baseUrl === 'https://llm.example.com/v1' && s.llm.model === '<model>')"
+$V wait "window.vnote.settings().then(s => s.llm.model === '<model>')"   # <model> = the selected or typed model
 # expected: condition met, not a timeout
 $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model }))"
-# expected: { "baseUrl": "https://llm.example.com/v1", "model": "<model>" } (baseUrl is echoed as origin+pathname)
+# not locked: { "baseUrl": "$ENDPOINT", "model": "<model>" } (baseUrl is echoed as origin+pathname); env-locked: baseUrl is the env endpoint
 cat tmp/verify/<run>/user-data/settings.json | grep -A2 '"llm"'
-# expected: "baseUrl": "https://llm.example.com/v1" and "model": "<model>"
+# not locked: expected: "baseUrl": "$ENDPOINT" and "model": "<model>"; env-locked: expected: "model": "<model>"
 $V shot settings-llm-saved
 $V snapshot settings-llm-saved
 ```
@@ -105,7 +115,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --run $R1-restart --port
 $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model, hasKey: s.llm.hasKey }))"
 # expected: identical to the pre-restart readback; llm.model equals the file's llm.model in tmp/verify/$R1/user-data/settings.json
 bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run $R1-restart
-# expected: exit 0 — the first check is that the process from state.json is alive and is Electron
+# expected: exit 0 — the first check is that the process from state.json is alive and is the executable recorded in state.json (a packaged app's process name is not Electron)
 ```
 
 ### Recipe: key field

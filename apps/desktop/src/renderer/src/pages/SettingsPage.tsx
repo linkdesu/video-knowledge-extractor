@@ -96,10 +96,15 @@ export function SettingsPage() {
     volcAccessKey: EMPTY_KEY,
   });
   const reloadTimers = useRef<number[]>([]);
+  const fetchGeneration = useRef(0);
   const prevBaseUrl = useRef<string | null>(null);
   const baseUrl = status?.llm.baseUrl ?? null;
   useEffect(() => {
-    if (prevBaseUrl.current !== null && prevBaseUrl.current !== baseUrl) setFetchedModels(null);
+    if (prevBaseUrl.current !== null && prevBaseUrl.current !== baseUrl) {
+      setFetchedModels(null);
+      // baseUrl 变了：在途的 listLlmModels 是旧端点的响应，丢弃。
+      fetchGeneration.current += 1;
+    }
     prevBaseUrl.current = baseUrl;
   }, [baseUrl]);
 
@@ -196,17 +201,25 @@ export function SettingsPage() {
   const fetchLlmModels = () => {
     setFetchingModels(true);
     setModelsFetchError(null);
+    fetchGeneration.current += 1;
+    const gen = fetchGeneration.current;
     window.vnote
       .listLlmModels()
       .then((r) => {
+        if (gen !== fetchGeneration.current) return;
         if (r.ok) {
           setFetchedModels(r.models);
         } else {
           setModelsFetchError(r.message);
         }
       })
-      .catch((err) => setModelsFetchError(errMessage(err)))
-      .finally(() => setFetchingModels(false));
+      .catch((err) => {
+        if (gen === fetchGeneration.current) setModelsFetchError(errMessage(err));
+      })
+      .finally(() => {
+        // 只有一次在途请求（按钮在 fetching 时禁用），所以无条件复位；否则被丢弃的那次会把按钮永久卡在「拉取中」。
+        setFetchingModels(false);
+      });
   };
 
   const saveLlm = () => {
@@ -258,12 +271,19 @@ export function SettingsPage() {
 
   const clearAsrSecret = (field: AsrSecretField, label: string, id: KeyFieldId) => {
     setKey(id, { clearing: true });
+    const draftAtStart = keys[id].draft;
     window.vnote
       .updateAsr({ secret: { field, clear: true } })
       .then(setStatus)
-      .then(() => showToast(`${label} 已清除`))
+      .then(() => {
+        showToast(`${label} 已清除`);
+        // 只在草稿仍等于清除时的快照时清空，失败或用户又输入过都不动。
+        setKeys((k) =>
+          k[id].draft === draftAtStart ? { ...k, [id]: { ...k[id], draft: "" } } : k,
+        );
+      })
       .catch((err) => showToast(`清除失败：${errMessage(err)}`))
-      .finally(() => setKey(id, { clearing: false, draft: "" }));
+      .finally(() => setKey(id, { clearing: false }));
   };
 
   const testLlm = () => {
@@ -403,13 +423,14 @@ export function SettingsPage() {
 
       <div className="vn-grid vn-cards2" data-testid="settings-page">
         <SettingsPanel title="语音转写" testId="settings-asr">
-          <SettingsField label="提供方" locked={asr.providerLocked}>
+          <SettingsField label="提供方" locked={asr.providerLocked} htmlFor="settings-asr-provider">
             {cloudAsr ? (
               <Select
                 id="settings-asr-provider"
                 value={asr.provider}
                 disabled={asr.providerLocked}
                 testId="settings-asr-provider"
+                ariaLabel="提供方"
                 options={(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => ({
                   value,
                   label: PROVIDER_LABEL[value],
@@ -429,8 +450,9 @@ export function SettingsPage() {
           </SettingsField>
           {cloudAsr && asr.provider === "openai" ? (
             <>
-              <SettingsField label="接口地址" locked={asr.openai.locked.baseUrl}>
+              <SettingsField label="接口地址" locked={asr.openai.locked.baseUrl} htmlFor="settings-asr-base-url">
                 <TextInput
+                  id="settings-asr-base-url"
                   value={asrText?.baseUrl ?? asr.openai.baseUrl}
                   placeholder="https://api.example.com/v1"
                   readOnly={asr.openai.locked.baseUrl}
@@ -443,8 +465,9 @@ export function SettingsPage() {
                   }}
                 />
               </SettingsField>
-              <SettingsField label="模型名" locked={asr.openai.locked.model}>
+              <SettingsField label="模型名" locked={asr.openai.locked.model} htmlFor="settings-asr-model">
                 <TextInput
+                  id="settings-asr-model"
                   value={asrText?.model ?? asr.openai.model}
                   readOnly={asr.openai.locked.model}
                   aria-label="模型名"
@@ -486,12 +509,13 @@ export function SettingsPage() {
             </>
           ) : cloudAsr && asr.provider === "volcengine" ? (
             <>
-              <SettingsField label="版本" locked={asr.volcengine.modeLocked}>
+              <SettingsField label="版本" locked={asr.volcengine.modeLocked} htmlFor="settings-asr-volc-mode">
                 <Select
                   id="settings-asr-volc-mode"
                   value={asr.volcengine.mode}
                   disabled={asr.volcengine.modeLocked}
                   testId="settings-asr-volc-mode"
+                  ariaLabel="版本"
                   options={(Object.keys(VOLC_MODE_LABEL) as VolcengineMode[]).map((value) => ({
                     value,
                     label: VOLC_MODE_LABEL[value],
@@ -521,12 +545,13 @@ export function SettingsPage() {
                   {volcModeInfo.resourceId}
                 </span>
               </SettingsField>
-              <SettingsField label="鉴权方式" locked={asr.volcengine.authModeLocked}>
+              <SettingsField label="鉴权方式" locked={asr.volcengine.authModeLocked} htmlFor="settings-asr-volc-auth">
                 <Select
                   id="settings-asr-volc-auth"
                   value={asr.volcengine.authMode}
                   disabled={asr.volcengine.authModeLocked}
                   testId="settings-asr-volc-auth"
+                  ariaLabel="鉴权方式"
                   options={(Object.keys(VOLC_AUTH_LABEL) as VolcengineAuthMode[]).map((value) => ({
                     value,
                     label: VOLC_AUTH_LABEL[value],
@@ -654,7 +679,7 @@ export function SettingsPage() {
         </SettingsPanel>
 
         <SettingsPanel title="总结分析" testId="settings-llm">
-          <SettingsField label="接口地址" locked={llm.locked.baseUrl}>
+          <SettingsField label="接口地址" locked={llm.locked.baseUrl} htmlFor="settings-llm-base-url">
             <TextInput
               id="settings-llm-base-url"
               value={llmCard?.draft.baseUrl ?? ""}
@@ -673,7 +698,7 @@ export function SettingsPage() {
               }}
             />
           </SettingsField>
-          <SettingsField label="模型名" locked={llm.locked.model}>
+          <SettingsField label="模型名" locked={llm.locked.model} htmlFor="settings-llm-model">
             <div className="vn-row">
               <TextInput
                 id="settings-llm-model"
@@ -696,7 +721,7 @@ export function SettingsPage() {
               <Button
                 size="sm"
                 data-testid="settings-llm-fetch-models"
-                disabled={fetchingModels || llmDirtyNow}
+                disabled={fetchingModels || llmBaseUrlDirty}
                 onClick={fetchLlmModels}
               >
                 {fetchingModels ? "拉取中…" : "拉取模型"}
@@ -713,6 +738,7 @@ export function SettingsPage() {
                 value={llmCard?.draft.model ?? ""}
                 disabled={llm.locked.model}
                 testId="settings-llm-model-select"
+                ariaLabel="模型名"
                 options={modelOptions(fetchedModels, llmCard?.draft.model ?? "")}
                 onChange={(v) =>
                   setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: v } } : c))
@@ -767,12 +793,20 @@ export function SettingsPage() {
             }}
             onClear={() => {
               setKey("llm", { clearing: true });
+              const draftAtStart = keys.llm.draft;
               window.vnote
                 .updateLlm({ clearApiKey: true })
                 .then(setStatus)
-                .then(() => showToast("API key 已清除"))
+                .then(() => {
+                  showToast("API key 已清除");
+                  setKeys((k) =>
+                    k.llm.draft === draftAtStart
+                      ? { ...k, llm: { ...k.llm, draft: "" } }
+                      : k,
+                  );
+                })
                 .catch((err) => showToast(`清除失败：${errMessage(err)}`))
-                .finally(() => setKey("llm", { clearing: false, draft: "" }));
+                .finally(() => setKey("llm", { clearing: false }));
             }}
           />
           <Button
@@ -878,12 +912,13 @@ function KeyRow({
 }) {
   return (
     <div className="vn-field" data-testid={`${testId}-field`}>
-      <label>{label}</label>
+      <label htmlFor={`${testId}-input`}>{label}</label>
       <div className="vn-row">
         <div style={{ flex: 1, minWidth: 0 }}>
           <PasswordInput
             value={state.draft}
             onChange={onDraft}
+            id={`${testId}-input`}
             onEnter={onSave}
             readOnly={!keyStorageAvailable}
             placeholder={hasKey ? "粘贴新 key 覆盖" : "输入 key"}

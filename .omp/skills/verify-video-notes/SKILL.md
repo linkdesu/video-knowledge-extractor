@@ -86,7 +86,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --run <old>-restart --po
   --user-data tmp/verify/<old>/user-data --home tmp/verify/<old>/home --model-dir <old run's modelDir>
 ```
 
-The main process points Electron's `userData` at `VNOTE_USER_DATA`, and `settings.json` / `secrets.bin` live in that directory; `--user-data` / `--home` / `--model-dir` are explicit directories that win over the new run's defaults. After the restart, assert twice: `drive eval "window.vnote.settings().then(s => s.llm)"` matches the on-disk `user-data/settings.json`, and `doctor` exits 0 — doctor checks that the process from `state.json` is alive and is Electron, which is the process-liveness assertion for the restarted run.
+The main process points Electron's `userData` at `VNOTE_USER_DATA`, and `settings.json` / `secrets.bin` live in that directory; `--user-data` / `--home` / `--model-dir` are explicit directories that win over the new run's defaults. After the restart, assert twice: `drive eval "window.vnote.settings().then(s => s.llm)"` matches the on-disk `user-data/settings.json`, and `doctor` exits 0 — doctor checks that the process from `state.json` is alive and is the executable recorded in `state.json` (a packaged app's process name is not Electron), which is the process-liveness assertion for the restarted run.
 
 ## Doctor
 
