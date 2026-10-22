@@ -116,6 +116,13 @@ export function planChunks(duration: number, silences: Silence[], limits?: Chunk
     cuts.push(cut);
     t = cut;
   }
+  // hardMax 收尾（ADR-0016 §6）：尾块短于 0.2 秒时，并入前一块会造出超 max 的块；
+  // 改为把最后一个切点前移到 duration-0.2（严格前进），得到两个合法块。
+  if (hardMax && cuts.length > 0) {
+    const last = cuts[cuts.length - 1];
+    const moved = Number((duration - 0.2).toFixed(6));
+    if (last !== undefined && duration - last < 0.2 && moved > (cuts[cuts.length - 2] ?? 0)) cuts[cuts.length - 1] = moved;
+  }
   const bounds = [0, ...cuts, duration];
   const raw: Chunk[] = [];
   for (let i = 0; i + 1 < bounds.length; i++) {
@@ -125,8 +132,9 @@ export function planChunks(duration: number, silences: Silence[], limits?: Chunk
   }
   // 短于 0.2 秒的块并入相邻块，保持时间轴覆盖连续。
   const blocks: Chunk[] = [];
-  for (const b of raw) {
-    if (b.end - b.start < 0.2) {
+  for (const [i, b] of raw.entries()) {
+    const isLast = i === raw.length - 1;
+    if (b.end - b.start < 0.2 && !(hardMax && isLast)) {
       const prev = blocks[blocks.length - 1];
       if (prev !== undefined) blocks[blocks.length - 1] = { ...prev, end: b.end };
       continue;

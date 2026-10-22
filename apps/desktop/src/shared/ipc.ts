@@ -94,8 +94,8 @@ export type VideoDetail = {
   transcript: TranscriptInfo | null;
   /** 生成这份字幕时用的 ASR 模型；旧目录为 null。 */
   asrModel: string | null;
-  /** 生成这份字幕时用的引擎；旧目录为 null，界面按本地显示（ADR-0015 §5）。 */
-  asrEngine: "local" | "remote" | null;
+  /** 生成这份字幕时用的引擎；旧目录为 null，旧 `remote` 在读取时映射为 `openai`（ADR-0016 §9）。 */
+  asrEngine: "local" | "openai" | "volcengine" | null;
   topics: TopicInfo[];
   corrections: CorrectionEntry[];
 };
@@ -103,7 +103,9 @@ export type VideoDetail = {
 /** 密钥来源：环境变量、系统密钥库、没有。 */
 export type KeySource = "env" | "stored" | "none";
 
-export type AsrProvider = "local" | "remote";
+export type AsrProvider = "local" | "openai" | "volcengine";
+export type VolcengineMode = "flash" | "standard";
+export type VolcengineAuthMode = "apiKey" | "appAccessKey";
 
 export type LlmStatus = {
   configured: boolean;
@@ -120,17 +122,34 @@ export type LlmStatus = {
   error: string | null;
 };
 
+export type AsrCredentialStatus = {
+  hasKey: boolean;
+  /** "env" 同时表示该字段由环境变量提供，界面据此显示「由环境变量控制」。 */
+  keySource: KeySource;
+  keyStorageAvailable: boolean;
+};
+
 export type AsrStatus = {
   provider: AsrProvider;
   providerLocked: boolean;
   local: { modelId: string; ready: boolean; missing: string[] };
-  remote: {
+  openai: {
     baseUrl: string;
     model: string;
     hasKey: boolean;
     keySource: KeySource;
     keyStorageAvailable: boolean;
     locked: { baseUrl: boolean; model: boolean };
+    error: string | null;
+  };
+  volcengine: {
+    mode: VolcengineMode;
+    modeLocked: boolean;
+    authMode: VolcengineAuthMode;
+    authModeLocked: boolean;
+    apiKey: AsrCredentialStatus;
+    appKey: AsrCredentialStatus;
+    accessKey: AsrCredentialStatus;
     error: string | null;
   };
 };
@@ -199,6 +218,8 @@ export type SettingsStatus = {
     asrProvider: boolean;
     asrBaseUrl: boolean;
     asrModel: boolean;
+    volcMode: boolean;
+    volcAuthMode: boolean;
   };
   appVersion: string;
 };
@@ -208,14 +229,27 @@ export type SettingsPatch = {
   cacheRoot?: string;
   modelDir?: string;
   llm?: { baseUrl?: string; model?: string };
-  asr?: { provider?: AsrProvider; remote?: { baseUrl?: string; model?: string } };
+  asr?: {
+    provider?: AsrProvider;
+    openai?: { baseUrl?: string; model?: string };
+    volcengine?: { mode?: VolcengineMode; authMode?: VolcengineAuthMode };
+  };
 };
 
 /** 密钥补丁：只上行，永不下行；两者同传会被拒绝。 */
 export type SecretPatch = { apiKey?: string; clearApiKey?: boolean };
 
 export type LlmUpdatePatch = { baseUrl?: string; model?: string } & SecretPatch;
-export type AsrUpdatePatch = { provider?: AsrProvider; remote?: { baseUrl?: string; model?: string } } & SecretPatch;
+
+export type AsrSecretField = "openaiKey" | "volcApiKey" | "volcAppKey" | "volcAccessKey";
+
+export type AsrUpdatePatch = {
+  provider?: AsrProvider;
+  openai?: { baseUrl?: string; model?: string };
+  volcengine?: { mode?: VolcengineMode; authMode?: VolcengineAuthMode };
+  /** 一次只改一个密钥；value 与 clear 同传拒绝。 */
+  secret?: { field: AsrSecretField; value?: string; clear?: boolean };
+};
 
 export type DirectoryKind = "notes" | "cache" | "model";
 

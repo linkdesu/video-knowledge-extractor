@@ -1,10 +1,14 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { asrEnv, envValue, llmEnv, llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
+
+beforeAll(() => {
+  process.env.VNOTE_HOME = "/tmp/vnote-config-home";
+  process.env.VNOTE_USER_DATA = "/tmp/vnote-config-data";
+});
 
 const saved: Record<string, string | undefined> = {};
 function withEnv(partial: Record<string, string | undefined>, fn: () => void): void {
   const keys = Object.keys(partial);
-  for (const key of keys) saved[key] = process.env[key];
   for (const [key, value] of Object.entries(partial)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -138,11 +142,41 @@ describe("llmEnv 与 asrEnv", () => {
 
   test("asrEnv 按变量表取分字段值", () => {
     const env = {
-      VNOTE_ASR_PROVIDER: "remote",
+      VNOTE_ASR_PROVIDER: "volcengine",
       VNOTE_ASR_BASE_URL: "https://asr",
       VNOTE_ASR_MODEL: "m-asr",
       VNOTE_ASR_API_KEY: "k-asr",
+      VNOTE_VOLC_API_KEY: "k-volc",
+      VNOTE_VOLC_APP_KEY: "k-app",
+      VNOTE_VOLC_ACCESS_KEY: "k-access",
+      VNOTE_ASR_VOLC_MODE: "standard",
+      VNOTE_ASR_VOLC_AUTH_MODE: "appAccessKey",
     };
-    expect(asrEnv(env)).toEqual({ provider: "remote", baseUrl: "https://asr", model: "m-asr", apiKey: "k-asr" });
+    expect(asrEnv(env)).toEqual({
+      provider: "volcengine",
+      baseUrl: "https://asr",
+      model: "m-asr",
+      apiKey: "k-asr",
+      volcApiKey: "k-volc",
+      volcAppKey: "k-app",
+      volcAccessKey: "k-access",
+      volcMode: "standard",
+      volcAuthMode: "appAccessKey",
+    });
+  });
+
+  test("旧 provider 值 remote 归一成 openai", () => {
+    expect(asrEnv({ VNOTE_ASR_PROVIDER: "remote" }).provider).toBe("openai");
+    expect(asrEnv({ VNOTE_ASR_PROVIDER: "openai" }).provider).toBe("openai");
+  });
+
+  test("VOLC_ASR_API_KEY 别名在 VNOTE_VOLC_API_KEY 缺失时生效", () => {
+    expect(asrEnv({ VOLC_ASR_API_KEY: "alias" }).volcApiKey).toBe("alias");
+    expect(asrEnv({}).volcApiKey).toBeUndefined();
+  });
+
+  test("VOLC_ASR_API_KEY 不覆盖已设置的 VNOTE_VOLC_API_KEY（规范名优先）", () => {
+    expect(asrEnv({ VNOTE_VOLC_API_KEY: "canonical", VOLC_ASR_API_KEY: "alias" }).volcApiKey).toBe("canonical");
+    expect(asrEnv({ VNOTE_VOLC_API_KEY: "  ", VOLC_ASR_API_KEY: "alias" }).volcApiKey).toBe("alias");
   });
 });

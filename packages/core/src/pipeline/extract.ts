@@ -27,7 +27,7 @@ export type ExtractInput = {
   /** 缓存根目录；缓存落在 `<cacheRoot>/<videoId>/`（ADR-0014）。 */
   cacheRoot: string;
   client?: LlmClient;
-  /** ASR 引擎配置；缺省用本地引擎（modelDir）。 */
+  /** ASR 引擎配置；缺省用本地引擎（modelDir）。火山标准版只收公网 URL，本地视频在预检即拒绝（ADR-0016 §6）。 */
   asr?: AsrConfig;
   /** 本次运行的 token；缺省 core 生成 randomUUID。 */
   runToken?: string;
@@ -48,7 +48,17 @@ export type ExtractResult = {
   staleRemoved: string[];
 };
 
+/** ADR-0016 §6：标准版只收公网 URL，本地视频是静态可判定的不兼容组合。 */
+const VOLCENGINE_STANDARD_LOCAL_VIDEO_ERROR = "火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR";
+
+/** 预检在 `probeVideo` 之前跑：零 ffmpeg、零目录创建，CLI 与直接调用方都快速失败。 */
+function assertAsrSupportsLocalVideo(asr: AsrConfig | undefined): void {
+  if (asr?.provider !== "volcengine") return;
+  if (asr.mode === "standard") throw new Error(VOLCENGINE_STANDARD_LOCAL_VIDEO_ERROR);
+}
+
 export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
+  assertAsrSupportsLocalVideo(input.asr);
   const notesRoot = input.notesRoot ?? defaultNotesRoot();
   const modelDir = input.modelDir ?? defaultModelDir();
   const client = input.client ?? createLlmClient(input.endpoint);

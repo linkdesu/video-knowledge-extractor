@@ -2,7 +2,10 @@ import { openSync, readFileSync, chmodSync, renameSync, writeSync, closeSync } f
 
 /** 密钥只存在于主进程（ADR-0015 §3）：safeStorage 密文 + 自写原子写，绝不落盘明文。 */
 
-export type SecretId = "llm" | "asr";
+/** 五个密钥位（ADR-0016 §5）：`asr` 沿用 r23 的 OpenAI 兼容 key，不迁移已存值。 */
+export const SECRET_IDS = ["llm", "asr", "volcApiKey", "volcAppKey", "volcAccessKey"] as const;
+
+export type SecretId = (typeof SECRET_IDS)[number];
 
 /** 加密器边界：Electron 用 safeStorage 包装，单测注入假实现（无 Electron 也能测往返与坏密文）。 */
 export type SecretCodec = {
@@ -34,7 +37,7 @@ export function writeBinaryAtomic(path: string, data: Buffer): void {
   }
 }
 
-/** 进程内密钥表：文件是 codec.encrypt(JSON({version:1, llm?, asr?})) 的二进制。 */
+/** 进程内密钥表：文件是 codec.encrypt(JSON({version:2, llm?, asr?, volcApiKey?, volcAppKey?, volcAccessKey?})) 的二进制。 */
 export type SecretStore = {
   available(): boolean;
   has(id: SecretId): boolean;
@@ -55,6 +58,12 @@ type StoreImpl = {
   loadError: string | null;
 };
 
+function failLoad(s: StoreImpl, message: string): void {
+  // 保留原文件不覆盖；只有显式 set/clear 才重写
+  s.values = {};
+  s.loadError = message;
+}
+
 function readStored(s: StoreImpl): void {
   s.loadError = null;
   let cipher: Buffer;
@@ -70,36 +79,48 @@ function readStored(s: StoreImpl): void {
   try {
     plain = s.codec.decrypt(cipher);
   } catch (err) {
-    // 保留原文件不覆盖；显式 set/clear 才重写
-    s.values = {};
-    s.loadError = `密钥文件解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}`;
+    failLoad(s, `密钥文件解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}`);
     return;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(plain);
   } catch {
-    s.values = {};
-    s.loadError = "密钥文件内容不是合法 JSON（原文件已保留）";
+    failLoad(s, "密钥文件内容不是合法 JSON（原文件已保留）");
     return;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    s.values = {};
-    s.loadError = "密钥文件内容不是对象（原文件已保留）";
+    failLoad(s, "密钥文件内容不是对象（原文件已保留）");
     return;
   }
   const obj = parsed as Record<string, unknown>;
+  const version = obj.version;
+  if (version !== 1 && version !== 2) {
+    failLoad(s, `密钥文件版本不支持（原文件已保留）：${JSON.stringify(version)}`);
+    return;
+  }
+  // v1 只有 llm/asr；v2 五个字段都接受。两边都只接受非空字符串，坏形状整份视为没有已存 key。
+  const ids = version === 1 ? (["llm", "asr"] as const) : SECRET_IDS;
   const next: Partial<Record<SecretId, string>> = {};
-  if (typeof obj.llm === "string" && obj.llm !== "") next.llm = obj.llm;
-  if (typeof obj.asr === "string" && obj.asr !== "") next.asr = obj.asr;
+  for (const id of ids) {
+    const value = obj[id];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value === "") {
+      failLoad(s, `密钥文件字段 ${id} 不是非空字符串（原文件已保留）`);
+      return;
+    }
+    next[id] = value;
+  }
   s.values = next;
 }
 
 function persist(s: StoreImpl): void {
   if (!s.codec.available()) throw new Error("系统密钥存储不可用，请用环境变量配置密钥");
-  const body: { version: 1; llm?: string; asr?: string } = { version: 1 };
-  if (s.values.llm !== undefined) body.llm = s.values.llm;
-  if (s.values.asr !== undefined) body.asr = s.values.asr;
+  const body: { version: 2 } & Partial<Record<SecretId, string>> = { version: 2 };
+  for (const id of SECRET_IDS) {
+    const value = s.values[id];
+    if (value !== undefined) body[id] = value;
+  }
   try {
     writeBinaryAtomic(s.file, s.codec.encrypt(JSON.stringify(body)));
   } catch (err) {
@@ -134,7 +155,7 @@ export function createSecretStore(input: { file: string; codec: SecretCodec }): 
     },
     all() {
       const out: string[] = [];
-      for (const id of ["llm", "asr"] as const) {
+      for (const id of SECRET_IDS) {
         const v = store.values[id];
         if (v !== undefined) out.push(v);
       }

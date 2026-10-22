@@ -32,7 +32,9 @@ import {
   deleteUtterance,
   deleteTopicSegment,
   mergeTopics,
+  asrEnv,
   resolveAsr,
+  resolveAsrFor,
   resolveLlm,
   resolveLlmEndpoint,
   resolveSettings,
@@ -44,16 +46,24 @@ import {
   listLibrary,
   saveSettings,
   acquireModelLock,
+  VOLCENGINE_STANDARD_RESOURCE_ID,
+  VOLCENGINE_STANDARD_SUBMIT_URL,
 } from "@video-notes/core";
+import { createVolcengineFlashProvider } from "../../../../packages/core/src/asr/providers/volcengine";
 import type {
   AppSettings,
+  AsrSecrets,
   CorrectionFileEntry,
-  LibraryVideo as CoreLibraryVideo,
+  KeySource,
   LibraryDetail as CoreLibraryDetail,
+  LibraryVideo as CoreLibraryVideo,
+  SettingsPatch as CoreSettingsPatch,
   VideoRef,
+  VolcengineAuth,
 } from "@video-notes/core";
 import {
   IPC,
+  type AsrSecretField,
   type AsrUpdatePatch,
   type CorrectionEntry,
   type DirectoryKind,
@@ -71,7 +81,7 @@ import {
 } from "../shared/ipc";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
-import { createSecretStore, type SecretCodec, type SecretStore } from "./secrets";
+import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { createModelDownloader } from "./models-downloader";
 
@@ -112,8 +122,19 @@ const electronCodec: SecretCodec = {
   encrypt: (plain: string) => safeStorage.encryptString(plain),
   decrypt: (cipher: Buffer) => safeStorage.decryptString(cipher),
 };
-let secretStore: ReturnType<typeof createSecretStore> | undefined;
-let txError: string | null = null;
+let secretStore: SecretStore | undefined;
+/** pending 事务门禁（ADR-0016 §5 硬规则 2）：非 null 时不发布运行时、不端点发现，拒绝入队与连接测试。 */
+let credentialTxError: string | null = null;
+/** 重放成功后解除门禁；失败保持门禁（commitCredentialUpdate 内部先重放旧 pending）。 */
+function clearTxAfterCommit(): void {
+  const err = replayCredentialTransaction({
+    userData: app.getPath("userData"),
+    settingsFile: SETTINGS_PATH(),
+    codec: electronCodec,
+    secretStore: requireStore(),
+  });
+  if (err === null) credentialTxError = null;
+}
 
 /** 单个 in-flight 下载器；状态查询与操作共用（ADR-0015 §4）。 */
 const modelsDownloader = createModelDownloader();
@@ -134,10 +155,11 @@ type LlmRuntime = {
   error: string | null;
 };
 type AsrRuntime = {
-  provider: "local" | "remote";
+  provider: "local" | "openai" | "volcengine";
   config:
     | { provider: "local"; modelDir: string }
-    | { provider: "remote"; baseUrl: string; model: string; apiKey: string }
+    | { provider: "openai"; baseUrl: string; model: string; apiKey: string }
+    | { provider: "volcengine"; mode: "flash" | "standard"; auth: VolcengineAuth }
     | undefined;
   hasKey: boolean;
   keySource: "env" | "stored" | "none";
@@ -146,16 +168,20 @@ type AsrRuntime = {
 let llmRuntime: LlmRuntime = { endpoint: undefined, discoveredModel: null, keySource: "none", error: null };
 let asrRuntime: AsrRuntime = { provider: "local", config: undefined, hasKey: false, keySource: "none", error: null };
 
-/** 错误与日志出口：脱敏集合 = env 两个 key + 密钥库已加载的两个 key + 两个 baseUrl，任一命中整体替换。 */
+/** 错误与日志出口：脱敏集合 = env 的 key 变量 + 密钥库全部值 + 两个 baseUrl，任一命中整体替换（ADR-0016 §7.1）。 */
 function sanitizeError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   const secrets: (string | undefined)[] = [
     process.env.VNOTE_LLM_API_KEY,
     process.env.IDEALSOFT_API_KEY,
     process.env.VNOTE_ASR_API_KEY,
+    process.env.VNOTE_VOLC_API_KEY,
+    process.env.VOLC_ASR_API_KEY,
+    process.env.VNOTE_VOLC_APP_KEY,
+    process.env.VNOTE_VOLC_ACCESS_KEY,
     ...(secretStore?.all() ?? []),
     settings.llm.baseUrl,
-    settings.asr.remote.baseUrl,
+    settings.asr.openai.baseUrl,
   ];
   for (const s of secrets) {
     if (s !== undefined && s !== "" && message.includes(s)) return "内部错误（详细信息已脱敏，见日志）";
@@ -163,9 +189,10 @@ function sanitizeError(err: unknown): string {
   return message;
 }
 
-/** 端点发现：空 model 时后台 GET /models 自选；失败把脱敏错误留在运行时上给界面。 */
+/** 端点发现：空 model 时后台 GET /models 自选；失败把脱敏错误留在运行时上给界面。门禁期间不启动（ADR-0016 §5 硬规则 2）。 */
 let discovery: Promise<void> | undefined;
 function startDiscovery(): void {
+  if (credentialTxError !== null) return;
   const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
   if (llm.value === undefined || llm.value.model !== "") return;
   const creds = llm.value;
@@ -180,7 +207,23 @@ function startDiscovery(): void {
 }
 
 /** 设置/密钥变更后重算两个运行时；失败时不重算，保持旧值（ADR-0015 §3）。 */
+function asrSecrets(): AsrSecrets {
+  const store = secretStore;
+  if (store === undefined) return {};
+  return {
+    openai: store.get("asr"),
+    volcApiKey: store.get("volcApiKey"),
+    volcAppKey: store.get("volcAppKey"),
+    volcAccessKey: store.get("volcAccessKey"),
+  };
+}
 function recomputeRuntimes(): void {
+  if (credentialTxError !== null) {
+    // 门禁：不发布解析结果与端点发现，运行时置为未配置（ADR-0016 §5 硬规则 2）
+    llmRuntime = { endpoint: undefined, discoveredModel: null, keySource: "none", error: credentialTxError };
+    asrRuntime = { provider: settings.asr.provider, config: undefined, hasKey: false, keySource: "none", error: credentialTxError };
+    return;
+  }
   try {
     const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
     llmRuntime = {
@@ -189,7 +232,7 @@ function recomputeRuntimes(): void {
       keySource: llm.keySource,
       error: llm.value === undefined ? (llm.missing.length > 0 ? `LLM 未配齐：${llm.missing.join("、")}` : null) : null,
     };
-    const asr = resolveAsr(settings, secretStore?.get("asr"), process.env);
+    const asr = resolveAsr(settings, asrSecrets(), process.env);
     asrRuntime = {
       provider: settings.asr.provider,
       config:
@@ -197,7 +240,9 @@ function recomputeRuntimes(): void {
           ? undefined
           : asr.value.provider === "local"
             ? { provider: "local", modelDir: settings.modelDir }
-            : { provider: "remote", baseUrl: asr.value.baseUrl, model: asr.value.model, apiKey: asr.value.apiKey },
+            : asr.value.provider === "openai"
+              ? { provider: "openai", baseUrl: asr.value.baseUrl, model: asr.value.model, apiKey: asr.value.apiKey }
+              : { provider: "volcengine", mode: asr.value.mode, auth: asr.value.auth },
       hasKey: asr.keySource !== "none",
       keySource: asr.keySource,
       error: asr.value === undefined ? (asr.missing.length > 0 ? `ASR 未配齐：${asr.missing.join("、")}` : null) : null,
@@ -366,7 +411,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     runToken: job.runToken,
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
-    asr: job.asr ?? { provider: "local", modelDir: job.config.modelDir },
+    asr: job.asr,
   });
   return state.handle;
 }
@@ -498,14 +543,22 @@ function detailDto(videoId: string): VideoDetail {
   return toDetailDto(detail);
 }
 
-/** 入队前的门禁（ADR-0015 §4/§7）：等端点发现、LLM 配齐、本地 ASR 模型 ready、队列为空。 */
+/** 入队前的门禁（ADR-0015 §4/§7、ADR-0016 §5 硬规则 2）：pending 门禁、等端点发现、LLM 配齐、火山标准版+本地视频静态拒绝、ASR 配齐、本地模型 ready、队列为空。 */
 async function ensurePipelineReady(): Promise<void> {
+  if (credentialTxError !== null) throw new Error(credentialTxError);
   if (discovery !== undefined) await discovery;
   if (llmRuntime.endpoint === undefined) {
     throw new Error("未配置 LLM 端点：请在设置里保存 base url 与 api key，或用环境变量配置");
   }
   if (llmRuntime.endpoint.model === "" && llmRuntime.discoveredModel === null) {
     throw new Error(`模型发现失败：请在设置里显式指定 model（${llmRuntime.error ?? "未知原因"}）`);
+  }
+  // 火山标准版只收公网 URL，本地视频路径永远不可用（ADR-0016 §6）
+  if (settings.asr.provider === "volcengine" && settings.asr.volcengine.mode === "standard") {
+    throw new Error("火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR");
+  }
+  if (settings.asr.provider !== "local" && asrRuntime.config === undefined) {
+    throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   }
   if (settings.asr.provider === "local") {
     const status = modelStatus(settings.modelDir);
@@ -517,8 +570,10 @@ async function ensurePipelineReady(): Promise<void> {
   if (queue.busy()) throw new Error("已有任务在运行，请等它结束再开始");
 }
 
-/** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结。 */
+/** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结；ASR 未配齐直接抛错，不回退本地（ADR-0016 §6）。 */
 function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[]): JobRequest {
+  const asrConfig = asrRuntime.config;
+  if (asrConfig === undefined) throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   return {
     kind,
     videoId,
@@ -526,7 +581,7 @@ function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, out
     outputDir,
     runToken: randomUUID(),
     endpoint: llmRuntime.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
-    asr: asrRuntime.config ?? { provider: "local", modelDir: settings.modelDir },
+    asr: asrConfig,
     config: { notesRoot: settings.notesRoot, cacheRoot: settings.cacheRoot, modelDir: settings.modelDir },
     ...(topicIds !== undefined ? { topicIds } : {}),
   };
@@ -645,7 +700,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     llm: llmStatus(),
     asr: asrStatusDto(),
     models: { ready: models.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes, autoDownloadDisabled: models.autoDownloadDisabled },
-    settingsFileError: txError !== null ? txError : (settingsFileError ?? secretStore?.error() ?? null),
+    settingsFileError: credentialTxError !== null ? credentialTxError : (settingsFileError ?? secretStore?.error() ?? null),
     ffmpeg: ff.ok,
     ffmpegVersion: ff.version,
     locked: {
@@ -657,26 +712,60 @@ async function settingsStatus(): Promise<SettingsStatus> {
       asrProvider: locked.asrProvider,
       asrBaseUrl: locked.asrBaseUrl,
       asrModel: locked.asrModel,
+      volcMode: locked.volcMode,
+      volcAuthMode: locked.volcAuthMode,
     },
     appVersion: app.getVersion(),
   };
 }
 
+/** 单个凭据字段的来源：只 env 提供是 env，只密钥库保存是 stored（ADR-0016 §9，逐字段独立于整套 Resolution.keySource）。 */
+function credentialFieldSource(envValue: string | undefined, stored: string | undefined): KeySource {
+  if (envValue !== undefined) return "env";
+  if (stored !== undefined && stored !== "") return "stored";
+  return "none";
+}
 function asrStatusDto(): SettingsStatus["asr"] {
   const local = modelStatus(settings.modelDir);
-  const remote = resolveAsr(settings, secretStore?.get("asr"), process.env);
+  const env = asrEnv(process.env);
+  const secrets = asrSecrets();
+  const openaiResolution = resolveAsrFor(settings, "openai", secrets, process.env);
+  const volcResolution = resolveAsrFor(settings, "volcengine", secrets, process.env);
+  const openaiKeyStored = secrets.openai;
   return {
     provider: settings.asr.provider,
     providerLocked: locked.asrProvider,
     local: { modelId: ASR_MODEL_ID, ready: local.ready, missing: local.bundles.filter((b) => b.state !== "ready").map((b) => b.title) },
-    remote: {
-      baseUrl: settings.asr.remote.baseUrl === "" ? "" : displayUrl(settings.asr.remote.baseUrl),
-      model: settings.asr.remote.model,
-      hasKey: asrRuntime.keySource !== "none",
-      keySource: asrRuntime.keySource,
+    openai: {
+      baseUrl: settings.asr.openai.baseUrl === "" ? "" : displayUrl(settings.asr.openai.baseUrl),
+      model: settings.asr.openai.model,
+      hasKey: env.apiKey !== undefined || (openaiKeyStored !== undefined && openaiKeyStored !== ""),
+      keySource: credentialFieldSource(env.apiKey, openaiKeyStored),
       keyStorageAvailable: secretStore?.available() ?? false,
       locked: { baseUrl: locked.asrBaseUrl, model: locked.asrModel },
-      error: asrRuntime.error,
+      error: credentialTxError !== null ? credentialTxError : openaiResolution.value === undefined && openaiResolution.missing.length > 0 ? `ASR 未配齐：${openaiResolution.missing.join("、")}` : null,
+    },
+    volcengine: {
+      mode: settings.asr.volcengine.mode,
+      modeLocked: locked.volcMode,
+      authMode: settings.asr.volcengine.authMode,
+      authModeLocked: locked.volcAuthMode,
+      apiKey: {
+        hasKey: env.volcApiKey !== undefined || (secrets.volcApiKey !== undefined && secrets.volcApiKey !== ""),
+        keySource: credentialFieldSource(env.volcApiKey, secrets.volcApiKey),
+        keyStorageAvailable: secretStore?.available() ?? false,
+      },
+      appKey: {
+        hasKey: env.volcAppKey !== undefined || (secrets.volcAppKey !== undefined && secrets.volcAppKey !== ""),
+        keySource: credentialFieldSource(env.volcAppKey, secrets.volcAppKey),
+        keyStorageAvailable: secretStore?.available() ?? false,
+      },
+      accessKey: {
+        hasKey: env.volcAccessKey !== undefined || (secrets.volcAccessKey !== undefined && secrets.volcAccessKey !== ""),
+        keySource: credentialFieldSource(env.volcAccessKey, secrets.volcAccessKey),
+        keyStorageAvailable: secretStore?.available() ?? false,
+      },
+      error: credentialTxError !== null ? credentialTxError : volcResolution.value === undefined && volcResolution.missing.length > 0 ? `ASR 未配齐：${volcResolution.missing.join("、")}` : null,
     },
   };
 }
@@ -712,6 +801,7 @@ function clearCacheNow(): { freedBytes: number } {
 }
 
 async function testLlm(): Promise<TestLlmResult> {
+  if (credentialTxError !== null) return { ok: false, model: null, message: credentialTxError };
   if (llmRuntime.endpoint === undefined) {
     return { ok: false, model: null, message: `未配置 LLM 端点：${llmRuntime.error ?? "请在设置里保存 base url 与 api key"}` };
   }
@@ -741,6 +831,7 @@ function requireStore(): SecretStore {
 }
 
 async function updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus> {
+  if (credentialTxError !== null) throw new Error(credentialTxError);
   return withSettingsWrite(() => {
     settings = commitCredentialUpdate({
       userData: app.getPath("userData"),
@@ -750,28 +841,105 @@ async function updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus> {
       settingsPatch: { llm: { baseUrl: patch.baseUrl, model: patch.model } },
       secret: { id: "llm", patch: { apiKey: patch.apiKey, clearApiKey: patch.clearApiKey } },
     });
+    clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
   });
 }
 
+/** secret.field 到 SecretId 的映射（ADR-0016 §9）：renderer 不发 store 内部 id。 */
+const ASR_SECRET_FIELD_TO_ID: Record<AsrSecretField, SecretId> = {
+  openaiKey: "asr",
+  volcApiKey: "volcApiKey",
+  volcAppKey: "volcAppKey",
+  volcAccessKey: "volcAccessKey",
+};
+const ASR_SECRET_FIELD_ENV: Record<AsrSecretField, () => string | undefined> = {
+  openaiKey: () => asrEnv(process.env).apiKey,
+  volcApiKey: () => asrEnv(process.env).volcApiKey,
+  volcAppKey: () => asrEnv(process.env).volcAppKey,
+  volcAccessKey: () => asrEnv(process.env).volcAccessKey,
+};
+const ASR_SECRET_FIELD_LABEL: Record<AsrSecretField, string> = {
+  openaiKey: "OpenAI API key",
+  volcApiKey: "火山 API Key",
+  volcAppKey: "火山 App Key",
+  volcAccessKey: "火山 Access Key",
+};
 async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
+  if (credentialTxError !== null) throw new Error(credentialTxError);
   return withSettingsWrite(() => {
+    const asrOut: NonNullable<CoreSettingsPatch["asr"]> = {};
+    if (patch.provider !== undefined) {
+      if (patch.provider !== "local" && patch.provider !== "openai" && patch.provider !== "volcengine") {
+        throw new Error(`设置 asr.provider 必须是 local / openai / volcengine，实际是 ${JSON.stringify(patch.provider)}`);
+      }
+      asrOut.provider = patch.provider;
+    }
+    if (patch.openai !== undefined) {
+      asrOut.openai = {};
+      if (patch.openai.baseUrl !== undefined) asrOut.openai.baseUrl = patch.openai.baseUrl;
+      if (patch.openai.model !== undefined) asrOut.openai.model = patch.openai.model;
+    }
+    if (patch.volcengine !== undefined) {
+      asrOut.volcengine = {};
+      if (patch.volcengine.mode !== undefined) {
+        if (patch.volcengine.mode !== "flash" && patch.volcengine.mode !== "standard") {
+          throw new Error(`设置 asr.volcengine.mode 必须是 flash / standard，实际是 ${JSON.stringify(patch.volcengine.mode)}`);
+        }
+        asrOut.volcengine.mode = patch.volcengine.mode;
+      }
+      if (patch.volcengine.authMode !== undefined) {
+        if (patch.volcengine.authMode !== "apiKey" && patch.volcengine.authMode !== "appAccessKey") {
+          throw new Error(`设置 asr.volcengine.authMode 必须是 apiKey / appAccessKey，实际是 ${JSON.stringify(patch.volcengine.authMode)}`);
+        }
+        asrOut.volcengine.authMode = patch.volcengine.authMode;
+      }
+    }
+    // 一次只改一个密钥：field 必填，value 与 clear 同传拒绝，空值按 clear（ADR-0016 §5）
+    const secretId: SecretId | undefined = patch.secret?.field === undefined
+      ? undefined
+      : patch.secret.field in ASR_SECRET_FIELD_TO_ID
+        ? ASR_SECRET_FIELD_TO_ID[patch.secret.field]
+        : undefined;
+    if (patch.secret !== undefined && secretId === undefined) {
+      throw new Error(`密钥字段必须是 openaiKey / volcApiKey / volcAppKey / volcAccessKey，实际是 ${JSON.stringify(patch.secret.field)}`);
+    }
+    let secretPatch: { apiKey?: string; clearApiKey?: boolean } = {};
+    if (secretId !== undefined) {
+      if (patch.secret !== undefined && patch.secret.value !== undefined && patch.secret.clear === true) {
+        throw new Error("不能同时保存和清除密钥");
+      }
+      if (patch.secret !== undefined && patch.secret.value === undefined && patch.secret.clear !== true) {
+        throw new Error("密钥更新必须传 value 或 clear 之一");
+      }
+      if (patch.secret !== undefined && patch.secret.value !== undefined && ASR_SECRET_FIELD_ENV[patch.secret.field]() !== undefined) {
+        throw new Error(`${ASR_SECRET_FIELD_LABEL[patch.secret.field]} 由环境变量控制，请用环境变量修改`);
+      }
+      if (patch.secret !== undefined && patch.secret.clear === true) {
+        secretPatch = { clearApiKey: true };
+      } else if (patch.secret !== undefined && patch.secret.value !== undefined) {
+        secretPatch = { apiKey: patch.secret.value === "" ? "" : patch.secret.value };
+        if (patch.secret.value === "") secretPatch = { clearApiKey: true };
+      }
+    }
     settings = commitCredentialUpdate({
       userData: app.getPath("userData"),
       settingsFile: SETTINGS_PATH(),
       codec: electronCodec,
       secretStore: requireStore(),
-      settingsPatch: { asr: { provider: patch.provider, remote: patch.remote } },
-      secret: { id: "asr", patch: { apiKey: patch.apiKey, clearApiKey: patch.clearApiKey } },
+      settingsPatch: Object.keys(asrOut).length > 0 ? { asr: asrOut } : {},
+      secret: { id: secretId ?? "asr", patch: secretPatch },
     });
+    clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
   });
 }
 
-/** 本地：检查 4 个包；远程：只 GET /models 证明鉴权与列表可达（不代表能转写，ADR-0015 §8）。 */
+/** 本地：检查 4 个包；OpenAI：GET /models；火山极速版：1 秒静音 WAV；火山标准版：官方示例 URL 提交一次（不轮询）。 */
 async function testAsr(): Promise<TestAsrResult> {
+  if (credentialTxError !== null) return { ok: false, modelsFound: null, message: credentialTxError };
   if (settings.asr.provider === "local") {
     const status = modelStatus(settings.modelDir);
     const ready = status.bundles.filter((b) => b.state === "ready").length;
@@ -779,23 +947,96 @@ async function testAsr(): Promise<TestAsrResult> {
       ? { ok: true, modelsFound: ready, message: "本地模型已全部就绪" }
       : { ok: false, modelsFound: ready, message: `本地模型缺 ${status.bundles.length - ready}/${status.bundles.length} 包，请在设置页下载或导入` };
   }
-  const asr = resolveAsr(settings, secretStore?.get("asr"), process.env);
+  const asr = resolveAsr(settings, asrSecrets(), process.env);
   if (asr.value === undefined) return { ok: false, modelsFound: null, message: `ASR 未配齐（${asr.missing.join("、")}）` };
-  const remote = asr.value;
-  if (remote.provider !== "remote") return { ok: false, modelsFound: null, message: "ASR 未配置为远程" };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const resolved = asr.value;
   try {
-    const res = await fetch(`${remote.baseUrl.replace(/\/$/, "")}/models`, {
-      headers: { Authorization: `Bearer ${remote.apiKey}` },
-      signal: controller.signal,
+    if (resolved.provider === "openai") {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const res = await fetch(`${resolved.baseUrl.replace(/\/$/, "")}/models`, {
+          headers: { Authorization: `Bearer ${resolved.apiKey}` },
+          signal: controller.signal,
+        });
+        if (!res.ok) return { ok: false, modelsFound: null, message: `连接失败：HTTP ${res.status}` };
+        return { ok: true, modelsFound: null, message: "连接成功，鉴权与模型列表可达（不代表能转写）" };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (resolved.provider !== "volcengine") {
+      return { ok: false, modelsFound: null, message: "ASR 提供方状态异常，请在设置里重新选择" };
+    }
+    if (resolved.mode === "flash") {
+      // 1 秒 16k 单声道 16-bit 静音 WAV（32 KB），远离空音频判定边界（ADR-0016 §9）
+      const seconds = 1;
+      const rate = 16_000;
+      const pcm = new Uint8Array(seconds * rate * 2);
+      const wav = new Uint8Array(44 + pcm.byteLength);
+      const dv = new DataView(wav.buffer);
+      dv.setUint32(0, 0x46465252, true); // RIFF
+      dv.setUint32(4, wav.byteLength - 8, true);
+      dv.setUint32(8, 0x44415753, true); // WAVE
+      dv.setUint32(12, 0x20746d66, true); // fmt
+      dv.setUint32(16, 16, true);
+      dv.setUint16(20, 1, true); // PCM
+      dv.setUint16(22, 1, true); // mono
+      dv.setUint32(24, rate, true);
+      dv.setUint32(28, rate * 2, true);
+      dv.setUint16(32, 2, true);
+      dv.setUint16(34, 16, true);
+      dv.setUint32(36, 0x64617461, true); // data
+      dv.setUint32(40, pcm.byteLength, true);
+      wav.set(pcm, 44);
+      const out = await createVolcengineFlashProvider(resolved.auth).transcribe(
+        { bytes: wav, fileName: "test.wav", format: "wav", duration: seconds },
+        fetch,
+      );
+      return out.segments.length > 0
+        ? { ok: true, modelsFound: null, message: "连接成功，鉴权与端点可达（样本返回了字幕，不代表整段能转写）" }
+        : { ok: true, modelsFound: null, message: "连接成功，鉴权与端点可达（样本为静音）" };
+    }
+    // 标准版：官方示例 URL 提交一次；提交成功（X-Api-Status-Code 20000000）即视为鉴权可达，不轮询（ADR-0016 §9）
+    const authHeaders: Record<string, string> = resolved.auth.kind === "apiKey"
+      ? { "X-Api-Key": resolved.auth.apiKey }
+      : { "X-Api-App-Key": resolved.auth.appKey, "X-Api-Access-Key": resolved.auth.accessKey };
+    const body = JSON.stringify({
+      user: { uid: resolved.auth.kind === "appAccessKey" ? resolved.auth.appKey : "video-notes" },
+      audio: { url: "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3" },
+      request: { model_name: "bigmodel", show_utterances: true, enable_itn: true, enable_punc: true, enable_speaker_info: false },
     });
-    if (!res.ok) return { ok: false, modelsFound: null, message: `连接失败：HTTP ${res.status}` };
-    return { ok: true, modelsFound: null, message: "连接成功，鉴权与模型列表可达（不代表能转写）" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const res = await fetch(VOLCENGINE_STANDARD_SUBMIT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Resource-Id": VOLCENGINE_STANDARD_RESOURCE_ID,
+          "X-Api-Request-Id": randomUUID(),
+          "X-Api-Sequence": "-1",
+          ...authHeaders,
+        },
+        body,
+        signal: controller.signal,
+      });
+      const statusCode = res.headers.get("x-api-status-code");
+      if (res.ok && statusCode === "20000000") {
+        return { ok: true, modelsFound: null, message: "连接成功，鉴权与端点可达（示例 URL 提交成功，未等待转写完成）" };
+      }
+      if (res.ok && statusCode === "45000002") {
+        return { ok: false, modelsFound: null, message: "音频样本被判定为空" };
+      }
+      return { ok: false, modelsFound: null, message: `提交失败：HTTP ${res.status}${statusCode !== null ? `，X-Api-Status-Code ${statusCode}` : ""}` };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err) {
-    return { ok: false, modelsFound: null, message: sanitizeError(err) };
-  } finally {
-    clearTimeout(timer);
+    // 45000002（空音频）由火山极速版按业务错误报出，单独给可读文案而不是鉴权失败
+    const message = sanitizeError(err);
+    if (message.includes("45000002")) return { ok: false, modelsFound: null, message: "音频样本被判定为空" };
+    return { ok: false, modelsFound: null, message };
   }
 }
 
@@ -897,13 +1138,13 @@ app.on("window-all-closed", () => {
 void app.whenReady().then(async () => {
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 首次自动下载
   secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
-  txError = replayCredentialTransaction({
+  credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
     settingsFile: SETTINGS_PATH(),
     codec: electronCodec,
     secretStore,
   });
-  if (txError !== null) console.warn(sanitizeError(new Error(txError)));
+  if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
   maybeAutoDownload();
 

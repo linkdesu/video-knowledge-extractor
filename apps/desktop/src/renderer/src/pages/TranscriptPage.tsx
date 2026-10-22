@@ -16,6 +16,18 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
   const playerRef = useRef<PlayerHandle | null>(null);
   const [t, setT] = useState(0);
 
+  // 旧 video.json 写的是 `remote`；main 读时已映射为 `openai`，这里再兼容一层（ADR-0016 §11）。
+  const asrEngine: string | null = detail.asrEngine;
+  const remoteAsr = asrEngine === "openai" || asrEngine === "remote" || asrEngine === "volcengine";
+  const asrLabel =
+    asrEngine === "volcengine"
+      ? detail.asrModel === "volc.seedasr.auc"
+        ? "火山引擎标准版（不含说话人分离）"
+        : "火山引擎极速版（不含说话人分离）"
+      : remoteAsr
+        ? "远程 ASR（不含说话人分离）"
+        : "本地";
+
   const transcript = detail.transcript;
   const speakers = transcript?.speakers ?? [];
   const utterances = transcript?.utterances ?? [];
@@ -80,7 +92,7 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
               转写模型 <b style={{ color: "#c4b5fd" }}>{detail.asrModel}</b> ·{" "}
             </>
           ) : null}
-          {detail.asrEngine === "remote" ? "远程 ASR（不含说话人分离）" : "本地"} ·{" "}
+          {asrLabel} ·{" "}
           {utterances.length} 条 · {speakers.length} 位说话人
         </>
       }
@@ -97,7 +109,7 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
       detail={
         <>
           <Player ref={playerRef} mediaUrl={detail.mediaUrl} onTime={setT} />
-          {detail.asrEngine === "remote" ? (
+          {remoteAsr ? (
             <p className="vn-hint" style={{ marginTop: 14 }}>
               远程 ASR 不含说话人分离。
             </p>

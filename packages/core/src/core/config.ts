@@ -20,6 +20,15 @@ export const REMOTE_CHUNK_MIN_SECONDS = 240;
 export const REMOTE_CHUNK_MAX_SECONDS = 300;
 /** 远程 ASR 缓存适配器版本，参与缓存键（ADR-0015）。 */
 export const REMOTE_ADAPTER_VERSION = 1;
+/** 火山引擎协议常量：端点、resource id、模型名不是用户配置（ADR-0016 §2）。 */
+export const VOLCENGINE_FLASH_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
+export const VOLCENGINE_FLASH_RESOURCE_ID = "volc.bigasr.auc_turbo";
+export const VOLCENGINE_FLASH_MODEL = "bigmodel";
+export const VOLCENGINE_FLASH_MODEL_ID = "volc.bigasr.auc_turbo";
+export const VOLCENGINE_STANDARD_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit";
+export const VOLCENGINE_STANDARD_QUERY_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query";
+export const VOLCENGINE_STANDARD_RESOURCE_ID = "volc.seedasr.auc";
+export const VOLCENGINE_STANDARD_MODEL_ID = "volc.seedasr.auc";
 
 export const CACHE_DIRNAME = ".cache";
 
@@ -52,12 +61,27 @@ export const ASR_ENV = {
   baseUrl: ["VNOTE_ASR_BASE_URL"],
   model: ["VNOTE_ASR_MODEL"],
   apiKey: ["VNOTE_ASR_API_KEY"],
+  volcApiKey: ["VNOTE_VOLC_API_KEY", "VOLC_ASR_API_KEY"],
+  volcAppKey: ["VNOTE_VOLC_APP_KEY"],
+  volcAccessKey: ["VNOTE_VOLC_ACCESS_KEY"],
+  volcMode: ["VNOTE_ASR_VOLC_MODE"],
+  volcAuthMode: ["VNOTE_ASR_VOLC_AUTH_MODE"],
 } as const;
 
 export type LlmCredentials = { baseUrl: string; apiKey: string; model?: string };
 
 export type LlmEnv = { baseUrl?: string; apiKey?: string; model?: string };
-export type AsrEnv = { provider?: string; baseUrl?: string; model?: string; apiKey?: string };
+export type AsrEnv = {
+  provider?: string;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  volcApiKey?: string;
+  volcAppKey?: string;
+  volcAccessKey?: string;
+  volcMode?: string;
+  volcAuthMode?: string;
+};
 
 /** 设置默认值、locked、凭据解析共用：规范名优先、trim、空串视为未设置（ADR-0009、ADR-0015）。 */
 export function envValue(env: EnvRecord, names: readonly string[]): string | undefined {
@@ -77,11 +101,18 @@ export function llmEnv(env: EnvRecord = process.env): LlmEnv {
 }
 
 export function asrEnv(env: EnvRecord = process.env): AsrEnv {
+  // 旧变量值 remote 视为 openai：迁移只在环境变量入口做一次（ADR-0016 §1）。
+  const provider = envValue(env, ASR_ENV.provider);
   return {
-    provider: envValue(env, ASR_ENV.provider),
+    provider: provider === "remote" ? "openai" : provider,
     baseUrl: envValue(env, ASR_ENV.baseUrl),
     model: envValue(env, ASR_ENV.model),
     apiKey: envValue(env, ASR_ENV.apiKey),
+    volcApiKey: envValue(env, ASR_ENV.volcApiKey),
+    volcAppKey: envValue(env, ASR_ENV.volcAppKey),
+    volcAccessKey: envValue(env, ASR_ENV.volcAccessKey),
+    volcMode: envValue(env, ASR_ENV.volcMode),
+    volcAuthMode: envValue(env, ASR_ENV.volcAuthMode),
   };
 }
 

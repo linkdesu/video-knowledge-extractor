@@ -339,25 +339,34 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
     expect(() => readVideoData(dir)).toThrow(/width/);
   });
 
-  test("非法 asrEngine 报错", () => {
+  test("非法 asrEngine 报错并列出全部合法值", () => {
     const dir = mkdtemp();
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), asrEngine: "cloud" } as unknown as VideoData);
-    expect(() => readVideoData(dir)).toThrow(/local 或 remote/);
+    expect(() => readVideoData(dir)).toThrow(/local 或 openai 或 volcengine/);
   });
 
-  test("写入后往返一致（非 null 值）", () => {
+  test("旧文档的 remote 读成 openai", () => {
     const dir = mkdtemp();
     const video = makeVideo(dir);
-    const d = emptyVideoData(video);
-    d.resolution = { width: 1920, height: 886 };
-    d.asrEngine = "remote";
-    d.runToken = "tok-123";
-    writeVideoData(dir, d);
-    const r = readVideoData(dir);
-    expect(r!.resolution).toEqual({ width: 1920, height: 886 });
-    expect(r!.asrEngine).toBe("remote");
-    expect(r!.runToken).toBe("tok-123");
+    writeVideoData(dir, { ...emptyVideoData(video), asrEngine: "remote" } as unknown as VideoData);
+    expect(readVideoData(dir)!.asrEngine).toBe("openai");
+  });
+
+  test("三个新值往返一致（非 null 值）", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    for (const engine of ["local", "openai", "volcengine"] as const) {
+      const d = emptyVideoData(video);
+      d.resolution = { width: 1920, height: 886 };
+      d.asrEngine = engine;
+      d.runToken = "tok-123";
+      writeVideoData(dir, d);
+      const r = readVideoData(dir);
+      expect(r!.resolution).toEqual({ width: 1920, height: 886 });
+      expect(r!.asrEngine).toBe(engine);
+      expect(r!.runToken).toBe("tok-123");
+    }
   });
 
   test("emptyVideoData 与迁移文档的三个字段默认 null", () => {

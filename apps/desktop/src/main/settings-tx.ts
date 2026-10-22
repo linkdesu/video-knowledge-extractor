@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { saveSettings } from "@video-notes/core/storage";
 import type { SettingsPatch as CoreSettingsPatch, AppSettings } from "@video-notes/core/storage";
 import type { SecretPatch } from "../shared/ipc";
-import { writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
+import { SECRET_IDS, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 
 /**
  * 端点与密钥分属 settings.json 与 secrets.bin，两份文件之间进程崩溃会留下「新地址配旧 key」的半套。
- * 事务语义（ADR-0015 §3）：先加密写 pending 记录，再幂等地 saveSettings → secrets.set/clear → 删 pending。
+ * 事务语义（ADR-0015 §3，ADR-0016 §5）：先加密写 pending 记录，再幂等地 saveSettings → secrets.set/clear → 删 pending。
  * 任一步失败保留 pending；启动时 replayCredentialTransaction 幂等重放。
  * 密钥变更是三种互斥动作之一（set / clear / 无动作）：纯端点更新不触碰密钥，重放也不会误清。
+ * 一次更新只改一个密钥；新提交前必须先重放旧 pending，失败就拒绝覆盖。
  */
 
 type SecretChange = { id: SecretId } & (
@@ -34,6 +35,22 @@ function pendingPath(userData: string): string {
 
 function writePending(userData: string, codec: SecretCodec, tx: PendingTx): void {
   writeBinaryAtomic(pendingPath(userData), codec.encrypt(JSON.stringify(tx)));
+}
+
+/**
+ * r23 留下的 pending.settings 是 v2 形状（`asr.provider: "remote"`、`asr.remote`），它不经过设置文件的读时迁移。
+ * 重放前在内存里转成 v3 patch：provider `remote` → `openai`，`remote` 块 → `openai` 块；已有 `openai` 时以它为准。
+ */
+function normalizePendingSettings(settings: CoreSettingsPatch): CoreSettingsPatch {
+  const raw = settings as unknown as Record<string, unknown>;
+  const asr = raw.asr;
+  if (typeof asr !== "object" || asr === null || Array.isArray(asr)) return settings;
+  const block = asr as Record<string, unknown>;
+  const nextAsr: Record<string, unknown> = { ...block };
+  delete nextAsr.remote;
+  if (nextAsr.provider === "remote") nextAsr.provider = "openai";
+  if (block.remote !== undefined && block.openai === undefined) nextAsr.openai = block.remote;
+  return { ...raw, asr: nextAsr } as CoreSettingsPatch;
 }
 
 function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | null; error: string | null } {
@@ -62,7 +79,7 @@ function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | nu
   if (typeof parsed.txId !== "string" || typeof parsed.createdAt !== "string" || typeof settings !== "object" || settings === null || typeof secret !== "object" || secret === null) {
     return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
   }
-  if (secret.id !== "llm" && secret.id !== "asr") return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
+  if (!(SECRET_IDS as readonly unknown[]).includes(secret.id)) return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
   if (secret.kind === "set") {
     if (typeof secret.value !== "string") return { tx: null, error: "pending 事务内容不完整（原文件已保留）" };
   } else if (secret.kind !== "clear" && secret.kind !== "none") {
@@ -72,7 +89,7 @@ function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | nu
     tx: {
       txId: parsed.txId,
       createdAt: parsed.createdAt,
-      settings,
+      settings: normalizePendingSettings(settings),
       // 上面已逐一校验 id 与 kind 分支，这里直接断言
       secret: secret as unknown as SecretChange,
     },
@@ -88,6 +105,7 @@ function applySecret(secret: SecretChange, store: SecretStore): void {
 /**
  * 提交一次「设置 + 密钥」更新。校验在写任何文件之前：
  * apiKey 与 clearApiKey 同传拒绝；带 apiKey 时存储必须可用。
+ * 写新 pending 之前先重放旧 pending：重放失败就抛错，绝不覆盖旧记录（ADR-0016 §5 硬规则 1）。
  * 任一步失败保留 pending 并抛错，运行时保持旧值。
  */
 export function commitCredentialUpdate(input: {
@@ -106,6 +124,9 @@ export function commitCredentialUpdate(input: {
   if (apiKey !== undefined && !secretStore.available()) {
     throw new Error("系统密钥存储不可用，请用环境变量配置密钥");
   }
+  // 旧 pending 未清时先幂等重放；失败则抛错且不写新记录，否则第二次保存会丢掉第一笔未完成的更新。
+  const replayError = replayCredentialTransaction({ userData, settingsFile, codec, secretStore });
+  if (replayError !== null) throw new Error(replayError);
   const change: SecretChange =
     clearApiKey === true
       ? { id: secret.id, kind: "clear" }

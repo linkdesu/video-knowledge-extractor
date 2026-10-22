@@ -84,15 +84,16 @@ async function main(): Promise<void> {
         "未配置 LLM 端点：请设置 VNOTE_LLM_BASE_URL 或 IDEALSOFT_API_URL，以及 VNOTE_LLM_API_KEY 或 IDEALSOFT_API_KEY（也可写进 .env）",
       );
     }
-    // ADR-0015 §5：CLI 走同一 ASR 边界（env key，不依赖 Electron），只配远程时也能转写
-    const asrSetting = resolveAsr(defaultSettings(process.env), undefined, process.env);
-    const asr =
-      asrSetting.value === undefined
-        ? { provider: "local" as const, modelDir: modelDir() }
-        : asrSetting.value.provider === "local"
-          ? { provider: "local" as const, modelDir: modelDir() }
-          : asrSetting.value;
-    console.error(`ASR: ${asr.provider === "local" ? "本地" : "远程"}`);
+    // ADR-0015 §5 / ADR-0016 §4：CLI 走同一 ASR 边界（env key，不依赖 Electron）。
+    // 选中提供方缺项时不回退本地（ADR-0016 §6）。
+    const asrSetting = resolveAsr(defaultSettings(process.env), {}, process.env);
+    if (asrSetting.value === undefined) {
+      throw new Error(`ASR 未配齐（${asrSetting.missing.join("、")}）`);
+    }
+    const asr = asrSetting.value.provider === "local" ? { provider: "local" as const, modelDir: modelDir() } : asrSetting.value;
+    console.error(
+      `ASR: ${asr.provider === "local" ? "本地" : asr.provider === "openai" ? "远程" : asr.mode === "flash" ? "火山引擎极速版" : "火山引擎标准版"}`,
+    );
     const result = await runExtract({
       videoPath,
       endpoint,

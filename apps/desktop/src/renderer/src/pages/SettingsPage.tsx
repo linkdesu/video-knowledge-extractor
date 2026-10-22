@@ -1,15 +1,50 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AsrProvider,
+  AsrSecretField,
   DirectoryKind,
   DownloadSnapshot,
   ModelsStatus,
   SettingsPatch,
   SettingsStatus,
+  VolcengineAuthMode,
+  VolcengineMode,
 } from "../../../shared/ipc";
 import { ModelPanel } from "../components/ModelPanel";
 import { errMessage, fmtBytes } from "../lib/format";
 import { showToast } from "../lib/toast";
+
+/** 火山引擎的端点与 resource id 是协议常量，不是用户配置（ADR-0016 §2）；这里只用于只读展示。 */
+const VOLC_MODE_INFO: Record<
+  VolcengineMode,
+  { endpoint: string; queryEndpoint?: string; resourceId: string }
+> = {
+  flash: {
+    endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+    resourceId: "volc.bigasr.auc_turbo",
+  },
+  standard: {
+    endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",
+    queryEndpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query",
+    resourceId: "volc.seedasr.auc",
+  },
+};
+
+const PROVIDER_LABEL: Record<AsrProvider, string> = {
+  local: "本地 sherpa-onnx",
+  openai: "远程 ASR（OpenAI 兼容）",
+  volcengine: "火山引擎 · 录音文件识别",
+};
+
+const VOLC_MODE_LABEL: Record<VolcengineMode, string> = {
+  flash: "极速版（同步，上传音频）",
+  standard: "标准版（异步，需公网 URL）",
+};
+
+const VOLC_AUTH_LABEL: Record<VolcengineAuthMode, string> = {
+  apiKey: "新版控制台 API Key",
+  appAccessKey: "旧版控制台 App Key + Access Key",
+};
 
 const FIELD_LABEL: Record<"notesRoot" | "cacheRoot" | "modelDir", string> = {
   notesRoot: "notes 根目录",
@@ -128,6 +163,8 @@ function CommitInput({ value, locked, placeholder, onCommit, testId }: TextCommi
 }
 
 type KeyFieldProps = {
+  /** 字段名（API key / API Key / App Key / Access Key）。 */
+  label: string;
   hasKey: boolean;
   keySource: "env" | "stored" | "none";
   keyStorageAvailable: boolean;
@@ -136,7 +173,15 @@ type KeyFieldProps = {
   testId: string;
 };
 
-function KeyField({ hasKey, keySource, keyStorageAvailable, onSave, onClear, testId }: KeyFieldProps) {
+function KeyField({
+  label,
+  hasKey,
+  keySource,
+  keyStorageAvailable,
+  onSave,
+  onClear,
+  testId,
+}: KeyFieldProps) {
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -144,18 +189,19 @@ function KeyField({ hasKey, keySource, keyStorageAvailable, onSave, onClear, tes
     if (!hasKey) setDraft("");
   }, [hasKey]);
 
+  // 每个密钥字段独立判断来源：env 提供的那个字段显示「由环境变量控制」，与整套凭据的解析结果无关。
   if (keySource === "env") {
     return (
       <div className="vn-field" data-testid={`${testId}-field`}>
-        <label>API key</label>
-        <span className="vn-hint">由环境变量提供</span>
+        <label>{label}</label>
+        <span className="vn-hint">由环境变量控制</span>
       </div>
     );
   }
   if (hasKey) {
     return (
       <div className="vn-field" data-testid={`${testId}-field`}>
-        <label>API key</label>
+        <label>{label}</label>
         <div className="vn-row">
           <span className="vn-hint">已保存（系统密钥库）</span>
           {keyStorageAvailable ? (
@@ -180,7 +226,7 @@ function KeyField({ hasKey, keySource, keyStorageAvailable, onSave, onClear, tes
   }
   return (
     <div className="vn-field" data-testid={`${testId}-field`}>
-      <label>API key</label>
+      <label>{label}</label>
       <div className="vn-row">
         <input
           type="password"
@@ -199,7 +245,7 @@ function KeyField({ hasKey, keySource, keyStorageAvailable, onSave, onClear, tes
               }
             }
           }}
-          aria-label={`${testId} API key`}
+          aria-label={label}
           data-testid={`${testId}-input`}
         />
         {keyStorageAvailable ? (
@@ -282,6 +328,23 @@ export function SettingsPage() {
       .then(setStatus)
       .catch((err) => showToast(`保存失败：${errMessage(err)}`));
   }, []);
+
+  // 一次只改一个密钥：四个字段各自一次调用（ADR-0016 §5），两次保存之间是可见的中间态。
+  const saveSecret =
+    (field: AsrSecretField, label: string) =>
+    (value: string): Promise<void> =>
+      window.vnote
+        .updateAsr({ secret: { field, value } })
+        .then(setStatus)
+        .then(() => showToast(`${label} 已保存`));
+
+  const clearSecret =
+    (field: AsrSecretField, label: string) =>
+    (): Promise<void> =>
+      window.vnote
+        .updateAsr({ secret: { field, clear: true } })
+        .then(setStatus)
+        .then(() => showToast(`${label} 已清除`));
 
   const testLlm = () => {
     setTestingLlm(true);
@@ -376,6 +439,7 @@ export function SettingsPage() {
 
   const asr = status.asr;
   const llm = status.llm;
+  const volcModeInfo = VOLC_MODE_INFO[asr.volcengine.mode];
   const busyModel = downloading || importing || verifying;
   const localMissing =
     models !== null
@@ -401,54 +465,53 @@ export function SettingsPage() {
                 update({ asr: { provider: e.target.value as AsrProvider } })
               }
             >
-              <option value="local">本地 sherpa-onnx</option>
-              <option value="remote">远程 ASR（OpenAI 兼容）</option>
+              {(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => (
+                <option key={value} value={value}>
+                  {PROVIDER_LABEL[value]}
+                </option>
+              ))}
             </select>
             {asr.providerLocked ? (
               <span className="vn-hint">由环境变量控制</span>
             ) : null}
           </div>
-          {asr.provider === "remote" ? (
+          {asr.provider === "openai" ? (
             <>
               <div className="vn-field">
                 <label>接口地址</label>
                 <CommitInput
-                  value={asr.remote.baseUrl}
-                  locked={asr.remote.locked.baseUrl}
+                  value={asr.openai.baseUrl}
+                  locked={asr.openai.locked.baseUrl}
                   placeholder="https://api.example.com/v1"
-                  onCommit={(v) => update({ asr: { remote: { baseUrl: v } } })}
+                  onCommit={(v) => update({ asr: { openai: { baseUrl: v } } })}
                   testId="settings-asr-base-url"
                 />
-                {asr.remote.locked.baseUrl ? <span className="vn-hint">由环境变量控制</span> : null}
+                {asr.openai.locked.baseUrl ? <span className="vn-hint">由环境变量控制</span> : null}
               </div>
               <div className="vn-field">
                 <label>模型名</label>
                 <CommitInput
-                  value={asr.remote.model}
-                  locked={asr.remote.locked.model}
-                  onCommit={(v) => update({ asr: { remote: { model: v } } })}
+                  value={asr.openai.model}
+                  locked={asr.openai.locked.model}
+                  onCommit={(v) => update({ asr: { openai: { model: v } } })}
                   testId="settings-asr-model"
                 />
-                {asr.remote.locked.model ? <span className="vn-hint">由环境变量控制</span> : null}
+                {asr.openai.locked.model ? <span className="vn-hint">由环境变量控制</span> : null}
               </div>
               <KeyField
-                hasKey={asr.remote.hasKey}
-                keySource={asr.remote.keySource}
-                keyStorageAvailable={asr.remote.keyStorageAvailable}
+                label="API key"
+                hasKey={asr.openai.hasKey}
+                keySource={asr.openai.keySource}
+                keyStorageAvailable={asr.openai.keyStorageAvailable}
                 testId="settings-asr-key"
-                onSave={(key) =>
-                  window.vnote
-                    .updateAsr({ apiKey: key })
-                    .then(setStatus)
-                    .then(() => showToast("API key 已保存"))
-                }
-                onClear={() =>
-                  window.vnote
-                    .updateAsr({ clearApiKey: true })
-                    .then(setStatus)
-                    .then(() => showToast("API key 已清除"))
-                }
+                onSave={saveSecret("openaiKey", "API key")}
+                onClear={clearSecret("openaiKey", "API key")}
               />
+              {asr.openai.error !== null ? (
+                <p className="vn-hint" data-testid="settings-asr-error">
+                  {asr.openai.error}
+                </p>
+              ) : null}
               <button
                 type="button"
                 data-testid="settings-test-asr"
@@ -458,6 +521,131 @@ export function SettingsPage() {
               >
                 {testingAsr ? "测试中…" : "测试连接"}
               </button>
+              <p className="vn-hint" style={{ marginTop: 8 }}>
+                远程 ASR 不含说话人分离。
+              </p>
+            </>
+          ) : asr.provider === "volcengine" ? (
+            <>
+              <div className="vn-field">
+                <label>版本</label>
+                <select
+                  className="vn-select"
+                  value={asr.volcengine.mode}
+                  disabled={asr.volcengine.modeLocked}
+                  data-testid="settings-asr-volc-mode"
+                  onChange={(e) =>
+                    update({
+                      asr: { volcengine: { mode: e.target.value as VolcengineMode } },
+                    })
+                  }
+                >
+                  {(Object.keys(VOLC_MODE_LABEL) as VolcengineMode[]).map((value) => (
+                    <option key={value} value={value}>
+                      {VOLC_MODE_LABEL[value]}
+                    </option>
+                  ))}
+                </select>
+                {asr.volcengine.modeLocked ? (
+                  <span className="vn-hint">由环境变量控制</span>
+                ) : null}
+              </div>
+              <div className="vn-field">
+                <label>{volcModeInfo.queryEndpoint === undefined ? "端点" : "端点（提交 / 查询）"}</label>
+                <span className="vn-read" data-testid="settings-asr-volc-endpoint">
+                  {volcModeInfo.endpoint}
+                </span>
+                {volcModeInfo.queryEndpoint === undefined ? null : (
+                  <span className="vn-read" data-testid="settings-asr-volc-query-endpoint">
+                    {volcModeInfo.queryEndpoint}
+                  </span>
+                )}
+              </div>
+              <div className="vn-field">
+                <label>Resource ID</label>
+                <span className="vn-read" data-testid="settings-asr-volc-resource-id">
+                  {volcModeInfo.resourceId}
+                </span>
+              </div>
+              <div className="vn-field">
+                <label>鉴权方式</label>
+                <select
+                  className="vn-select"
+                  value={asr.volcengine.authMode}
+                  disabled={asr.volcengine.authModeLocked}
+                  data-testid="settings-asr-volc-auth"
+                  onChange={(e) =>
+                    update({
+                      asr: {
+                        volcengine: { authMode: e.target.value as VolcengineAuthMode },
+                      },
+                    })
+                  }
+                >
+                  {(Object.keys(VOLC_AUTH_LABEL) as VolcengineAuthMode[]).map((value) => (
+                    <option key={value} value={value}>
+                      {VOLC_AUTH_LABEL[value]}
+                    </option>
+                  ))}
+                </select>
+                {asr.volcengine.authModeLocked ? (
+                  <span className="vn-hint">由环境变量控制</span>
+                ) : null}
+              </div>
+              {asr.volcengine.authMode === "apiKey" ? (
+                <KeyField
+                  label="API Key"
+                  hasKey={asr.volcengine.apiKey.hasKey}
+                  keySource={asr.volcengine.apiKey.keySource}
+                  keyStorageAvailable={asr.volcengine.apiKey.keyStorageAvailable}
+                  testId="settings-asr-volc-api-key"
+                  onSave={saveSecret("volcApiKey", "API Key")}
+                  onClear={clearSecret("volcApiKey", "API Key")}
+                />
+              ) : (
+                <>
+                  <KeyField
+                    label="App Key"
+                    hasKey={asr.volcengine.appKey.hasKey}
+                    keySource={asr.volcengine.appKey.keySource}
+                    keyStorageAvailable={asr.volcengine.appKey.keyStorageAvailable}
+                    testId="settings-asr-volc-app-key"
+                    onSave={saveSecret("volcAppKey", "App Key")}
+                    onClear={clearSecret("volcAppKey", "App Key")}
+                  />
+                  <KeyField
+                    label="Access Key"
+                    hasKey={asr.volcengine.accessKey.hasKey}
+                    keySource={asr.volcengine.accessKey.keySource}
+                    keyStorageAvailable={asr.volcengine.accessKey.keyStorageAvailable}
+                    testId="settings-asr-volc-access-key"
+                    onSave={saveSecret("volcAccessKey", "Access Key")}
+                    onClear={clearSecret("volcAccessKey", "Access Key")}
+                  />
+                </>
+              )}
+              {asr.volcengine.error !== null ? (
+                <p className="vn-hint" data-testid="settings-asr-volc-error">
+                  {asr.volcengine.error}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                data-testid="settings-test-asr"
+                className="vn-btn sm"
+                onClick={testAsr}
+                disabled={testingAsr}
+              >
+                {testingAsr ? "测试中…" : "测试连接"}
+              </button>
+              {asr.volcengine.mode === "standard" ? (
+                <p className="vn-hint" style={{ marginTop: 8 }} data-testid="settings-asr-volc-url-hint">
+                  只接受公网 URL；本地视频请用极速版或本地 ASR。
+                </p>
+              ) : null}
+              <p className="vn-hint" style={{ marginTop: 8 }} data-testid="settings-asr-volc-billing-hint">
+                测试会发一次真实请求，可能计费。
+              </p>
               <p className="vn-hint" style={{ marginTop: 8 }}>
                 远程 ASR 不含说话人分离。
               </p>
@@ -531,6 +719,7 @@ export function SettingsPage() {
             ) : null}
           </div>
           <KeyField
+            label="API key"
             hasKey={llm.hasKey}
             keySource={llm.keySource}
             keyStorageAvailable={llm.keyStorageAvailable}

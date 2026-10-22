@@ -37,6 +37,68 @@ function fakeClient(): LlmClient {
   };
 }
 
+describe("runExtract 的火山标准版预检（ADR-0016 §6）", () => {
+  const STANDARD_LOCAL_VIDEO_ERROR = "火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR";
+
+  function withEnv<T>(values: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(values)) {
+      previous.set(key, process.env[key]);
+      process.env[key] = value;
+    }
+    return fn().finally(() => {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+  }
+
+  test("标准版 + 本地视频在 probeVideo 之前拒绝，不建目录、不做文件工作", async () => {
+    const dir = mkdtemp();
+    const notesRoot = join(dir, "notes");
+    const cacheRoot = join(dir, "cache");
+    const userData = join(dir, "user-data");
+    // 故意指向不存在的文件：预检若不在最前，报错会变成 ffprobe 的文件错误
+    const videoPath = join(dir, "in.mp4");
+    await withEnv({ VNOTE_HOME: notesRoot, VNOTE_USER_DATA: userData }, async () => {
+      const err = await runExtract({
+        videoPath,
+        notesRoot,
+        endpoint,
+        cacheRoot,
+        client: fakeClient(),
+        asr: { provider: "volcengine", mode: "standard", auth: { kind: "apiKey", apiKey: "test-key" } },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe(STANDARD_LOCAL_VIDEO_ERROR);
+      // 输出目录、缓存目录、用户数据目录都还没被创建
+      expect(existsSync(notesRoot)).toBe(false);
+      expect(existsSync(cacheRoot)).toBe(false);
+      expect(existsSync(userData)).toBe(false);
+      expect(existsSync(join(dir, "video.json"))).toBe(false);
+    });
+  });
+
+  test("极速版不被预检拒绝：失败点后移到读源文件", async () => {
+    const dir = mkdtemp();
+    const notesRoot = join(dir, "notes");
+    const cacheRoot = join(dir, "cache");
+    await withEnv({ VNOTE_HOME: notesRoot, VNOTE_USER_DATA: join(dir, "user-data") }, async () => {
+      const err = await runExtract({
+        videoPath: join(dir, "in.mp4"),
+        notesRoot,
+        endpoint,
+        cacheRoot,
+        client: fakeClient(),
+        asr: { provider: "volcengine", mode: "flash", auth: { kind: "apiKey", apiKey: "test-key" } },
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).not.toBe(STANDARD_LOCAL_VIDEO_ERROR);
+    });
+  });
+});
+
 /**
  * extract 无法注入 probe/ASR（`runExtract` 直接调 `probeVideo` 与 `createAsrEngine`），
  * 故用真 mp4 + 指向不存在模型目录的本地 ASR 触发失败：失败点在 `engine.run`（onPrepared 之后、
