@@ -15,6 +15,14 @@ export {
   REMOTE_CHUNK_MIN_SECONDS,
   REMOTE_CHUNK_MAX_SECONDS,
   REMOTE_ADAPTER_VERSION,
+  VOLCENGINE_FLASH_URL,
+  VOLCENGINE_FLASH_RESOURCE_ID,
+  VOLCENGINE_FLASH_MODEL,
+  VOLCENGINE_FLASH_MODEL_ID,
+  VOLCENGINE_STANDARD_SUBMIT_URL,
+  VOLCENGINE_STANDARD_QUERY_URL,
+  VOLCENGINE_STANDARD_RESOURCE_ID,
+  VOLCENGINE_STANDARD_MODEL_ID,
 } from "./core/config";
 export { cacheDirFor } from "./core/paths";
 export {
@@ -36,10 +44,12 @@ export type {
   LlmSettings,
   AsrSettings,
   AsrProvider,
+  VolcengineMode,
+  VolcengineAuthMode,
   LockedSettings,
 } from "./core/settings";
-export { resolveLlm, resolveAsr } from "./core/credentials";
-export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr } from "./core/credentials";
+export { resolveLlm, resolveAsr, resolveAsrFor } from "./core/credentials";
+export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr, AsrSecrets, VolcengineAuth } from "./core/credentials";
 export { cacheUsage, clearCache } from "./core/cache-usage";
 export { resolveEndpointFromEnv, resolveLlmEndpoint } from "./llm/endpoint";
 export type { Progress, StepName, LlmEndpoint } from "./core/steps";

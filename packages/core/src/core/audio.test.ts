@@ -99,6 +99,27 @@ describe("planChunks hardMax", () => {
   });
 });
 
+describe("planChunks hardMax 收尾（ADR-0016 §6）", () => {
+  const remoteLimits = { target: 280, min: 240, max: 300, hardMax: true };
+  test("300.1s 无停顿：尾块短于 0.2s，最后切点前移到 299.9，两块都 ≤300 且首尾连续无遗漏", () => {
+    const chunks = planChunks(300.1, [], remoteLimits);
+    expect(chunks.map((c) => [c.start, c.end])).toEqual([[0, 299.9], [299.9, 300.1]]);
+    for (const c of chunks) expect(c.end - c.start).toBeLessThanOrEqual(300);
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]?.start).toBe(chunks[i - 1]?.end);
+    }
+    expect(chunks[0]?.start).toBe(0);
+    expect(chunks[chunks.length - 1]?.end).toBe(300.1);
+  });
+  test("600.1s 无停顿：得到 [0,300] [300,599.9] [599.9,600.1]", () => {
+    const chunks = planChunks(600.1, [], remoteLimits);
+    expect(chunks.map((c) => [c.start, c.end])).toEqual([[0, 300], [300, 599.9], [599.9, 600.1]]);
+    for (const c of chunks) expect(c.end - c.start).toBeLessThanOrEqual(300);
+    expect(chunks[0]?.start).toBe(0);
+    expect(chunks[chunks.length - 1]?.end).toBe(600.1);
+  });
+});
+
 describe("parseProbeJson", () => {
   test("有视频流：取宽高与时长", () => {
     const raw = JSON.stringify({ streams: [{ width: 886, height: 1920 }], format: { duration: "12.5" } });

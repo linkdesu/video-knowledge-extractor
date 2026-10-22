@@ -1,5 +1,7 @@
 /**
- * 远程 ASR 引擎（ADR-0015 §5）：OpenAI 兼容 `POST <baseUrl>/audio/transcriptions`。
+ * 远程 ASR 的共享分块管线（ADR-0016 §6）：
+ * 读 WAV、静音检测、`planChunks`、切片、可选转码、逐块缓存、重试节奏、时间偏移、
+ * 进度、单说话人组装。协议全部在 `providers/`（OpenAI 兼容 / 火山引擎）。
  * 块切分用 `hardMax`（绝不发出超时长请求）；逐块缓存只存块内相对时间；
  * 无说话人分离，全部字幕归 `speaker-1`。
  */
@@ -7,18 +9,13 @@ import { readFile } from "node:fs/promises";
 import { detectSilences, planChunks, sliceWav, type ChunkLimits } from "../core/audio";
 import { cacheKey, readCache, sha256, writeCache } from "../core/cache";
 import { run } from "../core/exec";
-import { redact } from "../llm/openai";
 import { readWav } from "../core/wav";
 import type { Speaker, SpeakerId, Utterance } from "../core/types";
-import type { AsrInput, AsrRun } from "./engine";
+import type { AsrEngine, AsrInput, AsrRun } from "./engine";
 
-/** 远程分块限额（ADR-0015 §5）：窗口内没有停顿就在 300 秒硬切。 */
+/** 远程分块限额（ADR-0016 §8）：窗口内没有停顿就在 300 秒硬切。 */
 export const REMOTE_CHUNK_LIMITS: ChunkLimits = { target: 280, min: 240, max: 300, hardMax: true };
 
-/** 适配器版本：变更块编码/请求/校验语义时递增，使旧缓存失效。 */
-export const REMOTE_ADAPTER_VERSION = 1;
-
-const SINGLE_TIMEOUT_MS = 60_000;
 const MAX_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1_000;
 
@@ -58,6 +55,54 @@ export function normalizeBaseUrl(baseUrl: string): string {
   return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
 }
 
+/** 块内相对时间（秒）的段：缓存只存这个形状，命中后与实时响应走同一条「加块起点」路径。 */
+export type RemoteSegment = { start: number; end: number; text: string };
+
+/** 一次请求用到的音频：编码后的字节、文件名、格式与块时长。 */
+export type RemoteChunkAudio = {
+  bytes: Uint8Array;
+  fileName: string;
+  format: "mp3" | "m4a" | "wav";
+  duration: number;
+};
+
+/** 协议适配器（ADR-0016 §6）：发一次块请求，返回块内相对时间；重试由本管线驱动。 */
+export type RemoteProvider = {
+  id: "openai" | "volcengine-flash";
+  modelId: string;
+  adapterVersion: number;
+  /** 参与缓存键的提供方常量（端点、resource id、response format 等）。 */
+  cache: Record<string, string | number>;
+  /** "mp3" 走 detectCodec 的 mp3/aac 回退；"wav" 直接上传 16k 单声道 PCM。 */
+  audio: "mp3" | "wav";
+  timeoutMs: number;
+  /** 缺省表示不额外检查；火山极速版设为 20 MiB。 */
+  maxUploadBytes?: number;
+  transcribe(chunk: RemoteChunkAudio, fetchImpl: typeof fetch): Promise<RemoteTranscribeResult>;
+};
+
+/** 标准版适配器（ADR-0016 §6）：只收公网 URL，返回整段绝对时间。 */
+export type UrlProvider = {
+  id: "volcengine-standard";
+  modelId: string;
+  adapterVersion: number;
+  cache: Record<string, string | number>;
+  transcribeUrl(url: string, fetchImpl: typeof fetch, onPoll?: (attempt: number) => void): Promise<{
+    segments: RemoteSegment[];
+    duration: number;
+  }>;
+};
+
+/** 协议适配器的结果：`segments` 是块内相对时间；`rawText` 仅供「整块静音」判定（ADR-0015 语义）。 */
+export type RemoteTranscribeResult = { segments: RemoteSegment[]; rawText?: unknown };
+
+/** 可重试性由共享管线判定的错误：429/5xx、550xxxx、超时、网络错误为 true。 */
+export class RemoteAsrError extends Error {
+  constructor(message: string, readonly retriable: boolean) {
+    super(message);
+  }
+}
+
 /**
  * 校验并规整端点返回的 segments：有限数字、越界钳制到 [0, 块时长+0.5]、
  * 零长与空文本丢弃、按起点排序。
@@ -65,11 +110,11 @@ export function normalizeBaseUrl(baseUrl: string): string {
 export function sanitizeSegments(
   raw: unknown,
   chunkDuration: number,
-): { start: number; end: number; text: string }[] {
+): RemoteSegment[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new Error("segments 不是数组");
   const limit = chunkDuration + 0.5;
-  const out: { start: number; end: number; text: string }[] = [];
+  const out: RemoteSegment[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) throw new Error("segment 不是对象");
     const rec = item as Record<string, unknown>;
@@ -90,90 +135,32 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
 }
 
-async function uploadChunk(
-  fileBytes: Uint8Array,
-  fileName: string,
-  opts: { url: string; apiKey: string; model: string; fetchImpl: typeof fetch },
-): Promise<{ text?: unknown; segments?: unknown }> {
-  let lastErr: Error | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    const form = new FormData();
-    form.append("file", new Blob([Buffer.from(fileBytes)], { type: "audio/mpeg" }), fileName);
-    form.append("model", opts.model);
-    form.append("response_format", "verbose_json");
-    form.append("temperature", "0");
-    form.append("language", "zh");
-    try {
-      const res = await opts.fetchImpl(opts.url, {
-        method: "POST",
-        headers: { authorization: `Bearer ${opts.apiKey}` },
-        body: form,
-        signal: AbortSignal.timeout(SINGLE_TIMEOUT_MS),
-      });
-      const bodyText = await res.text();
-      if (res.ok) {
-        try {
-          return JSON.parse(bodyText) as { text?: unknown; segments?: unknown };
-        } catch {
-          throw new Error(`远程 ASR 返回了非 JSON 响应：${redact(bodyText.slice(0, 300), opts.apiKey)}`);
-        }
-      }
-      // 429/5xx 才重试；401/403/413 与其余状态直接抛出。
-      const retriable = res.status === 429 || res.status >= 500;
-      lastErr = new Error(`远程 ASR 返回 HTTP ${res.status}：${redact(bodyText.slice(-300), opts.apiKey)}`);
-      if (!retriable) throw lastErr;
-      if (attempt === MAX_ATTEMPTS) throw lastErr;
-      await sleep(RETRY_DELAY_MS);
-    } catch (err) {
-      if (isAbortError(err)) {
-        lastErr = new Error(`远程 ASR 请求超时（${SINGLE_TIMEOUT_MS / 1000}s）`);
-        if (attempt === MAX_ATTEMPTS) throw lastErr;
-        await sleep(RETRY_DELAY_MS);
-        continue;
-      }
-      if (err instanceof TypeError) {
-        // fetch 网络错误（连接失败等）
-        lastErr = new Error(`远程 ASR 网络错误：${(err as Error).message}`);
-        if (attempt === MAX_ATTEMPTS) throw lastErr;
-        await sleep(RETRY_DELAY_MS);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr ?? new Error("远程 ASR 重试耗尽");
-}
-
-export type RemoteAsrConfig = { baseUrl: string; model: string; apiKey: string };
-
 export type RemoteEngineOptions = {
   fetchImpl?: typeof fetch;
   chunkLimits?: ChunkLimits;
-  /** 测试注入桩；缺省用 ffmpeg 探测 + 48kbps 转码。 */
+  /** 测试注入桩；缺省用 ffmpeg 探测 + 48kbps 转码。火山极速版 audio 为 "wav" 时不调用。 */
   encodeChunk?: (wavPath: string, outPath: string, format: "mp3" | "aac") => Promise<void>;
 };
 
-export function createRemoteEngine(config: RemoteAsrConfig, opts?: RemoteEngineOptions): {
-  id: "remote";
-  modelId: string;
-  run(input: AsrInput): Promise<AsrRun>;
-} {
+/**
+ * 共享分块管线：读 WAV → 静音检测 → 分块 → 切片（可选转码）→ 逐块缓存与重试 →
+ * 时间偏移 → 单说话人组装。`provider.audio` 为 "wav" 时直接传 PCM（火山极速版），
+ * 否则按 detectCodec 结果转码（OpenAI 分支）。
+ */
+export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngineOptions): AsrEngine {
   const doFetch = opts?.fetchImpl ?? fetch;
   const limits = opts?.chunkLimits ?? REMOTE_CHUNK_LIMITS;
-  const baseUrl = normalizeBaseUrl(config.baseUrl);
-  const url = `${baseUrl}/audio/transcriptions`;
   const cacheBase = {
     kind: "remote-chunk",
-    engine: "remote",
-    adapter: REMOTE_ADAPTER_VERSION,
-    model: config.model,
-    baseUrl,
-    responseFormat: "verbose_json",
+    provider: provider.id,
+    adapter: provider.adapterVersion,
+    model: provider.modelId,
+    ...provider.cache,
   };
 
   return {
-    id: "remote",
-    modelId: config.model,
+    id: provider.id === "openai" ? "openai" : "volcengine",
+    modelId: provider.modelId,
     async run(input: AsrInput): Promise<AsrRun> {
       const timings: Record<string, number> = {};
       const cacheHits: string[] = [];
@@ -190,7 +177,12 @@ export function createRemoteEngine(config: RemoteAsrConfig, opts?: RemoteEngineO
       timings.silence = t(performance.now() - s0);
       const chunks = planChunks(duration, silences, limits);
 
-      const codec = opts?.encodeChunk !== undefined ? { format: "mp3" as const, ext: "mp3" } : await detectCodec();
+      let codec: RemoteCodec;
+      if (provider.audio === "mp3") {
+        codec = opts?.encodeChunk !== undefined ? { format: "mp3", ext: "mp3" } : await detectCodec();
+      } else {
+        codec = { format: "mp3", ext: "mp3" }; // 占位，wav 路径不使用
+      }
       const encode = (wavPath: string, outPath: string, format: "mp3" | "aac") =>
         opts?.encodeChunk !== undefined
           ? opts.encodeChunk(wavPath, outPath, format)
@@ -217,47 +209,85 @@ export function createRemoteEngine(config: RemoteAsrConfig, opts?: RemoteEngineO
         const key = cacheKey("transcribe", {
           ...cacheBase,
           audio: sha256(chunkBytes),
-          codec: codec.format,
+          codec: provider.audio === "wav" ? "wav" : codec.format,
         });
-        const cached = readCache<{ segments: { start: number; end: number; text: string }[] }>(input.cacheDir, key);
+        const cached = readCache<{ segments: RemoteSegment[] }>(input.cacheDir, key);
         if (cached !== undefined) {
           cacheHits.push(`chunk-${chunk.index}`);
-          for (const s of cached.segments) utterances.push({ ...s, start: chunk.start + s.start, end: chunk.start + s.end, speakerId: speaker.id });
+          for (const s of cached.segments) {
+            utterances.push({ ...s, start: chunk.start + s.start, end: chunk.start + s.end, speakerId: speaker.id });
+          }
           reportProgress();
           continue;
         }
 
+        const chunkDuration = chunk.end - chunk.start;
         const wavOut = `${input.cacheDir}/remote-chunk-${chunk.index}.wav`;
         await sliceWav(input.wavPath, chunk.start, chunk.end, wavOut);
-        const audioOut = `${wavOut}.${codec.ext}`;
-        try {
+        let audioBytes: Uint8Array;
+        let fileName: string;
+        let format: RemoteChunkAudio["format"];
+        if (provider.audio === "wav") {
+          // 火山极速版：直接传 16k 单声道 PCM WAV（切片即 16k/16bit/单声道，ADR-0016 §8）。
+          audioBytes = new Uint8Array(await readFile(wavOut));
+          fileName = `chunk-${chunk.index}.wav`;
+          format = "wav";
+        } else {
+          const audioOut = `${wavOut}.${codec.ext}`;
           await encode(wavOut, audioOut, codec.format);
-          const fileBytes = new Uint8Array(await readFile(audioOut));
-          const res = await uploadChunk(fileBytes, `chunk-${chunk.index}.${codec.ext}`, {
-            url,
-            apiKey: config.apiKey,
-            model: config.model,
-            fetchImpl: doFetch,
-          });
-          const chunkDuration = chunk.end - chunk.start;
-          const hasText = typeof res.text === "string" && res.text.trim() !== "";
-          const segments = sanitizeSegments(res.segments, chunkDuration);
-          if (segments.length === 0) {
-            if (!hasText) {
-              // 整块静音：合法空结果。
-              writeCache(input.cacheDir, key, { segments: [] });
-              reportProgress();
-              continue;
-            }
-            throw new Error("该端点不返回逐句时间戳，不能用于字幕");
-          }
-          writeCache(input.cacheDir, key, { segments });
-          for (const s of segments) utterances.push({ ...s, start: chunk.start + s.start, end: chunk.start + s.end, speakerId: speaker.id });
-          reportProgress();
-        } finally {
-          await removeQuiet(wavOut);
-          await removeQuiet(audioOut);
+          audioBytes = new Uint8Array(await readFile(audioOut));
+          fileName = `chunk-${chunk.index}.${codec.ext}`;
+          format = codec.format === "mp3" ? "mp3" : "m4a";
         }
+        if (provider.maxUploadBytes !== undefined && audioBytes.byteLength > provider.maxUploadBytes) {
+          throw new RemoteAsrError(
+            `块 ${chunk.index} 的原始字节数 ${audioBytes.byteLength} 超过提供方单次上限 ${provider.maxUploadBytes} 字节`,
+            false,
+          );
+        }
+        let lastErr: RemoteAsrError | undefined;
+        let lastRetriable = false;
+        let ok = false;
+        let result: RemoteTranscribeResult | undefined;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ok; attempt += 1) {
+          try {
+            result = await provider.transcribe({ bytes: audioBytes, fileName, format, duration: chunkDuration }, doFetch);
+            ok = true;
+          } catch (err) {
+            if (err instanceof RemoteAsrError) {
+              lastErr = err;
+              lastRetriable = err.retriable;
+            } else if (isAbortError(err)) {
+              lastErr = new RemoteAsrError(`远程 ASR 请求超时（${provider.timeoutMs / 1000}s）`, true);
+              lastRetriable = true;
+            } else if (err instanceof TypeError) {
+              lastErr = new RemoteAsrError(`远程 ASR 网络错误：${err.message}`, true);
+              lastRetriable = true;
+            } else {
+              throw err;
+            }
+            if (!lastRetriable || attempt === MAX_ATTEMPTS) break;
+            await sleep(RETRY_DELAY_MS);
+          }
+        }
+        if (!ok || result === undefined) throw lastErr ?? new Error("远程 ASR 请求失败");
+        const segments = result.segments;
+        if (segments.length === 0) {
+          const rawText = result.rawText;
+          if (typeof rawText !== "string" || rawText.trim() === "") {
+            // 整块静音：合法空结果，写空缓存。
+            writeCache(input.cacheDir, key, { segments: [] });
+            reportProgress();
+            continue;
+          }
+          // 适配器已判定「text 非空但没有逐句时间戳」时直接抛错，不写缓存。
+          throw new Error("该端点不返回逐句时间戳，不能用于字幕");
+        }
+        writeCache(input.cacheDir, key, { segments });
+        for (const s of segments) {
+          utterances.push({ ...s, start: chunk.start + s.start, end: chunk.start + s.end, speakerId: speaker.id });
+        }
+        reportProgress();
       }
       timings.remote = t(performance.now() - r0);
 
@@ -269,17 +299,50 @@ export function createRemoteEngine(config: RemoteAsrConfig, opts?: RemoteEngineO
         chunks,
         timings,
         cacheHits,
-        engine: "remote",
-        modelId: config.model,
+        engine: provider.id === "openai" ? "openai" : "volcengine",
+        modelId: provider.modelId,
       };
     },
   };
 }
 
-async function removeQuiet(path: string): Promise<void> {
-  try {
-    await Bun.file(path).delete();
-  } catch {
-    // 文件不存在时无所谓
-  }
+/**
+ * 标准版引擎（ADR-0016 §6）：不读 WAV、不分块；缺 sourceUrl 立即报错；
+ * 结果按 audio_info.duration 构造单个 chunk [{index:1, start:0, end:duration}]，
+ * 绝对时间不再叠加块偏移；不做跨调用内容缓存（URL 不是内容身份）。
+ */
+export function createUrlEngine(provider: UrlProvider, opts?: { fetchImpl?: typeof fetch }): AsrEngine {
+  const doFetch = opts?.fetchImpl ?? fetch;
+  return {
+    id: "volcengine",
+    modelId: provider.modelId,
+    async run(input: AsrInput): Promise<AsrRun> {
+      if (input.sourceUrl === undefined || input.sourceUrl.trim() === "") {
+        throw new Error("火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR");
+      }
+      const t = (ms: number) => Math.round(ms / 10) / 100;
+      const t0 = performance.now();
+      const { segments, duration } = await provider.transcribeUrl(input.sourceUrl, doFetch, (attempt) => {
+        input.onProgress?.({ step: "transcribe", done: 0, total: 1, detail: `火山标准版轮询 ${attempt}` });
+      });
+      const timings: Record<string, number> = {};
+      const speaker: Speaker = {
+        id: "speaker-1" as SpeakerId,
+        name: "说话人1",
+        color: "#6aa9ff",
+      };
+      const utterances: Utterance[] = segments.map((s) => ({ ...s, speakerId: speaker.id }));
+      utterances.sort((a, b) => a.start - b.start);
+      timings.total = t(performance.now() - t0);
+      input.onProgress?.({ step: "transcribe", done: 1, total: 1, detail: "火山标准版完成" });
+      return {
+        transcript: { speakers: [speaker], utterances },
+        chunks: [{ index: 1, start: 0, end: duration }],
+        timings,
+        cacheHits: [],
+        engine: "volcengine",
+        modelId: provider.modelId,
+      };
+    },
+  };
 }

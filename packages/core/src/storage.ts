@@ -24,10 +24,12 @@ export type {
   LlmSettings,
   AsrSettings,
   AsrProvider,
+  VolcengineMode,
+  VolcengineAuthMode,
   LockedSettings,
 } from "./core/settings";
-export { resolveLlm, resolveAsr } from "./core/credentials";
-export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr } from "./core/credentials";
+export { resolveLlm, resolveAsr, resolveAsrFor } from "./core/credentials";
+export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr, AsrSecrets, VolcengineAuth } from "./core/credentials";
 export { cacheUsage, clearCache } from "./core/cache-usage";
 export { loadDotenvFiles } from "./core/env";
 export { videoIdFor } from "./core/paths";

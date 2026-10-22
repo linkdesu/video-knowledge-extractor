@@ -127,7 +127,7 @@ async function runRemote(
   const wavPath = `${dir}/in.wav`;
   writeSineWav(wavPath, seconds);
   const engine = createAsrEngine(
-    { provider: "remote", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
+    { provider: "openai", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
     {
       chunkLimits: limits,
       fetchImpl: fetch,
@@ -184,7 +184,7 @@ describe("远程 ASR 引擎", () => {
     // 边界两侧相同短句「hello」两条都保留（不按文本去重）。
     expect(run.transcript.utterances.filter((x) => x.text === "hello").length).toBe(2);
     expect(run.transcript.speakers).toEqual([{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#6aa9ff" }]);
-    expect(run.engine).toBe("remote");
+    expect(run.engine).toBe("openai");
     expect(run.modelId).toBe(TEST_MODEL);
     // 进度按块推进。
     expect(progress.length).toBe(3);
@@ -227,7 +227,7 @@ describe("远程 ASR 引擎", () => {
     const wavPath = `${dir}/in.wav`;
     writeSineWav(wavPath, 8);
     const engine = createAsrEngine(
-      { provider: "remote", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
+      { provider: "openai", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
       { chunkLimits: ONE_CHUNK_LIMITS, fetchImpl: fetch, encodeChunk: async (_w, o) => writeFileSync(o, Buffer.from([1])) },
     );
     let err: Error | undefined;
@@ -256,7 +256,7 @@ describe("远程 ASR 引擎", () => {
     const wavPath = `${dir}/in.wav`;
     writeSineWav(wavPath, 8);
     const engine = createAsrEngine(
-      { provider: "remote", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
+      { provider: "openai", baseUrl: url, model: TEST_MODEL, apiKey: TEST_KEY },
       { chunkLimits: ONE_CHUNK_LIMITS, fetchImpl: fetch, encodeChunk: async (_w, o) => writeFileSync(o, Buffer.from([1])) },
     );
     let err: Error | undefined;

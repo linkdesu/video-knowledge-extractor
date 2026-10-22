@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { parseClipFileName } from "./clips";
 import { isVideoLocked } from "./lock";
 import { writeJsonAtomic } from "./paths";
+import type { AsrProvider } from "./settings";
 import type { Chunk, Segment, SpeakerId, TopicId, Transcript, Utterance, Video, VideoId } from "./types";
 
 export const VIDEO_DATA_FILE = "video.json";
@@ -46,8 +47,8 @@ export type VideoData = {
   asrModel: string | null;
   /** 源视频分辨率；旧文档缺失为 null，卡片省略 */
   resolution: { width: number; height: number } | null;
-  /** ASR 引擎；旧文档缺失为 null，字幕页按本地显示 */
-  asrEngine: "local" | "remote" | null;
+  /** ASR 引擎（ADR-0016 §9 与 `AsrProvider` 同值）；旧文档缺失为 null，字幕页按本地显示 */
+  asrEngine: AsrProvider | null;
   /** 写这批主题的那次运行的 token；结算后 null（ADR-0015 §7） */
   runToken: string | null;
   updatedAt: string;
@@ -167,10 +168,14 @@ function parseResolution(v: unknown, where: string): { width: number; height: nu
   return { width, height };
 }
 
-function parseAsrEngine(v: unknown, where: string): "local" | "remote" | null {
+/** ADR-0016 §9：运行时值只有三个；旧文档的 `remote` 在读取边界映射为 `openai`。 */
+const ASR_ENGINE_VALUES = ["local", "openai", "volcengine"] as const;
+
+function parseAsrEngine(v: unknown, where: string): AsrProvider | null {
   if (v === null || v === undefined) return null;
-  if (v !== "local" && v !== "remote") throw new Error(`${where} 只能是 local 或 remote`);
-  return v;
+  if (v === "remote") return "openai";
+  for (const value of ASR_ENGINE_VALUES) if (v === value) return value;
+  throw new Error(`${where} 只能是 ${ASR_ENGINE_VALUES.join(" 或 ")}`);
 }
 
 /** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
