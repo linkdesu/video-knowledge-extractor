@@ -60,6 +60,13 @@ const api: VnoteApi = {
   cancelModelDownload: () => ipcRenderer.invoke(IPC.cancelModelDownload) as Promise<ModelsStatus>,
   importModels: () => ipcRenderer.invoke(IPC.importModels) as Promise<ImportModelsResult>,
   verifyModels: () => ipcRenderer.invoke(IPC.verifyModels) as Promise<ModelsStatus>,
+  onLlmChanged: (listener: () => void) => {
+    const listenerWrapper = (): void => listener();
+    ipcRenderer.on(IPC.llmEvent, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.llmEvent, listenerWrapper);
+    };
+  },
   onModelDownload: (listener: (snapshot: DownloadSnapshot) => void) => {
     const listenerWrapper = (_event: Electron.IpcRendererEvent, snapshot: DownloadSnapshot): void => listener(snapshot);
     ipcRenderer.on(IPC.modelEvent, listenerWrapper);

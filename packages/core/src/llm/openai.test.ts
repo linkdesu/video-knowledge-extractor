@@ -108,6 +108,71 @@ describe("createLlmClient", () => {
   });
 });
 
+describe("重试（ADR-0019）", () => {
+  function countingFetch(handler: (call: number) => Promise<Response> | Response): { fetch: typeof fetch; calls: number[] } {
+    const calls: number[] = [];
+    const impl = (async (_url: string | URL | Request, _init?: RequestInit) => {
+      calls.push(calls.length + 1);
+      return handler(calls.length);
+    }) as unknown as typeof fetch;
+    return { fetch: impl, calls };
+  }
+
+  const ok = () => new Response(JSON.stringify({ choices: [{ message: { content: "好" } }] }), { status: 200 });
+  const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1/v1", apiKey: "k-test", model: "m-test" };
+
+  test("超时一次后重试成功：同一调用返回内容，共两次尝试", async () => {
+    const stub = countingFetch((call) => {
+      if (call === 1) throw new DOMException("The operation timed out.", "TimeoutError");
+      return ok();
+    });
+    const client = createLlmClient(endpoint, stub.fetch);
+    await expect(client.chat([{ role: "user", content: "hi" }])).resolves.toBe("好");
+    expect(stub.calls.length).toBe(2);
+  });
+
+  test("两次都超时：抛中文超时错误，只发两次请求", async () => {
+    const stub = countingFetch(() => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const client = createLlmClient(endpoint, stub.fetch);
+    await expect(client.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/LLM 请求超时（180 秒内没有返回）/);
+    expect(stub.calls.length).toBe(2);
+  });
+
+  test("响应体读取超时也算传输失败并重试（端点是先回头再挂住）", async () => {
+    const hanging = {
+      ok: true,
+      status: 200,
+      text: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    } as unknown as Response;
+    const stub = countingFetch((call) => (call === 1 ? hanging : ok()));
+    const client = createLlmClient(endpoint, stub.fetch);
+    await expect(client.chat([{ role: "user", content: "hi" }])).resolves.toBe("好");
+    expect(stub.calls.length).toBe(2);
+
+    const alwaysHanging = countingFetch(() => hanging);
+    await expect(createLlmClient(endpoint, alwaysHanging.fetch).chat([{ role: "user", content: "hi" }])).rejects.toThrow(
+      /LLM 请求超时（180 秒内没有返回）/,
+    );
+    expect(alwaysHanging.calls.length).toBe(2);
+  });
+
+  test("5xx 重试一次后成功；4xx 不重试", async () => {
+    const flaky = countingFetch((call) =>
+      call === 1 ? new Response("boom", { status: 503 }) : ok(),
+    );
+    await expect(createLlmClient(endpoint, flaky.fetch).chat([{ role: "user", content: "hi" }])).resolves.toBe("好");
+    expect(flaky.calls.length).toBe(2);
+
+    const denied = countingFetch(() => new Response("nope", { status: 401 }));
+    await expect(createLlmClient(endpoint, denied.fetch).chat([{ role: "user", content: "hi" }])).rejects.toThrow(/401/);
+    expect(denied.calls.length).toBe(1);
+  });
+});
+
 describe("usage 累加", () => {
   test("两次调用的 usage 字段累加，total 缺失时用 prompt+completion 补", async () => {
     responseBody = JSON.stringify({

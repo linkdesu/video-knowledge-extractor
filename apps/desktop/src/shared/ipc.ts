@@ -205,6 +205,8 @@ export type SettingsStatus = {
   models: { ready: boolean; totalBytes: number; presentBytes: number; autoDownloadDisabled: boolean };
   /** 坏配置已被隔离时的可读原因（ADR-0015 §3）。 */
   settingsFileError: string | null;
+  /** 版本功能开关（r26）：云端 ASR 默认关闭，界面据此隐藏提供方切换。 */
+  features: { cloudAsr: boolean };
   ffmpeg: boolean;
   /** `ffmpeg -version` 第一行的版本号；未安装时为 null。 */
   ffmpegVersion: string | null;
@@ -336,6 +338,8 @@ export type VnoteApi = {
   cancelModelDownload(): Promise<ModelsStatus>;
   importModels(): Promise<ImportModelsResult>;
   verifyModels(): Promise<ModelsStatus>;
+  /** 端点发现落定（成功或失败）：重新拉一次 settings 即可拿到 discoveredModel。 */
+  onLlmChanged(listener: () => void): () => void;
   onModelDownload(listener: (snapshot: DownloadSnapshot) => void): () => void;
   reveal(outputDir: string): Promise<void>;
 };
@@ -362,6 +366,7 @@ export const IPC = {
   settings: "settings:status",
   updateSettings: "settings:update",
   updateLlm: "settings:llm-update",
+  llmEvent: "settings:llm-event",
   updateAsr: "settings:asr-update",
   pickDirectory: "settings:pick-dir",
   clearCache: "settings:clear-cache",

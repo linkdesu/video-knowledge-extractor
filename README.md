@@ -67,10 +67,13 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 ```bash
 cd apps/desktop
-bun run dev      # electron-vite 开发模式
-bun run build    # 产出 out/，不做签名与安装包
-bun run start    # 启动构建产物
+bun run dev         # electron-vite 开发模式
+bun run build       # 产出 out/
+bun run start       # 启动构建产物
+bun run package:mac # 打包 macOS arm64 未签名 .app 与 .dmg（release/）
 ```
+
+`package:mac` 先用最小 staging 复制 `out/` 与 `sherpa-onnx-node` 的原生包，再交给 `@electron/packager`（asar 内保留 `out/`，`**/node_modules/sherpa-onnx-*/**` 解包到 `app.asar.unpacked`），最后用 `hdiutil` 出 DMG（[ADR-0017](docs/adr/0017-mac-unsigned-package.md)）。产物 `apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app` 与 `Video Notes-<version>-arm64.dmg`，未签名、未公证；模型不内置（首次启动下载），ffmpeg 用系统或 Homebrew 安装。
 
 桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
 
@@ -87,6 +90,8 @@ bun run start    # 启动构建产物
 | `VNOTE_ASR_PROVIDER` | 转写提供方，`local`（默认）或 `remote` |
 | `VNOTE_ASR_BASE_URL` / `VNOTE_ASR_MODEL` / `VNOTE_ASR_API_KEY` | 远程 ASR（OpenAI 兼容转录接口）的端点、模型名与密钥 |
 | `VNOTE_DISABLE_MODEL_DOWNLOAD` | 设 `1` 停用首次启动自动下载（测试与截图用） |
+| `VNOTE_ENABLE_CLOUD_ASR` | 设 `1` 才在桌面端启用云端 ASR（OpenAI 兼容 / 火山）；默认只走本地 sherpa-onnx |
+| `VNOTE_FFMPEG_DIR` | 额外优先搜索 ffmpeg/ffprobe 的目录（打包后的 app 默认补 `/opt/homebrew/bin`、`/usr/local/bin`） |
 | `VNOTE_USER_DATA` | 只在开发/验收时用：覆盖 Electron `userData`（settings.json 与密钥库的位置），避免截图改动真实配置 |
 | `REACTBITS_LICENSE_KEY` | 只在开发期拉取 RBP 源码时用；不进 lockfile、不进 `components.json`，界面运行时不读 |
 
@@ -101,10 +106,12 @@ bun run test
 
 ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部命中缓存。ADR-0014 延后的四项能力按 [ADR-0015](docs/adr/0015-prototype-deferred-features.md) 补齐：远程 ASR 走 OpenAI 兼容转录接口（设置页或 `VNOTE_ASR_*` 配置）、卡片显示探测到的清晰度、设置页可编辑 LLM 字段（密钥走系统密钥库）、模型首次启动自动下载与本地导入（断点续传、sha256 校验）。[ADR-0016](docs/adr/0016-volcengine-flash-asr-provider.md) 增加火山引擎录音文件识别：极速版同步上传 WAV 并按 300 秒分块，标准版异步 submit/query（只接受公网 URL，本地视频请用极速版或本地 ASR）；设置页可切换提供方与鉴权方式，密钥仍只进 `secrets.bin`。Electron 桌面端能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消。
 
-尚未实现：打包、签名与 DMG；主题的结构编辑（改主题名、合并、拆分、调整时间段）。
+[ADR-0017](docs/adr/0017-mac-unsigned-package.md) 把打包做成 `bun run package:mac`：macOS arm64 未签名 `.app` 与 `.dmg`，asar 解包原生模块，启动时补 Homebrew 的 PATH，重启后自动校验已就位的模型；试用版本默认只启用本地 ASR，云端提供方藏在 `VNOTE_ENABLE_CLOUD_ASR=1` 后面。
+
+尚未实现：签名与公证；主题的结构编辑（改主题名、合并、拆分、调整时间段）。
 
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0016 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方。
+- `docs/adr/`：0001–0019 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方、macOS 未签名试用包的打包布局与云端 ASR 门禁、本地 ASR 单段解码上限 30 秒（Electron 内存边界）、LLM 请求超时与 5xx 重试一次。
 - `tmp/` 与 `runs/` 不进 git。

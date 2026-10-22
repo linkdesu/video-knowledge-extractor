@@ -33,7 +33,6 @@ import {
   deleteTopicSegment,
   mergeTopics,
   asrEnv,
-  resolveAsr,
   resolveAsrFor,
   resolveLlm,
   resolveLlmEndpoint,
@@ -57,6 +56,7 @@ import type {
   KeySource,
   LibraryDetail as CoreLibraryDetail,
   LibraryVideo as CoreLibraryVideo,
+  LlmEndpoint,
   SettingsPatch as CoreSettingsPatch,
   VideoRef,
   VolcengineAuth,
@@ -110,6 +110,25 @@ const SETTINGS_PATH = () => join(app.getPath("userData"), "settings.json");
 const settingsRead = readSettingsFileSafe(SETTINGS_PATH());
 // 2) cwd .env → 3) 用此时 env 求 notes 根 → 根 .env
 loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => process.env.VNOTE_HOME ?? settingsRead.file.notesRoot ?? `${process.env.HOME ?? process.env.USERPROFILE ?? "."}/Documents/video-notes` });
+
+// .env 加载之后才读这两个变量：Finder 启动的进程没有 shell 的 env，靠 <cwd>/.env 与 <notes 根>/.env 提供（ADR-0009）。
+// 打包后从 Finder 启动的 GUI 进程拿到的是 launchd 的最小 PATH（/usr/bin:/bin:/usr/sbin:/sbin），
+// Homebrew 的 ffmpeg/ffprobe 不在里面。这里把常见安装位置补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
+// VNOTE_FFMPEG_DIR 可显式指定（自定义安装或测试）。
+const TOOL_DIRS = [
+  process.env.VNOTE_FFMPEG_DIR,
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+].filter((dir): dir is string => dir !== undefined && dir !== "");
+process.env.PATH = `${TOOL_DIRS.join(":")}:${process.env.PATH ?? ""}`;
+
+/**
+ * 云端 ASR 开关（r26）：未签名试用版只启用本地 sherpa-onnx，云端提供方（OpenAI 兼容 / 火山）不暴露。
+ * 设置文件里的 provider 仍按原样读写（r24 代码保留），但运行时一律求值为 local。
+ */
+const CLOUD_ASR_ENABLED = process.env.VNOTE_ENABLE_CLOUD_ASR === "1";
 // 4) 文件层 + 完整 env 求有效设置与 locked（不重读磁盘）
 const resolved = resolveSettings(settingsRead.file, process.env);
 let settings: AppSettings = resolved.settings;
@@ -149,7 +168,10 @@ function withSettingsWrite<T>(fn: () => T | Promise<T>): Promise<T> {
 
 /** 运行时配置：设置变更后重算；key 只在 main/worker 内存里。 */
 type LlmRuntime = {
-  endpoint: { baseUrl: string; apiKey: string; model: string } | undefined;
+  /** 已配齐 base url 与 key 的凭据；连接测试只用它，不要求 model 已解析。 */
+  credentials: { baseUrl: string; apiKey: string } | undefined;
+  /** 可交给 worker 的端点：credentials + 非空 model；model 留空时等发现填好才出现（r26）。 */
+  endpoint: LlmEndpoint | undefined;
   discoveredModel: string | null;
   keySource: "env" | "stored" | "none";
   error: string | null;
@@ -165,8 +187,13 @@ type AsrRuntime = {
   keySource: "env" | "stored" | "none";
   error: string | null;
 };
-let llmRuntime: LlmRuntime = { endpoint: undefined, discoveredModel: null, keySource: "none", error: null };
+let llmRuntime: LlmRuntime = { credentials: undefined, endpoint: undefined, discoveredModel: null, keySource: "none", error: null };
 let asrRuntime: AsrRuntime = { provider: "local", config: undefined, hasKey: false, keySource: "none", error: null };
+
+/** 运行时实际使用的 ASR 提供方：云端开关关闭时恒为 local（r26）。 */
+function effectiveAsrProvider(): "local" | "openai" | "volcengine" {
+  return CLOUD_ASR_ENABLED ? settings.asr.provider : "local";
+}
 
 /** 错误与日志出口：脱敏集合 = env 的 key 变量 + 密钥库全部值 + 两个 baseUrl，任一命中整体替换（ADR-0016 §7.1）。 */
 function sanitizeError(err: unknown): string {
@@ -189,9 +216,17 @@ function sanitizeError(err: unknown): string {
   return message;
 }
 
-/** 端点发现：空 model 时后台 GET /models 自选；失败把脱敏错误留在运行时上给界面。门禁期间不启动（ADR-0016 §5 硬规则 2）。 */
+/**
+ * 端点发现：model 留空时后台 GET /models 自选；失败把脱敏错误留在运行时上给界面。门禁期间不启动（ADR-0016 §5 硬规则 2）。
+ * 结果直接替换 `llmRuntime.endpoint`：空 model 只是「等发现」的中间态，不能流到 worker（r26）。
+ * 世代号让迟到的旧凭据结果不覆盖新设置。
+ */
 let discovery: Promise<void> | undefined;
+let discoveryGeneration = 0;
 function startDiscovery(): void {
+  // 每次重算都先作废上一次发现：显式钉了 model、凭据不全或门禁中都不该让迟到的旧结果落回来
+  const generation = ++discoveryGeneration;
+  discovery = undefined;
   if (credentialTxError !== null) return;
   const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
   if (llm.value === undefined || llm.value.model !== "") return;
@@ -199,11 +234,28 @@ function startDiscovery(): void {
   discovery = (async () => {
     try {
       const endpoint = await resolveLlmEndpoint(creds);
+      if (generation !== discoveryGeneration) return;
+      llmRuntime.endpoint = endpoint;
       llmRuntime.discoveredModel = endpoint.model;
     } catch (err) {
+      if (generation !== discoveryGeneration) return;
       llmRuntime.error = sanitizeError(err);
     }
+    // 设置页靠这条事件把「留空时自动发现」换成发现结果，不必切页面重挂载
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.llmEvent);
   })();
+}
+
+/** 可交给 worker 的 LLM 端点：baseUrl、key、非空 model 三者齐备，否则带原因抛错。 */
+async function requireLlmEndpoint(): Promise<LlmEndpoint> {
+  if (discovery !== undefined) await discovery;
+  const endpoint = llmRuntime.endpoint;
+  // 发布出来的 endpoint 一定带非空 model；「有凭据但没有 endpoint」只可能是发现失败
+  if (endpoint !== undefined) return endpoint;
+  if (llmRuntime.credentials !== undefined) {
+    throw new Error(`模型发现失败：请在设置里显式指定 model（${llmRuntime.error ?? "未知原因"}）`);
+  }
+  throw new Error("未配置 LLM 端点：请在设置里保存 base url 与 api key，或用环境变量配置");
 }
 
 /** 设置/密钥变更后重算两个运行时；失败时不重算，保持旧值（ADR-0015 §3）。 */
@@ -220,21 +272,24 @@ function asrSecrets(): AsrSecrets {
 function recomputeRuntimes(): void {
   if (credentialTxError !== null) {
     // 门禁：不发布解析结果与端点发现，运行时置为未配置（ADR-0016 §5 硬规则 2）
-    llmRuntime = { endpoint: undefined, discoveredModel: null, keySource: "none", error: credentialTxError };
-    asrRuntime = { provider: settings.asr.provider, config: undefined, hasKey: false, keySource: "none", error: credentialTxError };
+    llmRuntime = { credentials: undefined, endpoint: undefined, discoveredModel: null, keySource: "none", error: credentialTxError };
+    asrRuntime = { provider: effectiveAsrProvider(), config: undefined, hasKey: false, keySource: "none", error: credentialTxError };
     return;
   }
   try {
     const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
+    // model 留空时 endpoint 先不发布：空 model 是「等发现」的中间态，discovery 成功后才补上（r26）
     llmRuntime = {
-      endpoint: llm.value !== undefined ? { baseUrl: llm.value.baseUrl, apiKey: llm.value.apiKey, model: llm.value.model } : undefined,
+      credentials: llm.value !== undefined ? { baseUrl: llm.value.baseUrl, apiKey: llm.value.apiKey } : undefined,
+      endpoint: llm.value !== undefined && llm.value.model !== "" ? { baseUrl: llm.value.baseUrl, apiKey: llm.value.apiKey, model: llm.value.model } : undefined,
       discoveredModel: null,
       keySource: llm.keySource,
       error: llm.value === undefined ? (llm.missing.length > 0 ? `LLM 未配齐：${llm.missing.join("、")}` : null) : null,
     };
-    const asr = resolveAsr(settings, asrSecrets(), process.env);
+    const provider = effectiveAsrProvider();
+    const asr = resolveAsrFor(settings, provider, asrSecrets(), process.env);
     asrRuntime = {
-      provider: settings.asr.provider,
+      provider,
       config:
         asr.value === undefined
           ? undefined
@@ -268,7 +323,7 @@ type WorkerState = {
 const workers = new Map<string, WorkerState>();
 
 function killProcessTree(pid: number): void {
-  // utilityProcess.kill() 不会带走 worker 里 spawn 的 ffmpeg/ffprobe，按父 pid 补杀一层
+  // 结束 worker 进程本身不会带走它 spawn 的 ffmpeg/ffprobe，按父 pid 补杀一层
   const out = spawnSync("pgrep", ["-P", String(pid)]);
   if (out.status !== 0) return;
   for (const line of out.stdout.toString().split("\n")) {
@@ -546,21 +601,17 @@ function detailDto(videoId: string): VideoDetail {
 /** 入队前的门禁（ADR-0015 §4/§7、ADR-0016 §5 硬规则 2）：pending 门禁、等端点发现、LLM 配齐、火山标准版+本地视频静态拒绝、ASR 配齐、本地模型 ready、队列为空。 */
 async function ensurePipelineReady(): Promise<void> {
   if (credentialTxError !== null) throw new Error(credentialTxError);
-  if (discovery !== undefined) await discovery;
-  if (llmRuntime.endpoint === undefined) {
-    throw new Error("未配置 LLM 端点：请在设置里保存 base url 与 api key，或用环境变量配置");
-  }
-  if (llmRuntime.endpoint.model === "" && llmRuntime.discoveredModel === null) {
-    throw new Error(`模型发现失败：请在设置里显式指定 model（${llmRuntime.error ?? "未知原因"}）`);
-  }
+  await requireLlmEndpoint();
   // 火山标准版只收公网 URL，本地视频路径永远不可用（ADR-0016 §6）
-  if (settings.asr.provider === "volcengine" && settings.asr.volcengine.mode === "standard") {
+  const provider = effectiveAsrProvider();
+  if (provider === "volcengine" && settings.asr.volcengine.mode === "standard") {
     throw new Error("火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR");
   }
-  if (settings.asr.provider !== "local" && asrRuntime.config === undefined) {
+  if (provider !== "local" && asrRuntime.config === undefined) {
     throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   }
-  if (settings.asr.provider === "local") {
+  if (provider === "local") {
+    if (autoVerify !== undefined) await autoVerify;
     const status = modelStatus(settings.modelDir);
     if (!status.ready) {
       const bad = status.bundles.filter((b) => b.state !== "ready").map((b) => b.title).join("、");
@@ -571,7 +622,7 @@ async function ensurePipelineReady(): Promise<void> {
 }
 
 /** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结；ASR 未配齐直接抛错，不回退本地（ADR-0016 §6）。 */
-function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[]): JobRequest {
+async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[]): Promise<JobRequest> {
   const asrConfig = asrRuntime.config;
   if (asrConfig === undefined) throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   return {
@@ -580,7 +631,7 @@ function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, out
     sourcePath,
     outputDir,
     runToken: randomUUID(),
-    endpoint: llmRuntime.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
+    endpoint: await requireLlmEndpoint(),
     asr: asrConfig,
     config: { notesRoot: settings.notesRoot, cacheRoot: settings.cacheRoot, modelDir: settings.modelDir },
     ...(topicIds !== undefined ? { topicIds } : {}),
@@ -613,20 +664,20 @@ async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
     if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
     outputDir = entry.outputDir;
   }
-  return { jobId: queue.enqueue(buildJobRequest("extract", videoId, sourcePath, outputDir)) };
+  return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
 }
 
 async function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
   await ensurePipelineReady();
   const entry = resolveVideo(videoId);
   if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-  return { jobId: queue.enqueue(buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+  return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
 }
 
 async function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
   await ensurePipelineReady();
   const entry = resolveVideo(videoId);
-  return { jobId: queue.enqueue(buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+  return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
 }
 
 async function pickVideo(): Promise<string | null> {
@@ -661,9 +712,9 @@ function ffmpegProbe(): { ok: boolean; version: string | null } {
 }
 
 function llmStatus(): SettingsStatus["llm"] {
-  const baseUrl = llmRuntime.endpoint?.baseUrl ?? settings.llm.baseUrl;
+  const baseUrl = llmRuntime.credentials?.baseUrl ?? settings.llm.baseUrl;
   return {
-    configured: llmRuntime.endpoint !== undefined,
+    configured: llmRuntime.credentials !== undefined,
     baseUrl: baseUrl === "" ? null : displayUrl(baseUrl),
     model: settings.llm.model === "" ? null : settings.llm.model,
     discoveredModel: llmRuntime.discoveredModel,
@@ -701,6 +752,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     asr: asrStatusDto(),
     models: { ready: models.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes, autoDownloadDisabled: models.autoDownloadDisabled },
     settingsFileError: credentialTxError !== null ? credentialTxError : (settingsFileError ?? secretStore?.error() ?? null),
+    features: { cloudAsr: CLOUD_ASR_ENABLED },
     ffmpeg: ff.ok,
     ffmpegVersion: ff.version,
     locked: {
@@ -733,7 +785,7 @@ function asrStatusDto(): SettingsStatus["asr"] {
   const volcResolution = resolveAsrFor(settings, "volcengine", secrets, process.env);
   const openaiKeyStored = secrets.openai;
   return {
-    provider: settings.asr.provider,
+    provider: effectiveAsrProvider(),
     providerLocked: locked.asrProvider,
     local: { modelId: ASR_MODEL_ID, ready: local.ready, missing: local.bundles.filter((b) => b.state !== "ready").map((b) => b.title) },
     openai: {
@@ -780,6 +832,9 @@ async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
       throw new Error("模型正在下载中，请完成后再修改模型目录");
     }
     const clean = buildSettingsPatch(patch);
+    if (clean.asr?.provider !== undefined && clean.asr.provider !== "local" && !CLOUD_ASR_ENABLED) {
+      throw new Error("此版本只启用本地 ASR，云端提供方不可用");
+    }
     settings = saveSettings(SETTINGS_PATH(), clean);
     recomputeRuntimes();
     return settingsStatus();
@@ -802,16 +857,17 @@ function clearCacheNow(): { freedBytes: number } {
 
 async function testLlm(): Promise<TestLlmResult> {
   if (credentialTxError !== null) return { ok: false, model: null, message: credentialTxError };
-  if (llmRuntime.endpoint === undefined) {
+  // 连接测试只验证凭据与网络：model 还没发现成功时也要能测（r26 的诊断曾因此误报「未配置」）
+  const creds = llmRuntime.credentials;
+  if (creds === undefined) {
     return { ok: false, model: null, message: `未配置 LLM 端点：${llmRuntime.error ?? "请在设置里保存 base url 与 api key"}` };
   }
-  const ep = llmRuntime.endpoint;
-  const url = `${ep.baseUrl.replace(/\/$/, "")}/models`;
+  const url = `${creds.baseUrl.replace(/\/$/, "")}/models`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${ep.apiKey}` },
+      headers: { Authorization: `Bearer ${creds.apiKey}` },
       signal: controller.signal,
     });
     if (!res.ok) return { ok: false, model: null, message: `连接失败：HTTP ${res.status}` };
@@ -873,6 +929,10 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
     if (patch.provider !== undefined) {
       if (patch.provider !== "local" && patch.provider !== "openai" && patch.provider !== "volcengine") {
         throw new Error(`设置 asr.provider 必须是 local / openai / volcengine，实际是 ${JSON.stringify(patch.provider)}`);
+      }
+      // r26：试用版只启用本地 ASR，云端提供方连写入都拒绝，避免界面隐藏后仍有第二条路径
+      if (patch.provider !== "local" && !CLOUD_ASR_ENABLED) {
+        throw new Error("此版本只启用本地 ASR，云端提供方不可用");
       }
       asrOut.provider = patch.provider;
     }
@@ -940,14 +1000,15 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
 /** 本地：检查 4 个包；OpenAI：GET /models；火山极速版：1 秒静音 WAV；火山标准版：官方示例 URL 提交一次（不轮询）。 */
 async function testAsr(): Promise<TestAsrResult> {
   if (credentialTxError !== null) return { ok: false, modelsFound: null, message: credentialTxError };
-  if (settings.asr.provider === "local") {
+  if (effectiveAsrProvider() === "local") {
+    if (autoVerify !== undefined) await autoVerify;
     const status = modelStatus(settings.modelDir);
     const ready = status.bundles.filter((b) => b.state === "ready").length;
     return ready === status.bundles.length
       ? { ok: true, modelsFound: ready, message: "本地模型已全部就绪" }
       : { ok: false, modelsFound: ready, message: `本地模型缺 ${status.bundles.length - ready}/${status.bundles.length} 包，请在设置页下载或导入` };
   }
-  const asr = resolveAsr(settings, asrSecrets(), process.env);
+  const asr = resolveAsrFor(settings, effectiveAsrProvider(), asrSecrets(), process.env);
   if (asr.value === undefined) return { ok: false, modelsFound: null, message: `ASR 未配齐（${asr.missing.join("、")}）` };
   const resolved = asr.value;
   try {
@@ -1097,7 +1158,7 @@ function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknow
 
 /** 首次启动自动下载（ADR-0015 §4）：本地、未 ready、未尝试过、VNOTE_DISABLE_MODEL_DOWNLOAD!=1 才启动；先 markAutoDownloadAttempted。 */
 function maybeAutoDownload(): void {
-  if (settings.asr.provider !== "local") return;
+  if (effectiveAsrProvider() !== "local") return;
   if (process.env.VNOTE_DISABLE_MODEL_DOWNLOAD === "1") return;
   if (settings.asr.autoDownloadAttemptedAt !== null) return;
   if (modelStatus(settings.modelDir).ready) return;
@@ -1107,6 +1168,43 @@ function maybeAutoDownload(): void {
       for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, s);
     },
     busy: () => queue.busy(),
+  });
+}
+
+/**
+ * 启动时的模型校验（r26）：校验缓存只在进程内，重启后曾下载好的模型会回到「未校验」，
+ * 而提取要求 ready。文件齐、字节数对的所有包在这里后台校验一遍，免掉每次启动手点「校验模型」。
+ * 缺文件或已判 invalid 的包不在这里处理，交给自动下载或设置页导入。
+ */
+let autoVerify: Promise<void> | undefined;
+function maybeAutoVerifyModels(): void {
+  if (modelsDownloader.busy()) return;
+  const status = modelStatus(settings.modelDir);
+  if (status.ready) return;
+  if (!status.bundles.every((b) => b.state === "unverified")) return;
+  let lock: ReturnType<typeof acquireModelLock>;
+  try {
+    lock = acquireModelLock(settings.modelDir);
+  } catch (err) {
+    // 另一个实例正在校验/下载同一模型目录：保持「未校验」，用户可在设置页手动校验；不能让它中断启动
+    console.warn(sanitizeError(err));
+    return;
+  }
+  const done = (async () => {
+    try {
+      await verifyModels(settings.modelDir);
+    } catch (err) {
+      console.warn(sanitizeError(err));
+    } finally {
+      lock.release();
+    }
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.modelEvent, { state: "done", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null });
+    }
+  })();
+  autoVerify = done;
+  void done.finally(() => {
+    if (autoVerify === done) autoVerify = undefined;
   });
 }
 
@@ -1147,6 +1245,7 @@ void app.whenReady().then(async () => {
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
   maybeAutoDownload();
+  maybeAutoVerifyModels();
 
   // 媒体协议 root 读 settings 当前值（env 启动时可能没被 .env 补全，settings 才和界面一致）；
   // 源视频路径用当前 notes 根目录的库记录来校验

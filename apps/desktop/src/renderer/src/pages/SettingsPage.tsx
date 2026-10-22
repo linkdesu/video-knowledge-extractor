@@ -314,6 +314,12 @@ export function SettingsPage() {
   }, [reloadModels]);
 
   useEffect(() => {
+    // 端点发现是后台异步的：落定后重拉一次，模型名提示才不会是「留空时自动发现」
+    const off = window.vnote.onLlmChanged(reload);
+    return off;
+  }, [reload]);
+
+  useEffect(() => {
     const off = window.vnote.onModelDownload((snap) => {
       setSnapshot(snap);
       setDownloading(snap.state === "downloading");
@@ -439,6 +445,8 @@ export function SettingsPage() {
 
   const asr = status.asr;
   const llm = status.llm;
+  // r26：试用版只启用本地 ASR；隐藏提供方切换与云端面板（存盘值由 main 求值为 local）
+  const cloudAsr = status.features.cloudAsr;
   const volcModeInfo = VOLC_MODE_INFO[asr.volcengine.mode];
   const busyModel = downloading || importing || verifying;
   const localMissing =
@@ -456,26 +464,34 @@ export function SettingsPage() {
           <b>语音转写</b>
           <div className="vn-field" style={{ marginTop: 12 }}>
             <label>提供方</label>
-            <select
-              className="vn-select"
-              value={asr.provider}
-              disabled={asr.providerLocked}
-              data-testid="settings-asr-provider"
-              onChange={(e) =>
-                update({ asr: { provider: e.target.value as AsrProvider } })
-              }
-            >
-              {(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => (
-                <option key={value} value={value}>
-                  {PROVIDER_LABEL[value]}
-                </option>
-              ))}
-            </select>
-            {asr.providerLocked ? (
-              <span className="vn-hint">由环境变量控制</span>
-            ) : null}
+            {cloudAsr ? (
+              <>
+                <select
+                  className="vn-select"
+                  value={asr.provider}
+                  disabled={asr.providerLocked}
+                  data-testid="settings-asr-provider"
+                  onChange={(e) =>
+                    update({ asr: { provider: e.target.value as AsrProvider } })
+                  }
+                >
+                  {(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => (
+                    <option key={value} value={value}>
+                      {PROVIDER_LABEL[value]}
+                    </option>
+                  ))}
+                </select>
+                {asr.providerLocked ? (
+                  <span className="vn-hint">由环境变量控制</span>
+                ) : null}
+              </>
+            ) : (
+              <span className="vn-read" data-testid="settings-asr-provider-fixed">
+                {PROVIDER_LABEL.local}
+              </span>
+            )}
           </div>
-          {asr.provider === "openai" ? (
+          {cloudAsr && asr.provider === "openai" ? (
             <>
               <div className="vn-field">
                 <label>接口地址</label>
@@ -525,7 +541,7 @@ export function SettingsPage() {
                 远程 ASR 不含说话人分离。
               </p>
             </>
-          ) : asr.provider === "volcengine" ? (
+          ) : cloudAsr && asr.provider === "volcengine" ? (
             <>
               <div className="vn-field">
                 <label>版本</label>
@@ -715,7 +731,9 @@ export function SettingsPage() {
             {llm.locked.model ? (
               <span className="vn-hint">由环境变量控制</span>
             ) : llm.model === null ? (
-              <span className="vn-hint">留空时自动发现</span>
+              <span className="vn-hint" data-testid="settings-llm-discovered">
+                {llm.discoveredModel === null ? "留空时自动发现" : `已自动发现 ${llm.discoveredModel}`}
+              </span>
             ) : null}
           </div>
           <KeyField

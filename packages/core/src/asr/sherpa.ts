@@ -1,6 +1,29 @@
 /// <reference path="../types/sherpa-onnx-node.d.ts" />
 import { existsSync } from "node:fs";
-import * as sherpa from "sherpa-onnx-node";
+import * as sherpaModule from "sherpa-onnx-node";
+
+type SherpaApi = typeof sherpaModule;
+
+function isSherpaApi(value: unknown): value is SherpaApi {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "OfflineRecognizer" in value &&
+    typeof value.OfflineRecognizer === "function"
+  );
+}
+
+/**
+ * 从 app.asar 里 import 这个 CJS 包时，Node 的命名导出探测只能认出部分键（r26 打包实测），
+ * 而 `default` 始终是完整的 module.exports。dev 下命名导出齐全，两个分支等价。
+ */
+function resolveSherpaApi(mod: unknown): SherpaApi {
+  if (isSherpaApi(mod)) return mod;
+  if (typeof mod === "object" && mod !== null && "default" in mod && isSherpaApi(mod.default)) return mod.default;
+  throw new Error("sherpa-onnx-node 加载失败：没有 OfflineRecognizer（原生模块或 JS 封装缺失）");
+}
+
+const sherpa = resolveSherpaApi(sherpaModule);
 
 const ASR_SAMPLE_RATE = 16000;
 
@@ -47,7 +70,7 @@ export type Transcriber = {
   decode(samples: Float32Array): string;
 };
 
-function withPunct(punct: sherpa.OfflinePunctuation, raw: string): string {
+function withPunct(punct: sherpaModule.OfflinePunctuation, raw: string): string {
   if (!raw) return "";
   // FireRed CTC 输出没有标点；
   if (/[，。！？；：]/.test(raw)) return raw;
