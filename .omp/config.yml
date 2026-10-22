@@ -1,28 +1,18 @@
-# 项目级模型固定（video-notes）
-# 目的：pstack 工作流的 agent → 模型映射在本项目内固定，避免全局配置变动导致执行偏移。
-# 作用域：只影响本仓库；对新的会话 / 新的 subagent spawn 生效。
-# 校验：omp config get modelRoles --json / omp config get task.agentModelOverrides --json
-# 手工调整：直接改下面的值，改完回读校验即可。
-modelRoles:
-  # 项目代理（comment-sicko / poteto-agent）通过别名引用这两个角色
-  advisor: "deepseek/deepseek-flash:auto"
-  task: "new-api/ai-02/qwen-27b-latest:medium"
-  # vibe 轻量档与 prewalk 目标
-  tiny: "opencode-go/mimo-v2.6-flash:off"
-  smol: "opencode-go/mimo-v2.6-flash:low"
-
+# 项目级 agent → 模型映射（video-notes）
+# 原则：这里只写角色别名（@task / @slow / @smol / @plan / @default），不写具体模型 ID。
+# 具体模型只在全局 ~/.omp/agent/config.yml 的 modelRoles 里配置；换模型只改 modelRoles，subagent 不会因模型 ID 失效而无法启动。
+# 校验：omp config get task.agentModelOverrides --json；omp models find <q>
 task:
   agentModelOverrides:
-    # 写产物的 runner：arena / architect / swarm 的实现型候选
-    task: "new-api/ai-02/qwen-27b-latest"
-    qwen-worker: "new-api/ai-02/qwen-27b-latest"
-    flash-worker: "opencode-go/deepseek-v4.1-flash"
-    # 只读调研（不做评审 / judge）
-    scout: "opencode-go/mimo-v2.6-flash"
-    # 评审 / cross-judge：ChatGPT Sol + K3，两模型跨模型对照；不含 mimo
-    sol-reviewer: "openai-codex/gpt-6.1-sol"
-    reviewer: "openai-codex/gpt-6.1-sol"
-    security-reviewer: "openai-codex/gpt-6.1-sol"
-    k3-reviewer: "kimi-code/k3"
-    # vibe fast 档此前未映射（UNRESOLVED），在此补定
-    sonic: "opencode-go/mimo-v2.6-flash"
+    # 写产物的 runner
+    task: "@task"
+    qwen-worker: "@task"
+    flash-worker: "@default"
+    # 只读调研
+    scout: "@smol"
+    sonic: "@smol"
+    # 评审 / cross-judge：slow（Sol）+ plan（K3）两模型跨模型对照
+    sol-reviewer: "@slow"
+    reviewer: "@slow"
+    security-reviewer: "@slow"
+    k3-reviewer: "@plan"
