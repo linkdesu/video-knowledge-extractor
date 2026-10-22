@@ -39,7 +39,7 @@ What `up` does:
 
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
 2. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411`.
-3. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache, `VNOTE_DISABLE_MODEL_DOWNLOAD=1`.
+3. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache.
 4. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
 5. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run.
 
@@ -47,9 +47,10 @@ Isolation limits:
 
 - One instance per `VNOTE_USER_DATA` because the main process takes Electron's single-instance lock. Two runs side by side need both a distinct `--port` and a distinct `--run`.
 - The model directory is shared read-only. Never point `--model-dir` at a scratch copy unless the journey verifies model files.
-- `VNOTE_DISABLE_MODEL_DOWNLOAD=1` prevents the first-launch download. It does not disable the manual 「下载模型」 button in Settings; do not click it on a metered connection.
+- There is no automatic model download (r28): a fresh process never starts one. The manual 「下载模型」 button in Settings is the only way to download, and it hits the network, so do not click it on a metered connection.
 - Extraction with only `IDEALSOFT_API_URL`/`KEY` and no pinned model now works: the main process awaits model discovery before it builds a job (r26). A pin via `VNOTE_LLM_MODEL` or 设置 still wins and skips discovery.
 - A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
+- Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
 
 ### Packaged app
 
@@ -160,9 +161,9 @@ Proof standards:
 - Verify side effects alongside pixels. A glossary row is proven by `<home>/corrections.json`; an import is proven by `index.json` plus topic dirs with `topic.md` and clips.
 - Record the exact command, its stdout/stderr and its exit code for CLI proofs.
 - Extraction journeys call the endpoint configured in `.env`: real network, real token spend. Say so in the report.
-- `VNOTE_DISABLE_MODEL_DOWNLOAD=1` only skips *automatic* download on first launch. Do not claim the app is offline-capable from that flag; manual download and connection tests still hit the network.
+- There is no automatic model download (r28): a fresh process never starts one, and the acceptance script no longer sets any flag for it. The manual 下载模型 button is the only way to download; it hits the network, so a download journey must be explicitly clicked and waited out until ready, and is skipped on a metered connection.
 
-Last proven runs: `tmp/verify/r26-pkg-02/` and `tmp/verify/r26-pkg-01/` (r26: the packaged, DMG-installed app with launchd's PATH — 10-minute local-ASR extraction to four finished topics, notes rerun after a failed LLM call, settings with the trial ASR gate and auto-discovered model) and `tmp/verify/r26-empty/` (packaged app on a fresh home: empty library, first drop, running banner, finished card). Earlier: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
+Last proven runs (r28, evidence copied to `tmp/report/r28-evidence/`): `r28-after/` (settings page with the always-editable key field and the fetched model list), `r28-download/` (explicit 下载模型 click, progress and phase log through 校验/解压/安装 until all four bundles read 就绪), `r28-error2/` (unreachable endpoint shows a readable inline error) and `r28-pkg2/` (DMG-installed app under launchd's PATH: ffmpeg found, models ready, dev-home untouched). Earlier: `tmp/verify/r26-pkg-02/` and `tmp/verify/r26-pkg-01/` (r26: the packaged, DMG-installed app with launchd's PATH — 10-minute local-ASR extraction to four finished topics, notes rerun after a failed LLM call, settings with the trial ASR gate and auto-discovered model) and `tmp/verify/r26-empty/` (packaged app on a fresh home: empty library, first drop, running banner, finished card). Earlier: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
 
 ## Gotchas
 

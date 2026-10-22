@@ -562,6 +562,40 @@ textarea {
   margin-top: 4px;
 }
 
+.vn-model-log {
+  margin-top: 10px;
+  max-height: 140px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.vn-model-log-empty {
+  color: var(--vn-dim);
+}
+.vn-model-log-line {
+  display: flex;
+  gap: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.vn-model-log-line.info {
+  color: var(--vn-muted);
+}
+.vn-model-log-line.warn {
+  color: #fcd34d;
+}
+.vn-model-log-line.error {
+  color: #fda4af;
+}
+.vn-model-log-time {
+  color: var(--vn-dim);
+  flex-shrink: 0;
+}
 .vn-toast {
   position: fixed;
   right: 24px;

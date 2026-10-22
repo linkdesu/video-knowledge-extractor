@@ -6,7 +6,6 @@ import {
   SETTINGS_VERSION,
   defaultSettings,
   loadSettings,
-  markAutoDownloadAttempted,
   readSettingsFile,
   readSettingsFileSafe,
   resolveSettings,
@@ -36,13 +35,12 @@ describe("defaultSettings", () => {
       version: SETTINGS_VERSION,
       notesRoot: "/home/u/Documents/video-notes",
       cacheRoot: "/home/u/Documents/video-notes/.cache",
-      modelDir: "/home/u/.cache/video-notes/models",
+      modelDir: "/home/u/Documents/video-notes/models",
       llm: { baseUrl: "", model: "" },
       asr: {
         provider: "local",
         openai: { baseUrl: "", model: "" },
         volcengine: { mode: "flash", authMode: "apiKey" },
-        autoDownloadAttemptedAt: null,
       },
     });
   });
@@ -74,7 +72,6 @@ describe("loadSettings", () => {
         provider: "local",
         openai: { baseUrl: "", model: "" },
         volcengine: { mode: "flash", authMode: "apiKey" },
-        autoDownloadAttemptedAt: null,
       },
     });
   });
@@ -83,7 +80,7 @@ describe("loadSettings", () => {
     const path = resolve(tempRoot(), "settings.json");
     writeFileSync(path, JSON.stringify({ cacheRoot: "/data/cache" }));
     expect(loadSettings(path, { HOME: "/home/u" }).notesRoot).toBe("/home/u/Documents/video-notes");
-    expect(loadSettings(path, { HOME: "/home/u" }).modelDir).toBe("/home/u/.cache/video-notes/models");
+    expect(loadSettings(path, { HOME: "/home/u" }).modelDir).toBe("/home/u/Documents/video-notes/models");
   });
 
   test("env 优先于文件", () => {
@@ -116,13 +113,12 @@ describe("saveSettings", () => {
       version: SETTINGS_VERSION,
       notesRoot: "/home/u/Documents/video-notes",
       cacheRoot: "/new/cache",
-      modelDir: "/home/u/.cache/video-notes/models",
+      modelDir: "/home/u/Documents/video-notes/models",
       llm: { baseUrl: "", model: "" },
       asr: {
         provider: "local",
         openai: { baseUrl: "", model: "" },
         volcengine: { mode: "flash", authMode: "apiKey" },
-        autoDownloadAttemptedAt: null,
       },
     });
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ version: SETTINGS_VERSION, cacheRoot: "/new/cache" });
@@ -170,7 +166,6 @@ describe("readSettingsFile 迁移与校验", () => {
       { name: "llm 不是对象", body: JSON.stringify({ version: 3, llm: "http" }), field: "llm" },
       { name: "asr.openai 不是对象", body: JSON.stringify({ version: 3, asr: { openai: [] } }), field: "asr.openai" },
       { name: "llm.model 不是字符串", body: JSON.stringify({ version: 3, llm: { model: 3 } }), field: "llm.model" },
-      { name: "时间戳不可解析", body: JSON.stringify({ version: 3, asr: { autoDownloadAttemptedAt: "not-a-date" } }), field: "autoDownloadAttemptedAt" },
       { name: "volcengine 不是对象", body: JSON.stringify({ version: 3, asr: { volcengine: "flash" } }), field: "asr.volcengine" },
     ];
     for (const { body, field } of cases) {
@@ -276,7 +271,7 @@ describe("resolveSettings 优先级", () => {
     });
     expect(settings.notesRoot).toBe("/file/notes");
     expect(settings.cacheRoot).toBe("/env/cache");
-    expect(settings.modelDir).toBe("/h/.cache/video-notes/models");
+    expect(settings.modelDir).toBe("/h/Documents/video-notes/models");
     expect(settings.llm.baseUrl).toBe("https://env");
     expect(settings.llm.model).toBe("m-file");
     expect(settings.asr.provider).toBe("volcengine");
@@ -300,6 +295,16 @@ describe("resolveSettings 优先级", () => {
     const { settings, locked } = resolveSettings(file, { HOME: "/h", VNOTE_ASR_PROVIDER: "volcengine" });
     expect(settings.asr.provider).toBe("volcengine");
     expect(locked.asrProvider).toBe(true);
+  });
+  test("v3 文件残留 autoDownloadAttemptedAt 键时被忽略，文件照常解析", () => {
+    const path = resolve(tempRoot(), "settings.json");
+    writeFileSync(path, JSON.stringify({ version: 3, asr: { autoDownloadAttemptedAt: "2026-10-22T08:00:00Z" } }));
+    const { settings } = resolveSettings(readSettingsFile(path), { HOME: "/h" });
+    expect(settings.asr).toEqual({
+      provider: "local",
+      openai: { baseUrl: "", model: "" },
+      volcengine: { mode: "flash", authMode: "apiKey" },
+    });
   });
 });
 
@@ -344,14 +349,6 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
     expect(saved.asr.openai).toEqual({ baseUrl: "https://old-asr", model: "m-old-asr" });
   });
 
-  test("markAutoDownloadAttempted 只写时间戳字段", () => {
-    const path = resolve(tempRoot(), "settings.json");
-    writeFileSync(path, JSON.stringify(base));
-    const saved = markAutoDownloadAttempted(path, "2026-10-22T08:00:00Z", { HOME: "/h" });
-    expect(saved.asr.autoDownloadAttemptedAt).toBe("2026-10-22T08:00:00Z");
-    expect(JSON.parse(readFileSync(path, "utf8")).asr.autoDownloadAttemptedAt).toBe("2026-10-22T08:00:00Z");
-    expect(() => markAutoDownloadAttempted(path, "not-a-date", { HOME: "/h" })).toThrow("autoDownloadAttemptedAt");
-  });
 
   test("env 锁定字段保存被拒，错误文案点名字段", () => {
     const path = resolve(tempRoot(), "settings.json");

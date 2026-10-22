@@ -19,9 +19,10 @@ import {
   ASR_MODEL_ID,
   cacheUsage,
   clearCache,
+  fetchModelIds,
   importModels,
   loadDotenvFiles,
-  markAutoDownloadAttempted,
+  migrateStorageLayout,
   modelStatus,
   recoverInterruptedRun,
   readGlobalCorrections,
@@ -52,6 +53,7 @@ import { createVolcengineFlashProvider } from "../../../../packages/core/src/asr
 import type {
   AppSettings,
   AsrSecrets,
+  DownloadLogLine,
   CorrectionFileEntry,
   KeySource,
   LibraryDetail as CoreLibraryDetail,
@@ -67,11 +69,15 @@ import {
   type AsrUpdatePatch,
   type CorrectionEntry,
   type DirectoryKind,
+  type DownloadSnapshot,
   type ExtractTarget,
   type ImportModelsResult,
   type JobKind,
   type JobStep,
+  type LlmModelListResult,
   type LlmUpdatePatch,
+  type ModelDownloadEvent,
+  type ModelLogEntry,
   type ModelsStatus,
   type SettingsPatch,
   type SettingsStatus,
@@ -79,12 +85,29 @@ import {
   type TestLlmResult,
   type VideoDetail,
 } from "../shared/ipc";
+import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
+import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
-import { createModelDownloader } from "./models-downloader";
 
+// dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
+// 仓库 tmp/dev-home 下，便于人工检查；打包后的 app 走正常路径（resolveDevHome 返回 null）。
+// 显式 env 优先：VNOTE_USER_DATA 存在时不改 userData；VNOTE_HOME/VNOTE_DATA_ROOT 存在时不设 VNOTE_DATA_ROOT。
+const devHome = resolveDevHome({ isPackaged: app.isPackaged, cwd: process.cwd(), env: process.env });
+if (devHome !== null) {
+  mkdirSync(devHome.root, { recursive: true });
+  if (process.env.VNOTE_USER_DATA === undefined || process.env.VNOTE_USER_DATA === "") {
+    app.setPath("userData", devHome.userData);
+  }
+  if (process.env.VNOTE_HOME === undefined || process.env.VNOTE_HOME === "") {
+    if (process.env.VNOTE_DATA_ROOT === undefined || process.env.VNOTE_DATA_ROOT === "") {
+      process.env.VNOTE_DATA_ROOT = devHome.dataRoot;
+    }
+  }
+  prepareDevHome(devHome, process.env);
+}
 // 测试隔离（ADR-0015 §12）：验收夹具用 VNOTE_USER_DATA 隔离 userData，避免改写真实
 // ~/Library/Application Support/@video-notes 的 settings.json/secrets.bin；必须在任何 getPath("userData") 之前
 if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !== "") {
@@ -134,6 +157,12 @@ const resolved = resolveSettings(settingsRead.file, process.env);
 let settings: AppSettings = resolved.settings;
 const locked = resolved.locked;
 let settingsFileError: string | null = settingsRead.error;
+// 存储布局迁移（r28）：旧模型目录 rename 到统一根；失败继续用旧目录，只 warn 一次不弹 UI。
+// ADR-0020：迁移只处理默认路径；settings.json 钉住 modelDir 时不迁移，避免搬动非默认目录。
+if (settingsRead.file.modelDir === undefined) {
+  const migration = migrateStorageLayout(process.env);
+  if (migration.warning !== null) console.warn(migration.warning);
+}
 
 // Electron codec 包装 safeStorage（ready 后可用）；单测注入假 codec
 const electronCodec: SecretCodec = {
@@ -195,7 +224,7 @@ function effectiveAsrProvider(): "local" | "openai" | "volcengine" {
   return CLOUD_ASR_ENABLED ? settings.asr.provider : "local";
 }
 
-/** 错误与日志出口：脱敏集合 = env 的 key 变量 + 密钥库全部值 + 两个 baseUrl，任一命中整体替换（ADR-0016 §7.1）。 */
+/** 错误与日志出口：脱敏集合 = env 的 key 变量 + 密钥库全部值，任一命中整体替换（ADR-0016 §7.1）。 */
 function sanitizeError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   const secrets: (string | undefined)[] = [
@@ -207,8 +236,6 @@ function sanitizeError(err: unknown): string {
     process.env.VNOTE_VOLC_APP_KEY,
     process.env.VNOTE_VOLC_ACCESS_KEY,
     ...(secretStore?.all() ?? []),
-    settings.llm.baseUrl,
-    settings.asr.openai.baseUrl,
   ];
   for (const s of secrets) {
     if (s !== undefined && s !== "" && message.includes(s)) return "内部错误（详细信息已脱敏，见日志）";
@@ -750,7 +777,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),
-    models: { ready: models.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes, autoDownloadDisabled: models.autoDownloadDisabled },
+    models: { ready: models.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes },
     settingsFileError: credentialTxError !== null ? credentialTxError : (settingsFileError ?? secretStore?.error() ?? null),
     features: { cloudAsr: CLOUD_ASR_ENABLED },
     ffmpeg: ff.ok,
@@ -878,6 +905,21 @@ async function testLlm(): Promise<TestLlmResult> {
     return { ok: false, model: null, message: sanitizeError(err) };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** 「拉取模型」：当前生效的 base url + key 请求 <base>/models；key 只在请求里用，不进日志、不进返回值。 */
+async function listLlmModels(): Promise<LlmModelListResult> {
+  const creds = llmRuntime.credentials;
+  if (creds === undefined) {
+    return { ok: false, models: [], message: `未配置 LLM 端点：${llmRuntime.error ?? "请在设置里保存 base url 与 api key"}` };
+  }
+  try {
+    const ids = await fetchModelIds(creds.baseUrl, creds.apiKey);
+    const deduped = [...new Set(ids)].sort();
+    return { ok: true, models: deduped, message: deduped.length === 0 ? "连接成功，但返回的模型列表为空" : `已拉取 ${deduped.length} 个模型` };
+  } catch (err) {
+    return { ok: false, models: [], message: sanitizeError(err) };
   }
 }
 
@@ -1101,6 +1143,21 @@ async function testAsr(): Promise<TestAsrResult> {
   }
 }
 
+const MODEL_LOG_LIMIT = 200;
+let downloadLog: ModelLogEntry[] = [];
+
+function appendModelLog(line: DownloadLogLine): void {
+  downloadLog.push({ at: new Date().toISOString(), level: line.level, text: line.text });
+  if (downloadLog.length > MODEL_LOG_LIMIT) downloadLog = downloadLog.slice(-MODEL_LOG_LIMIT);
+  broadcastModelEvent();
+}
+
+/** 快照与日志共用一条出口：payload 是 { snapshot, log }，log 是截至此刻的缓冲（有上限）。 */
+function broadcastModelEvent(snapshot?: DownloadSnapshot): void {
+  const event: ModelDownloadEvent = { snapshot: snapshot ?? modelsDownloader.snapshot(), log: downloadLog };
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, event);
+}
+
 function modelsStatusNow(): ModelsStatus {
   return modelsDownloader.status(settings.modelDir);
 }
@@ -1108,16 +1165,29 @@ function modelsStatusNow(): ModelsStatus {
 async function downloadModelsNow(): Promise<ModelsStatus> {
   if (queue.busy()) throw new Error("已有任务在运行，完成后再安装模型");
   if (modelsDownloader.busy()) return modelsStatusNow();
+  downloadLog = [];
+  broadcastModelEvent();
   modelsDownloader.start(settings.modelDir, {
-    onSnapshot: (s) => {
-      for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, s);
-    },
+    onSnapshot: broadcastModelEvent,
+    onLog: appendModelLog,
     busy: () => queue.busy(),
+  });
+  // 下载循环结束后复核（不阻塞 IPC 返回）：core 报 done 但目录仍不 ready 时补一条带原因的 failed 快照；
+  // failed/cancelled 终态已由下载器发出，不覆盖
+  void modelsDownloader.done().then(() => {
+    if (modelsDownloader.snapshot().state !== "done") return;
+    const finalStatus = modelStatus(settings.modelDir);
+    if (finalStatus.ready) return;
+    const missing = finalStatus.bundles.filter((b) => b.state !== "ready").map((b) => b.title).join("、");
+    appendModelLog({ level: "error", text: `下载结束但模型未就绪${missing === "" ? "" : `（${missing}）`}` });
+    broadcastModelEvent({ state: "failed", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: `模型未就绪${missing === "" ? "" : `：${missing}`}` });
   });
   return modelsStatusNow();
 }
 
 function cancelModelDownload(): ModelsStatus {
+  // 取消由下载器内部发 cancelled 快照；这里只补一行日志让界面日志面板有交代
+  appendModelLog({ level: "warn", text: "下载已取消" });
   modelsDownloader.cancel();
   return modelsStatusNow();
 }
@@ -1156,25 +1226,10 @@ function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknow
   };
 }
 
-/** 首次启动自动下载（ADR-0015 §4）：本地、未 ready、未尝试过、VNOTE_DISABLE_MODEL_DOWNLOAD!=1 才启动；先 markAutoDownloadAttempted。 */
-function maybeAutoDownload(): void {
-  if (effectiveAsrProvider() !== "local") return;
-  if (process.env.VNOTE_DISABLE_MODEL_DOWNLOAD === "1") return;
-  if (settings.asr.autoDownloadAttemptedAt !== null) return;
-  if (modelStatus(settings.modelDir).ready) return;
-  settings = markAutoDownloadAttempted(SETTINGS_PATH(), new Date().toISOString());
-  modelsDownloader.start(settings.modelDir, {
-    onSnapshot: (s) => {
-      for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, s);
-    },
-    busy: () => queue.busy(),
-  });
-}
-
 /**
  * 启动时的模型校验（r26）：校验缓存只在进程内，重启后曾下载好的模型会回到「未校验」，
  * 而提取要求 ready。文件齐、字节数对的所有包在这里后台校验一遍，免掉每次启动手点「校验模型」。
- * 缺文件或已判 invalid 的包不在这里处理，交给自动下载或设置页导入。
+ * 缺文件或已判 invalid 的包不在这里处理，交给设置页导入或手动下载。
  */
 let autoVerify: Promise<void> | undefined;
 function maybeAutoVerifyModels(): void {
@@ -1198,9 +1253,8 @@ function maybeAutoVerifyModels(): void {
     } finally {
       lock.release();
     }
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.modelEvent, { state: "done", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null });
-    }
+    // 校验完把快照与既有日志一起发出去，让界面进度条随 ready 状态收起
+    broadcastModelEvent({ state: "done", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null });
   })();
   autoVerify = done;
   void done.finally(() => {
@@ -1234,7 +1288,7 @@ app.on("window-all-closed", () => {
 });
 
 void app.whenReady().then(async () => {
-  // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 首次自动下载
+  // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 后台模型校验（r28 起不自动下载）
   secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
@@ -1244,7 +1298,6 @@ void app.whenReady().then(async () => {
   });
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
-  maybeAutoDownload();
   maybeAutoVerifyModels();
 
   // 媒体协议 root 读 settings 当前值（env 启动时可能没被 .env 补全，settings 才和界面一致）；
@@ -1344,6 +1397,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.pickDirectory, guard((_e, kind: DirectoryKind) => pickDirectory(kind)));
   ipcMain.handle(IPC.clearCache, guard(() => clearCacheNow()));
   ipcMain.handle(IPC.testLlm, guard(() => testLlm()));
+  ipcMain.handle(IPC.listLlmModels, guard(() => listLlmModels()));
   ipcMain.handle(IPC.testAsr, guard(() => testAsr()));
   ipcMain.handle(IPC.models, guard(() => modelsStatusNow()));
   ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));

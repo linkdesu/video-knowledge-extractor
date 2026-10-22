@@ -22,7 +22,6 @@ export type SettingsFile = {
     provider?: AsrProvider;
     openai?: { baseUrl?: string; model?: string };
     volcengine?: { mode?: VolcengineMode; authMode?: VolcengineAuthMode };
-    autoDownloadAttemptedAt?: string | null;
   };
 };
 
@@ -31,7 +30,6 @@ export type AsrSettings = {
   provider: AsrProvider;
   openai: { baseUrl: string; model: string };
   volcengine: { mode: VolcengineMode; authMode: VolcengineAuthMode };
-  autoDownloadAttemptedAt: string | null;
 };
 /** 解析后的有效设置：字段齐全。 */
 export type AppSettings = {
@@ -56,7 +54,7 @@ export type LockedSettings = {
   volcAuthMode: boolean;
 };
 
-/** 界面 patch：只碰用户可编辑字段，自动下载时间戳走 markAutoDownloadAttempted。 */
+/** 界面 patch：只碰用户可编辑字段。 */
 export type SettingsPatch = {
   notesRoot?: string;
   cacheRoot?: string;
@@ -161,13 +159,6 @@ function parseSettingsFile(raw: unknown, path: string): SettingsFile {
         authMode: vc.authMode === "apiKey" || vc.authMode === "appAccessKey" ? vc.authMode : undefined,
       };
     }
-    if (asr.autoDownloadAttemptedAt !== undefined) {
-      const value = asr.autoDownloadAttemptedAt;
-      if (value !== null && (typeof value !== "string" || Number.isNaN(Date.parse(value)))) {
-        throw new Error(`设置文件 ${path} 的 asr.autoDownloadAttemptedAt 必须是 null 或可解析的 ISO 时间字符串`);
-      }
-    }
-    fileAsr.autoDownloadAttemptedAt = asr.autoDownloadAttemptedAt === null ? null : typeof asr.autoDownloadAttemptedAt === "string" ? asr.autoDownloadAttemptedAt : undefined;
     file.asr = fileAsr;
   }
   return file;
@@ -231,7 +222,6 @@ export function resolveSettings(file: SettingsFile, env: EnvRecord): { settings:
             ? asrEnvValue.volcAuthMode
             : file.asr?.volcengine?.authMode ?? "apiKey",
       },
-      autoDownloadAttemptedAt: file.asr?.autoDownloadAttemptedAt ?? null,
     },
   };
   validateSettings(settings);
@@ -310,17 +300,6 @@ function mergePatch(file: SettingsFile, patch: SettingsPatch): SettingsFile {
   return merged;
 }
 
-/** 自动下载时间戳不由用户 patch 写：只深度合并该字段（ADR-0015）。 */
-export function markAutoDownloadAttempted(configPath: string, when: string | null, env: EnvRecord = process.env): AppSettings {
-  if (when !== null && Number.isNaN(Date.parse(when))) {
-    throw new Error(`设置 asr.autoDownloadAttemptedAt 必须是 null 或可解析的 ISO 时间字符串，实际是 ${JSON.stringify(when)}`);
-  }
-  const file = readSettingsFile(configPath);
-  file.asr = { ...file.asr, autoDownloadAttemptedAt: when };
-  const { settings } = resolveSettings(file, env);
-  writeJsonAtomic(configPath, file);
-  return settings;
-}
 
 /**
  * 所有已存在的块始终执行形状、枚举与 URL 安全校验（openai.baseUrl 即使未选中也不允许
@@ -348,10 +327,6 @@ function validateSettings(settings: AppSettings): void {
   }
   if (settings.asr.volcengine.authMode !== "apiKey" && settings.asr.volcengine.authMode !== "appAccessKey") {
     throw new Error(`设置 asr.volcengine.authMode 必须是 apiKey 或 appAccessKey，实际是 ${String(settings.asr.volcengine.authMode)}`);
-  }
-  const stamp = settings.asr.autoDownloadAttemptedAt;
-  if (stamp !== null && Number.isNaN(Date.parse(stamp))) {
-    throw new Error(`设置 asr.autoDownloadAttemptedAt 必须是 null 或可解析的 ISO 时间字符串，实际是 ${JSON.stringify(stamp)}`);
   }
 }
 

@@ -29,10 +29,9 @@ function asrRemote(overrides?: { openai?: { baseUrl?: string; model?: string }; 
     provider: "openai",
     openai: { baseUrl: "https://asr", model: "m-asr", ...overrides?.openai },
     volcengine: { ...volc, ...overrides?.volcengine },
-    autoDownloadAttemptedAt: null,
   };
 }
-const asrLocal = { provider: "local", openai: { baseUrl: "", model: "" }, volcengine: volc, autoDownloadAttemptedAt: null } as const;
+const asrLocal = { provider: "local", openai: { baseUrl: "", model: "" }, volcengine: volc } as const;
 
 describe("resolveLlm", () => {
   test("env key 优先于传入 key", () => {

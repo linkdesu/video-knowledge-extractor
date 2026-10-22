@@ -392,7 +392,6 @@ async function up(args: string[]): Promise<void> {
       VNOTE_HOME: home,
       VNOTE_USER_DATA: userData,
       VNOTE_MODEL_DIR: modelDir,
-      VNOTE_DISABLE_MODEL_DOWNLOAD: "1",
     },
     stdin: "ignore",
     stdout: logFd,

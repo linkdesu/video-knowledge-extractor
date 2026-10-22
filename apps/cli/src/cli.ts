@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { cacheRoot, defaultSettings, loadDotenvFiles, modelDir, notesRoot, resolveAsr, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
+import { cacheRoot, defaultSettings, loadDotenvFiles, migrateStorageLayout, modelDir, notesRoot, resolveAsr, resolveEndpointFromEnv, runExtract } from "@video-notes/core";
 import type { Progress, StepName } from "@video-notes/core";
 
 const USAGE = `用法:
@@ -11,7 +11,7 @@ const USAGE = `用法:
 .env 从 cwd 与 notes 根目录各读一份，shell 变量优先，cwd 优先于 notes 根目录。
 LLM 端点: VNOTE_LLM_BASE_URL / IDEALSOFT_API_URL、VNOTE_LLM_API_KEY / IDEALSOFT_API_KEY，
 两个名字都认，规范名优先；模型名可留空，留空时代码调 GET <base>/models 自选。
-可用环境变量 VNOTE_HOME 覆盖产物根目录。
+数据根目录 VNOTE_DATA_ROOT（默认 ~/Documents/video-notes），可用 VNOTE_HOME 单独覆盖笔记根；缓存在 <根>/.cache，模型在 <根>/models（旧模型目录 ~/.cache/video-notes/models 启动时自动迁移）。
 `;
 
 const STEP_LABELS: Record<StepName, string> = {
@@ -66,6 +66,8 @@ function printProgress(p: Progress): void {
 
 async function main(): Promise<void> {
   loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => notesRoot() });
+  const migration = migrateStorageLayout(process.env);
+  if (migration.warning) console.warn(migration.warning);
   const [command, ...rest] = process.argv.slice(2);
   if (command === undefined || command === "--help" || command === "help") {
     console.log(USAGE);

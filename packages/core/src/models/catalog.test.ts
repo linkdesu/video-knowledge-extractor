@@ -159,17 +159,6 @@ describe("modelStatus", () => {
     expect(status.locked).toBe(false);
   });
 
-  test("VNOTE_DISABLE_MODEL_DOWNLOAD=1 时 autoDownloadDisabled=true", () => {
-    const root = tempRoot();
-    const modelDir = join(root, "models");
-    process.env.VNOTE_DISABLE_MODEL_DOWNLOAD = "1";
-    try {
-      expect(modelStatus(modelDir, []).autoDownloadDisabled).toBe(true);
-    } finally {
-      delete process.env.VNOTE_DISABLE_MODEL_DOWNLOAD;
-    }
-    expect(modelStatus(modelDir, []).autoDownloadDisabled).toBe(false);
-  });
 
   test("lock 文件存在但 pid 已死：locked=false", () => {
     const root = tempRoot();

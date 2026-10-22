@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { ModelBundle } from "./catalog";
-import { downloadBundle, downloadModels, recoverModelDir, type FetchImpl } from "./download";
+import { downloadBundle, downloadModels, recoverModelDir, type DownloadLogLine, type FetchImpl } from "./download";
 import { verifyBundle } from "./verify";
 
 function tempRoot(): string {
@@ -61,6 +61,16 @@ function streamFromBytes(bytes: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+/** 把流切成 size 字节的分片（模拟慢速网络，让进度里程碑逐 10% 触发）。 */
+function streamInChunks(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let i = 0; i < bytes.length; i += size) controller.enqueue(bytes.slice(i, i + size));
       controller.close();
     },
   });
@@ -286,6 +296,112 @@ describe("downloadBundle", () => {
       server.close();
     }
   });
+
+  test("onLog 阶段日志：开始、进度里程碑、校验、解压、安装、完成，且日志不含请求头里的授权值", async () => {
+    const root = tempRoot();
+    const modelDir = join(root, "models");
+    const files: Record<string, string> = {
+      "model.onnx": "log-check-archive-model".repeat(4),
+      "tokens.txt": "1 tok\n",
+      "pad.bin": randomBytes(2 * 1024 * 1024).toString("base64"),
+    };
+    const { bundle, archive } = archiveBundleFixture(root, "pkg", files);
+    const payload = new Uint8Array(readFileSync(archive));
+    expect(payload.length).toBeGreaterThanOrEqual(120);
+    const manifestBytes = bundle.files.reduce((sum, f) => sum + f.bytes, 0);
+    // 与 download.ts 的 fmtBytes 同规则：MB 一位小数（<10 时）
+    const mb = manifestBytes / (1024 * 1024);
+    const sizeText = `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+    const fakeAuth = "Bearer sk-vnote-test-0000";
+    const seenAuth: string[] = [];
+    const server = startMockServer({
+      state: { payload },
+      seenRanges: [],
+      onRequest: (req) => {
+        const auth = req.headers.get("authorization");
+        if (auth !== null) seenAuth.push(auth);
+      },
+    });
+    if (bundle.source.kind === "tar.bz2") bundle.source.url = `http://127.0.0.1:${server.port}/model.tar.bz2`;
+    // 分片发送 + 注入 Authorization 头：证明日志管线看不到密钥
+    const fetchImpl: FetchImpl = async (url, init) => {
+      const headers = new Headers(init?.headers ?? {});
+      headers.set("Authorization", fakeAuth);
+      const res = await fetch(url, { ...init, headers });
+      const body = res.body;
+      if (body === null) throw new Error("mock 响应没有 body");
+      const responseHeaders = new Headers(res.headers);
+      responseHeaders.set("content-length", String(payload.length));
+      return { status: res.status, headers: responseHeaders, body: streamInChunks(payload, Math.ceil(payload.length / 10)) };
+    };
+    const lines: DownloadLogLine[] = [];
+    const states: string[] = [];
+    try {
+      const status = await downloadBundle(modelDir, bundle, {
+        fetchImpl,
+        onProgress: (s) => states.push(s.state),
+        onLog: (line) => lines.push(line),
+      });
+      expect(status.ready).toBe(true);
+      expect(seenAuth).toContain(fakeAuth);
+      const texts = lines.map((l) => l.text);
+      expect(texts[0]).toBe(`开始下载 ${bundle.title}（${sizeText}）`);
+      const progressLines = texts.filter((t) => /^下载 .+ \d+%（\d+\/\d+）$/.test(t));
+      expect(progressLines.length).toBeGreaterThanOrEqual(10);
+      expect(texts).toContain(`校验 ${bundle.title} sha256`);
+      expect(texts).toContain("解压 model.tar.bz2");
+      expect(texts).toContain(`安装 ${bundle.title}`);
+      expect(texts.at(-1)).toBe(`完成 ${bundle.title}`);
+      // 100% 之后快照仍按 verifying → installing 顺序发出，UI 才能看到收尾阶段
+      for (const state of ["downloading", "verifying", "installing", "done"]) expect(states).toContain(state);
+      expect(states.indexOf("verifying")).toBeGreaterThan(states.lastIndexOf("downloading"));
+      expect(states.indexOf("installing")).toBeGreaterThan(states.indexOf("verifying"));
+      for (const line of lines) expect(line.text).not.toContain(fakeAuth);
+    } finally {
+      server.close();
+    }
+  });
+
+
+  test("onLog 续传行：预置 .part 前缀时先发续传起点，日志不含授权值", async () => {
+    const root = tempRoot();
+    const modelDir = join(root, "models");
+    const content = "resume-log-01234567890123456789";
+    const fakeAuth = "Bearer sk-vnote-test-1111";
+    const seenAuth: string[] = [];
+    const server = startMockServer({
+      state: { payload: new TextEncoder().encode(content) },
+      seenRanges: [],
+      onRequest: (req) => {
+        const auth = req.headers.get("authorization");
+        if (auth !== null) seenAuth.push(auth);
+      },
+    });
+    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `http://127.0.0.1:${server.port}/model.onnx`);
+    const bundle = singleFileBundle("model.onnx", content);
+    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    const fetchImpl: FetchImpl = async (url, init) => {
+      const headers = new Headers(init?.headers ?? {});
+      headers.set("Authorization", fakeAuth);
+      const res = await fetch(url, { ...init, headers });
+      const body = res.body;
+      if (body === null) throw new Error("mock 响应没有 body");
+      return { status: res.status, headers: res.headers, body: body as ReadableStream<Uint8Array> };
+    };
+    const lines: DownloadLogLine[] = [];
+    try {
+      const status = await downloadBundle(modelDir, bundle, { fetchImpl, onLog: (line) => lines.push(line) });
+      expect(status.ready).toBe(true);
+      expect(seenAuth).toContain(fakeAuth);
+      const texts = lines.map((l) => l.text);
+      expect(texts[0]).toBe(`开始下载 ${bundle.title}（${content.length} B）`);
+      expect(texts[1]).toBe("续传：从 10 继续");
+      for (const line of lines) expect(line.text).not.toContain(fakeAuth);
+    } finally {
+      server.close();
+    }
+  });
+
 
   test("AbortSignal 中止：请求失败，失败快照发出且 .part 按失败清理", async () => {
     const root = tempRoot();

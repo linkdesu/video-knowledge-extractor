@@ -4,6 +4,7 @@ export { runNotes, runTopics } from "./pipeline/notes-run";
 export { loadDotenvFiles } from "./core/env";
 export {
   cacheRoot,
+  dataRoot,
   llmCredentialsFromEnv,
   modelDir,
   notesRoot,
@@ -34,7 +35,6 @@ export {
   readSettingsFileSafe,
   resolveSettings,
   saveSettings,
-  markAutoDownloadAttempted,
   settingsLockedByEnv,
 } from "./core/settings";
 export type {
@@ -51,7 +51,9 @@ export type {
 export { resolveLlm, resolveAsr, resolveAsrFor } from "./core/credentials";
 export type { KeySource, Resolution, ResolvedLlm, ResolvedAsr, AsrSecrets, VolcengineAuth } from "./core/credentials";
 export { cacheUsage, clearCache } from "./core/cache-usage";
-export { resolveEndpointFromEnv, resolveLlmEndpoint } from "./llm/endpoint";
+export { migrateStorageLayout } from "./core/storage-layout";
+export type { StorageMigrationResult } from "./core/storage-layout";
+export { resolveEndpointFromEnv, resolveLlmEndpoint, fetchModelIds } from "./llm/endpoint";
 export type { Progress, StepName, LlmEndpoint } from "./core/steps";
 export { videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo } from "./core/library";
@@ -113,7 +115,7 @@ export type {
   ImportResult,
 } from "./models/catalog";
 export { downloadBundle, downloadModels, recoverModelDir } from "./models/download";
-export type { DownloadProgress, FetchImpl } from "./models/download";
+export type { DownloadProgress, DownloadLogLine, FetchImpl } from "./models/download";
 export { importModels } from "./models/import";
 export { verifyModels, verifyBundle } from "./models/verify";
 export { acquireModelLock } from "./models/oplock";

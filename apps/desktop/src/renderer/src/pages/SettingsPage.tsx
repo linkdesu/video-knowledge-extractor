@@ -4,6 +4,8 @@ import type {
   AsrSecretField,
   DirectoryKind,
   DownloadSnapshot,
+  ModelLogEntry,
+  ModelDownloadEvent,
   ModelsStatus,
   SettingsPatch,
   SettingsStatus,
@@ -188,61 +190,39 @@ function KeyField({
   useEffect(() => {
     if (!hasKey) setDraft("");
   }, [hasKey]);
+  const save = () => {
+    if (draft.trim() === "") return;
+    setSaving(true);
+    onSave(draft.trim())
+      .then(() => setDraft(""))
+      .catch((err) => showToast(`保存失败：${errMessage(err)}`))
+      .finally(() => setSaving(false));
+  };
 
-  // 每个密钥字段独立判断来源：env 提供的那个字段显示「由环境变量控制」，与整套凭据的解析结果无关。
-  if (keySource === "env") {
-    return (
-      <div className="vn-field" data-testid={`${testId}-field`}>
-        <label>{label}</label>
-        <span className="vn-hint">由环境变量控制</span>
-      </div>
-    );
-  }
-  if (hasKey) {
-    return (
-      <div className="vn-field" data-testid={`${testId}-field`}>
-        <label>{label}</label>
-        <div className="vn-row">
-          <span className="vn-hint">已保存（系统密钥库）</span>
-          {keyStorageAvailable ? (
-            <button
-              type="button"
-              className="vn-btn sm"
-              data-testid={`${testId}-clear`}
-              disabled={clearing}
-              onClick={() => {
-                setClearing(true);
-                onClear()
-                  .catch((err) => showToast(`清除失败：${errMessage(err)}`))
-                  .finally(() => setClearing(false));
-              }}
-            >
-              {clearing ? "清除中…" : "清除"}
-            </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
+  const clear = () => {
+    setClearing(true);
+    onClear()
+      .then(() => setDraft(""))
+      .catch((err) => showToast(`清除失败：${errMessage(err)}`))
+      .finally(() => setClearing(false));
+  };
+
   return (
     <div className="vn-field" data-testid={`${testId}-field`}>
       <label>{label}</label>
       <div className="vn-row">
         <input
           type="password"
+          autoComplete="off"
           className="vn-input"
           style={{ flex: 1 }}
           value={draft}
+          placeholder={hasKey ? "粘贴新 key 覆盖" : "输入 key"}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              if (draft.trim() !== "") {
-                setSaving(true);
-                onSave(draft.trim())
-                  .catch((err) => showToast(`保存失败：${errMessage(err)}`))
-                  .finally(() => setSaving(false));
-              }
+              save();
             }
           }}
           aria-label={label}
@@ -254,18 +234,32 @@ function KeyField({
             className="vn-btn sm"
             data-testid={`${testId}-save`}
             disabled={saving || draft.trim() === ""}
-            onClick={() => {
-              if (draft.trim() === "") return;
-              setSaving(true);
-              onSave(draft.trim())
-                .catch((err) => showToast(`保存失败：${errMessage(err)}`))
-                .finally(() => setSaving(false));
-            }}
+            onClick={save}
           >
             {saving ? "保存中…" : "保存"}
           </button>
         ) : null}
+        {hasKey && keyStorageAvailable ? (
+          <button
+            type="button"
+            className="vn-btn sm"
+            data-testid={`${testId}-clear`}
+            disabled={clearing}
+            onClick={clear}
+          >
+            {clearing ? "清除中…" : "清除"}
+          </button>
+        ) : null}
       </div>
+      {keySource === "env" ? (
+        <span className="vn-hint" data-testid={`${testId}-env`}>
+          当前使用环境变量中的 key，这里保存的 key 在环境变量移除后生效
+        </span>
+      ) : hasKey ? (
+        <span className="vn-hint" data-testid={`${testId}-saved`}>
+          已保存（系统密钥库），可粘贴新 key 覆盖
+        </span>
+      ) : null}
       {keyStorageAvailable ? null : (
         <span className="vn-hint" data-testid={`${testId}-no-storage`}>
           系统密钥存储不可用，请用环境变量配置密钥
@@ -283,11 +277,21 @@ export function SettingsPage() {
   const [clearing, setClearing] = useState(false);
   const [models, setModels] = useState<ModelsStatus | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [downloadLog, setDownloadLog] = useState<ModelLogEntry[]>([]);
   const [importing, setImporting] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [snapshot, setSnapshot] = useState<DownloadSnapshot | null>(null);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
+  const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
   const reloadTimers = useRef<number[]>([]);
+  const prevBaseUrl = useRef<string | null>(null);
+  const baseUrl = status?.llm.baseUrl ?? null;
+  useEffect(() => {
+    if (prevBaseUrl.current !== null && prevBaseUrl.current !== baseUrl) setFetchedModels(null);
+    prevBaseUrl.current = baseUrl;
+  }, [baseUrl]);
 
   const reload = useCallback(() => {
     setLoadError(null);
@@ -320,13 +324,35 @@ export function SettingsPage() {
   }, [reload]);
 
   useEffect(() => {
-    const off = window.vnote.onModelDownload((snap) => {
-      setSnapshot(snap);
-      setDownloading(snap.state === "downloading");
-      if (snap.state === "done" || snap.state === "failed") reloadModels();
+    const off = window.vnote.onModelDownload((event: ModelDownloadEvent) => {
+      setSnapshot(event.snapshot);
+      setDownloadLog(event.log);
+      if (event.snapshot.state === "failed" || event.snapshot.state === "cancelled") {
+        setStarted(false);
+      }
+      reloadModels();
     });
     return off;
   }, []);
+  useEffect(() => {
+    if (models !== null && models.ready) setStarted(false);
+  }, [models]);
+
+  const fetchLlmModels = () => {
+    setFetchingModels(true);
+    setModelsFetchError(null);
+    window.vnote
+      .listLlmModels()
+      .then((r) => {
+        if (r.ok) {
+          setFetchedModels(r.models);
+        } else {
+          setModelsFetchError(r.message);
+        }
+      })
+      .catch((err) => setModelsFetchError(errMessage(err)))
+      .finally(() => setFetchingModels(false));
+  };
 
   const update = useCallback((patch: SettingsPatch) => {
     window.vnote
@@ -448,7 +474,7 @@ export function SettingsPage() {
   // r26：试用版只启用本地 ASR；隐藏提供方切换与云端面板（存盘值由 main 求值为 local）
   const cloudAsr = status.features.cloudAsr;
   const volcModeInfo = VOLC_MODE_INFO[asr.volcengine.mode];
-  const busyModel = downloading || importing || verifying;
+  const busyModel = started || importing || verifying;
   const localMissing =
     models !== null
       ? models.bundles.filter((b) => b.state !== "ready").map((b) => b.title)
@@ -679,9 +705,15 @@ export function SettingsPage() {
                 <ModelPanel
                   status={models}
                   snapshot={snapshot}
+                  started={started}
+                  log={downloadLog}
                   busy={busyModel}
                   verifying={verifying}
-                  onDownload={() => runModelAction(() => window.vnote.downloadModels())}
+                  onDownload={() => {
+                    setStarted(true);
+                    setDownloadLog([]);
+                    runModelAction(() => window.vnote.downloadModels());
+                  }}
                   onCancel={() => runModelAction(() => window.vnote.cancelModelDownload())}
                   onImport={importModels}
                   onVerify={verify}
@@ -721,13 +753,50 @@ export function SettingsPage() {
           </div>
           <div className="vn-field">
             <label>模型名</label>
-            <CommitInput
-              value={llm.model ?? ""}
-              locked={llm.locked.model}
-              placeholder="留空时自动发现"
-              onCommit={(v) => update({ llm: { model: v } })}
-              testId="settings-llm-model"
-            />
+            <div className="vn-row">
+              <CommitInput
+                value={llm.model ?? ""}
+                locked={llm.locked.model}
+                placeholder="留空时自动发现"
+                onCommit={(v) => update({ llm: { model: v } })}
+                testId="settings-llm-model"
+              />
+              <button
+                type="button"
+                className="vn-btn sm"
+                data-testid="settings-llm-fetch-models"
+                disabled={fetchingModels}
+                onClick={fetchLlmModels}
+              >
+                {fetchingModels ? "拉取中…" : "拉取模型"}
+              </button>
+            </div>
+            {fetchedModels !== null ? (
+              <select
+                className="vn-select"
+                value={llm.model ?? ""}
+                data-testid="settings-llm-model-select"
+                disabled={llm.locked.model}
+                onChange={(e) => update({ llm: { model: e.target.value } })}
+              >
+                <option value="">自动发现（留空）</option>
+                {llm.model !== null && !fetchedModels.includes(llm.model) ? (
+                  <option key={llm.model} value={llm.model}>
+                    {llm.model}
+                  </option>
+                ) : null}
+                {fetchedModels.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            {modelsFetchError !== null ? (
+              <p className="vn-hint" data-testid="settings-llm-models-error">
+                {modelsFetchError}
+              </p>
+            ) : null}
             {llm.locked.model ? (
               <span className="vn-hint">由环境变量控制</span>
             ) : llm.model === null ? (
