@@ -140,7 +140,8 @@ export async function resolveLlmEndpoint(
   creds: LlmCredentials,
   fetchImpl?: typeof fetch,
 ): Promise<LlmEndpoint> {
-  if (creds.model !== undefined) {
+  // 空模型名与缺省同义：设置层把「留空」规范成 ""，不能当成显式模型名返回 ""
+  if (creds.model !== undefined && creds.model !== "") {
     return { baseUrl: creds.baseUrl, apiKey: creds.apiKey, model: creds.model };
   }
   const ids = await fetchModelIds(creds.baseUrl, creds.apiKey, fetchImpl);

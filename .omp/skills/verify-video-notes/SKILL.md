@@ -20,6 +20,7 @@ Preconditions, once per machine:
 
 ```bash
 bun install
+node node_modules/electron/install.js   # a fresh worktree install skips Electron's binary; `up` fails without it
 ffmpeg -version          # required by every extraction; Homebrew is fine
 ls ~/.cache/video-notes/models   # ~1.1 GB of local ASR models, required for import journeys
 # A fresh Electron process reports the models as unverified until they are checked once:
@@ -47,8 +48,23 @@ Isolation limits:
 - One instance per `VNOTE_USER_DATA` because the main process takes Electron's single-instance lock. Two runs side by side need both a distinct `--port` and a distinct `--run`.
 - The model directory is shared read-only. Never point `--model-dir` at a scratch copy unless the journey verifies model files.
 - `VNOTE_DISABLE_MODEL_DOWNLOAD=1` prevents the first-launch download. It does not disable the manual 「下载模型」 button in Settings; do not click it on a metered connection.
-- Extraction still needs `settings.llm.model` when model discovery is slow: with only `IDEALSOFT_API_URL`/`KEY` the job can fail with 模型发现失败 and leave an empty `video.json`. Pin the model in 设置 (`ai-02/qwen3.8-27b` at the time of writing) or set `VNOTE_LLM_MODEL`.
-- On `main@3e9a10c` a real local-ASR import fails at 说话人分离 with `ASR 模型加载失败：sherpa.OfflineRecognizer is not a constructor`; the fix is on the unmerged `r26-mac-package` branch. Status and glossary journeys do not need ASR; a prepared `video.json` (transcript, no topics) is enough to drive them.
+- Extraction with only `IDEALSOFT_API_URL`/`KEY` and no pinned model now works: the main process awaits model discovery before it builds a job (r26). A pin via `VNOTE_LLM_MODEL` or 设置 still wins and skips discovery.
+- A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
+
+### Packaged app
+
+`bun run package:mac` in `apps/desktop` produces `release/Video Notes-darwin-arm64/Video Notes.app` and a DMG. Drive the installed bundle, not `apps/desktop/out`:
+
+```bash
+hdiutil attach apps/desktop/release/Video\ Notes-0.1.0-arm64.dmg -nobrowse -readonly
+ditto "/Volumes/Video Notes/Video Notes.app" tmp/r26-install/"Video Notes.app"
+hdiutil detach "/Volumes/Video Notes"
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r26-install/Video Notes.app" --min-path --run pkg-01
+```
+
+`--app` resolves `Contents/MacOS/<CFBundleExecutable>` from `Contents/Info.plist` and implies `--no-build`; the run records `appPath` in `state.json`, and `doctor` compares the bundle's mtime against the sources instead of `out/`. `--min-path` replaces the child PATH with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, so `settings().ffmpeg === true` proves the app's own PATH repair (`/opt/homebrew/bin`, `/usr/local/bin`) and not your shell.
+
+The bundled app has no `.env` of its own, but the helper starts it with the repo root as cwd and `loadDotenvFiles` reads `cwd/.env` first — so env credentials still work here. On a machine without that file the only credential path is 设置 (base url + key into the system keychain), which is the path a real user takes.
 
 Teardown (always, including after a failed journey):
 
@@ -94,7 +110,7 @@ $V fill '[data-testid=glossary-right]' 'sherpa-onnx'
 $V type 'sherpa'                           # key events into the focused element
 $V press Enter
 $V drop /abs/path/video.mp4                # real drag-and-drop onto the dropzone
-$V wait "window.vnote.activeJob() === null" --timeout 240000
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 $V shot glossary-proof                     # -> <run>/glossary-proof.png
 $V snapshot glossary-proof                 # -> <run>/glossary-proof.aria.txt (accessibility tree)
 $V log 60                                  # tail <run>/app.log
@@ -104,9 +120,9 @@ Mechanics that matter:
 
 - `click` / `click-text` dispatch `Input.dispatchMouseEvent` at the element center, so they exercise the same handlers as a user. `click-text` resolves the accessible name from `Accessibility.getFullAXTree`; step tabs are named `1 字幕`, `2 主题`, `3 笔记`, and the numeric badge is stripped when you pass `主题` / `笔记`.
 - `fill` focuses, selects the existing text, then sends key events. Use it instead of `eval`-setting `input.value`: React's value tracker ignores direct assignments.
+- `wait` evaluates with `awaitPromise`, which awaits the expression only when the expression *is* a promise. `window.vnote.activeJob() === null` compares a promise to null and is therefore always false — every wait written that way burns its full timeout. Write `window.vnote.activeJob().then(j => j === null)` or `window.vnote.listLibrary().then(...)`. Wait on state, never on a fixed sleep.
 - `type` sends key events for ASCII and `Input.insertText` for non-ASCII. The global glossary debounces saves (~400 ms) and submits only rows with both columns filled, so half-typed rows produce neither requests nor error toasts.
 - `drop` uses `Input.dispatchDragEvent` with a real filesystem path. This is the only automatable import path: clicking the dropzone opens a native file dialog that blocks the renderer.
-- `wait` evaluates the expression with `awaitPromise`, so `window.vnote.listLibrary().then(...)` works. Wait on state, never on a fixed sleep.
 
 Stable handles in this repo:
 
@@ -146,7 +162,16 @@ Proof standards:
 - Extraction journeys call the endpoint configured in `.env`: real network, real token spend. Say so in the report.
 - `VNOTE_DISABLE_MODEL_DOWNLOAD=1` only skips *automatic* download on first launch. Do not claim the app is offline-capable from that flag; manual download and connection tests still hit the network.
 
-Last proven runs: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
+Last proven runs: `tmp/verify/r26-pkg-02/` and `tmp/verify/r26-pkg-01/` (r26: the packaged, DMG-installed app with launchd's PATH — 10-minute local-ASR extraction to four finished topics, notes rerun after a failed LLM call, settings with the trial ASR gate and auto-discovered model) and `tmp/verify/r26-empty/` (packaged app on a fresh home: empty library, first drop, running banner, finished card). Earlier: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
+
+## Gotchas
+
+- **Worktree installs skip Electron's binary.** `bun install` in a fresh worktree links `node_modules/electron` but does not fetch `dist/`; `up` then fails with "Electron binary not found". Run `node node_modules/electron/install.js` once.
+- **The packaged app's process is not "Electron".** `down` compares `ps`'s process name with the recorded executable, so packaged runs pass only because `appPath` is in `state.json`. If you start the binary by hand, `down` refuses on purpose.
+- **CJS native packages lose half their named exports under ESM.** `import * as sherpa from "sherpa-onnx-node"` yields only `OnlineRecognizer` plus `default`; `sherpa.OfflineRecognizer` is `undefined` and `new sherpa.OfflineRecognizer(...)` throws "is not a constructor". Only the packaged app hit it in r26, but the shape is a property of the package, not the bundle. Read through `default` (core's `resolveSherpaApi` does).
+- **A local ASR job that dies in the utility process** shows up as `worker 进程退出（退出码 …）` on the topic or job, and `~/Library/Logs/DiagnosticReports/` holds the Electron crash log. One 70-second utterance was enough to SIGTRAP Electron's ONNX allocator (ADR-0018); the fix lived in `ASR_MAX_UTTERANCE_SECONDS`, not in the surface you are driving.
+- **A DMG you built yourself has no quarantine bit**, so Gatekeeper does not block it. Downloaded copies of the same unsigned app do; ADR-0017 documents the right-click / `xattr -dr com.apple.quarantine` path. Do not report "the package launches" as proof that distribution is safe.
+- **The packaged app reads `cwd/.env`** because `loadDotenvFiles` runs first for `process.cwd()`. That is why driving it from the repo root works without a keychain entry; a Finder launch has `/` as cwd and needs 设置 instead.
 
 ## Cleanup
 

@@ -31,7 +31,7 @@ Preconditions:
 - **Empty state.** Read the dropzone. Run `$V wait "document.querySelector('[data-testid=dropzone]') !== null"` and `$V text`. The page shows `点击或拖放视频到这里` and no `video-card`.
 - **Import by drop.** Drag the fixture onto the dropzone. Run `$V drop tmp/r26-e2e/short-30s.mp4`. Within a second `$V status` reports an `extract` job in `queued`/`running` state and `library[0].status` is `in-progress`.
 - **Job banner.** Capture the running state. Run `$V wait "document.querySelector('[data-testid=job-banner]') !== null"` and `$V shot library-running`. The banner shows 提取进度 and the current step.
-- **Wait for completion.** Wait for the job to leave the queue, not for the card tag. Run `$V wait "window.vnote.activeJob() === null" --timeout 240000`, then `$V wait "window.vnote.listLibrary().then(v => v.length === 1 && v[0].topicCount > 0 && v[0].clipCount > 0)" --timeout 120000`.
+- **Wait for completion.** Wait for the job to leave the queue, not for the card tag. Run `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000`, then `$V wait "window.vnote.listLibrary().then(v => v.length === 1 && v[0].topicCount > 0 && v[0].clipCount > 0)" --timeout 120000`.
 - **Card state.** Run `$V status > tmp/verify/<run>/status.json`. The card is 已完成 with a topic count, resolution and size; `outputDir` points inside the run home.
 - **Side effects.** Read the output directory. `test -f <home>/index.json`, `test -f <outputDir>/index.md`, and every topic directory listed by `index.md` contains `topic.md` plus at least one clip. A `.part-*.mp4` file means note generation is still running.
 - **Open workspace.** Run `$V click '[data-testid=card-open-notes]'` (finished video). The breadcrumb reads `视频库 / <title> / 笔记`.

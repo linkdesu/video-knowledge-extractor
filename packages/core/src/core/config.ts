@@ -6,8 +6,11 @@ export const CHUNK_TARGET_SECONDS = 13 * 60;
 export const CHUNK_MIN_SECONDS = 10 * 60;
 export const CHUNK_MAX_SECONDS = 15 * 60;
 
-/** 单段解码上限约 80s，是内存上限不是模型上限；只有超长段才在停顿处切（ADR-0003）。 */
-export const ASR_MAX_UTTERANCE_SECONDS = 80;
+/**
+ * 单段解码上限 30s，是内存上限不是模型上限；只有超长段才在停顿处切（ADR-0003、ADR-0018）。
+ * Electron 里一次 70s 前向会申请到 ONNX 分配器中止的尺寸（r26 实测 SIGTRAP）。
+ */
+export const ASR_MAX_UTTERANCE_SECONDS = 30;
 
 /** 识别、说话人分离、标点模型，参与缓存键（ADR-0003、ADR-0006）。 */
 export const ASR_MODEL_ID = "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25";

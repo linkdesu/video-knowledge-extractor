@@ -153,6 +153,14 @@ describe("resolveLlmEndpoint", () => {
     expect(requestLog).toHaveLength(1);
   });
 
+  test("空 model 字符串按缺省处理：走发现，不返回空模型名", async () => {
+    const base = startServer();
+    body = modelsResponse(REAL_IDS);
+    const endpoint = await resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test", model: "" });
+    expect(endpoint.model).toBe("ai-02/qwen3.8-27b");
+    expect(requestLog).toHaveLength(1);
+  });
+
   test("空列表报错文本不含 key 且给出显式指定提示", async () => {
     const base = startServer();
     body = modelsResponse([]);

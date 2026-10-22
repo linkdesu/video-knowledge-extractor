@@ -28,7 +28,7 @@ Preconditions:
 - **Read the note set.** Run `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.map(t => ({ id: t.id, title: t.title, status: t.status, clips: t.clips.length, keyPoints: t.keyPoints.length })))"`. A note is `done` only when its `topic.md` and clips exist.
 - **Switch notes.** Run `$V click '[data-testid=note-open]' --index 1` (the second row; indexes follow `getVideo(id).topics` order). The left pane heading changes to that topic's title.
 - **Seek from a subtitle.** Run `$V click '[data-testid=clip-sub]' --index 0`. A toast `已定位到 <time>` appears and the line is highlighted. Playback itself needs a real user gesture and is not part of the proof.
-- **Regenerate one topic.** Run `$V click-text '单独重新生成'`, then `$V wait "window.vnote.activeJob() === null" --timeout 180000`. With cache intact this finishes quickly; the note row shows 生成中 while it runs.
+- **Regenerate one topic.** Run `$V click-text '单独重新生成'`, then `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 180000`. With cache intact this finishes quickly; the note row shows 生成中 while it runs.
 - **Output directory.** Run `$V eval "window.vnote.listLibrary().then(v => v[0].outputDir)"` and inspect `<outputDir>/index.md` and each topic directory (`topic.md` plus `*.mp4`). Do not click 打开输出目录: it opens Finder.
 - **Proof.** `$V shot notes-proof`, `$V snapshot notes-proof`, the `getVideo` read, and the file listing.
 

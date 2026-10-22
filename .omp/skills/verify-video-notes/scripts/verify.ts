@@ -13,7 +13,7 @@
  * Run with `--help` for the full command list.
  */
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
 const DESKTOP = join(REPO, "apps/desktop");
@@ -29,6 +29,8 @@ type RunState = {
   userData: string;
   modelDir: string;
   appLog: string;
+  /** Set when the run drives a packaged .app instead of apps/desktop. */
+  appPath?: string;
   startedAt: string;
   electron: string;
 };
@@ -38,8 +40,12 @@ type Target = { type: string; url: string; title: string; webSocketDebuggerUrl: 
 const HELP = `usage: verify.ts <command>
 
   up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build]
+     [--app PATH] [--min-path]
       Build apps/desktop, start Electron with isolated VNOTE_HOME / VNOTE_USER_DATA,
       wait until the renderer answers, write tmp/verify/<run>/state.json.
+      --app drives an already packaged .app (or its executable) instead of apps/desktop,
+      and implies --no-build. --min-path replaces the child PATH with launchd's
+      /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
 
   doctor [--run ID]
       Read-only health check of the latest run: process, CDP port owner, build freshness,
@@ -182,6 +188,21 @@ class Cdp {
   }
 }
 
+/** launchd hands GUI apps this PATH; a packaged run must not borrow the shell's. */
+const LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/** A .app bundle runs its CFBundleExecutable; a plain path runs as-is. */
+function bundleExecutable(appPath: string): string {
+  if (!existsSync(appPath)) fail(`app not found: ${appPath}`);
+  if (!appPath.endsWith(".app")) return appPath;
+  const plist = join(appPath, "Contents/Info.plist");
+  const name = Bun.spawnSync(["plutil", "-extract", "CFBundleExecutable", "raw", "-o", "-", plist]).stdout.toString().trim();
+  if (name === "") fail(`cannot read CFBundleExecutable from ${plist}`);
+  const exe = join(appPath, "Contents/MacOS", name);
+  if (!existsSync(exe)) fail(`bundle executable missing: ${exe}`);
+  return exe;
+}
+
 const sleep = (ms: number) => {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -315,7 +336,10 @@ const OUTPUTS = [
 async function up(args: string[]): Promise<void> {
   const port = Number(takeFlag(args, "--port") ?? "9411");
   const runId = takeFlag(args, "--run") ?? stamp();
-  const skipBuild = hasFlag(args, "--no-build");
+  const appArg = takeFlag(args, "--app");
+  // --app drives an already packaged bundle: building apps/desktop cannot change what it runs
+  const skipBuild = hasFlag(args, "--no-build") || appArg !== undefined;
+  const minPath = hasFlag(args, "--min-path");
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
   mkdirSync(runDir, { recursive: true });
@@ -341,18 +365,30 @@ async function up(args: string[]): Promise<void> {
     // expected: port is free
   }
 
-  const electron = [
-    join(DESKTOP, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
-    join(REPO, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
-  ].find((path) => existsSync(path));
-  if (electron === undefined) fail("Electron binary not found; run `bun install` in the repo root");
+  let electron: string;
+  let appArgs: string[];
+  let appPath: string | undefined;
+  if (appArg !== undefined) {
+    appPath = resolve(appArg);
+    electron = bundleExecutable(appPath);
+    appArgs = [`--remote-debugging-port=${port}`];
+  } else {
+    const devElectron = [
+      join(DESKTOP, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
+      join(REPO, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
+    ].find((path) => existsSync(path));
+    if (devElectron === undefined) fail("Electron binary not found; run `bun install` in the repo root");
+    electron = devElectron;
+    appArgs = ["apps/desktop", `--remote-debugging-port=${port}`];
+  }
 
   const appLog = join(runDir, "app.log");
   const logFd = openSync(appLog, "w");
-  const child = Bun.spawn([electron, "apps/desktop", `--remote-debugging-port=${port}`], {
+  const child = Bun.spawn([electron, ...appArgs], {
     cwd: REPO,
     env: {
       ...process.env,
+      ...(minPath ? { PATH: LAUNCHD_PATH } : {}),
       VNOTE_HOME: home,
       VNOTE_USER_DATA: userData,
       VNOTE_MODEL_DIR: modelDir,
@@ -373,6 +409,7 @@ async function up(args: string[]): Promise<void> {
     userData,
     modelDir,
     appLog,
+    ...(appPath !== undefined ? { appPath } : {}),
     startedAt: new Date().toISOString(),
     electron,
   };
@@ -410,6 +447,7 @@ async function up(args: string[]): Promise<void> {
   console.log(`home:     ${home}`);
   console.log(`userData: ${userData}`);
   console.log(`log:      ${appLog}`);
+  if (appPath !== undefined) console.log(`app:      ${appPath}`);
 }
 
 async function doctor(args: string[]): Promise<void> {
@@ -488,11 +526,18 @@ async function doctor(args: string[]): Promise<void> {
     warn("lsof unavailable; cannot prove port ownership");
   }
 
-  const newest = newestSourceMtime();
-  const stale = OUTPUTS.filter((path) => !existsSync(path) || statSync(path).mtimeMs < newest);
-  stale.length === 0
-    ? ok("build output is newer than apps/desktop + packages/core sources")
-    : bad(`stale build: ${stale.map((p) => p.replace(`${REPO}/`, "")).join(", ")} older than sources`);
+  if (state.appPath !== undefined) {
+    const stamp = statSync(state.appPath).mtimeMs;
+    stamp > newestSourceMtime()
+      ? ok(`packaged app is newer than apps/desktop + packages/core sources (${state.appPath})`)
+      : bad(`packaged app at ${state.appPath} is older than sources; rerun \`bun run package:mac\``);
+  } else {
+    const newest = newestSourceMtime();
+    const stale = OUTPUTS.filter((path) => !existsSync(path) || statSync(path).mtimeMs < newest);
+    stale.length === 0
+      ? ok("build output is newer than apps/desktop + packages/core sources")
+      : bad(`stale build: ${stale.map((p) => p.replace(`${REPO}/`, "")).join(", ")} older than sources`);
+  }
 
   if (problems.length > 0) {
     console.log(`\ndoctor: ${problems.length} problem(s)`);
@@ -648,8 +693,10 @@ async function down(args: string[]): Promise<void> {
     return;
   }
   const name = processName(state.pid);
-  if (!name.toLowerCase().includes("electron")) {
-    fail(`refusing to kill pid ${state.pid}: process name is "${name}", not Electron`);
+  // a packaged run's process is the bundle executable ("Video Notes"), not "Electron"
+  const expected = state.appPath === undefined ? "Electron" : basename(bundleExecutable(state.appPath));
+  if (!name.toLowerCase().includes(expected.toLowerCase())) {
+    fail(`refusing to kill pid ${state.pid}: process name is "${name}", not ${expected}`);
   }
   process.kill(state.pid, "SIGTERM");
   const started = Date.now();
