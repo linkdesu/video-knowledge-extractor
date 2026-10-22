@@ -1168,7 +1168,10 @@ void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(target).toString());
   });
 
-  ipcMain.handle(IPC.listLibrary, guard(() => listLibrary(settings.notesRoot).map(toVideoDto)));
+  ipcMain.handle(
+    IPC.listLibrary,
+    guard(() => listLibrary(settings.notesRoot, { busyVideoId: queue.active()?.videoId ?? null }).map(toVideoDto)),
+  );
   ipcMain.handle(
     IPC.getVideo,
     guard((_e, videoId: string) => {
