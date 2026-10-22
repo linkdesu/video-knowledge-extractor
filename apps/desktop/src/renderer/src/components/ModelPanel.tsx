@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { DownloadSnapshot, ModelLogEntry, ModelsStatus } from "../../../shared/ipc";
 import { fmtBytes } from "../lib/format";
-
+import { Button } from "../rbp/blocks/settings-form-3";
 const STATE_LABEL: Record<"ready" | "unverified" | "missing" | "invalid", string> = {
   ready: "就绪",
   unverified: "未校验",
@@ -87,42 +87,38 @@ export function ModelPanel({
         ))}
       </div>
       <div className="vn-row" style={{ flexWrap: "wrap", marginTop: 12 }}>
-        <button
+        <Button
           type="button"
-          className="vn-btn sm"
           data-testid="model-download"
           disabled={busy || active}
           onClick={onDownload}
         >
           下载模型
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="vn-btn sm"
           data-testid="model-cancel"
           disabled={!active}
           onClick={onCancel}
         >
           取消
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="vn-btn sm"
           data-testid="model-import"
           disabled={busy}
           onClick={onImport}
         >
           导入本地模型
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="vn-btn sm"
           data-testid="model-verify"
           disabled={busy || verifying}
           onClick={onVerify}
         >
           {verifying ? "校验中…" : "校验模型"}
-        </button>
+        </Button>
       </div>
       {showProgress ? (
         <div className="vn-progress" data-testid="model-download-progress" aria-hidden="true">

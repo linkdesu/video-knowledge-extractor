@@ -57,7 +57,7 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 转写默认走本地引擎；也可以用 `VNOTE_ASR_PROVIDER=remote` 或设置页切换到远程 ASR（OpenAI 兼容转录接口）。远程转写没有说话人分离，全部字幕归说话人1；端点不返回逐句时间戳时直接报「不能用于字幕」，不伪造整块字幕。
 
-主题分析与笔记走你配置的一个 OpenAI 兼容端点。`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录；端点变量两个名字都认，按字段独立取值并允许混用，规范名优先：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`。端点地址与模型名也可以在设置页修改；LLM 密钥仍走环境变量（含 `.env`）或桌面端系统密钥库（safeStorage，绝不落盘明文），密钥库不可用时只能用环境变量。模型名可留空：`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 没设时，代码调 `GET <base>/models` 按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。
+主题分析与笔记走你配置的一个 OpenAI 兼容端点。`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录；端点变量两个名字都认，按字段独立取值并允许混用，规范名优先：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`。端点地址与模型名也可以在设置页修改（两者都是本地草稿，点「保存」才写盘；「拉取模型」后从页面内下拉里选，不是 macOS 原生菜单）；LLM 密钥仍走环境变量（含 `.env`）或桌面端系统密钥库（safeStorage，绝不落盘明文），密钥库不可用时只能用环境变量。模型名可留空：`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 没设时，代码调 `GET <base>/models` 按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。
 
 ## 命令与开发
 
@@ -77,7 +77,7 @@ bun run package:mac # 打包 macOS arm64 未签名 .app 与 .dmg（release/）
 
 桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
 
-界面是 React Bits Pro（RBP）源码组件加 Tailwind CSS 4：库、视频详情、提取进度、纠错词表、设置各落在一个 App UI 区块上，空态标题用 `luminous-type`，库统计用 `bento-29` 的计数补间（[ADR-0013](docs/adr/0013-react-bits-pro-renderer.md)）。RBP 源码落在 `apps/desktop/src/renderer/src/rbp/`，条目清单是 `apps/desktop/reactbits.json`。新增条目需要 `.env` 里的 `REACTBITS_LICENSE_KEY`，跑 `bun run rbp:vendor`（只在 `apps/desktop` 内）；重跑会覆盖已经改过的文件。
+界面是 React Bits Pro（RBP）源码组件加 Tailwind CSS 4：库、视频详情、提取进度、纠错词表、设置各落在一个 App UI 区块上，空态标题用 `luminous-type`，库统计用 `bento-29` 的计数补间（[ADR-0013](docs/adr/0013-react-bits-pro-renderer.md)）。设置页的表单控件（面板、字段、下拉、输入、密码框、按钮）来自 vendored 的 `settings-form-3`，经 [ADR-0022](docs/adr/0022-settings-form-react-bits-controls.md) 改造成可复用 primitives。RBP 源码落在 `apps/desktop/src/renderer/src/rbp/`，条目清单是 `apps/desktop/reactbits.json`。新增条目需要 `.env` 里的 `REACTBITS_LICENSE_KEY`，跑 `bun run rbp:vendor`（只在 `apps/desktop` 内）；重跑会覆盖已经改过的文件。
 
 环境变量（也可写进 `.env`）：
 
@@ -112,5 +112,5 @@ ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部�
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0019 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方、macOS 未签名试用包的打包布局与云端 ASR 门禁、本地 ASR 单段解码上限 30 秒（Electron 内存边界）、LLM 请求超时与 5xx 重试一次。
+- `docs/adr/`：0001–0022 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方、macOS 未签名试用包的打包布局与云端 ASR 门禁、本地 ASR 单段解码上限 30 秒（Electron 内存边界）、LLM 请求超时与 5xx 重试一次、统一数据根与 dev 数据目录、模型下载改为显式触发并显示阶段日志、设置页表单统一为 React Bits Pro 控件（DOM 下拉、显式保存、密码可见性）。
 - `tmp/` 与 `runs/` 不进 git。

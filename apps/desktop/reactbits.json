@@ -20,6 +20,10 @@
     {
       "registry": "pro",
       "name": "empty-state-5"
+    },
+    {
+      "registry": "pro",
+      "name": "settings-form-3"
     }
   ]
 }

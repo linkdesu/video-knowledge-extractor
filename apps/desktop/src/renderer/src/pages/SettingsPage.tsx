@@ -7,30 +7,23 @@ import type {
   ModelLogEntry,
   ModelDownloadEvent,
   ModelsStatus,
-  SettingsPatch,
   SettingsStatus,
   VolcengineAuthMode,
   VolcengineMode,
 } from "../../../shared/ipc";
 import { ModelPanel } from "../components/ModelPanel";
 import { errMessage, fmtBytes } from "../lib/format";
+import { draftFrom, llmBaseUrlChanged, llmDirty, llmPatch, modelOptions, type LlmSaved } from "../lib/llm-draft";
 import { showToast } from "../lib/toast";
-
-/** 火山引擎的端点与 resource id 是协议常量，不是用户配置（ADR-0016 §2）；这里只用于只读展示。 */
-const VOLC_MODE_INFO: Record<
-  VolcengineMode,
-  { endpoint: string; queryEndpoint?: string; resourceId: string }
-> = {
-  flash: {
-    endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
-    resourceId: "volc.bigasr.auc_turbo",
-  },
-  standard: {
-    endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",
-    queryEndpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query",
-    resourceId: "volc.seedasr.auc",
-  },
-};
+import { VOLC_MODE_INFO } from "../../../shared/volc";
+import {
+  Button,
+  PasswordInput,
+  Select,
+  SettingsField,
+  SettingsPanel,
+  TextInput,
+} from "../rbp/blocks/settings-form-3";
 
 const PROVIDER_LABEL: Record<AsrProvider, string> = {
   local: "本地 sherpa-onnx",
@@ -62,212 +55,19 @@ const FIELD_KIND: Record<"notesRoot" | "cacheRoot" | "modelDir", DirectoryKind> 
 
 type PathField = "notesRoot" | "cacheRoot" | "modelDir";
 
-function PathInput({
-  label,
-  value,
-  locked,
-  onCommit,
-}: {
-  label: PathField;
-  value: string;
-  locked: boolean;
-  onCommit: (value: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
+type KeyState = { draft: string; saving: boolean; clearing: boolean };
 
-  const commit = () => {
-    if (locked) return;
-    if (draft.trim() !== "" && draft !== value) onCommit(draft.trim());
-  };
+const EMPTY_KEY: KeyState = { draft: "", saving: false, clearing: false };
 
-  return (
-    <div className="vn-field" data-testid={`settings-path-${label}`}>
-      <label>{FIELD_LABEL[label]}</label>
-      <div className="vn-row">
-        <input
-          className="vn-input"
-          style={{ flex: 1 }}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-          readOnly={locked}
-          aria-label={FIELD_LABEL[label]}
-          data-testid={`settings-path-input-${label}`}
-        />
-        <button
-          type="button"
-          className="vn-btn sm"
-          data-testid={`settings-pick-${label}`}
-          disabled={locked}
-          onClick={() => {
-            window.vnote
-              .pickDirectory(FIELD_KIND[label])
-              .then((dir) => {
-                if (dir !== null) {
-                  setDraft(dir);
-                  onCommit(dir);
-                }
-              })
-              .catch((err) => showToast(`选择目录失败：${errMessage(err)}`));
-          }}
-        >
-          选择…
-        </button>
-      </div>
-      {locked ? (
-        <span className="vn-hint" data-testid={`settings-path-locked-${label}`}>
-          由环境变量控制
-        </span>
-      ) : null}
-    </div>
-  );
-}
+const KEY_FIELDS = [
+  "llm",
+  "openaiKey",
+  "volcApiKey",
+  "volcAppKey",
+  "volcAccessKey",
+] as const;
 
-type TextCommit = {
-  value: string;
-  locked: boolean;
-  placeholder?: string;
-  onCommit: (value: string) => void;
-  testId: string;
-};
-
-function CommitInput({ value, locked, placeholder, onCommit, testId }: TextCommit) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  const commit = () => {
-    if (locked) return;
-    if (draft !== value) onCommit(draft);
-  };
-
-  return (
-    <input
-      className="vn-input"
-      value={draft}
-      placeholder={placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-      }}
-      readOnly={locked}
-      data-testid={testId}
-    />
-  );
-}
-
-type KeyFieldProps = {
-  /** 字段名（API key / API Key / App Key / Access Key）。 */
-  label: string;
-  hasKey: boolean;
-  keySource: "env" | "stored" | "none";
-  keyStorageAvailable: boolean;
-  onSave: (key: string) => Promise<void>;
-  onClear: () => Promise<void>;
-  testId: string;
-};
-
-function KeyField({
-  label,
-  hasKey,
-  keySource,
-  keyStorageAvailable,
-  onSave,
-  onClear,
-  testId,
-}: KeyFieldProps) {
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  useEffect(() => {
-    if (!hasKey) setDraft("");
-  }, [hasKey]);
-  const save = () => {
-    if (draft.trim() === "") return;
-    setSaving(true);
-    onSave(draft.trim())
-      .then(() => setDraft(""))
-      .catch((err) => showToast(`保存失败：${errMessage(err)}`))
-      .finally(() => setSaving(false));
-  };
-
-  const clear = () => {
-    setClearing(true);
-    onClear()
-      .then(() => setDraft(""))
-      .catch((err) => showToast(`清除失败：${errMessage(err)}`))
-      .finally(() => setClearing(false));
-  };
-
-  return (
-    <div className="vn-field" data-testid={`${testId}-field`}>
-      <label>{label}</label>
-      <div className="vn-row">
-        <input
-          type="password"
-          autoComplete="off"
-          className="vn-input"
-          style={{ flex: 1 }}
-          value={draft}
-          placeholder={hasKey ? "粘贴新 key 覆盖" : "输入 key"}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              save();
-            }
-          }}
-          aria-label={label}
-          data-testid={`${testId}-input`}
-        />
-        {keyStorageAvailable ? (
-          <button
-            type="button"
-            className="vn-btn sm"
-            data-testid={`${testId}-save`}
-            disabled={saving || draft.trim() === ""}
-            onClick={save}
-          >
-            {saving ? "保存中…" : "保存"}
-          </button>
-        ) : null}
-        {hasKey && keyStorageAvailable ? (
-          <button
-            type="button"
-            className="vn-btn sm"
-            data-testid={`${testId}-clear`}
-            disabled={clearing}
-            onClick={clear}
-          >
-            {clearing ? "清除中…" : "清除"}
-          </button>
-        ) : null}
-      </div>
-      {keySource === "env" ? (
-        <span className="vn-hint" data-testid={`${testId}-env`}>
-          当前使用环境变量中的 key，这里保存的 key 在环境变量移除后生效
-        </span>
-      ) : hasKey ? (
-        <span className="vn-hint" data-testid={`${testId}-saved`}>
-          已保存（系统密钥库），可粘贴新 key 覆盖
-        </span>
-      ) : null}
-      {keyStorageAvailable ? null : (
-        <span className="vn-hint" data-testid={`${testId}-no-storage`}>
-          系统密钥存储不可用，请用环境变量配置密钥
-        </span>
-      )}
-    </div>
-  );
-}
+type KeyFieldId = (typeof KEY_FIELDS)[number];
 
 export function SettingsPage() {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
@@ -285,6 +85,16 @@ export function SettingsPage() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
   const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
+  const [pathDrafts, setPathDrafts] = useState<
+    Record<"notesRoot" | "cacheRoot" | "modelDir", string>
+  >({ notesRoot: "", cacheRoot: "", modelDir: "" });
+  const [keys, setKeys] = useState<Record<KeyFieldId, KeyState>>({
+    llm: EMPTY_KEY,
+    openaiKey: EMPTY_KEY,
+    volcApiKey: EMPTY_KEY,
+    volcAppKey: EMPTY_KEY,
+    volcAccessKey: EMPTY_KEY,
+  });
   const reloadTimers = useRef<number[]>([]);
   const prevBaseUrl = useRef<string | null>(null);
   const baseUrl = status?.llm.baseUrl ?? null;
@@ -293,6 +103,51 @@ export function SettingsPage() {
     prevBaseUrl.current = baseUrl;
   }, [baseUrl]);
 
+  const [llmCard, setLlmCard] = useState<{
+    draft: { baseUrl: string; model: string };
+    saving: boolean;
+    saveError: string | null;
+  } | null>(null);
+  const [asrText, setAsrText] = useState<{ baseUrl: string; model: string } | null>(null);
+
+  const llmInited = useRef(false);
+  useEffect(() => {
+    if (status === null) return;
+    if (!llmInited.current) {
+      llmInited.current = true;
+      const saved: LlmSaved = { baseUrl: status.llm.baseUrl ?? "", model: status.llm.model };
+      setLlmCard({ draft: draftFrom(saved), saving: false, saveError: null });
+    }
+  }, [status]);
+  // 服务端值变了才重置本地编辑：值没变（如只保存 LLM）就不打断输入。
+  const prevPath = useRef<{ notesRoot: string; cacheRoot: string; modelDir: string } | null>(null);
+  useEffect(() => {
+    if (status === null) return;
+    const prev = prevPath.current;
+    if (prev === null) {
+      prevPath.current = { notesRoot: status.notesRoot, cacheRoot: status.cacheRoot, modelDir: status.modelDir };
+      setPathDrafts({ notesRoot: status.notesRoot, cacheRoot: status.cacheRoot, modelDir: status.modelDir });
+      return;
+    }
+    if (
+      prev.notesRoot !== status.notesRoot ||
+      prev.cacheRoot !== status.cacheRoot ||
+      prev.modelDir !== status.modelDir
+    ) {
+      prevPath.current = { notesRoot: status.notesRoot, cacheRoot: status.cacheRoot, modelDir: status.modelDir };
+      setPathDrafts({ notesRoot: status.notesRoot, cacheRoot: status.cacheRoot, modelDir: status.modelDir });
+    }
+  }, [status]);
+  const prevAsrText = useRef<{ baseUrl: string; model: string } | null>(null);
+  useEffect(() => {
+    if (status === null) return;
+    const prev = prevAsrText.current;
+    const next = { baseUrl: status.asr.openai.baseUrl, model: status.asr.openai.model };
+    if (prev === null || prev.baseUrl !== next.baseUrl || prev.model !== next.model) {
+      prevAsrText.current = next;
+      setAsrText(next);
+    }
+  }, [status]);
   const reload = useCallback(() => {
     setLoadError(null);
     window.vnote
@@ -354,29 +209,62 @@ export function SettingsPage() {
       .finally(() => setFetchingModels(false));
   };
 
-  const update = useCallback((patch: SettingsPatch) => {
+  const saveLlm = () => {
+    if (status === null || llmCard === null || llmCard.saving) return;
+    const patch = llmPatch(
+      { baseUrl: status.llm.baseUrl ?? "", model: status.llm.model },
+      llmCard.draft,
+      status.llm.locked,
+    );
+    if (patch === null) return;
+    const atSave = { ...llmCard.draft };
+    setLlmCard({ ...llmCard, saving: true, saveError: null });
     window.vnote
-      .updateSettings(patch)
+      .updateSettings({ llm: patch })
+      .then((next) => {
+        showToast("已保存");
+        setLlmCard((cur) => {
+          if (cur === null) return null;
+          const unchanged = cur.draft.baseUrl === atSave.baseUrl && cur.draft.model === atSave.model;
+          return {
+            draft: unchanged
+              ? draftFrom({ baseUrl: next.llm.baseUrl ?? "", model: next.llm.model })
+              : cur.draft,
+            saving: false,
+            saveError: null,
+          };
+        });
+        setStatus(next);
+      })
+      .catch((err) => {
+        setLlmCard((cur) => (cur !== null ? { ...cur, saving: false, saveError: errMessage(err) } : cur));
+      });
+  };
+
+  const setKey = (id: KeyFieldId, patch: Partial<KeyState>) =>
+    setKeys((k) => ({ ...k, [id]: { ...k[id], ...patch } }));
+
+  const saveAsrSecret = (field: AsrSecretField, label: string, id: KeyFieldId) => {
+    const key = keys[id].draft.trim();
+    if (key === "") return;
+    setKey(id, { saving: true });
+    window.vnote
+      .updateAsr({ secret: { field, value: key } })
       .then(setStatus)
-      .catch((err) => showToast(`保存失败：${errMessage(err)}`));
-  }, []);
+      .then(() => showToast(`${label} 已保存`))
+      .catch((err) => showToast(`保存失败：${errMessage(err)}`))
+      .finally(() => setKey(id, { saving: false }));
+  };
 
-  // 一次只改一个密钥：四个字段各自一次调用（ADR-0016 §5），两次保存之间是可见的中间态。
-  const saveSecret =
-    (field: AsrSecretField, label: string) =>
-    (value: string): Promise<void> =>
-      window.vnote
-        .updateAsr({ secret: { field, value } })
-        .then(setStatus)
-        .then(() => showToast(`${label} 已保存`));
-
-  const clearSecret =
-    (field: AsrSecretField, label: string) =>
-    (): Promise<void> =>
-      window.vnote
-        .updateAsr({ secret: { field, clear: true } })
-        .then(setStatus)
-        .then(() => showToast(`${label} 已清除`));
+  const clearAsrSecret = (field: AsrSecretField, label: string, id: KeyFieldId) => {
+    setKey(id, { clearing: true });
+    window.vnote
+      .updateAsr({ secret: { field, clear: true } })
+      .then(setStatus)
+      .then(() => showToast(`${label} 已清除`))
+      .catch((err) => showToast(`清除失败：${errMessage(err)}`))
+      .finally(() => setKey(id, { clearing: false, draft: "" }));
+  };
 
   const testLlm = () => {
     setTestingLlm(true);
@@ -419,7 +307,6 @@ export function SettingsPage() {
       .then(() => reloadModels())
       .catch((err) => showToast(`操作失败：${errMessage(err)}`));
 
-
   const verify = () => {
     setVerifying(true);
     runModelAction(() => window.vnote.verifyModels()).finally(() => setVerifying(false));
@@ -453,14 +340,9 @@ export function SettingsPage() {
     return (
       <div className="vn-hint">
         加载设置失败：{loadError}
-        <button
-          type="button"
-          className="vn-btn sm"
-          style={{ marginLeft: 12 }}
-          onClick={reload}
-        >
+        <Button size="sm" style={{ marginLeft: 12 }} onClick={reload}>
           重试
-        </button>
+        </Button>
       </div>
     );
   }
@@ -480,120 +362,151 @@ export function SettingsPage() {
       ? models.bundles.filter((b) => b.state !== "ready").map((b) => b.title)
       : asr.local.missing;
 
+  const saveLlmBlocked =
+    llmCard === null ||
+    llmCard.saving ||
+    (llm.locked.baseUrl && llm.locked.model);
+  const llmDirtyNow =
+    llmCard !== null && llmDirty({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft, llm.locked);
+  const llmBaseUrlDirty =
+    llmCard !== null && llmBaseUrlChanged({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft, llm.locked);
+
+  const pickDir = (field: PathField) => {
+    window.vnote
+      .pickDirectory(FIELD_KIND[field])
+      .then((dir) => {
+        if (dir !== null) {
+          setPathDrafts((d) => ({ ...d, [field]: dir }));
+          window.vnote
+            .updateSettings({ [field]: dir })
+            .then(setStatus)
+            .catch((err) => showToast(`保存失败：${errMessage(err)}`));
+        }
+      })
+      .catch((err) => showToast(`选择目录失败：${errMessage(err)}`));
+  };
+  const commitAsrText = (field: "baseUrl" | "model", locked: boolean) => {
+    if (locked || asrText === null) return;
+    const v = asrText[field];
+    if (v !== (field === "baseUrl" ? asr.openai.baseUrl : asr.openai.model)) {
+      window.vnote
+        .updateSettings({ asr: { openai: { [field]: v } } })
+        .then(setStatus)
+        .catch((err) => showToast(`保存失败：${errMessage(err)}`));
+    }
+  };
+
   return (
     <>
       <h1 className="vn-h1">设置</h1>
       <p className="vn-sub">模型、存储与缓存。API key 安全存储，界面只显示已保存。</p>
 
       <div className="vn-grid vn-cards2" data-testid="settings-page">
-        <section className="vn-card vn-pad" data-testid="settings-asr">
-          <b>语音转写</b>
-          <div className="vn-field" style={{ marginTop: 12 }}>
-            <label>提供方</label>
+        <SettingsPanel title="语音转写" testId="settings-asr">
+          <SettingsField label="提供方" locked={asr.providerLocked}>
             {cloudAsr ? (
-              <>
-                <select
-                  className="vn-select"
-                  value={asr.provider}
-                  disabled={asr.providerLocked}
-                  data-testid="settings-asr-provider"
-                  onChange={(e) =>
-                    update({ asr: { provider: e.target.value as AsrProvider } })
-                  }
-                >
-                  {(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => (
-                    <option key={value} value={value}>
-                      {PROVIDER_LABEL[value]}
-                    </option>
-                  ))}
-                </select>
-                {asr.providerLocked ? (
-                  <span className="vn-hint">由环境变量控制</span>
-                ) : null}
-              </>
+              <Select
+                id="settings-asr-provider"
+                value={asr.provider}
+                disabled={asr.providerLocked}
+                testId="settings-asr-provider"
+                options={(Object.keys(PROVIDER_LABEL) as AsrProvider[]).map((value) => ({
+                  value,
+                  label: PROVIDER_LABEL[value],
+                }))}
+                onChange={(v) =>
+                  window.vnote
+                    .updateSettings({ asr: { provider: v as AsrProvider } })
+                    .then(setStatus)
+                    .catch((err) => showToast(`保存失败：${errMessage(err)}`))
+                }
+              />
             ) : (
               <span className="vn-read" data-testid="settings-asr-provider-fixed">
                 {PROVIDER_LABEL.local}
               </span>
             )}
-          </div>
+          </SettingsField>
           {cloudAsr && asr.provider === "openai" ? (
             <>
-              <div className="vn-field">
-                <label>接口地址</label>
-                <CommitInput
-                  value={asr.openai.baseUrl}
-                  locked={asr.openai.locked.baseUrl}
+              <SettingsField label="接口地址" locked={asr.openai.locked.baseUrl}>
+                <TextInput
+                  value={asrText?.baseUrl ?? asr.openai.baseUrl}
                   placeholder="https://api.example.com/v1"
-                  onCommit={(v) => update({ asr: { openai: { baseUrl: v } } })}
-                  testId="settings-asr-base-url"
+                  readOnly={asr.openai.locked.baseUrl}
+                  aria-label="接口地址"
+                  data-testid="settings-asr-base-url"
+                  onChange={(e) => setAsrText((t) => ({ baseUrl: e.target.value, model: t?.model ?? asr.openai.model }))}
+                  onBlur={() => commitAsrText("baseUrl", asr.openai.locked.baseUrl)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
                 />
-                {asr.openai.locked.baseUrl ? <span className="vn-hint">由环境变量控制</span> : null}
-              </div>
-              <div className="vn-field">
-                <label>模型名</label>
-                <CommitInput
-                  value={asr.openai.model}
-                  locked={asr.openai.locked.model}
-                  onCommit={(v) => update({ asr: { openai: { model: v } } })}
-                  testId="settings-asr-model"
+              </SettingsField>
+              <SettingsField label="模型名" locked={asr.openai.locked.model}>
+                <TextInput
+                  value={asrText?.model ?? asr.openai.model}
+                  readOnly={asr.openai.locked.model}
+                  aria-label="模型名"
+                  data-testid="settings-asr-model"
+                  onChange={(e) => setAsrText((t) => ({ baseUrl: t?.baseUrl ?? asr.openai.baseUrl, model: e.target.value }))}
+                  onBlur={() => commitAsrText("model", asr.openai.locked.model)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
                 />
-                {asr.openai.locked.model ? <span className="vn-hint">由环境变量控制</span> : null}
-              </div>
-              <KeyField
+              </SettingsField>
+              <KeyRow
                 label="API key"
+                state={keys.openaiKey}
                 hasKey={asr.openai.hasKey}
                 keySource={asr.openai.keySource}
                 keyStorageAvailable={asr.openai.keyStorageAvailable}
                 testId="settings-asr-key"
-                onSave={saveSecret("openaiKey", "API key")}
-                onClear={clearSecret("openaiKey", "API key")}
+                onDraft={(v) => setKey("openaiKey", { draft: v })}
+                onSave={() => saveAsrSecret("openaiKey", "API key", "openaiKey")}
+                onClear={() => clearAsrSecret("openaiKey", "API key", "openaiKey")}
               />
               {asr.openai.error !== null ? (
                 <p className="vn-hint" data-testid="settings-asr-error">
                   {asr.openai.error}
                 </p>
               ) : null}
-              <button
-                type="button"
+              <Button
+                size="sm"
                 data-testid="settings-test-asr"
-                className="vn-btn sm"
                 onClick={testAsr}
                 disabled={testingAsr}
               >
                 {testingAsr ? "测试中…" : "测试连接"}
-              </button>
+              </Button>
               <p className="vn-hint" style={{ marginTop: 8 }}>
                 远程 ASR 不含说话人分离。
               </p>
             </>
           ) : cloudAsr && asr.provider === "volcengine" ? (
             <>
-              <div className="vn-field">
-                <label>版本</label>
-                <select
-                  className="vn-select"
+              <SettingsField label="版本" locked={asr.volcengine.modeLocked}>
+                <Select
+                  id="settings-asr-volc-mode"
                   value={asr.volcengine.mode}
                   disabled={asr.volcengine.modeLocked}
-                  data-testid="settings-asr-volc-mode"
-                  onChange={(e) =>
-                    update({
-                      asr: { volcengine: { mode: e.target.value as VolcengineMode } },
-                    })
+                  testId="settings-asr-volc-mode"
+                  options={(Object.keys(VOLC_MODE_LABEL) as VolcengineMode[]).map((value) => ({
+                    value,
+                    label: VOLC_MODE_LABEL[value],
+                  }))}
+                  onChange={(v) =>
+                    window.vnote
+                      .updateSettings({ asr: { volcengine: { mode: v as VolcengineMode } } })
+                      .then(setStatus)
+                      .catch((err) => showToast(`保存失败：${errMessage(err)}`))
                   }
-                >
-                  {(Object.keys(VOLC_MODE_LABEL) as VolcengineMode[]).map((value) => (
-                    <option key={value} value={value}>
-                      {VOLC_MODE_LABEL[value]}
-                    </option>
-                  ))}
-                </select>
-                {asr.volcengine.modeLocked ? (
-                  <span className="vn-hint">由环境变量控制</span>
-                ) : null}
-              </div>
-              <div className="vn-field">
-                <label>{volcModeInfo.queryEndpoint === undefined ? "端点" : "端点（提交 / 查询）"}</label>
+                />
+              </SettingsField>
+              <SettingsField
+                label={volcModeInfo.queryEndpoint === undefined ? "端点" : "端点（提交 / 查询）"}
+              >
                 <span className="vn-read" data-testid="settings-asr-volc-endpoint">
                   {volcModeInfo.endpoint}
                 </span>
@@ -602,67 +515,67 @@ export function SettingsPage() {
                     {volcModeInfo.queryEndpoint}
                   </span>
                 )}
-              </div>
-              <div className="vn-field">
-                <label>Resource ID</label>
+              </SettingsField>
+              <SettingsField label="Resource ID">
                 <span className="vn-read" data-testid="settings-asr-volc-resource-id">
                   {volcModeInfo.resourceId}
                 </span>
-              </div>
-              <div className="vn-field">
-                <label>鉴权方式</label>
-                <select
-                  className="vn-select"
+              </SettingsField>
+              <SettingsField label="鉴权方式" locked={asr.volcengine.authModeLocked}>
+                <Select
+                  id="settings-asr-volc-auth"
                   value={asr.volcengine.authMode}
                   disabled={asr.volcengine.authModeLocked}
-                  data-testid="settings-asr-volc-auth"
-                  onChange={(e) =>
-                    update({
-                      asr: {
-                        volcengine: { authMode: e.target.value as VolcengineAuthMode },
-                      },
-                    })
+                  testId="settings-asr-volc-auth"
+                  options={(Object.keys(VOLC_AUTH_LABEL) as VolcengineAuthMode[]).map((value) => ({
+                    value,
+                    label: VOLC_AUTH_LABEL[value],
+                  }))}
+                  onChange={(v) =>
+                    window.vnote
+                      .updateSettings({
+                        asr: { volcengine: { authMode: v as VolcengineAuthMode } },
+                      })
+                      .then(setStatus)
+                      .catch((err) => showToast(`保存失败：${errMessage(err)}`))
                   }
-                >
-                  {(Object.keys(VOLC_AUTH_LABEL) as VolcengineAuthMode[]).map((value) => (
-                    <option key={value} value={value}>
-                      {VOLC_AUTH_LABEL[value]}
-                    </option>
-                  ))}
-                </select>
-                {asr.volcengine.authModeLocked ? (
-                  <span className="vn-hint">由环境变量控制</span>
-                ) : null}
-              </div>
+                />
+              </SettingsField>
               {asr.volcengine.authMode === "apiKey" ? (
-                <KeyField
+                <KeyRow
                   label="API Key"
+                  state={keys.volcApiKey}
                   hasKey={asr.volcengine.apiKey.hasKey}
                   keySource={asr.volcengine.apiKey.keySource}
                   keyStorageAvailable={asr.volcengine.apiKey.keyStorageAvailable}
                   testId="settings-asr-volc-api-key"
-                  onSave={saveSecret("volcApiKey", "API Key")}
-                  onClear={clearSecret("volcApiKey", "API Key")}
+                  onDraft={(v) => setKey("volcApiKey", { draft: v })}
+                  onSave={() => saveAsrSecret("volcApiKey", "API Key", "volcApiKey")}
+                  onClear={() => clearAsrSecret("volcApiKey", "API Key", "volcApiKey")}
                 />
               ) : (
                 <>
-                  <KeyField
+                  <KeyRow
                     label="App Key"
+                    state={keys.volcAppKey}
                     hasKey={asr.volcengine.appKey.hasKey}
                     keySource={asr.volcengine.appKey.keySource}
                     keyStorageAvailable={asr.volcengine.appKey.keyStorageAvailable}
                     testId="settings-asr-volc-app-key"
-                    onSave={saveSecret("volcAppKey", "App Key")}
-                    onClear={clearSecret("volcAppKey", "App Key")}
+                    onDraft={(v) => setKey("volcAppKey", { draft: v })}
+                    onSave={() => saveAsrSecret("volcAppKey", "App Key", "volcAppKey")}
+                    onClear={() => clearAsrSecret("volcAppKey", "App Key", "volcAppKey")}
                   />
-                  <KeyField
+                  <KeyRow
                     label="Access Key"
+                    state={keys.volcAccessKey}
                     hasKey={asr.volcengine.accessKey.hasKey}
                     keySource={asr.volcengine.accessKey.keySource}
                     keyStorageAvailable={asr.volcengine.accessKey.keyStorageAvailable}
                     testId="settings-asr-volc-access-key"
-                    onSave={saveSecret("volcAccessKey", "Access Key")}
-                    onClear={clearSecret("volcAccessKey", "Access Key")}
+                    onDraft={(v) => setKey("volcAccessKey", { draft: v })}
+                    onSave={() => saveAsrSecret("volcAccessKey", "Access Key", "volcAccessKey")}
+                    onClear={() => clearAsrSecret("volcAccessKey", "Access Key", "volcAccessKey")}
                   />
                 </>
               )}
@@ -671,15 +584,14 @@ export function SettingsPage() {
                   {asr.volcengine.error}
                 </p>
               ) : null}
-              <button
-                type="button"
+              <Button
+                size="sm"
                 data-testid="settings-test-asr"
-                className="vn-btn sm"
                 onClick={testAsr}
                 disabled={testingAsr}
               >
                 {testingAsr ? "测试中…" : "测试连接"}
-              </button>
+              </Button>
               {asr.volcengine.mode === "standard" ? (
                 <p className="vn-hint" style={{ marginTop: 8 }} data-testid="settings-asr-volc-url-hint">
                   只接受公网 URL；本地视频请用极速版或本地 ASR。
@@ -694,10 +606,9 @@ export function SettingsPage() {
             </>
           ) : (
             <>
-              <div className="vn-field">
-                <label>模型</label>
+              <SettingsField label="模型">
                 <span className="vn-read">{asr.local.modelId}</span>
-              </div>
+              </SettingsField>
               {localMissing.length > 0 ? (
                 <p className="vn-hint">缺失文件：{localMissing.join("、")}</p>
               ) : null}
@@ -726,9 +637,13 @@ export function SettingsPage() {
               {modelsError !== null ? (
                 <p className="vn-hint" data-testid="models-error">
                   加载模型状态失败：{modelsError}
-                  <button type="button" className="vn-btn sm" style={{ marginLeft: 12 }} onClick={reloadModels}>
+                  <Button
+                    size="sm"
+                    style={{ marginLeft: 12 }}
+                    onClick={reloadModels}
+                  >
                     重试
-                  </button>
+                  </Button>
                 </p>
               ) : null}
               <p className="vn-hint" style={{ marginTop: 8 }}>
@@ -736,61 +651,73 @@ export function SettingsPage() {
               </p>
             </>
           )}
-        </section>
+        </SettingsPanel>
 
-        <section className="vn-card vn-pad" data-testid="settings-llm">
-          <b>总结分析</b>
-          <div className="vn-field" style={{ marginTop: 12 }}>
-            <label>接口地址</label>
-            <CommitInput
-              value={llm.baseUrl ?? ""}
-              locked={llm.locked.baseUrl}
+        <SettingsPanel title="总结分析" testId="settings-llm">
+          <SettingsField label="接口地址" locked={llm.locked.baseUrl}>
+            <TextInput
+              id="settings-llm-base-url"
+              value={llmCard?.draft.baseUrl ?? ""}
               placeholder="https://api.example.com/v1"
-              onCommit={(v) => update({ llm: { baseUrl: v } })}
-              testId="settings-llm-base-url"
+              readOnly={llm.locked.baseUrl}
+              aria-label="接口地址"
+              data-testid="settings-llm-base-url"
+              onChange={(e) =>
+                setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, baseUrl: e.target.value } } : c))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  saveLlm();
+                }
+              }}
             />
-            {llm.locked.baseUrl ? <span className="vn-hint">由环境变量控制</span> : null}
-          </div>
-          <div className="vn-field">
-            <label>模型名</label>
+          </SettingsField>
+          <SettingsField label="模型名" locked={llm.locked.model}>
             <div className="vn-row">
-              <CommitInput
-                value={llm.model ?? ""}
-                locked={llm.locked.model}
+              <TextInput
+                id="settings-llm-model"
+                value={llmCard?.draft.model ?? ""}
                 placeholder="留空时自动发现"
-                onCommit={(v) => update({ llm: { model: v } })}
-                testId="settings-llm-model"
+                readOnly={llm.locked.model}
+                aria-label="模型名"
+                data-testid="settings-llm-model"
+                style={{ flex: 1 }}
+                onChange={(e) =>
+                  setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: e.target.value } } : c))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    saveLlm();
+                  }
+                }}
               />
-              <button
-                type="button"
-                className="vn-btn sm"
+              <Button
+                size="sm"
                 data-testid="settings-llm-fetch-models"
-                disabled={fetchingModels}
+                disabled={fetchingModels || llmDirtyNow}
                 onClick={fetchLlmModels}
               >
                 {fetchingModels ? "拉取中…" : "拉取模型"}
-              </button>
+              </Button>
             </div>
+            {llmBaseUrlDirty ? (
+              <span className="vn-hint" data-testid="settings-llm-fetch-hint">
+                先保存接口地址
+              </span>
+            ) : null}
             {fetchedModels !== null ? (
-              <select
-                className="vn-select"
-                value={llm.model ?? ""}
-                data-testid="settings-llm-model-select"
+              <Select
+                id="settings-llm-model-select"
+                value={llmCard?.draft.model ?? ""}
                 disabled={llm.locked.model}
-                onChange={(e) => update({ llm: { model: e.target.value } })}
-              >
-                <option value="">自动发现（留空）</option>
-                {llm.model !== null && !fetchedModels.includes(llm.model) ? (
-                  <option key={llm.model} value={llm.model}>
-                    {llm.model}
-                  </option>
-                ) : null}
-                {fetchedModels.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-              </select>
+                testId="settings-llm-model-select"
+                options={modelOptions(fetchedModels, llmCard?.draft.model ?? "")}
+                onChange={(v) =>
+                  setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: v } } : c))
+                }
+              />
             ) : null}
             {modelsFetchError !== null ? (
               <p className="vn-hint" data-testid="settings-llm-models-error">
@@ -804,81 +731,201 @@ export function SettingsPage() {
                 {llm.discoveredModel === null ? "留空时自动发现" : `已自动发现 ${llm.discoveredModel}`}
               </span>
             ) : null}
-          </div>
-          <KeyField
+          </SettingsField>
+          <Button
+            variant="primary"
+            size="sm"
+            data-testid="settings-llm-save"
+            disabled={saveLlmBlocked || !llmDirtyNow}
+            onClick={saveLlm}
+          >
+            {llmCard?.saving ? "保存中…" : "保存"}
+          </Button>
+          {llmCard !== null && llmCard.saveError !== null ? (
+            <p className="vn-hint" data-testid="settings-llm-save-error">
+              {llmCard.saveError}
+            </p>
+          ) : null}
+          <KeyRow
             label="API key"
+            state={keys.llm}
             hasKey={llm.hasKey}
             keySource={llm.keySource}
             keyStorageAvailable={llm.keyStorageAvailable}
             testId="settings-llm-key"
-            onSave={(key) =>
+            onDraft={(v) => setKey("llm", { draft: v })}
+            onSave={() => {
+              const key = keys.llm.draft.trim();
+              if (key === "") return;
+              setKey("llm", { saving: true });
               window.vnote
                 .updateLlm({ apiKey: key })
                 .then(setStatus)
                 .then(() => showToast("API key 已保存"))
-            }
-            onClear={() =>
+                .catch((err) => showToast(`保存失败：${errMessage(err)}`))
+                .finally(() => setKey("llm", { saving: false }));
+            }}
+            onClear={() => {
+              setKey("llm", { clearing: true });
               window.vnote
                 .updateLlm({ clearApiKey: true })
                 .then(setStatus)
                 .then(() => showToast("API key 已清除"))
-            }
+                .catch((err) => showToast(`清除失败：${errMessage(err)}`))
+                .finally(() => setKey("llm", { clearing: false, draft: "" }));
+            }}
           />
-          <button
-            type="button"
+          <Button
+            size="sm"
             data-testid="settings-test-llm"
-            className="vn-btn sm"
             onClick={testLlm}
             disabled={testingLlm}
           >
             {testingLlm ? "测试中…" : "测试连接"}
-          </button>
-        </section>
+          </Button>
+        </SettingsPanel>
 
-        <section className="vn-card vn-pad" data-testid="settings-storage">
-          <b>存储</b>
+        <SettingsPanel title="存储" testId="settings-storage">
           <div style={{ marginTop: 12 }}>
-            <PathInput
-              label="notesRoot"
-              value={status.notesRoot}
-              locked={status.locked.notesRoot}
-              onCommit={(v) => update({ notesRoot: v })}
-            />
-            <PathInput
-              label="cacheRoot"
-              value={status.cacheRoot}
-              locked={status.locked.cacheRoot}
-              onCommit={(v) => update({ cacheRoot: v })}
-            />
-            <PathInput
-              label="modelDir"
-              value={status.modelDir}
-              locked={status.locked.modelDir}
-              onCommit={(v) => update({ modelDir: v })}
-            />
+            {(Object.keys(FIELD_LABEL) as PathField[]).map((field) => {
+              const locked = status.locked[field];
+              return (
+                <div className="vn-field" key={field} data-testid={`settings-path-${field}`}>
+                  <label>{FIELD_LABEL[field]}</label>
+                  <div className="vn-row">
+                    <TextInput
+                      value={pathDrafts[field]}
+                      onChange={(e) => setPathDrafts((d) => ({ ...d, [field]: e.target.value }))}
+                      onBlur={() => {
+                        const v = pathDrafts[field].trim();
+                        if (!locked && v !== "" && v !== status[field]) {
+                          window.vnote
+                            .updateSettings({ [field]: v })
+                            .then(setStatus)
+                            .catch((err) => showToast(`保存失败：${errMessage(err)}`));
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                      readOnly={locked}
+                      aria-label={FIELD_LABEL[field]}
+                      data-testid={`settings-path-input-${field}`}
+                      style={{ flex: 1 }}
+                    />
+                    <Button
+                      size="sm"
+                      data-testid={`settings-pick-${field}`}
+                      disabled={locked}
+                      onClick={() => pickDir(field)}
+                    >
+                      选择…
+                    </Button>
+                  </div>
+                  {locked ? (
+                    <span className="vn-hint" data-testid={`settings-path-locked-${field}`}>
+                      由环境变量控制
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
           <div className="vn-row vn-between">
             <span className="vn-hint">缓存占用 {fmtBytes(status.cacheBytes)}</span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               data-testid="settings-clear-cache"
-              className="vn-btn sm"
               onClick={clearCache}
               disabled={clearing}
             >
               {clearing ? "清理中…" : "清理缓存"}
-            </button>
+            </Button>
           </div>
-        </section>
+        </SettingsPanel>
 
-        <section className="vn-card vn-pad" data-testid="settings-about">
-          <b>关于</b>
+        <SettingsPanel title="关于" testId="settings-about">
           <div className="vn-meta" style={{ marginTop: 12, flexDirection: "column", gap: 6 }}>
             <span>VideoNotes {status.appVersion}</span>
             <span>ffmpeg {status.ffmpegVersion ?? "未安装"}</span>
           </div>
-        </section>
+        </SettingsPanel>
       </div>
     </>
+  );
+}
+
+function KeyRow({
+  label,
+  state,
+  hasKey,
+  keySource,
+  keyStorageAvailable,
+  testId,
+  onDraft,
+  onSave,
+  onClear,
+}: {
+  label: string;
+  state: KeyState;
+  hasKey: boolean;
+  keySource: "env" | "stored" | "none";
+  keyStorageAvailable: boolean;
+  testId: string;
+  onDraft: (v: string) => void;
+  onSave: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="vn-field" data-testid={`${testId}-field`}>
+      <label>{label}</label>
+      <div className="vn-row">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <PasswordInput
+            value={state.draft}
+            onChange={onDraft}
+            onEnter={onSave}
+            readOnly={!keyStorageAvailable}
+            placeholder={hasKey ? "粘贴新 key 覆盖" : "输入 key"}
+            ariaLabel={label}
+            testId={testId}
+          />
+        </div>
+        {keyStorageAvailable ? (
+          <Button
+            size="sm"
+            data-testid={`${testId}-save`}
+            disabled={state.saving || state.draft.trim() === ""}
+            onClick={onSave}
+          >
+            {state.saving ? "保存中…" : "保存"}
+          </Button>
+        ) : null}
+        {hasKey && keyStorageAvailable ? (
+          <Button
+            size="sm"
+            data-testid={`${testId}-clear`}
+            disabled={state.clearing}
+            onClick={onClear}
+          >
+            {state.clearing ? "清除中…" : "清除"}
+          </Button>
+        ) : null}
+      </div>
+      {keySource === "env" ? (
+        <span className="vn-hint" data-testid={`${testId}-env`}>
+          当前使用环境变量中的 key，这里保存的 key 在环境变量移除后生效
+        </span>
+      ) : hasKey ? (
+        <span className="vn-hint" data-testid={`${testId}-saved`}>
+          已保存（系统密钥库），可粘贴新 key 覆盖
+        </span>
+      ) : null}
+      {keyStorageAvailable ? null : (
+        <span className="vn-hint" data-testid={`${testId}-no-storage`}>
+          系统密钥存储不可用，请用环境变量配置密钥
+        </span>
+      )}
+    </div>
   );
 }
