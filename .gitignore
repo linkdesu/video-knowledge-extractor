@@ -9,3 +9,9 @@ tmp/
 .turbo/
 artifacts/
 apps/desktop/out/
+
+# `~/.gitignore_global` 整体忽略 .omp/；仓库只收项目技能（.omp/skills 已有大量跟踪文件），
+# 本机配置、agents、sessions 与缓存继续忽略。父目录被忽略时子路径的取反不生效，所以逐层写。
+!.omp/
+.omp/*
+!.omp/skills/

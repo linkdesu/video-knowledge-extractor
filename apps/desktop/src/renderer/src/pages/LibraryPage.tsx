@@ -150,24 +150,24 @@ export function LibraryPage({
       {videos.length > 0 ? (
         <div className="vn-grid vn-vcards" style={{ marginTop: 18 }}>
           {videos.map((v) => {
+            // 运行中的视频一律不显示文档里的终态：重跑排队到 worker 起来之间，video.json 还是上一轮的 done。
             const running =
               job !== null &&
               job.videoId === v.id &&
-              (job.state === "queued" || job.state === "running");
+              (job.state === "queued" || job.state === "running")
+                ? job
+                : null;
             const percent =
-              running && job.state === "running" && job.total > 0
-                ? (job.done / job.total) * 100
+              running !== null && running.state === "running" && running.total > 0
+                ? (running.done / running.total) * 100
                 : 0;
             const label =
-              v.status === "in-progress" && running
-                ? job.state === "running" && job.step === "transcribe"
+              running !== null
+                ? running.state === "running" && running.step === "transcribe"
                   ? `转写中 ${Math.round(percent)}%`
                   : `处理中 ${Math.round(percent)}%`
                 : STATUS_TAG[v.status].label;
-            const cls =
-              v.status === "in-progress" && running
-                ? "vn-tag warn"
-                : STATUS_TAG[v.status].cls;
+            const cls = running !== null ? "vn-tag warn" : STATUS_TAG[v.status].cls;
             const expanded = expandedId === v.id;
             return (
               <div key={v.id} className="vn-card vn-vcard" data-testid="video-card">

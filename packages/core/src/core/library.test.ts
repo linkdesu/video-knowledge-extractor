@@ -176,7 +176,7 @@ describe("readLibraryVideo", () => {
     expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("in-progress");
   });
 
-  test("已勾选主题全 done 且字幕非空 → done；未勾选主题 done 不拖状态（空勾选集视为 vacuous done）", () => {
+  test("已勾选主题全 done 且字幕非空 → done；未勾选主题 done 不拖状态", () => {
     const { root, id } = fixture();
     const outputDir = join(root, "视频一");
     const base = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
@@ -318,5 +318,60 @@ describe("resolution 透传与中断状态投影", () => {
     // 磁盘未被回写：仍是 generating/queued
     const raw = JSON.parse(readFileSync(join(outputDir, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
     expect(raw.topics.map((t) => t.status).sort()).toEqual(["generating", "queued"]);
+  });
+});
+
+describe("卡片状态与运行中的关系", () => {
+  function videoWith(root: string, id: string, opts: { withTranscript: boolean; topicsDone: boolean }): string {
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    if (opts.withTranscript) {
+      data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    }
+    data.topics = opts.topicsDone
+      ? [
+          {
+            id: "t1" as TopicId,
+            title: "t",
+            summary: "s",
+            segments: [{ start: 1, end: 2 }],
+            dirName: "t",
+            status: "done",
+            selected: true,
+            keyPoints: [],
+            clips: [{ file: "01-00-00-01-00-00-02.mp4", start: 1, end: 2, segmentIndexes: [0] }],
+            startedAt: null,
+            elapsedSeconds: null,
+            error: null,
+          },
+        ]
+      : [];
+    writeVideoData(outputDir, data);
+    return outputDir;
+  }
+
+  test("字幕已落盘、主题还没出来（无任务）：in-progress，不能因空 topics 判 done", () => {
+    const { root, id } = fixture();
+    videoWith(root, id, { withTranscript: true, topicsDone: false });
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("in-progress");
+  });
+
+  test("字幕已落盘、主题为空且该视频正在跑任务：in-progress", () => {
+    const { root, id } = fixture();
+    videoWith(root, id, { withTranscript: true, topicsDone: false });
+    expect(listLibrary(root, { busyVideoId: id }).find((v) => v.id === id)!.status).toBe("in-progress");
+  });
+
+  test("重跑排队中：文档仍是上一轮的 done，但 busyVideoId 命中 → in-progress", () => {
+    const { root, id } = fixture();
+    videoWith(root, id, { withTranscript: true, topicsDone: true });
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("done");
+    expect(listLibrary(root, { busyVideoId: id }).find((v) => v.id === id)!.status).toBe("in-progress");
+  });
+
+  test("别的视频在跑：本卡保持 done", () => {
+    const { root, id } = fixture();
+    videoWith(root, id, { withTranscript: true, topicsDone: true });
+    expect(listLibrary(root, { busyVideoId: "vid-missing" }).find((v) => v.id === id)!.status).toBe("done");
   });
 });

@@ -152,20 +152,30 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
   };
 }
 
-/** 库卡片状态：没有 `video.json` 且没有旧主题目录 → `in-progress`，有旧主题目录 → `needs-rerun`；文档为空（无主题且无字幕）→ `in-progress`；有 `failed`/`needs-rerun` → `needs-rerun`；全部已勾选主题 `done` 且字幕非空 → `done`；其余 → `in-progress`。 */
+/**
+ * 库卡片状态：没有 `video.json` 且没有旧主题目录 → `in-progress`，有旧主题目录 → `needs-rerun`；
+ * 有 `failed`/`needs-rerun` → `needs-rerun`；无字幕 → `in-progress`；有主题且**已勾选**主题全部 `done` → `done`；
+ * 其余（含字幕已落盘、主题还没出来）→ `in-progress`。
+ * 空 `topics` 不能当「全部完成」：`[].every` 恒真，转写完、分段没落盘的那一段会误报 done。
+ */
 function deriveStatus(data: VideoData): LibraryVideoStatus {
-  if (data.topics.length === 0 && data.transcript.utterances.length === 0) return "in-progress";
   if (data.topics.some((t) => t.status === "failed" || t.status === "needs-rerun")) return "needs-rerun";
+  if (data.transcript.utterances.length === 0) return "in-progress";
   const selectedDone = data.topics.filter((t) => t.selected).every((t) => t.status === "done");
-  if (selectedDone && data.transcript.utterances.length > 0) return "done";
+  if (data.topics.length > 0 && selectedDone) return "done";
   return "in-progress";
 }
 
-export function listLibrary(root: string = notesRoot()): LibraryVideo[] {
+/**
+ * `busyVideoId`：该视频正在跑任务时，`video.json` 可能还是上一轮的完成态（重跑在 worker 起来前不改文档）；
+ * 卡片一律按 `in-progress` 出，避免运行中显示「已完成」。
+ */
+export function listLibrary(root: string = notesRoot(), opts: { busyVideoId?: string | null } = {}): LibraryVideo[] {
   const index = readVideoIndex(root);
   const out: LibraryVideo[] = [];
   for (const entry of index.videos) {
-    out.push(videoSummary(root, entry, false));
+    const video = videoSummary(root, entry, false);
+    out.push(video.id === opts.busyVideoId && video.status === "done" ? { ...video, status: "in-progress" } : video);
   }
   return out;
 }

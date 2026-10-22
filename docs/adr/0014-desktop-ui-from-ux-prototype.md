@@ -191,7 +191,7 @@ export type VideoData = {
 - 写盘一律 `writeJsonAtomic`。读不到文档时按旧目录迁移：标题取 `topic.md` 的 `# `，**时间段取 `topic.md` 的 `### [HH:MM:SS - HH:MM:SS]` 标题**（切片名带 3 秒前移且重叠会合一，反推不出原始边界），切片取目录里的文件名，要点取 `## 要点`，字幕为空；标题缺失时才用切片范围近似并给主题写 `error = "时间段按切片近似恢复"`。迁移结果不回写，等下一次生成或编辑再落盘。
 - 字幕存**原始**转写；纠错词表在渲染 `topic.md`、生成主题/笔记、给界面出字幕时应用，不在文档里二次替换。界面用 `UtteranceInfo.index` 指向原始下标删除。
 - 状态归一：读文档时若某主题是 `generating` 而该视频没有存活的运行锁，记为 `failed`，`error = "上次生成已中断"`。
-- 库卡片状态：所有**已勾选**主题 `done` 且字幕非空 → `done`；有 `needs-rerun` 或 `failed` → `needs-rerun`；没有文档但有旧主题目录 → `needs-rerun`（旧目录缺结构化字幕）；没有文档也没有主题 → `in-progress`；其余 → `in-progress`。未勾选的主题不把视频拖成「未完成」。
+- 库卡片状态：**有主题**、所有**已勾选**主题 `done` 且字幕非空 → `done`（空 `topics` 不算完成：`[].every` 会把「转写完、分段没落盘」误报成已完成）；有 `needs-rerun` 或 `failed` → `needs-rerun`；没有文档但有旧主题目录 → `needs-rerun`（旧目录缺结构化字幕）；没有文档也没有主题 → `in-progress`；其余 → `in-progress`。未勾选的主题不把视频拖成「未完成」。该视频有排队/运行中的任务时，`listLibrary` 收到 `busyVideoId` 把 `done` 压成 `in-progress`，卡片在任务期间不显示「已完成」。
 - 运行锁：`<outputDir>/.vnote-run.lock`，`wx` 独占创建，陈旧锁用 `rename` 抢占，内容带 token，释放只删自己的锁。读状态兼容旧的 `<outputDir>/.cache/run.lock`。锁存在时结构编辑被拒绝；本进程持锁时允许写进度。
 - 结构编辑（删段、合并）要求文档已有字幕；迁移来的旧文档直接拒绝，避免用空字幕把 `topic.md` 正文重写成空。
 - 生成与编辑互斥：运行锁存在时所有编辑命令报「视频正在生成，完成后再编辑」。

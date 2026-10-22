@@ -3,8 +3,8 @@
 import type { CorrectionEntry } from "../../../../shared/ipc";
 import { fmtDateTime } from "@/lib/format";
 
-// data-table-3 改造：术语表行原语。四列（识别结果/正确写法/来源/修改时间），
-// 行内编辑、新增行、即时保存；演示表头/表脚逻辑已删除。
+// data-table-3 改造：术语表行原语。五列（识别结果/正确写法/来源/修改时间/操作），
+// 行内编辑、新增行、删除行、自动保存；演示表头/表脚逻辑已删除。
 
 type Props = {
   rows: CorrectionEntry[];
@@ -26,6 +26,7 @@ export function GlossaryTable({ rows, onEditCell, onRemoveRow, onAddRow }: Props
             <th scope="col">正确写法</th>
             <th scope="col">来源</th>
             <th scope="col">修改时间</th>
+            <th scope="col">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -53,6 +54,17 @@ export function GlossaryTable({ rows, onEditCell, onRemoveRow, onAddRow }: Props
               </td>
               <td>{row.source === null ? "手工" : row.source === "manual" ? "手工" : "从字幕添加"}</td>
               <td>{fmtDateTime(row.updatedAt)}</td>
+              <td style={{ width: 1, whiteSpace: "nowrap" }}>
+                <button
+                  type="button"
+                  className="vn-btn sm"
+                  aria-label={`删除第 ${i + 1} 行：${row.wrong} → ${row.right}`}
+                  data-testid="glossary-remove"
+                  onClick={() => onRemoveRow(i)}
+                >
+                  删除
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
