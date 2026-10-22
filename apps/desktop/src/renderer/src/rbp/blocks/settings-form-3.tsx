@@ -65,6 +65,7 @@ export function Select({
   options,
   disabled,
   testId,
+  ariaLabel,
 }: {
   id?: string;
   value: string;
@@ -72,6 +73,7 @@ export function Select({
   options: readonly SelectOption[];
   disabled?: boolean;
   testId?: string;
+  ariaLabel?: string;
 }) {
   const listId = useId();
   const [open, setOpen] = useState(false);
@@ -89,10 +91,11 @@ export function Select({
     const node = rootRef.current;
     if (node !== null) {
       const box = node.getBoundingClientRect();
+      // 可见区域 = 视口 ∩ 各滚动祖先的矩形；body 本身也是滚动容器，必须参与求交。
       let top = 0;
-      let bottom = box.bottom;
-      let el = node.parentElement;
-      while (el !== null && el !== document.body) {
+      let bottom = window.innerHeight;
+      let el: HTMLElement | null = node.parentElement;
+      while (el !== null) {
         const style = window.getComputedStyle(el);
         if (style.overflowY !== "visible") {
           const clip = el.getBoundingClientRect();
@@ -102,8 +105,10 @@ export function Select({
         el = el.parentElement;
       }
       const listHeight = Math.min(options.length * 32 + 10, 264);
-      const up = bottom - box.bottom < listHeight + 6 && box.top - top > bottom - box.bottom;
-      const room = (up ? box.top - top : bottom - box.bottom) - 10;
+      const roomBelow = bottom - box.bottom;
+      const roomAbove = box.top - top;
+      const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
+      const room = (up ? roomAbove : roomBelow) - 10;
       setFlip(up);
       setMaxHeight(room < listHeight ? Math.max(room, 72) : undefined);
     }
@@ -155,10 +160,6 @@ export function Select({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (disabled) {
-      e.preventDefault();
-      return;
-    }
     if (!open) {
       if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(e.key)) {
         e.preventDefault();
@@ -207,6 +208,7 @@ export function Select({
         aria-expanded={open}
         aria-controls={listId}
         aria-haspopup="listbox"
+        aria-label={ariaLabel}
         aria-activedescendant={open ? `${listId}-opt-${active}` : undefined}
         data-testid={testId}
         disabled={disabled}
@@ -275,6 +277,7 @@ export function PasswordInput({
   readOnly,
   placeholder,
   ariaLabel,
+  id,
   testId,
 }: {
   value: string;
@@ -283,6 +286,7 @@ export function PasswordInput({
   readOnly?: boolean;
   placeholder?: string;
   ariaLabel?: string;
+  id?: string;
   testId?: string;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -295,6 +299,7 @@ export function PasswordInput({
         value={value}
         placeholder={placeholder}
         readOnly={readOnly}
+        id={id}
         aria-label={ariaLabel}
         data-testid={testId !== undefined ? `${testId}-input` : undefined}
         onChange={(e) => onChange(e.target.value)}
@@ -327,7 +332,7 @@ export function Button({
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary";
-  size?: "sm" | "md";
+  size?: "sm";
   pending?: boolean;
 }) {
   const cls = ["vn-btn", size, variant === "primary" ? "primary" : "", rest.className ?? ""]

@@ -831,3 +831,7 @@ textarea {
   color: var(--vn-fg);
   background: rgba(255, 255, 255, 0.06);
 }
+.vn-btn-eye:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.6);
+  outline-offset: 1px;
+}
