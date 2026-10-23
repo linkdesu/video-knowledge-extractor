@@ -42,4 +42,5 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Notes and clips](./notes.md) — read generated notes, inspect clips, play a clip, reveal the output directory.
 - [Glossary](./glossary.md) — global correction entries, inline edit, immediate save, delete.
 - [Settings](./settings.md) — ASR provider, model bundles, LLM fields, storage paths, cache, about.
+- [Logging and diagnostics](./logging.md) - log folder, copied diagnostics, the three failure journeys.
 - [CLI extraction](./cli-extract.md) — `vnote --help/--version/extract`, `--limit`, failure modes.
