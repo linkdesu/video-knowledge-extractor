@@ -1,6 +1,6 @@
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, slugify } from "../core/paths";
 import { loadVideoData, readVideoData, writeVideoData } from "../core/video-data";
@@ -138,7 +138,7 @@ export async function generateAll(
           note === undefined
             ? []
             : note.clips.map((c): TopicClip => ({
-                file: c.path.split("/").pop() ?? "",
+                file: basename(c.path),
                 start: c.segment.start,
                 end: c.segment.end,
                 segmentIndexes: c.segmentIndexes ?? [0],
