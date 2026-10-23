@@ -5,6 +5,7 @@
  */
 import { statSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { logger } from "./logger";
 import { run } from "./exec";
 import { ensureDir } from "./paths";
 
@@ -49,6 +50,7 @@ export async function ensureCoverFrame(input: {
       { label: "封面抽帧" },
     );
     renameSync(part, out);
+    logger().debug("fs", "封面帧已写入", { file: out });
     return true;
   } catch (err) {
     try {

@@ -13,6 +13,7 @@ import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/type
 import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
 import { createLlmClient } from "../llm/openai";
 import { generateNotes } from "./generate-notes";
+import { logger, runWithTask } from "../core/logger";
 import { segmentTopics } from "./segment-topics";
 
 function emptyRef(): VideoRef {
@@ -146,6 +147,7 @@ export async function generateAll(
       });
       noteCount += 1;
       for (const key of result.noteCacheKeys) if (before.has(key)) cacheHits.push(key);
+      logger().info("llm", "主题生成完成", { topicId: id, title: topic.title, durationMs: Math.round(performance.now() - t0), status: "done" });
     } catch (err) {
       // 当前主题标 failed 并补写 elapsedSeconds（从 startedAt 结算）；排队主题由流水线级结算处理
       setTopicProgress(outputDir, id, {
@@ -153,6 +155,9 @@ export async function generateAll(
         error: err instanceof Error ? err.message : String(err),
         elapsedSeconds: Math.round((performance.now() - t0) / 100) / 10,
       });
+      // 失败路径记 error + 堆栈后仍向上抛
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("llm", "主题生成失败", { topicId: id, title: topic.title, durationMs: Math.round(performance.now() - t0), status: "failed", stack: e.stack });
       throw err;
     }
   }
@@ -170,48 +175,55 @@ export async function runNotes(input: {
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
 }): Promise<{ noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
-  if (input.topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-  const data = loadVideoData(input.outputDir, emptyRef());
-  if (data.transcript.utterances.length === 0) throw new Error("该视频还没有结构化字幕，请先重新转写");
-  const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
-  const client = input.client ?? createLlmClient(input.endpoint);
-  const lock = acquireVideoLock(input.outputDir);
-  // token 取锁后、写任何进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
-  const runToken = input.runToken ?? randomUUID();
-  const doc = readVideoData(input.outputDir);
-  if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken });
-  const timings: Record<string, number> = {};
-  const startedAt = performance.now();
-  const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
-  try {
-    const ids = (input.topicIds as TopicId[]).filter((id) => {
-      const topic = data.topics.find((x) => x.id === id);
-      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-      return topic.status !== "done";
-    });
-    if (ids.length === 0) {
-      // 全部已 done：不生成、不碰任何产物，index 从完整文档重建（条目本来就在）
+  const taskId = input.runToken ?? randomUUID();
+  return runWithTask(taskId, async () => {
+    if (input.topicIds.length === 0) throw new Error("请先勾选要生成的主题");
+    const data = loadVideoData(input.outputDir, emptyRef());
+    if (data.transcript.utterances.length === 0) throw new Error("该视频还没有结构化字幕，请先重新转写");
+    const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
+    const client = input.client ?? createLlmClient(input.endpoint);
+    const lock = acquireVideoLock(input.outputDir);
+    // 日志 task id 与落盘 token 同值（入口已解析）；取锁后、写任何进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
+    const doc = readVideoData(input.outputDir);
+    if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken: taskId });
+    const timings: Record<string, number> = {};
+    const startedAt = performance.now();
+    const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
+    logger().info("app", "笔记生成开始", { kind: "notes", outputDir: input.outputDir, topicIds: input.topicIds.length });
+    try {
+      const ids = (input.topicIds as TopicId[]).filter((id) => {
+        const topic = data.topics.find((x) => x.id === id);
+        if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
+        return topic.status !== "done";
+      });
+      if (ids.length === 0) {
+        // 全部已 done：不生成、不碰任何产物，index 从完整文档重建（条目本来就在）
+        timings.total = t();
+        writeIndexFromDoc(input.outputDir);
+        logger().info("app", "笔记生成完成", { noteCount: 0, topicCount: data.topics.length, timings });
+        return { noteCount: 0, cacheHits: [], timings };
+      }
+      const dirNameOf = (id: TopicId) => {
+        const topic = data.topics.find((x) => x.id === id);
+        if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
+        return topic.dirName;
+      };
+      const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir), input.endpoint, cacheDir, client, input.onProgress);
+      timings.notes = t();
       timings.total = t();
       writeIndexFromDoc(input.outputDir);
-      return { noteCount: 0, cacheHits: [], timings };
+      logger().info("app", "笔记生成完成", { noteCount: r.noteCount, topicCount: data.topics.length, timings });
+      return { noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("app", "笔记生成失败", { error: e.message, stack: e.stack });
+      // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
+      settleRunWhileLocked(input.outputDir, taskId, "本次生成未完成");
+      throw err;
+    } finally {
+      lock.release();
     }
-    const dirNameOf = (id: TopicId) => {
-      const topic = data.topics.find((x) => x.id === id);
-      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-      return topic.dirName;
-    };
-    const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir), input.endpoint, cacheDir, client, input.onProgress);
-    timings.notes = t();
-    timings.total = t();
-    writeIndexFromDoc(input.outputDir);
-    return { noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
-  } catch (err) {
-    // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
-    settleRunWhileLocked(input.outputDir, runToken, "本次生成未完成");
-    throw err;
-  } finally {
-    lock.release();
-  }
+  });
 }
 
 /** 主题 + 笔记重跑:从存盘的字幕与分块重新划主题,保留同名主题目录,再生成笔记。 */
@@ -223,73 +235,79 @@ export async function runTopics(input: {
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
 }): Promise<{ topicCount: number; noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
-  const data = loadVideoData(input.outputDir, emptyRef());
-  if (data.transcript.utterances.length === 0) throw new Error("该视频还没有结构化字幕，请先重新转写");
-  const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
-  const client = input.client ?? createLlmClient(input.endpoint);
-  const lock = acquireVideoLock(input.outputDir);
-  // token 取锁后、写任何主题/进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
-  const runToken = input.runToken ?? randomUUID();
-  const doc = readVideoData(input.outputDir);
-  if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken });
-  const timings: Record<string, number> = {};
-  const startedAt = performance.now();
-  const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
-  try {
-    const corrections = correctionsFor(input.outputDir);
-    const { topics } = await segmentTopics({
-      transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
-      chunks: data.chunks,
-      endpoint: input.endpoint,
-      cacheDir,
-      client,
-      ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
-    });
-    timings["segment-topics"] = t();
+  const taskId = input.runToken ?? randomUUID();
+  return runWithTask(taskId, async () => {
+    const data = loadVideoData(input.outputDir, emptyRef());
+    if (data.transcript.utterances.length === 0) throw new Error("该视频还没有结构化字幕，请先重新转写");
+    const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
+    const client = input.client ?? createLlmClient(input.endpoint);
+    const lock = acquireVideoLock(input.outputDir);
+    // 日志 task id 与落盘 token 同值（入口已解析）；取锁后、写任何主题/进度前先落盘；登记覆盖整个文档（持锁后重读原始文档，避免投影快照覆盖）
+    const doc = readVideoData(input.outputDir);
+    if (doc !== undefined) writeVideoData(input.outputDir, { ...doc, runToken: taskId });
+    const timings: Record<string, number> = {};
+    const startedAt = performance.now();
+    const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
+    logger().info("app", "主题重跑开始", { kind: "topics", outputDir: input.outputDir, topicIds: data.topics.length });
+    try {
+      const corrections = correctionsFor(input.outputDir);
+      const { topics } = await segmentTopics({
+        transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
+        chunks: data.chunks,
+        endpoint: input.endpoint,
+        cacheDir,
+        client,
+        ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
+      });
+      timings["segment-topics"] = t();
 
-    // 同名同时间段沿用旧目录名与勾选,其余按新分配;先整体写回 video.json,再逐主题生成
-    const used = new Set<string>();
-    const records: TopicRecord[] = topics.map((t) => {
-      const old = data.topics.find((x) => x.title === t.title && segmentsEqual(x.segments, t.segments) && !used.has(x.dirName));
-      const dirName = old !== undefined ? old.dirName : freshName(t.title, used);
-      used.add(dirName);
-      return {
-        id: t.id,
-        title: t.title,
-        summary: t.summary,
-        segments: t.segments,
-        dirName,
-        status: "queued",
-        selected: old !== undefined ? old.selected : true,
-        keyPoints: [],
-        clips: [],
-        startedAt: null,
-        elapsedSeconds: null,
-        error: null,
+      // 同名同时间段沿用旧目录名与勾选,其余按新分配;先整体写回 video.json,再逐主题生成
+      const used = new Set<string>();
+      const records: TopicRecord[] = topics.map((t) => {
+        const old = data.topics.find((x) => x.title === t.title && segmentsEqual(x.segments, t.segments) && !used.has(x.dirName));
+        const dirName = old !== undefined ? old.dirName : freshName(t.title, used);
+        used.add(dirName);
+        return {
+          id: t.id,
+          title: t.title,
+          summary: t.summary,
+          segments: t.segments,
+          dirName,
+          status: "queued",
+          selected: old !== undefined ? old.selected : true,
+          keyPoints: [],
+          clips: [],
+          startedAt: null,
+          elapsedSeconds: null,
+          error: null,
+        };
+      });
+      data.topics = records;
+      // 划主题后的整体写回不能覆盖已登记的 runToken：持锁后重读原始文档再写，避免投影快照把 token 抹掉导致失败结算失配
+      const docNow = readVideoData(input.outputDir);
+      writeVideoData(input.outputDir, docNow !== undefined ? { ...docNow, topics: records } : data);
+
+      const dirNameOf = (id: TopicId) => {
+        const topic = data.topics.find((x) => x.id === id);
+        if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
+        return topic.dirName;
       };
-    });
-    data.topics = records;
-    // 划主题后的整体写回不能覆盖已登记的 runToken：持锁后重读原始文档再写，避免投影快照把 token 抹掉导致失败结算失配
-    const docNow = readVideoData(input.outputDir);
-    writeVideoData(input.outputDir, docNow !== undefined ? { ...docNow, topics: records } : data);
-
-    const dirNameOf = (id: TopicId) => {
-      const topic = data.topics.find((x) => x.id === id);
-      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-      return topic.dirName;
-    };
-    const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, input.onProgress);
-    timings.notes = t();
-    timings.total = t();
-    writeIndexFromDoc(input.outputDir);
-    return { topicCount: topics.length, noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
-  } catch (err) {
-    // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
-    settleRunWhileLocked(input.outputDir, runToken, "本次生成未完成");
-    throw err;
-  } finally {
-    lock.release();
-  }
+      const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, input.onProgress);
+      timings.notes = t();
+      timings.total = t();
+      writeIndexFromDoc(input.outputDir);
+      logger().info("app", "主题重跑完成", { noteCount: r.noteCount, topicCount: topics.length, timings });
+      return { topicCount: topics.length, noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("app", "主题重跑失败", { error: e.message, stack: e.stack });
+      // 仍持锁时结算：只结算该次运行写的主题，token 清 null，再把错误抛给调用方
+      settleRunWhileLocked(input.outputDir, taskId, "本次生成未完成");
+      throw err;
+    } finally {
+      lock.release();
+    }
+  });
 }
 
 function segmentsEqual(a: { start: number; end: number }[], b: { start: number; end: number }[]): boolean {

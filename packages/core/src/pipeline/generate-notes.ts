@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { concatClips, cutClip, planTopicClip } from "../core/clips";
 import { SLICE_RE } from "../core/outputs";
 import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
+import { logger } from "../core/logger";
 import { ensureDir, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
 import type { GenerateNotesInput, GenerateNotesResult, LlmClient } from "../core/steps";
@@ -65,6 +66,7 @@ async function keyPointsFor(
   // 无论命中与否，这个键都是本次「用过」的，清理时不能删
   usedCacheKeys.add(key.hash);
   const hit = readCache<KeyPoints>(input.cacheDir, key);
+  logger().debug("llm", hit !== undefined ? "要点缓存命中" : "要点缓存未命中", { topicId: topic.id, cacheHit: hit !== undefined });
   if (hit !== undefined) return hit.keyPoints;
   const raw = await client.chat([{ role: "system", content: system }], { json: true });
   const parsed = tryParseJson<{ keyPoints?: unknown }>(raw);
@@ -93,6 +95,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     const clips: Clip[] = [];
     // 单文件主题切片（r33）：每个 union 切到系统临时目录，concat 成 topic.mp4（流拷贝）
     const { unions, segmentOffsets } = planTopicClip(topic.segments);
+    const clipT0 = performance.now();
     if (unions.length > 0) {
       const workDir = mkdtempSync(join(tmpdir(), "vnote-clip-"));
       const parts: string[] = [];
@@ -120,9 +123,11 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
       } finally {
         rmSync(workDir, { recursive: true, force: true });
       }
+      logger().info("llm", "切片完成", { clipCount: parts.length, durationMs: Math.round(performance.now() - clipT0) });
     }
     const markdown = renderTopicMarkdown(topic, utterances, keyPoints, clips, speakerNames);
     writeFileAtomic(join(topicDir, "topic.md"), markdown);
+    logger().info("llm", "笔记生成完成", { topicId: topic.id, markdownBytes: Buffer.byteLength(markdown, "utf8") });
     // 以 topic.md 真正落盘为「本主题已写出」的标记，崩溃时没写成功的目录不在此列
     topicDirs.push(dir);
     notes.push({ topicId: topic.id, markdown, clips });

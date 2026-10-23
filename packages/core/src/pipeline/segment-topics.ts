@@ -1,4 +1,5 @@
 import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
+import { logger } from "../core/logger";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { SegmentTopicsInput, SegmentTopicsResult } from "../core/steps";
 import type { Segment, Topic, TopicId } from "../core/types";
@@ -94,11 +95,13 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   const maxEnd = input.transcript.utterances.reduce((m, u) => Math.max(m, u.end), 0);
   const candidates: RawTopic[] = [];
   const chunkPromptHash = hashJson(CHUNK_SYSTEM_PROMPT);
+  const startedAt = performance.now();
 
   for (let i = 0; i < input.chunks.length; i++) {
     const chunk = input.chunks[i];
     if (chunk === undefined) continue;
     const lines = renderChunkLines(input, i);
+    let cacheHit = false;
     if (lines.length > 0) {
       const key = cacheKey("topic-candidates", {
         chunk: hashJson(lines),
@@ -106,6 +109,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
         model: input.endpoint.model,
       });
       let topics = topicsOf(readCache<RawResponse>(input.cacheDir, key));
+      cacheHit = topics !== undefined;
       if (topics === undefined) {
         const text = await client.chat([
           { role: "system", content: CHUNK_SYSTEM_PROMPT },
@@ -116,9 +120,13 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       }
       candidates.push(...topics);
     }
+    logger().debug("llm", "块候选主题", { chunkIndex: i + 1, chunkCount: input.chunks.length, cacheHit });
     input.onProgress?.({ step: "segment-topics", done: i + 1, total: input.chunks.length });
   }
-  if (candidates.length === 0) return { topics: [] };
+  if (candidates.length === 0) {
+    logger().info("llm", "划主题完成", { topics: 0, durationMs: Math.round(performance.now() - startedAt), model: client.model });
+    return { topics: [] };
+  }
 
   const mergeKey = cacheKey("topic-candidates", {
     kind: "merge",
@@ -151,5 +159,6 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   if (topics.length === 0) {
     throw new Error(`主题合并失败：${candidates.length} 个候选主题里没有一个带有效时间段`);
   }
+  logger().info("llm", "划主题完成", { topics: topics.length, durationMs: Math.round(performance.now() - startedAt), model: client.model });
   return { topics };
 }

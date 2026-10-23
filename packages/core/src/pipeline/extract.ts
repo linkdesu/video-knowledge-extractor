@@ -13,6 +13,7 @@ import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
 import type { CorrectionList, Note, Topic, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
 import { createAsrEngine, type AsrConfig } from "../asr/engine";
+import { logger, runWithTask } from "../core/logger";
 import { correctionsFor } from "./notes-run";
 import { segmentTopics } from "./segment-topics";
 
@@ -62,137 +63,153 @@ function assertAsrSupportsLocalVideo(asr: AsrConfig | undefined): void {
 }
 
 export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
-  assertAsrSupportsLocalVideo(input.asr);
-  const notesRoot = input.notesRoot ?? defaultNotesRoot();
-  const modelDir = input.modelDir ?? defaultModelDir();
-  const client = input.client ?? createLlmClient(input.endpoint);
-  const timings: Record<string, number> = {};
-  const startedAt = performance.now();
-  const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
-  const before = client.usage?.() ?? emptyUsage();
+  // 入口解析一次 token，日志 task id 与落盘 runToken 共用，避免生成两次
+  const taskId = input.runToken ?? randomUUID();
+  return runWithTask(taskId, async () => {
+    assertAsrSupportsLocalVideo(input.asr);
+    const notesRoot = input.notesRoot ?? defaultNotesRoot();
+    const modelDir = input.modelDir ?? defaultModelDir();
+    const client = input.client ?? createLlmClient(input.endpoint);
+    const timings: Record<string, number> = {};
+    const startedAt = performance.now();
+    const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
+    const before = client.usage?.() ?? emptyUsage();
 
-  const probe = await probeVideo(input.videoPath);
-  const video = openVideo(input.videoPath, probe.duration, notesRoot);
-  const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
-  // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑
-  const lock = acquireVideoLock(video.outputDir);
-  // token 取锁后、写任何主题前先落盘（缺省 core 生成 randomUUID）
-  const runToken = input.runToken ?? randomUUID();
-  const asr = input.asr ?? { provider: "local", modelDir };
-  const engine = createAsrEngine(asr);
-  try {
-    let data = readVideoData(video.outputDir);
-    if (data === undefined) data = { ...emptyVideoData(video), runToken };
-    else data.runToken = runToken;
-    writeVideoData(video.outputDir, data);
-    // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
+    logger().info("import", "导入开始", { videoPath: input.videoPath, limitSeconds: input.limitSeconds, notesRoot });
+    const probe = await logger().step("ffmpeg", "ffprobe", () => probeVideo(input.videoPath));
+    const video = openVideo(input.videoPath, probe.duration, notesRoot);
+    const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
+    // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑
+    const lock = acquireVideoLock(video.outputDir);
+    // token 与日志 task id 同一个值（入口已解析）；取锁后、写任何主题前先落盘
+    const runToken = taskId;
+    const asr = input.asr ?? { provider: "local", modelDir };
+    const engine = createAsrEngine(asr);
     try {
-      await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration });
-    } catch {
-      // 封面失败静默
-    }
-    // 接收屏障：等 main 的 ACK 才继续（超时由调用方处理，不写主题）
-    if (input.onPrepared !== undefined) {
-      await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
-    }
-    const wavPath = `${cacheDir}/audio.wav`;
-    await extractAudio(video.sourcePath, wavPath, input.limitSeconds);
-    timings.audio = t();
+      let data = readVideoData(video.outputDir);
+      if (data === undefined) data = { ...emptyVideoData(video), runToken };
+      else data.runToken = runToken;
+      writeVideoData(video.outputDir, data);
+      // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
+      try {
+        await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration });
+      } catch {
+        // 封面失败只记 warn，不让导入失败
+        logger().warn("ffmpeg", "封面抽帧失败");
+      }
+      // 接收屏障：等 main 的 ACK 才继续（超时由调用方处理，不写主题）
+      if (input.onPrepared !== undefined) {
+        await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
+      }
+      const wavPath = `${cacheDir}/audio.wav`;
+      await logger().step("ffmpeg", "抽取音频", () => extractAudio(video.sourcePath, wavPath, input.limitSeconds));
+      timings.audio = t();
 
-    const run = await engine.run({
-      video,
-      wavPath,
-      cacheDir,
-      ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
-    });
-    for (const [k, v] of Object.entries(run.timings)) timings[k] = t();
-    timings.transcribe = t();
+      const run = await logger().step("asr", "转写", () =>
+        engine.run({
+          video,
+          wavPath,
+          cacheDir,
+          ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
+        }),
+      );
+      for (const [k, v] of Object.entries(run.timings)) timings[k] = t();
+      timings.transcribe = t();
 
-    // 落 video.json：原始转写（纠错在生成/渲染时应用）+ chunks + asrModel/resolution/asrEngine（token 已在取锁后落盘）
-    if (data.importedAt === null) data.importedAt = new Date().toISOString();
-    data.asrModel = run.modelId;
-    data.asrEngine = run.engine;
-    data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
-    data.sourceBytes = statSync(input.videoPath).size;
-    data.chunks = run.chunks;
-    data.transcript = run.transcript;
-    data.topics = [];
-    writeVideoData(video.outputDir, data);
+      // 落 video.json：原始转写（纠错在生成/渲染时应用）+ chunks + asrModel/resolution/asrEngine（token 已在取锁后落盘）
+      if (data.importedAt === null) data.importedAt = new Date().toISOString();
+      data.asrModel = run.modelId;
+      data.asrEngine = run.engine;
+      data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
+      data.sourceBytes = statSync(input.videoPath).size;
+      data.chunks = run.chunks;
+      data.transcript = run.transcript;
+      data.topics = [];
+      writeVideoData(video.outputDir, data);
 
-    const corrections: CorrectionList = correctionsFor(video.outputDir);
-    const transcript = {
-      speakers: run.transcript.speakers,
-      utterances: applyCorrections(corrections, run.transcript.utterances),
-    };
-
-    const topicsStarted = performance.now();
-    const { topics } = await segmentTopics({
-      transcript,
-      chunks: run.chunks,
-      endpoint: input.endpoint,
-      cacheDir,
-      client,
-      ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
-    });
-    timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
-
-    // r33 确认模型：划完主题写盘为 proposed（等用户确认才生成笔记），不再生成
-    // 写回前先清工具自有的旧主题目录（用户改过 topic.md 的目录由 hash 保护保留）与旧 index.md
-    const sweep = sweepStaleTopicDirs({ outputDir: video.outputDir, keep: [] });
-    try {
-      rmSync(`${video.outputDir}/index.md`, { force: true });
-    } catch {
-      // 旧 index 删除失败静默
-    }
-    const used = new Set<string>();
-    const records: TopicRecord[] = topics.map((x) => {
-      const name = freshName(x.title, used);
-      used.add(name);
-      return {
-        id: x.id,
-        title: x.title,
-        summary: x.summary,
-        segments: x.segments,
-        dirName: name,
-        status: "proposed",
-        selected: true,
-        keyPoints: [],
-        clips: [],
-        startedAt: null,
-        elapsedSeconds: null,
-        error: null,
+      const corrections: CorrectionList = correctionsFor(video.outputDir);
+      const transcript = {
+        speakers: run.transcript.speakers,
+        utterances: applyCorrections(corrections, run.transcript.utterances),
       };
-    });
-    data.topics = records;
-    writeVideoData(video.outputDir, data);
 
-    timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
+      const topicsStarted = performance.now();
+      const { topics } = await logger().step("llm", "划主题", () =>
+        segmentTopics({
+          transcript,
+          chunks: run.chunks,
+          endpoint: input.endpoint,
+          cacheDir,
+          client,
+          ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
+        }),
+      );
+      timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
 
-    const after = client.usage?.() ?? before;
-    return {
-      video,
-      topics,
-      notes: [],
-      indexMarkdown: "",
-      topicCount: topics.length,
-      noteCount: 0,
-      timings,
-      cacheHits: run.cacheHits,
-      usage: {
-        calls: after.calls - before.calls,
-        promptTokens: after.promptTokens - before.promptTokens,
-        completionTokens: after.completionTokens - before.completionTokens,
-        totalTokens: after.totalTokens - before.totalTokens,
-      },
-      staleRemoved: sweep.removed,
-    };
-  } catch (err) {
-    // 仍持锁时结算：只有该次运行写的主题变 failed，token 清 null，再把错误抛给调用方
-    settleRunWhileLocked(video.outputDir, runToken, "本次生成未完成");
-    throw err;
-  } finally {
-    lock.release();
-  }
+      // r33 确认模型：划完主题写盘为 proposed（等用户确认才生成笔记），不再生成
+      const sweep = await logger().step("fs", "写 video.json", () => {
+        // 写回前先清工具自有的旧主题目录（用户改过 topic.md 的目录由 hash 保护保留）与旧 index.md
+        const s = sweepStaleTopicDirs({ outputDir: video.outputDir, keep: [] });
+        try {
+          rmSync(`${video.outputDir}/index.md`, { force: true });
+        } catch {
+          // 旧 index 删除失败静默
+        }
+        const used = new Set<string>();
+        const records: TopicRecord[] = topics.map((x) => {
+          const name = freshName(x.title, used);
+          used.add(name);
+          return {
+            id: x.id,
+            title: x.title,
+            summary: x.summary,
+            segments: x.segments,
+            dirName: name,
+            status: "proposed",
+            selected: true,
+            keyPoints: [],
+            clips: [],
+            startedAt: null,
+            elapsedSeconds: null,
+            error: null,
+          };
+        });
+        data.topics = records;
+        writeVideoData(video.outputDir, data);
+        return s;
+      });
+
+      timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
+
+      const after = client.usage?.() ?? before;
+      logger().info("import", "导入完成", { topicCount: topics.length, timings, cacheHits: run.cacheHits });
+      return {
+        video,
+        topics,
+        notes: [],
+        indexMarkdown: "",
+        topicCount: topics.length,
+        noteCount: 0,
+        timings,
+        cacheHits: run.cacheHits,
+        usage: {
+          calls: after.calls - before.calls,
+          promptTokens: after.promptTokens - before.promptTokens,
+          completionTokens: after.completionTokens - before.completionTokens,
+          totalTokens: after.totalTokens - before.totalTokens,
+        },
+        staleRemoved: sweep.removed,
+      };
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("import", "导入失败", { error: e.message, stack: e.stack });
+      // 仍持锁时结算：只有该次运行写的主题变 failed，token 清 null，再把错误抛给调用方
+      settleRunWhileLocked(video.outputDir, runToken, "本次生成未完成");
+      throw err;
+    } finally {
+      lock.release();
+    }
+  });
 }
 
 function freshName(title: string, used: Set<string>): string {
