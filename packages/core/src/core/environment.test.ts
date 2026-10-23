@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { findExecutable, checkPath, collectEnvironment, formatEnvironment } from "./environment";
 
 const tempDir = mkdtempSync(join(tmpdir(), "vnote-env-"));
@@ -9,16 +9,22 @@ const fakeEnv: NodeJS.ProcessEnv = { HOME: "/home/tester" };
 afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
 
 describe("findExecutable", () => {
-  test("posix：PATH（: 分隔）里找到真实文件返回绝对路径", () => {
+  test("PATH（本机分隔符）里找到真实文件返回绝对路径", () => {
     const dir = join(tempDir, "bin");
     mkdirSync(dir);
-    const file = join(dir, "ffmpeg");
+    const exeSuffix = process.platform === "win32" ? ".exe" : "";
+    const file = join(dir, `ffmpeg${exeSuffix}`);
     writeFileSync(file, "x");
-    expect(findExecutable("ffmpeg", { env: { PATH: `${dir}/empty:${dir}` }, platform: "linux" })).toBe(file);
+    expect(
+      findExecutable("ffmpeg", {
+        env: { PATH: [join(dir, "empty"), dir].join(delimiter) },
+        platform: process.platform,
+      }),
+    ).toBe(file);
   });
 
   test("posix：不在 PATH 里返回 null", () => {
-    expect(findExecutable("no-such-tool-xyz", { env: { PATH: tempDir }, platform: "linux" })).toBeNull();
+    expect(findExecutable("no-such-tool-xyz", { env: { PATH: tempDir }, platform: process.platform })).toBeNull();
   });
 
   test("win32：PATH（; 分隔）里只认 .exe 后缀", () => {
@@ -39,15 +45,16 @@ describe("findExecutable", () => {
   });
 
   test("多个目录时返回 PATH 中第一个命中", () => {
+    const exeSuffix = process.platform === "win32" ? ".exe" : "";
     const first = join(tempDir, "first");
     const second = join(tempDir, "second");
     mkdirSync(first);
     mkdirSync(second);
-    const f1 = join(first, "ffprobe");
-    const f2 = join(second, "ffprobe");
+    const f1 = join(first, `ffprobe${exeSuffix}`);
+    const f2 = join(second, `ffprobe${exeSuffix}`);
     writeFileSync(f1, "a");
     writeFileSync(f2, "b");
-    expect(findExecutable("ffprobe", { env: { PATH: `${first}:${second}` }, platform: "darwin" })).toBe(f1);
+    expect(findExecutable("ffprobe", { env: { PATH: [first, second].join(delimiter) }, platform: process.platform })).toBe(f1);
   });
 });
 

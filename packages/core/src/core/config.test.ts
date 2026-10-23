@@ -90,7 +90,7 @@ describe("modelDir", () => {
   });
 
   test("两个目录都不存在时（全新安装）返回 <数据根>/models", () => {
-    expect(modelDir({ HOME: "/h" })).toBe("/h/Documents/video-notes/models");
+    expect(modelDir({ HOME: "/h" })).toBe(join("/h", "Documents", "video-notes", "models"));
   });
 
   test("<数据根>/models 缺失且旧目录存在时回落到旧目录", () => {
@@ -100,7 +100,7 @@ describe("modelDir", () => {
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, "model.onnx"), "weights");
     const env: Record<string, string | undefined> = { HOME: home, VNOTE_DATA_ROOT: join(root, "data") };
-    expect(modelDir(env)).toBe(legacy);
+    expect(modelDir(env)).toBe(join(home, ".cache", "video-notes", "models"));
   });
 
   test("<数据根>/models 存在时优先于旧目录", () => {
