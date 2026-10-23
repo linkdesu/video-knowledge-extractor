@@ -112,10 +112,11 @@ describe("buildDiagnostics", () => {
       environment: ["ffmpeg: ffmpeg (missing)"],
       taskId: "task-a",
     });
-    expect(text).toContain("（无任务日志）");
+    expect(text).toContain("（无该任务日志，以下为最近日志）");
+    expect(text).toContain("（无日志）");
 
     const noTask = buildDiagnostics({ logDir: "", environment: [], taskId: null });
-    expect(noTask).toContain("（无任务日志）");
+    expect(noTask).toContain("（无任务，以下为最近日志）");
   });
 
   test("已登记 secret 不会出现在诊断文本里", () => {
@@ -132,5 +133,19 @@ describe("buildDiagnostics", () => {
     expect(text).not.toContain(KEY);
     // logger 已把 key 换成 [redacted]，诊断文本保持该性质
     expect(text).toContain("[redacted]");
+  });
+
+  test("没有任务 id 时退回最近日志尾部，门禁失败也进错误摘要", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-diag-tail-"));
+    try {
+      const log = createLogger({ dir, now: () => new Date("2026-10-24T05:00:00.000Z") });
+      log.error("app", "任务未开始", { kind: "extract", error: "本地 ASR 模型未就绪（识别）" });
+      const text = buildDiagnostics({ logDir: dir, environment: ["modelDir: /m (missing, ?)"], taskId: null });
+      expect(text).toContain("（无任务，以下为最近日志）");
+      expect(text).toContain("本地 ASR 模型未就绪");
+      expect(text.split("## 错误摘要")[1]?.split("## 最近任务")[0]).toContain("ERROR");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

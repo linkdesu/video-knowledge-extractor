@@ -1,4 +1,4 @@
-import { readTaskLog } from "./logger";
+import { readTaskLog, tailLog } from "./logger";
 
 export type DiagnosticsInput = {
   logDir: string;
@@ -33,21 +33,21 @@ export function buildDiagnostics(input: DiagnosticsInput): string {
   lines.push("## 环境");
   lines.push(...input.environment);
   lines.push("");
-  const allLines = input.taskId === null ? [] : readTaskLog(input.logDir, input.taskId, input.maxTaskLines ?? 500);
+  const maxLines = input.maxTaskLines ?? 500;
+  const taskLines = input.taskId === null ? [] : readTaskLog(input.logDir, input.taskId, maxLines);
+  // 门禁失败发生在任务入队之前，没有 task id；退回最近日志尾部，否则诊断里看不到失败原因
+  const allLines = taskLines.length > 0 ? taskLines : tailLog(input.logDir, maxLines);
   lines.push("## 错误摘要");
   const errs = errorLines(allLines);
   lines.push(errs.length > 0 ? errs.join("\n") : "（无）");
   lines.push("");
   lines.push("## 最近任务");
-  if (input.taskId === null) {
-    lines.push("（无任务日志）");
-  } else if (allLines.length === 0) {
-    if (typeof input.taskLabel === "string" && input.taskLabel !== "") lines.push(input.taskLabel);
-    lines.push("（无任务日志）");
-  } else {
-    if (typeof input.taskLabel === "string" && input.taskLabel !== "") lines.push(input.taskLabel);
-    lines.push(...allLines);
+  if (typeof input.taskLabel === "string" && input.taskLabel !== "") lines.push(input.taskLabel);
+  if (taskLines.length === 0) {
+    lines.push(input.taskId === null ? "（无任务，以下为最近日志）" : "（无该任务日志，以下为最近日志）");
   }
+  if (allLines.length === 0) lines.push("（无日志）");
+  else lines.push(...allLines);
   lines.push("");
   lines.push("## 日志目录");
   lines.push(input.logDir);

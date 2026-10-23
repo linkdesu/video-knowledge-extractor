@@ -12,6 +12,7 @@ export {
   redactSecrets,
   pruneOldLogs,
   readTaskLog,
+  tailLog,
 } from "./core/logger";
 export { buildDiagnostics, errorLines } from "./core/diagnostics";
 export type { DiagnosticsInput } from "./core/diagnostics";

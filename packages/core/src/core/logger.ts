@@ -247,6 +247,20 @@ export function pruneOldLogs(dir: string, keepDays = PRUNE_KEEP_DAYS, now: Date 
   return removed;
 }
 
+/** 全部日志文件的尾部（按日期升序，取最后 maxLines 行）；无日志返回空数组。 */
+export function tailLog(dir: string, maxLines = 200): string[] {
+  const all: string[] = [];
+  for (const name of listLogFiles(dir).sort()) {
+    try {
+      const content = readFileSync(join(dir, name), "utf8");
+      for (const line of content.split("\n")) if (line !== "") all.push(line);
+    } catch {
+      // 读取中途消失：跳过该文件
+    }
+  }
+  return all.slice(-maxLines);
+}
+
 export function readTaskLog(dir: string, taskId: string, maxLines?: number): string[] {
   // 匹配 task= 字段（前后为空白或行边界），避免误中 URL 等字段值
   const re = new RegExp(`(?:^|\\s)task=${escapeRegExp(taskId)}(?=\\s|$)`);

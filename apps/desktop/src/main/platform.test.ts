@@ -88,8 +88,8 @@ describe("killProcessTree", () => {
 
 describe("defaultDataRoot", () => {
   test("Documents 下拼 video-notes", () => {
-    expect(defaultDataRoot("/Users/link/Documents")).toBe("/Users/link/Documents/video-notes");
-    // 分隔符跟随宿主 path.join（真 Windows 下为 \）
+    // 期望值同样走 join，分隔符跟随宿主（Windows 下为 \）
+    expect(defaultDataRoot("/Users/link/Documents")).toBe(join("/Users/link/Documents", "video-notes"));
     expect(defaultDataRoot("C:\\Users\\link\\Documents")).toBe(join("C:\\Users\\link\\Documents", "video-notes"));
   });
 });
