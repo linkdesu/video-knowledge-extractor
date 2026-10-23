@@ -115,6 +115,8 @@ export type LlmStatus = {
   model: string | null;
   /** GET /models 发现并选中的模型名；显式配置或发现失败时为 null。 */
   discoveredModel: string | null;
+  /** 生效中的 key 明文（密钥库或 dev 种子）；设置页输入框回显它，没有 key 时为 null（ADR-0024）。 */
+  apiKey: string | null;
   hasKey: boolean;
   /** "env" 只可能来自 dev 模式的 .env 种子；打包版只有 "stored" 或 "none"。 */
   keySource: KeySource;

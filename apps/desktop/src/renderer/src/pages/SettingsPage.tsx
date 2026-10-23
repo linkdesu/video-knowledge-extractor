@@ -126,7 +126,11 @@ export function SettingsPage() {
     if (status === null) return;
     if (!llmInited.current) {
       llmInited.current = true;
-      const saved: LlmSaved = { baseUrl: status.llm.baseUrl ?? "", model: status.llm.model };
+      const saved: LlmSaved = {
+        baseUrl: status.llm.baseUrl ?? "",
+        model: status.llm.model,
+        apiKey: status.llm.apiKey,
+      };
       setLlmCard({ draft: draftFrom(saved), saving: false, saveError: null });
     }
   }, [status]);
@@ -234,12 +238,14 @@ export function SettingsPage() {
 
   const saveLlm = () => {
     if (status === null || llmCard === null || llmCard.saving) return;
-    const patch = llmPatch(
-      { baseUrl: status.llm.baseUrl ?? "", model: status.llm.model },
-      llmCard.draft,
-    );
+    const saved: LlmSaved = {
+      baseUrl: status.llm.baseUrl ?? "",
+      model: status.llm.model,
+      apiKey: status.llm.apiKey,
+    };
+    const patch = llmPatch(saved, llmCard.draft);
     if (patch === null) return;
-    const atSave = { baseUrl: llmCard.draft.baseUrl, model: llmCard.draft.model, apiKey: llmCard.draft.apiKey };
+    const atSave = { ...llmCard.draft };
     setLlmCard({ ...llmCard, saving: true, saveError: null });
     window.vnote
       .updateLlm(patch)
@@ -247,17 +253,19 @@ export function SettingsPage() {
         showToast("已保存");
         setLlmCard((cur) => {
           if (cur === null) return null;
-          const keyUntouched = cur.draft.apiKey === atSave.apiKey;
-          const unchanged =
+          // 保存期间用户又改了：保留草稿，不回填服务端值。
+          const untouched =
             cur.draft.baseUrl === atSave.baseUrl &&
             cur.draft.model === atSave.model &&
-            keyUntouched;
+            cur.draft.apiKey === atSave.apiKey;
           return {
-            draft: unchanged
-              ? draftFrom({ baseUrl: next.llm.baseUrl ?? "", model: next.llm.model })
-              : keyUntouched
-                ? { ...cur.draft, apiKey: "" }
-                : cur.draft,
+            draft: untouched
+              ? draftFrom({
+                  baseUrl: next.llm.baseUrl ?? "",
+                  model: next.llm.model,
+                  apiKey: next.llm.apiKey,
+                })
+              : cur.draft,
             saving: false,
             saveError: null,
           };
@@ -401,10 +409,15 @@ export function SettingsPage() {
       ? models.bundles.filter((b) => b.state !== "ready").map((b) => b.title)
       : asr.local.missing;
 
-  const llmDirtyNow = llmCard !== null && llmDirty({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft);
-  // 保存整表单需要凭证事务：有 key 且密钥库不可用时无法落库，按钮禁用。
+  const llmSaved: LlmSaved = { baseUrl: llm.baseUrl ?? "", model: llm.model, apiKey: llm.apiKey };
+  const llmDirtyNow = llmCard !== null && llmDirty(llmSaved, llmCard.draft);
+  // 保存整表单需要凭证事务：只有「要写新 key」且密钥库不可用时才禁用。
+  const keyChanged =
+    llmCard !== null &&
+    llmCard.draft.apiKey.trim() !== "" &&
+    llmCard.draft.apiKey.trim() !== (llm.apiKey ?? "");
   const llmSaveBlocked =
-    llmCard === null || llmCard.saving || !llmDirtyNow || (llmCard.draft.apiKey.trim() !== "" && !llm.keyStorageAvailable);
+    llmCard === null || llmCard.saving || !llmDirtyNow || (keyChanged && !llm.keyStorageAvailable);
 
   const pickDir = (field: PathField) => {
     window.vnote
@@ -434,7 +447,7 @@ export function SettingsPage() {
   return (
     <>
       <h1 className="vn-h1">设置</h1>
-      <p className="vn-sub">模型、存储与缓存。API key 安全存储，界面只显示已保存。</p>
+      <p className="vn-sub">模型、存储与缓存。API key 存在系统密钥库，输入框可编辑替换。</p>
 
       <div className="vn-grid vn-cards2" data-testid="settings-page">
         <SettingsPanel title="语音转写" testId="settings-asr">
@@ -715,7 +728,7 @@ export function SettingsPage() {
               testId="settings-llm-key"
               ariaLabel="API key"
               readOnly={!llm.keyStorageAvailable}
-              placeholder="粘贴新 key"
+              placeholder="输入 API key"
             />
             {!llm.keyStorageAvailable ? (
               <span className="vn-hint" data-testid="settings-llm-key-no-storage">
@@ -723,11 +736,11 @@ export function SettingsPage() {
               </span>
             ) : llm.keySource === "env" ? (
               <span className="vn-hint" data-testid="settings-llm-key-env">
-                尚未保存 key，当前使用 dev 模式 .env 种子；保存的 key 优先
+                当前 key 来自 dev 模式 .env 种子；保存后以这里为准
               </span>
             ) : llm.hasKey ? (
               <span className="vn-hint" data-testid="settings-llm-key-saved">
-                已保存 key；这里留空继续使用，输入则覆盖
+                已保存 key，掩码显示；点眼睛看明文，直接编辑即可替换
               </span>
             ) : (
               <span className="vn-hint" data-testid="settings-llm-key-none">
@@ -742,7 +755,7 @@ export function SettingsPage() {
               onChange={(v) =>
                 setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: v } } : c))
               }
-              options={modelOptions(fetchedModels, llmCard?.draft.model ?? "")}
+              options={modelOptions(fetchedModels)}
               placeholder="留空时自动发现"
               testId="settings-llm-model"
               ariaLabel="模型名"

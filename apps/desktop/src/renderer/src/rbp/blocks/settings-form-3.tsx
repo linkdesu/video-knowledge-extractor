@@ -279,12 +279,22 @@ export function Combobox({
   const [active, setActive] = useState(0);
   const [flip, setFlip] = useState(false);
   const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  // r32：只在「打开后用户还在打字」时过滤。每次展开都以全部候选开始，
+  // 否则选中一个模型后再次打开只会剩它自己。
+  const [query, setQuery] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const blurTimer = useRef(0);
 
+  const q = (query ?? "").trim().toLowerCase();
+  const visible =
+    query === null || q === ""
+      ? options
+      : options.filter((o) => o.label.toLowerCase().includes(q));
+
   const openList = () => {
     window.clearTimeout(blurTimer.current);
+    setQuery(null);
     const node = rootRef.current;
     if (node !== null) {
       const box = node.getBoundingClientRect();
@@ -308,8 +318,15 @@ export function Combobox({
       setFlip(up);
       setMaxHeight(room < listHeight ? Math.max(room, 72) : undefined);
     }
-    setActive(0);
+    const selected = options.findIndex((o) => o.value === value);
+    setActive(selected >= 0 ? selected : 0);
     setOpen(true);
+  };
+
+  // 用户正在输入：列表跟着过滤，但输入值本身仍交给上层当草稿。
+  const typeList = (next: string) => {
+    if (!open) openList();
+    setQuery(next);
   };
 
   const closeList = () => {
@@ -353,12 +370,12 @@ export function Combobox({
       list.scrollTop = bottom - list.clientHeight;
   }, [open, active]);
   useEffect(() => {
-    if (options.length > 0) setActive((i) => Math.min(i, options.length - 1));
-  }, [options.length]);
+    if (visible.length > 0) setActive((i) => Math.min(i, visible.length - 1));
+  }, [visible.length]);
   useEffect(() => () => window.clearTimeout(blurTimer.current), []);
 
   const commit = (index: number) => {
-    const option = options[index];
+    const option = visible[index];
     if (option === undefined) return;
     onChange(option.value);
     setOpen(false);
@@ -381,7 +398,7 @@ export function Combobox({
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(i + 1, options.length - 1));
+      setActive((i) => Math.min(i + 1, visible.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActive((i) => Math.max(i - 1, 0));
@@ -390,7 +407,7 @@ export function Combobox({
       setActive(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      setActive(options.length - 1);
+      setActive(visible.length - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
       commit(active);
@@ -406,7 +423,7 @@ export function Combobox({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-haspopup="listbox"
-        aria-activedescendant={open && options.length > 0 ? `${listId}-opt-${active}` : undefined}
+        aria-activedescendant={open && visible.length > 0 ? `${listId}-opt-${active}` : undefined}
         aria-label={ariaLabel}
         data-testid={testId}
         value={value}
@@ -415,9 +432,13 @@ export function Combobox({
         className="vn-input"
         onChange={(e) => {
           onChange(e.target.value);
-          if (!open) openList();
+          typeList(e.target.value);
         }}
         onFocus={openList}
+        onClick={() => {
+          // 关掉列表后焦点还在输入框里，再点一次不会再触发 focus；没有这条就永远打不开。
+          if (!open) openList();
+        }}
         onBlur={closeList}
         onKeyDown={onKeyDown}
       />
@@ -441,7 +462,7 @@ export function Combobox({
           style={maxHeight !== undefined ? { maxHeight } : undefined}
           className={`vn-select-list${flip ? " up" : ""}`}
         >
-          {options.map((o, i) => (
+          {visible.map((o, i) => (
             <li
               key={o.value}
               id={`${listId}-opt-${i}`}
@@ -531,7 +552,6 @@ export function PasswordInput({
         className="vn-btn-eye"
         aria-label={revealed ? "隐藏密钥" : "显示密钥"}
         data-testid={testId !== undefined ? `${testId}-reveal` : undefined}
-        disabled={readOnly}
         onClick={() => setRevealed((r) => !r)}
       >
         {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
