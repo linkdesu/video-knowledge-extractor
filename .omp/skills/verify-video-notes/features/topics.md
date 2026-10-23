@@ -153,6 +153,34 @@ $V shot topics-resize
 
 The literal state assertions: `$V drag '[data-testid=player-resize]' 0 120` (the real pointer gesture), `H1 != $H0` (the player element's `getBoundingClientRect().height` changed), and `localStorage['vn.topics.playerHeight']` equals the stored value before and after a restart. The `player-resize` handle is a real `button` with `aria-label="调整播放器高度"`; a drag of `-120` (up) shrinks the player the same way.
 
+### Recipe: Player fits its container（r33-fix P1: 竖屏不裁切、控件在视口内）
+
+In fixed-height mode the `<video>` is absolutely positioned to fill `[data-testid=player]` with `object-fit: contain`; a percentage `max-height` inside the grid container used to resolve against the video's intrinsic size, so a portrait video grew to 507×1099 and the 420-px container (with `overflow:hidden`) cut off both the picture and the native control row. The assertions below are the regression test; run them on a **portrait** and a **landscape** video, and once more after a real `player-resize` drag in each direction.
+
+```bash
+# use a fresh run (no localStorage vn.topics.playerHeight) so the default height applies;
+# to reuse a run, first reset it: $V eval "localStorage.removeItem('vn.topics.playerHeight'); location.reload(); true"
+# open the portrait video's 主题 page and wait for the video element
+$V wait "document.querySelector('[data-testid=player] video') !== null" --timeout 10000
+# measure container, video and controls geometry
+$V eval "(() => { const p = document.querySelector('[data-testid=player]'); const v = p.querySelector('video'); const pr = p.getBoundingClientRect(), vr = v.getBoundingClientRect(); return { innerH, innerW, playerH: pr.height, playerW: pr.width, videoH: vr.height, videoW: vr.width, videoTop: vr.top, videoBottom: vr.bottom, playerTop: pr.top, playerBottom: pr.bottom, controls: v.controls, stored: localStorage.getItem('vn.topics.playerHeight') }; })()"
+# expected (portrait, no stored height): stored === null, playerH <= innerH * 0.6,
+#   videoH <= playerH + 0.5, videoW <= playerW + 0.5,
+#   max(videoTop, playerTop) >= 0 and min(videoBottom, playerBottom) <= innerH
+# a real drag down (+150) then up (-300): the height changes and the video still fits
+$V drag '[data-testid=player-resize]' 0 150
+$V eval "(() => { const p = document.querySelector('[data-testid=player]'); const v = p.querySelector('video'); const pr = p.getBoundingClientRect(), vr = v.getBoundingClientRect(); return { playerH: pr.height, videoH: vr.height, fits: vr.height <= pr.height + 0.5 && vr.width <= pr.width + 0.5 && Math.min(vr.bottom, pr.bottom) <= innerHeight + 0.5, stored: localStorage.getItem('vn.topics.playerHeight') }; })()"
+# expected: fits === true at every height (240 … min(900, innerH*0.8))
+$V drag '[data-testid=player-resize]' 0 -300
+# repeat the measurement: fits === true
+# repeat the whole block on a landscape video: with no stored height the container is
+# auto-sized (no aspect-ratio box), so playerH is the video's own height (<= 62vh) and
+# videoH <= playerH + 0.5 still holds
+$V shot topics-player-fit
+```
+
+Literal assertions: `video.getBoundingClientRect().height <= player.getBoundingClientRect().height + 0.5`, `video.width <= player.width + 0.5` (no overflow in either axis), `min(video.bottom, player.bottom) <= innerHeight` and `max(video.top, player.top) >= 0` (the control row at the video's bottom edge is inside the viewport), and for a portrait video on a fresh profile `player.height <= innerHeight * 0.6`. Do not assert on the `<video>`'s intrinsic size (`videoWidth`/`videoHeight` are the source resolution and stay 886×1920 / 3840×2160) and do not assert pixel colours — the geometry is the proof.
+
 ## Gotchas
 
 - The step tabs have no test ids. Their accessible names are `1 字幕`, `2 主题`, `3 笔记`; pass `主题` to `click-text`, which strips the leading number. Do not click by position — the tab order is a UI detail.
