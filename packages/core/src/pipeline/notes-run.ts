@@ -79,6 +79,7 @@ export function writeIndexFromDoc(outputDir: string): string {
       segment: { start: c.start, end: c.end },
       path: resolve(outputDir, t.dirName, c.file),
       segmentIndexes: c.segmentIndexes,
+      segmentOffsets: c.segmentOffsets,
     })),
   }));
   const markdown = renderIndexMarkdown(video, topics, dirs, notes);
@@ -129,6 +130,7 @@ export async function generateAll(
       if (note !== undefined) notes.push(note);
       data = setTopicProgress(outputDir, id, {
         status: "done",
+        error: null,
         elapsedSeconds: Math.round((performance.now() - t0) / 100) / 10,
         keyPoints: note !== undefined ? keyPointsFromMarkdown(note.markdown) : [],
         clips:
@@ -139,6 +141,7 @@ export async function generateAll(
                 start: c.segment.start,
                 end: c.segment.end,
                 segmentIndexes: c.segmentIndexes ?? [0],
+                segmentOffsets: c.segmentOffsets ?? [],
               })),
       });
       noteCount += 1;
@@ -181,7 +184,17 @@ export async function runNotes(input: {
   const startedAt = performance.now();
   const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
   try {
-    const ids = input.topicIds as TopicId[];
+    const ids = (input.topicIds as TopicId[]).filter((id) => {
+      const topic = data.topics.find((x) => x.id === id);
+      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
+      return topic.status !== "done";
+    });
+    if (ids.length === 0) {
+      // 全部已 done：不生成、不碰任何产物，index 从完整文档重建（条目本来就在）
+      timings.total = t();
+      writeIndexFromDoc(input.outputDir);
+      return { noteCount: 0, cacheHits: [], timings };
+    }
     const dirNameOf = (id: TopicId) => {
       const topic = data.topics.find((x) => x.id === id);
       if (topic === undefined) throw new Error(`主题 ${id} 不存在`);

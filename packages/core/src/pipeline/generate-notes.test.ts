@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -295,5 +296,57 @@ describe("generateNotes 中断", () => {
     expect(readFileSync(join(input.video.outputDir, "index.md"), "utf8")).toBe(oldIndex);
     expect(readFileSync(join(oldTopicDir, "topic.md"), "utf8")).toBe("# 旧主题\n");
     expect(existsSync(join(input.video.outputDir, OUTPUT_MANIFEST))).toBe(false);
+  });
+});
+
+describe("generateNotes 单文件主题切片（r33）", () => {
+  test("part + concat 成 topic.mp4，记录 segmentOffsets，删旧编号切片", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vnote-topicmp4-"));
+    const out = join(root, "out");
+    mkdirSync(out, { recursive: true });
+    // 真 60 秒源：段 [10,20] 前移 2s 后 union [8,20]，偏移 10-8=2
+    const src = join(root, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=60", "-f", "lavfi", "-i", "sine=d=60", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+      { stdio: "pipe" },
+    );
+    const topic: Topic = {
+      id: "t1" as never,
+      title: "主题A",
+      summary: "这是摘要",
+      segments: [{ start: 10, end: 20 }],
+    };
+    const transcript: Transcript = {
+      speakers: [],
+      utterances: [{ start: 11, end: 12, speakerId: "s1" as SpeakerId, text: "内容" }],
+    };
+    const topicDir = join(out, "主题A");
+    mkdirSync(topicDir, { recursive: true });
+    // 旧编号切片：拼接成功后必须被删
+    writeFileSync(join(topicDir, "01-00-00-07-00-00-20.mp4"), "legacy");
+    const input = {
+      video: { id: "v1" as never, title: "测试视频", sourcePath: src, durationSeconds: 60, outputDir: out },
+      transcript,
+      topics: [topic],
+      dirNames: new Map([[topic.id, "主题A"]]),
+      corrections,
+      endpoint,
+      cacheDir: join(out, ".cache"),
+      client: makeClient(["要点一"], []),
+    } as Parameters<typeof generateNotes>[0];
+    const r = await generateNotes(input);
+    expect(r.notes).toHaveLength(1);
+    const clips = r.notes[0]!.clips;
+    expect(clips).toHaveLength(1);
+    expect(clips[0]!.path).toBe(join(topicDir, "topic.mp4"));
+    expect(clips[0]!.segment).toEqual({ start: 8, end: 20 });
+    expect(clips[0]!.segmentIndexes).toEqual([0]);
+    expect(clips[0]!.segmentOffsets).toEqual([2]);
+    // 单文件落盘、旧编号切片被删
+    expect(existsSync(join(topicDir, "topic.mp4"))).toBe(true);
+    expect(existsSync(join(topicDir, "01-00-00-07-00-00-20.mp4"))).toBe(false);
+    // topic.md 的段标题链接 topic.mp4
+    expect(readFileSync(join(topicDir, "topic.md"), "utf8")).toContain("](topic.mp4)");
   });
 });

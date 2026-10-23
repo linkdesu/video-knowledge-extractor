@@ -102,6 +102,20 @@ describe("isToolTopicDir", () => {
     expect(isToolTopicDir(outputDir, "plain")).toBe(true);
   });
 
+  test("topic.md 加 topic.mp4 是纯工具目录（r33 单文件切片）", () => {
+    const outputDir = tempDir();
+    mkdirSync(resolve(outputDir, "single"), { recursive: true });
+    writeFileSync(resolve(outputDir, "single", "topic.md"), "# single\n");
+    writeFileSync(resolve(outputDir, "single", "topic.mp4"), "");
+    expect(isToolTopicDir(outputDir, "single")).toBe(true);
+  });
+
+  test("topic.mp4 与旧编号切片并存仍是纯工具目录", () => {
+    const outputDir = tempDir();
+    makeToolTopicDir(outputDir, "mixed", ["topic.mp4"]);
+    expect(isToolTopicDir(outputDir, "mixed")).toBe(true);
+  });
+
   test("缺 topic.md 就不是纯工具目录", () => {
     const outputDir = tempDir();
     mkdirSync(resolve(outputDir, "no-topic-md"), { recursive: true });

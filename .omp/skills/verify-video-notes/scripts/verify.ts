@@ -59,6 +59,9 @@ const HELP = `usage: verify.ts <command>
       fill <selector> <text>      focus + select + type (works on inputs/textareas)
       press <key> [--meta]        press one key (e.g. Enter, Escape)
       drop <file>                 drag a real file onto the library dropzone
+      drag <selector> <dx> <dy> [--index N] [--steps N]
+                                real pointer drag: press at the element center, move in
+                                N steps (default 8) to center+(dx,dy), release at the end
       wait <expr> [--timeout MS]  poll until the expression is truthy
       text                        print document.body.innerText
       shot [name]                 PNG screenshot -> <run>/<name>.png
@@ -275,6 +278,21 @@ async function drop(cdp: Cdp, file: string): Promise<void> {
   for (const type of ["dragEnter", "dragOver", "drop"]) {
     await cdp.send("Input.dispatchDragEvent", { type, x, y, data });
   }
+}
+
+// 真实指针拖拽：在元素中心按下，分 N 步移动到 中心+(dx,dy)，再在终点松开。
+async function drag(cdp: Cdp, selector: string, index: number, dx: number, dy: number, steps: number): Promise<void> {
+  await waitFor(cdp, `document.querySelectorAll(${JSON.stringify(selector)}).length > ${index}`, 5000);
+  const { x, y } = await elementCenter(cdp, selector, index);
+  const end = { x: x + dx, y: y + dy };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, buttons: 1 });
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + dx * f, y: y + dy * f, button: "left", buttons: 1 });
+  }
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: end.x, y: end.y, button: "left", clickCount: 1 });
+  console.log(`dragged ${selector}[${index}] (${x}, ${y}) -> (${end.x}, ${end.y}) in ${steps} steps`);
 }
 
 async function snapshot(cdp: Cdp, file: string): Promise<number> {
@@ -633,6 +651,18 @@ async function drive(args: string[]): Promise<void> {
         if (file === undefined) fail("drop needs a file path");
         await drop(cdp, file);
         console.log(`dropped ${resolve(file)} on the dropzone`);
+        break;
+      }
+      case "drag": {
+        const index = Number(takeFlag(args, "--index") ?? "0");
+        const steps = Number(takeFlag(args, "--steps") ?? "8");
+        const selector = args[0];
+        const dx = Number(args[1]);
+        const dy = Number(args[2]);
+        if (selector === undefined) fail("drag needs a selector");
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) fail("drag needs numeric dx and dy");
+        if (!Number.isFinite(steps) || steps < 1) fail("--steps must be a positive integer");
+        await drag(cdp, selector, index, dx, dy, Math.round(steps));
         break;
       }
       case "wait": {

@@ -49,6 +49,13 @@ export function App() {
     void refreshLibrary();
   }, [refreshLibrary]);
 
+  // 主进程后台补齐封面后广播 videoId 列表，刷新库让封面 url 出现。
+  useEffect(() => {
+    return window.vnote.onLibraryCovers(() => {
+      void refreshLibrary();
+    });
+  }, [refreshLibrary]);
+
   // 启动时接管已经在跑的任务，之后全部由 onJob 事件驱动。
   useEffect(() => {
     let off: (() => void) | undefined;

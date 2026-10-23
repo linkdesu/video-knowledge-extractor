@@ -13,6 +13,8 @@ import { showToast } from "../lib/toast";
 
 const STATUS_TAG: Record<VideoStatus, { label: string; cls: string }> = {
   done: { label: "已完成", cls: "vn-tag ok" },
+  "pending-confirm": { label: "待确认主题", cls: "vn-tag accent" },
+  partial: { label: "部分完成", cls: "vn-tag warn" },
   "in-progress": { label: "处理中", cls: "vn-tag warn" },
   "needs-rerun": { label: "需重跑", cls: "vn-tag warn" },
   failed: { label: "失败", cls: "vn-tag err" },
@@ -172,6 +174,14 @@ export function LibraryPage({
             return (
               <div key={v.id} className="vn-card vn-vcard" data-testid="video-card">
                 <div className="vn-thumb">
+                  {v.coverUrl !== null ? (
+                    <img
+                      data-testid="video-cover"
+                      className="vn-thumb-img"
+                      src={v.coverUrl}
+                      alt=""
+                    />
+                  ) : null}
                   <span className="vn-dur">
                     {v.durationSeconds !== null ? fmtClock(v.durationSeconds) : "—"}
                   </span>
@@ -195,20 +205,38 @@ export function LibraryPage({
                     ) : null}
                     {v.topicCount > 0 ? <span>{v.topicCount} 个主题</span> : null}
                   </div>
-                  <div className="vn-row vn-between" style={{ marginTop: 12 }}>
+                  <div className="vn-row vn-between vn-vactions" data-testid="video-card-foot">
                     <span data-testid="video-status" className={cls}>
                       {label}
                     </span>
-                    <button
-                      type="button"
-                      data-testid={v.status === "done" ? "card-open-notes" : "card-continue"}
-                      className="vn-btn sm"
-                      onClick={() =>
-                        onOpenVideo(v, v.status === "done" ? "notes" : "topics")
-                      }
-                    >
-                      {v.status === "done" ? "查看笔记切片" : "继续编辑"}
-                    </button>
+                    {v.status === "pending-confirm" ? (
+                      <button
+                        type="button"
+                        data-testid="card-confirm-topics"
+                        className="vn-btn sm"
+                        onClick={() => onOpenVideo(v, "topics")}
+                      >
+                        确认主题
+                      </button>
+                    ) : v.status === "done" ? (
+                      <button
+                        type="button"
+                        data-testid="card-open-notes"
+                        className="vn-btn sm"
+                        onClick={() => onOpenVideo(v, "notes")}
+                      >
+                        查看笔记切片
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid="card-continue"
+                        className="vn-btn sm"
+                        onClick={() => onOpenVideo(v, "topics")}
+                      >
+                        继续编辑
+                      </button>
+                    )}
                   </div>
                   {running ? <ProgressBar percent={percent} /> : null}
                   {expanded ? (

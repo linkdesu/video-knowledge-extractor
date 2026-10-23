@@ -53,7 +53,7 @@ describe("video.json 文档", () => {
           status: "generating",
           selected: true,
           keyPoints: ["要点一"],
-          clips: [{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0] }],
+          clips: [{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] }],
           startedAt: "2026-10-20T00:00:00.000Z",
           elapsedSeconds: 5,
           error: "上次出错",
@@ -129,6 +129,41 @@ describe("video.json 文档", () => {
     const dir = mkdtemp();
     writeFileSync(join(dir, "video.json"), "{ not json");
     expect(() => readVideoData(dir)).toThrow(/video\.json/);
+  });
+
+  test("clips 缺 segmentOffsets 读回为 []，非法值被过滤", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    const base = emptyVideoData(video);
+    writeVideoData(
+      dir,
+      {
+        ...base,
+        topics: [
+          {
+            id: "t1",
+            title: "T",
+            summary: "s",
+            segments: [{ start: 1, end: 2 }],
+            dirName: "d",
+            status: "done",
+            selected: true,
+            keyPoints: [],
+            clips: [
+              { file: "a.mp4", start: 1, end: 2, segmentIndexes: [0] },
+              { file: "b.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [2, "x", NaN] },
+            ],
+            startedAt: null,
+            elapsedSeconds: null,
+            error: null,
+          },
+        ],
+      } as unknown as VideoData,
+    );
+    const d = readVideoData(dir);
+    expect(d).toBeDefined();
+    expect(d!.topics[0]!.clips[0]!.segmentOffsets).toEqual([]);
+    expect(d!.topics[0]!.clips[1]!.segmentOffsets).toEqual([2]);
   });
 });
 
@@ -229,8 +264,8 @@ describe("旧目录迁移", () => {
       { start: 120, end: 150 },
     ]);
     expect(t.clips).toEqual([
-      { file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0] },
-      { file: "02-00-02-00-00-02-30.mp4", start: 120, end: 150, segmentIndexes: [1] },
+      { file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] },
+      { file: "02-00-02-00-00-02-30.mp4", start: 120, end: 150, segmentIndexes: [1], segmentOffsets: [] },
     ]);
     expect(t.error).toBeNull();
     expect(t.status).toBe("done");
@@ -254,8 +289,8 @@ describe("旧目录迁移", () => {
     const t = migrated.topics[0]!;
     expect(t.segments).toEqual([{ start: 10, end: 20 }]);
     expect(t.clips).toEqual([
-      { file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0] },
-      { file: "02-00-01-59-00-02-10.mp4", start: 119, end: 130, segmentIndexes: [] },
+      { file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] },
+      { file: "02-00-01-59-00-02-10.mp4", start: 119, end: 130, segmentIndexes: [], segmentOffsets: [] },
     ]);
     expect(t.error).toBeNull();
   });

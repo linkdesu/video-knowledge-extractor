@@ -17,8 +17,12 @@ export function renderTopicMarkdown(
   const lines: string[] = [`# ${topic.title}`, ""];
   if (topic.summary.length > 0) lines.push(topic.summary, "");
   lines.push("## 要点", ...keyPoints.map((p) => `- ${p}`), "", "## 正文");
-  for (const seg of [...topic.segments].sort((a, b) => a.start - b.start)) {
-    const covering = clips.find((c) => c.segment.start <= seg.start && seg.start < c.segment.end) ?? clips[0];
+  for (const [n, seg] of [...topic.segments.entries()].sort((a, b) => a[1].start - b[1].start)) {
+    if (seg === undefined) continue;
+    const covering =
+      clips.find((c) => (c.segmentIndexes ?? []).includes(n)) ??
+      clips.find((c) => c.segment.start <= seg.start && seg.start < c.segment.end) ??
+      clips[0];
     if (lines[lines.length - 1] !== "") lines.push("");
     lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering?.path.split("/").pop() ?? ""})`);
     const inSeg = utterances.filter((u) => u.end > seg.start && u.start < seg.end).sort((a, b) => a.start - b.start);
@@ -47,7 +51,7 @@ export function renderIndexMarkdown(video: Video, topics: Topic[], dirs: Map<Top
     const note = byId.get(topic.id);
     if (dir === undefined || note === undefined) continue;
     let line = `- [${topic.title}](./${dir}/topic.md) — ${topic.summary}`;
-    for (const clip of note.clips) line += ` [切片](./${dir}/${clip.path.split("/").pop()})`;
+    for (const name of new Set(note.clips.map((c) => c.path.split("/").pop()))) line += ` [切片](./${dir}/${name})`;
     lines.push(line);
   }
   return `${lines.join("\n")}\n`;

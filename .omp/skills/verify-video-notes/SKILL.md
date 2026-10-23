@@ -123,7 +123,8 @@ $V click-text '生成笔记：<topic title>'      # checkbox aria-labels are exa
 $V fill '[data-testid=glossary-right]' 'sherpa-onnx'
 $V type 'sherpa'                           # key events into the focused element
 $V press Enter
-$V drop /abs/path/video.mp4                # real drag-and-drop onto the dropzone
+$V drop /abs/path/video.mp4                 # real drag-and-drop onto the dropzone
+$V drag '[data-testid=player-resize]' 0 120 # real pointer drag: press at center, N steps (default 8) to center+(dx,dy), release
 $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 $V shot glossary-proof                     # -> <run>/glossary-proof.png
 $V snapshot glossary-proof                 # -> <run>/glossary-proof.aria.txt (accessibility tree)
@@ -137,6 +138,7 @@ Mechanics that matter:
 - `wait` evaluates with `awaitPromise`, which awaits the expression only when the expression *is* a promise. `window.vnote.activeJob() === null` compares a promise to null and is therefore always false — every wait written that way burns its full timeout. Write `window.vnote.activeJob().then(j => j === null)` or `window.vnote.listLibrary().then(...)`. Wait on state, never on a fixed sleep.
 - `type` sends key events for ASCII and `Input.insertText` for non-ASCII. The global glossary debounces saves (~400 ms) and submits only rows with both columns filled, so half-typed rows produce neither requests nor error toasts.
 - `drop` uses `Input.dispatchDragEvent` with a real filesystem path. This is the only automatable import path: clicking the dropzone opens a native file dialog that blocks the renderer.
+- `drag <selector> <dx> <dy> [--index N] [--steps N]` is a real pointer drag (r33): it scrolls the element into view, moves to its center, presses the left button, interpolates `--steps` (default 8) `Input.dispatchMouseEvent` moves to center+(dx,dy) with `buttons: 1`, and releases at the end point. Use it for the `player-resize` resize handle — the `player` element's `getBoundingClientRect().height` changes and the value persists in `localStorage['vn.topics.playerHeight']` across a restart.
 - **A native `<select>`'s popup is a separate window on macOS** (its own NSMenu layer). `click` and `press` never reach it, and faking a user selection by dispatching `change`/`input` events through `eval` is prohibited — a selection counts only when a DOM element was clicked and the resulting real value was asserted. This repo's model picker is the DOM shape: a `role=combobox` input (`settings-llm-model`) plus a `role=listbox` (`settings-llm-model-listbox`) whose `role=option` rows `settings-llm-model-option-<i>` carry `data-value`. The listbox is a DOM `ul`, so `click` reaches it, but **selecting a model must click `settings-llm-model-option-<i>` and the result counts only when the input value and the saved settings change**; typing into the combobox input only filters the options, it never commits a model.
 
 Stable handles in this repo:
@@ -145,11 +147,11 @@ Stable handles in this repo:
 |---|---|
 | Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings` |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
-| Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `video-resolution` |
+| Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-card-foot` (the bottom-pinned action row) |
 | Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close` |
-| Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`; checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
+| Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`, `topic-seg-<i>` (clickable segment-label buttons on the selected topic; `i` is the segment index), `player-resize` (bottom-right resize handle, aria-label 调整播放器高度); checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
-| Notes | `note-row`, `note-open`, `clip-block`, `clip-sub`, `player` |
+| Notes | `note-row`, `note-open`, `clip-block`, `clip-player` (one `<video>` per topic, the concatenated `topic.mp4`), `clip-seg-<i>` (clickable segment-label chips, seek to `segmentOffsets[i]`), `clip-sub` (clickable subtitle rows), `player` (the 主题-page player; not the notes clip-player) |
 | Glossary | `glossary-add`, `glossary-row`, `glossary-wrong`, `glossary-right`, `glossary-remove` (per row, use `--index`) |
 | Settings | `settings-page`, `settings-asr-provider-fixed`, `settings-llm-base-url`, `settings-llm-model` (combobox input, role=combobox), `settings-llm-model-listbox` (role=listbox), `settings-llm-model-option-<i>` (role=option, `data-value` is the model id), `settings-llm-key-input` (password input; already holds the saved key, masked — r32), `settings-llm-key-reveal` (eye toggle, aria-label 显示密钥 / 隐藏密钥; shows the plaintext), key hints `settings-llm-key-saved` / `settings-llm-key-env` / `settings-llm-key-none`, `settings-llm-fetch-models`, `settings-test-llm`, single save `settings-llm-save` (disabled while the draft equals the saved values), `settings-llm-save-error`, `settings-llm-models-error`, `settings-llm-discovered`, the four ASR key fields follow the `<prefix>-input` / `-save` / `-reveal` / `-saved` / `-clear` pattern with prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, `settings-clear-cache`, `settings-about`, `model-panel`, `model-bundle-<id>`, `model-verify`, `model-import`, `model-download` |
 | Video glossary (in library card) | `video-title`, `video-glossary-add`, `video-glossary-wrong`, `video-glossary-right`, `video-glossary-remove` |
@@ -189,6 +191,8 @@ Last proven runs (r32, evidence copied to `tmp/report/r32-evidence/`): `r32-befo
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env` at all; a dev (unpacked) app loads it only as a seed for LLM fields that have no saved value, a saved value always wins, and a run with a saved key shows the `settings-llm-key-saved` hint (never `-key-env`). The `vnote` CLI keeps the env-only configuration (`VNOTE_LLM_*` / `IDEALSOFT_*` from the shell or `.env`); it does not read `settings.json` or the keychain.
 - **The LLM key input is never empty once a key exists (r32).** `settings().llm.apiKey` is the effective key (stored, or the dev seed) and the password input holds it on load and after a save, so `value === ""` asserts "no key", not "just saved". Masked by default; `settings-llm-key-reveal` flips it to `type=text` with the same value. Clearing the input means 「保留已存 key」 and does not dirty the form. The ASR key fields still do not echo (ADR-0024).
 - **The model combobox lists every fetched id when opened (r32).** Filtering happens only while the user is typing in `settings-llm-model`; opening the list, focusing it, or clicking the input after closing it re-shows the full set with the selected row marked `aria-selected="true"`. Clicking the combobox input is the reliable way to reopen it — a click does not always fire `focus` again and an already-closed list with the input focused opens on click or ArrowDown.
+- **Subtitle rows are only clickable when `onSeek` is passed (r33 root cause).** `SubtitleList` attaches click/seek semantics only when the `onSeek` prop is a function; otherwise the rows render display-only. The r32 主题 page never passed `onSeek` to its subtitle list, so 主题-page subtitle clicks did nothing — that was the r32 "subtitle not clickable" bug. The fix (r33) wires `onSeek` on both the 主题 and 笔记 pages (seeking the selected topic's clip via `segmentOffsets`). When verifying subtitle clicks, assert `video.currentTime` and `video.paused === false` after a real `click` — a `drive`-click on a row with no `onSeek` changes nothing and must not be reported as a pass.
+- **Slices are now one `topic.mp4` per topic (r33).** Each generated topic writes a single concatenated `topic.mp4` (segments cut with 2 s pre-roll, overlaps merged, joined with `-c copy`) plus one `TopicClip` record carrying `segmentOffsets`. The numbered per-segment files (`01-….mp4`, `SLICE_RE`-shaped) only exist in pre-r33 data; on those, the renderer falls back to source playback / multi-clip. Do not assert numbered clip names for r33 runs, and do not treat a `topic.mp4`-only topic directory as incomplete — it is the finished shape.
 
 ## Cleanup
 
@@ -210,7 +214,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 |---|---|
 | `up` | build + launch isolated Electron, wait for usable renderer |
 | `doctor` | read-only health check, exit 1 on failure |
-| `drive …` | eval / click / click-text / type / fill / press / drop / wait / text / shot / snapshot / status / log |
+| `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log |
 | `down` | stop the instance this run started, keep evidence |
 | `runs` | list runs with liveness |
 

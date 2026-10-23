@@ -86,7 +86,7 @@ describe("readLibraryVideo", () => {
     expect(detail.data.topics).toHaveLength(2);
     const a = detail.data.topics.find((t) => t.dirName === "前段")!;
     expect(a.title).toBe("前段标题");
-    expect(a.clips).toEqual([{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0] }]);
+    expect(a.clips).toEqual([{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] }]);
     expect(a.status).toBe("done");
     const b = detail.data.topics.find((t) => t.dirName === "后段")!;
     expect(b.title).toBe("后段");
@@ -112,7 +112,7 @@ describe("readLibraryVideo", () => {
         status: "done",
         selected: false,
         keyPoints: [],
-        clips: [{ file: "01-00-00-01-00-00-02.mp4", start: 1, end: 2, segmentIndexes: [0] }],
+        clips: [{ file: "01-00-00-01-00-00-02.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [] }],
         startedAt: null,
         elapsedSeconds: null,
         error: null,
@@ -339,7 +339,7 @@ describe("卡片状态与运行中的关系", () => {
             status: "done",
             selected: true,
             keyPoints: [],
-            clips: [{ file: "01-00-00-01-00-00-02.mp4", start: 1, end: 2, segmentIndexes: [0] }],
+            clips: [{ file: "01-00-00-01-00-00-02.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [] }],
             startedAt: null,
             elapsedSeconds: null,
             error: null,
@@ -373,5 +373,49 @@ describe("卡片状态与运行中的关系", () => {
     const { root, id } = fixture();
     videoWith(root, id, { withTranscript: true, topicsDone: true });
     expect(listLibrary(root, { busyVideoId: "vid-missing" }).find((v) => v.id === id)!.status).toBe("done");
+  });
+});
+
+describe("卡片状态：proposed / pending-confirm / partial", () => {
+  function writeCard(root: string, id: string, topics: Array<Record<string, unknown>>): void {
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    data.topics = topics as never;
+    writeVideoData(outputDir, data);
+  }
+  const topic = (id: string, status: string, selected = true): Record<string, unknown> => ({
+    id,
+    title: "t",
+    summary: "s",
+    segments: [{ start: 1, end: 2 }],
+    dirName: id,
+    status,
+    selected,
+    keyPoints: [],
+    clips: [],
+    startedAt: null,
+    elapsedSeconds: null,
+    error: null,
+  });
+
+  test("全部勾选主题 proposed → pending-confirm（failed 优先）", () => {
+    const { root, id } = fixture();
+    writeCard(root, id, [topic("t1", "proposed"), topic("t2", "proposed")]);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("pending-confirm");
+    writeCard(root, id, [topic("t1", "failed"), topic("t2", "proposed")]);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("needs-rerun");
+  });
+
+  test("勾选主题 done 与 proposed 混合 → partial", () => {
+    const { root, id } = fixture();
+    writeCard(root, id, [topic("t1", "done"), topic("t2", "proposed")]);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("partial");
+  });
+
+  test("全 proposed 但都不勾选 → in-progress", () => {
+    const { root, id } = fixture();
+    writeCard(root, id, [topic("t1", "proposed", false), topic("t2", "proposed", false)]);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("in-progress");
   });
 });

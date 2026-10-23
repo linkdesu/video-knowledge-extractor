@@ -49,6 +49,13 @@ const api: VnoteApi = {
       ipcRenderer.removeListener(IPC.jobEvent, listenerWrapper);
     };
   },
+  onLibraryCovers: (listener: (videoIds: string[]) => void) => {
+    const listenerWrapper = (_event: Electron.IpcRendererEvent, videoIds: string[]): void => listener(videoIds);
+    ipcRenderer.on(IPC.libraryCovers, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.libraryCovers, listenerWrapper);
+    };
+  },
   settings: () => ipcRenderer.invoke(IPC.settings) as Promise<SettingsStatus>,
   updateSettings: (patch: SettingsPatch) => ipcRenderer.invoke(IPC.updateSettings, patch) as Promise<SettingsStatus>,
   pickDirectory: (kind: DirectoryKind) => ipcRenderer.invoke(IPC.pickDirectory, kind) as Promise<string | null>,

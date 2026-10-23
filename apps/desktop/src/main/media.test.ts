@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { createMediaHandler, decodeClipUrl, decodeSourceUrl, encodeClipUrl, encodeSourceUrl, parseRangeHeader } from "./media";
+import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
 const ROOT = "/home/u/video-notes";
 // 测试用 fake realpath / stat：不碰真实文件系统，纯路径运算
@@ -100,7 +100,7 @@ describe("源视频路由", () => {
     writeFileSync(realSrc, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
     const resolveLive = (id: string) => (id === "v1" ? realSrc : undefined);
     try {
-      const handler = createMediaHandler({ root: () => ROOT, resolveSource: resolveLive });
+      const handler = createMediaHandler({ root: () => ROOT, resolveSource: resolveLive, resolveOutputDir: () => undefined });
       // 未登记的 videoId 只会走源路由（clip 路由永不返回 404），证明分发正确
       const res = await handler(new Request(encodeSourceUrl("nope")));
       expect(res.status).toBe(404);
@@ -118,10 +118,92 @@ describe("源视频路由", () => {
     mkdirSync(`${root}/vid-1/主题-01`, { recursive: true });
     writeFileSync(`${root}/vid-1/主题-01/clip-1.mp4`, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
     try {
-      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined });
+      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: () => undefined });
       const res = await handler(new Request(encodeClipUrl("vid-1/主题-01/clip-1.mp4")));
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("video/mp4");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("封面路由", () => {
+  const dirs: Record<string, string> = { v1: "/home/u/video-notes/vid-1" };
+  const resolveDir = (id: string) => dirs[id];
+
+  test("encode → decode 回环：解析到 <outputDir>/cover.jpg，content type 固定 image/jpeg", () => {
+    const res = decodeCoverUrl(encodeCoverUrl("v1"), resolveDir, fakeRealpath, () => true);
+    expect(res).toMatchObject({
+      absolutePath: "/home/u/video-notes/vid-1/cover.jpg",
+      contentType: "image/jpeg",
+    });
+  });
+
+  test("videoId 含非法字符：bad-url", () => {
+    expect(decodeCoverUrl("vnote-media://cover/../../etc", resolveDir, fakeRealpath, () => true)).toMatchObject({
+      code: "bad-url",
+    });
+  });
+
+  test("videoId 含路径分隔符：bad-url", () => {
+    expect(decodeCoverUrl("vnote-media://cover/vid-1", resolveDir, fakeRealpath, () => true)).toMatchObject({
+      code: "bad-url",
+    });
+  });
+
+  test("不在库里的 videoId：not-found", () => {
+    expect(decodeCoverUrl(encodeCoverUrl("nope"), resolveDir, fakeRealpath, () => true)).toMatchObject({ code: "not-found" });
+  });
+
+  test("cover.jpg 不是常规文件：not-found", () => {
+    expect(decodeCoverUrl(encodeCoverUrl("v1"), resolveDir, fakeRealpath, () => false)).toMatchObject({ code: "not-found" });
+  });
+
+  test("handler 封面分支：已登记且文件存在 → 200 全量 + image/jpeg", async () => {
+    const dir = `${process.cwd()}/tmp-cover-media-test/vid-1`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/cover.jpg`, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
+    const root = `${process.cwd()}/tmp-cover-media-test`;
+    try {
+      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+      const res = await handler(new Request(encodeCoverUrl("v1")));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/jpeg");
+      const body = new Uint8Array(await res.arrayBuffer());
+      expect(body.length).toBe(7);
+    } finally {
+      rmSync(`${process.cwd()}/tmp-cover-media-test`, { recursive: true, force: true });
+    }
+  });
+
+  test("handler 封面分支：带 Range 头也按 200 全量返回，忽略 Range", async () => {
+    const dir = `${process.cwd()}/tmp-cover-range-test/vid-1`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(`${dir}/cover.jpg`, Buffer.from([1, 2, 3, 4, 5]));
+    const root = `${process.cwd()}/tmp-cover-range-test`;
+    try {
+      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+      const res = await handler(new Request(encodeCoverUrl("v1"), { headers: { range: "bytes=1-2" } }));
+      expect(res.status).toBe(200);
+      const body = new Uint8Array(await res.arrayBuffer());
+      expect(body.length).toBe(5);
+    } finally {
+      rmSync(`${process.cwd()}/tmp-cover-range-test`, { recursive: true, force: true });
+    }
+  });
+
+  test("handler 封面分支：未登记 videoId → 404；文件不存在 → 404", async () => {
+    const dir = `${process.cwd()}/tmp-cover-missing-test/vid-1`;
+    mkdirSync(dir, { recursive: true });
+    const root = `${process.cwd()}/tmp-cover-missing-test`;
+    try {
+      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+      expect((await handler(new Request(encodeCoverUrl("nope")))).status).toBe(404);
+      expect((await handler(new Request(encodeCoverUrl("v1")))).status).toBe(404);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

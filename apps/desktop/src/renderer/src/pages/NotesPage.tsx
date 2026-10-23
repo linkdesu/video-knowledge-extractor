@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PageContext } from "./types";
-import { ClipBlock } from "../components/ClipBlock";
 import { NoteList, generatingProgress } from "../components/NoteList";
 import { ProgressBar } from "@/rbp/blocks/monitoring-9";
 import { fmtClock, fmtElapsed } from "@/lib/format";
+import { clipSeekTarget } from "@/lib/playback";
 import { showToast } from "@/lib/toast";
 
 const BTN =
@@ -43,6 +43,18 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
   };
 
   const reveal = () => void window.vnote.reveal(detail.video.outputDir);
+  // r33：每个主题只渲染一个播放器，用 clips[0]（topic.mp4）+ 段偏移。
+  const clip =
+    selected !== null && selected.clips.length === 1 ? (selected.clips[0] ?? null) : null;
+  const clipPlayer = clip !== null && clip.segmentOffsets.length > 0 ? clip : null;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const seekClip = (seconds: number) => {
+    const v = videoRef.current;
+    if (v === null) return;
+    v.currentTime = Math.max(0, seconds);
+    void v.play().catch(() => undefined);
+  };
+
 
   return (
     <div className="flex h-full min-w-0 flex-col gap-3.5 overflow-y-auto p-4">
@@ -75,12 +87,31 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
                   <b className="text-[16px]">{selected.title}</b>
                   <span className="flex flex-wrap gap-1">
                     {selected.segments.map((s, i) => (
-                      <span
+                      <button
                         key={i}
-                        className="rounded border border-neutral-900/10 px-1.5 py-0.5 text-[11px] tabular-nums text-neutral-900/66 dark:border-neutral-100/14 dark:text-neutral-100/66"
+                        type="button"
+                        data-testid={`clip-seg-${i}`}
+                        onClick={
+                          clipPlayer !== null
+                            ? () => {
+                                const seg = selected.segments[i];
+                                if (seg === undefined) return;
+                                seekClip(
+                                  clipSeekTarget(
+                                    { segments: selected.segments, clips: selected.clips },
+                                    i,
+                                    seg.start,
+                                  ).seconds,
+                                );
+                              }
+                            : undefined
+                        }
+                        className={`rounded border border-neutral-900/10 px-1.5 py-0.5 text-[11px] tabular-nums text-neutral-900/66 dark:border-neutral-100/14 dark:text-neutral-100/66 ${
+                          clipPlayer !== null ? "cursor-pointer hover:border-neutral-900/30 dark:hover:border-neutral-100/40" : ""
+                        }`}
                       >
                         {fmtClock(s.start)}–{fmtClock(s.end)}
-                      </span>
+                      </button>
                     ))}
                   </span>
                 </div>
@@ -104,19 +135,83 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
 
               <div className={`${CARD} ${CARD_PAD}`}>
                 <b className="text-[13px]">视频片段</b>
-                <div className="mt-2.5 flex flex-col">
-                  {selected.segments.map((seg, i) => {
-                    const clip = selected.clips.find((c) => c.segmentIndexes.includes(i));
-                    return (
-                      <ClipBlock
-                        key={`${selected.id}-${i}`}
-                        index={i}
-                        segment={seg}
-                        clip={clip ?? null}
-                        transcript={detail.transcript}
+                <div data-testid="clip-block">
+                  {clipPlayer !== null ? (
+                    <div className="mt-2.5 overflow-hidden rounded-[10px] border border-neutral-900/10 dark:border-neutral-100/14">
+                      <video
+                        ref={videoRef}
+                        data-testid="clip-player"
+                        src={clipPlayer.mediaUrl}
+                        controls
+                        className="max-h-[280px] w-full bg-black object-contain"
                       />
-                    );
-                  })}
+                    </div>
+                  ) : (
+                    <div className="mt-2.5 flex h-[74px] items-center justify-center rounded-[10px] border border-neutral-900/10 bg-[#1e293b] text-[11px] text-[#94a3b8] dark:border-neutral-100/14">
+                      ▶ topic.mp4 · 待重新生成
+                    </div>
+                  )}
+                  {clipPlayer !== null ? (
+                    <div className="mt-2.5 flex flex-col gap-2">
+                      {selected.segments.map((seg, i) => {
+                        const subs = (detail.transcript?.utterances ?? []).filter(
+                          (u) => u.start >= seg.start && u.start < seg.end,
+                        );
+                        const rows = subs.map((u) => {
+                          const sp = detail.transcript?.speakers.find((s) => s.id === u.speakerId);
+                          return {
+                            start: u.start,
+                            text: u.text,
+                            speakerName: sp?.name ?? "说话人",
+                            speakerColor: sp?.color ?? "#94a3b8",
+                          };
+                        });
+                        return (
+                          <div key={i}>
+                            <div className="mb-1 text-[11px] tabular-nums text-neutral-900/66 dark:text-neutral-100/66">
+                              段 {i + 1} · {fmtClock(seg.start)}–{fmtClock(seg.end)}
+                            </div>
+                            {rows.length === 0 ? (
+                              <div className="px-2.5 py-1.5 text-[11px] text-neutral-900/40 dark:text-neutral-100/40">
+                                该片段无字幕
+                              </div>
+                            ) : (
+                              <div className="overflow-hidden rounded-[10px] border border-neutral-900/10 dark:border-neutral-100/14">
+                                {rows.map((r) => (
+                                  <button
+                                    key={r.start}
+                                    type="button"
+                                    data-testid="clip-sub"
+                                    onClick={() =>
+                                      seekClip(
+                                        clipSeekTarget(
+                                          { segments: selected.segments, clips: selected.clips },
+                                          i,
+                                          r.start,
+                                        ).seconds,
+                                      )
+                                    }
+                                    className="grid w-full cursor-pointer grid-cols-[42px_64px_1fr] items-start gap-1.5 border-b border-neutral-900/8 px-2.5 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-neutral-900/4 dark:border-neutral-100/8 dark:hover:bg-neutral-100/4"
+                                  >
+                                    <span className="text-neutral-900/66 tabular-nums dark:text-neutral-100/66">
+                                      {fmtClock(r.start)}
+                                    </span>
+                                    <span
+                                      className="rounded px-1.5 py-0.5"
+                                      style={{ color: r.speakerColor, background: `${r.speakerColor}1f` }}
+                                    >
+                                      {r.speakerName}
+                                    </span>
+                                    <span>{r.text}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 

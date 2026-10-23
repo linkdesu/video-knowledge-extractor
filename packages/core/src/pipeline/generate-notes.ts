@@ -1,6 +1,8 @@
+import { mkdtempSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { planClips, clipFileName, cutClip } from "../core/clips";
-import { CLIP_PREROLL_SECONDS } from "../core/config";
+import { concatClips, cutClip, planTopicClip } from "../core/clips";
+import { SLICE_RE } from "../core/outputs";
 import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
 import { ensureDir, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
@@ -11,17 +13,6 @@ import { renderIndexMarkdown, renderTopicMarkdown } from "../core/render";
 
 export { renderIndexMarkdown, renderTopicMarkdown };
 
-/** planClips 前移后多个原段落可能并入同一切片;返回该切片覆盖的原段落下标(升序)。 */
-function clipSegmentIndexes(origSegments: { start: number; end: number }[], clip: { start: number; end: number }): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < origSegments.length; i++) {
-    const s = origSegments[i];
-    if (s === undefined) continue;
-    const shiftedStart = Math.max(0, s.start - CLIP_PREROLL_SECONDS);
-    if (shiftedStart < clip.end && s.end > clip.start) out.push(i);
-  }
-  return out;
-}
 /** 本次要处理的主题:只取调用方分配了目录名的;没分配目录名的跳过(ADR-0014)。 */
 function selectedTopics(input: GenerateNotesInput): Topic[] {
   const { topics, dirNames } = input;
@@ -100,14 +91,35 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     const utterances = topicUtterances(topic, input.transcript.utterances);
     const keyPoints = await keyPointsFor(input, client, topic, utterances, usedCacheKeys);
     const clips: Clip[] = [];
-    const segments = planClips(topic.segments);
-    for (let j = 0; j < segments.length; j++) {
-      const segment = segments[j];
-      if (segment === undefined) continue;
-      const name = clipFileName(segment, j + 1);
-      await cutClip({ videoPath: input.video.sourcePath, segment, outPath: join(topicDir, name) });
-      clips.push({ topicId: topic.id, segment, path: join(topicDir, name), segmentIndexes: clipSegmentIndexes(topic.segments, segment) });
-      input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / segments.length) * 100) });
+    // 单文件主题切片（r33）：每个 union 切到系统临时目录，concat 成 topic.mp4（流拷贝）
+    const { unions, segmentOffsets } = planTopicClip(topic.segments);
+    if (unions.length > 0) {
+      const workDir = mkdtempSync(join(tmpdir(), "vnote-clip-"));
+      const parts: string[] = [];
+      try {
+        for (let j = 0; j < unions.length; j++) {
+          const u = unions[j];
+          if (u === undefined) continue;
+          const part = join(workDir, `${j}.mp4`);
+          await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part });
+          parts.push(part);
+          input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
+        }
+        const clipPath = join(topicDir, "topic.mp4");
+        await concatClips({ parts, outPath: clipPath });
+        // 拼接成功后删掉该主题目录里的旧编号切片（旧数据；topic.mp4 本身不在 SLICE_RE 内）
+        for (const entry of readdirSync(topicDir)) {
+          if (entry !== "topic.mp4" && SLICE_RE.test(entry)) unlinkSync(join(topicDir, entry));
+        }
+        const first = unions[0];
+        const last = unions[unions.length - 1];
+        if (first !== undefined && last !== undefined) {
+          const segmentIndexes = topic.segments.map((_, n) => n);
+          clips.push({ topicId: topic.id, segment: { start: first.start, end: last.end }, path: clipPath, segmentIndexes, segmentOffsets });
+        }
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
     }
     const markdown = renderTopicMarkdown(topic, utterances, keyPoints, clips, speakerNames);
     writeFileAtomic(join(topicDir, "topic.md"), markdown);

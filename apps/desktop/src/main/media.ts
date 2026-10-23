@@ -14,6 +14,11 @@ export function encodeSourceUrl(videoId: string): string {
   return `${MEDIA_SCHEME}://source/${videoId}`;
 }
 
+/** 封面地址：只编码 videoId，路径由 handler 按库记录解析；文件固定是 `<outputDir>/cover.jpg`。 */
+export function encodeCoverUrl(videoId: string): string {
+  return `${MEDIA_SCHEME}://cover/${videoId}`;
+}
+
 export type MediaLocation = {
   /** 校验过的绝对路径。 */
   absolutePath: string;
@@ -67,6 +72,40 @@ export function decodeSourceUrl(
   });
   if (!isFile(real)) return { code: "not-found", message: "源文件不存在" };
   return { absolutePath: real, contentType };
+}
+
+/**
+ * 解码 `vnote-media://cover/<videoId>`：只认 `[A-Za-z0-9]+` 的 id，
+ * 解析到 `<outputDir>/cover.jpg`；文件必须是常规文件，content type 固定 `image/jpeg`。
+ * `realpath` 缺省用真实 fs 实现，测试可以注入 fake。
+ */
+export function decodeCoverUrl(
+  url: string,
+  resolveOutputDir: (videoId: string) => string | undefined,
+  realpath?: (p: string) => string,
+  statIsFile?: (p: string) => boolean,
+): MediaLocation | UrlError {
+  const m = url.match(`^${MEDIA_SCHEME}://cover/([A-Za-z0-9]+)$`);
+  if (m === null || m[1] === undefined) return { code: "bad-url", message: "非法的媒体 url" };
+  const outputDir = resolveOutputDir(m[1]);
+  if (outputDir === undefined) return { code: "not-found", message: "视频不在库中" };
+  const rp = realpath ?? ((p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  });
+  const real = rp(resolve(outputDir, "cover.jpg"));
+  const isFile = statIsFile ?? ((p: string) => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (!isFile(real)) return { code: "not-found", message: "封面不存在" };
+  return { absolutePath: real, contentType: "image/jpeg" };
 }
 
 /**
@@ -208,8 +247,28 @@ export function mediaResponse(
 export function createMediaHandler(opts: {
   root: () => string;
   resolveSource: (videoId: string) => string | undefined;
+  resolveOutputDir: (videoId: string) => string | undefined;
 }): (request: Request) => Promise<Response> {
   return async (request: Request) => {
+    // 封面不走 Range 语义：无 Range 头也直接 200 全量，忽略任何 Range 请求
+    if (request.url.startsWith(`${MEDIA_SCHEME}://cover/`)) {
+      const loc = decodeCoverUrl(request.url, opts.resolveOutputDir);
+      if ("code" in loc) {
+        return new Response(loc.message, {
+          status: loc.code === "not-found" ? 404 : 403,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      let size: number;
+      try {
+        size = statSync(loc.absolutePath).size;
+      } catch {
+        size = 0;
+      }
+      return new Response(Readable.toWeb(createReadStream(loc.absolutePath)) as unknown as ReadableStream, {
+        headers: { "Content-Type": loc.contentType, "Content-Length": String(size) },
+      });
+    }
     const rangeHeader = request.headers.get("range");
     const isSource = request.url.startsWith(`${MEDIA_SCHEME}://source/`);
     const decision = decideMediaRequest(request.url, {

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 
-export const CLIP_PREROLL_SECONDS = 3;
+export const CLIP_PREROLL_SECONDS = 2;
 
 export const CHUNK_TARGET_SECONDS = 13 * 60;
 export const CHUNK_MIN_SECONDS = 10 * 60;
