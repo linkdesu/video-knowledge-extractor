@@ -51,7 +51,9 @@ JSON 格式，内容是一个数组 `[{"wrong": "识别错原文", "right": "正
 
 ## 平台与模型
 
-首发 macOS Apple Silicon，Windows 暂不验证、不承诺可用。
+首发 macOS Apple Silicon 与 Windows x64 安装包。
+
+Windows x64 通过 NSIS 安装包安装（`Video Notes-<version>-setup.exe`），未签名；安装包内置 ffmpeg 9.0.2 essentials 静态构建（`ffmpeg.exe`、`ffprobe.exe`，版本与 sha256 由 `bun run fetch:ffmpeg` 固定），不依赖系统安装。Windows 首次启动自动下载约 1.1 GB 的 ASR 模型（进度在设置页），这是「模型下载不自动开始」的唯一例外；macOS 包不带 ffmpeg，仍要求系统或 Homebrew 安装。
 
 本地 ASR 的模型是四个包（识别、说话人分离、声纹、标点），合计约 1.1 GB，放在模型目录里（默认 notes 根目录下的 `models/`，用 `VNOTE_MODEL_DIR` 覆盖；旧的 `~/.cache/video-notes/models` 启动时尝试搬进新位置，搬不动就继续使用旧目录）。模型下载不自动开始：在设置页点「下载模型」或「导入本地模型」后才会动网。下载支持断点续传，每个文件落盘后按内置清单的 sha256 与字节数校验；校验失败删除未完成文件，本次下载失败且不再自动重试。进度条与阶段日志（下载、校验、解压、安装）一直显示到模型真正「就绪」。设置页也可以「导入模型」（从本地目录、归档或单文件导入，同样过 sha256 校验）与「校验模型」；手动放进模型目录的文件显示「未校验」，点校验后生效。模型的下载、导入、校验与视频生成任务互斥：视频任务运行中拒绝安装与导入，模型操作进行中拒绝视频入队。
 
@@ -71,9 +73,13 @@ bun run dev         # electron-vite 开发模式；数据固定在 <repo>/tmp/de
 bun run build       # 产出 out/
 bun run start       # 启动构建产物
 bun run package:mac # 打包 macOS arm64 未签名 .app 与 .dmg（release/）
+bun run package:win # 打包 Windows x64 未签名 NSIS 安装包（release-win/）；先跑 fetch:ffmpeg
+bun run fetch:ffmpeg # 拉取固定 sha256 的 ffmpeg 9.0.2 essentials 静态包进 win-resources/ffmpeg/
 ```
 
 `package:mac` 先用最小 staging 复制 `out/` 与 `sherpa-onnx-node` 的原生包，再交给 `@electron/packager`（asar 内保留 `out/`，`**/node_modules/sherpa-onnx-*/**` 解包到 `app.asar.unpacked`），最后用 `hdiutil` 出 DMG（[ADR-0017](docs/adr/0017-mac-unsigned-package.md)）。产物 `apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app` 与 `Video Notes-<version>-arm64.dmg`，未签名、未公证；模型不内置（设置页手动下载或导入），ffmpeg 用系统或 Homebrew 安装。
+
+`package:win` 用同样的 staging 策略把 `out/` 与 `sherpa-onnx-node`、`sherpa-onnx-win-x64` 复制进 `release-win/stage`，再交给 electron-builder 出 NSIS x64 安装包（asar 内保留 `out/`，`**/node_modules/sherpa-onnx-*/**` 解包出 asar；[ADR-0028](docs/adr/0028-structured-logging-and-windows-build.md)）。ffmpeg 由 `bun run fetch:ffmpeg` 预先拉好（固定 URL 与 sha256，只解出 `ffmpeg.exe`、`ffprobe.exe`），作为 extraResources 进包。产物 `apps/desktop/release-win/Video Notes-<version>-setup.exe`，未签名；`sherpa-onnx-win-x64` 是 optional 平台包，macOS 上本机打包会明确报错，请在 Windows CI 上构建。
 
 桌面端在 Electron 的 utility process 里跑 core，主进程负责串行队列、取消与 IPC，renderer 只通过 preload 暴露的类型化接口访问数据（[ADR-0012](docs/adr/0012-electron-desktop-utility-process.md)）。同一视频的运行锁由 core 持有，CLI 与桌面互斥。
 
@@ -112,5 +118,5 @@ ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部�
 ## 文档
 
 - `GLOSSARY.md`：领域词汇表，讨论本工具时以此为准。
-- `docs/adr/`：0001–0024 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方、macOS 未签名试用包的打包布局与云端 ASR 门禁、本地 ASR 单段解码上限 30 秒（Electron 内存边界）、LLM 请求超时与 5xx 重试一次、统一数据根与 dev 数据目录、模型下载改为显式触发并显示阶段日志、设置页表单统一为 React Bits Pro 控件（DOM 下拉、显式保存、密码可见性）、LLM 提供方配置单一来源（三字段表单、dev 种子、凭据事务）、设置页回显已保存的 LLM key 与模型下拉始终列全集。
+- `docs/adr/`：0001–0028 决策记录，分块转写、存储、识别引擎、平台与模型获取、笔记流水线、缓存与主题编辑、CLI 与笔记格式、目录布局与纠错词表文件格式、dotenv 加载与 LLM 端点模型发现、turbo + bun monorepo 布局、重跑后旧主题目录清理、Electron 桌面端与运行时中立的 core、桌面端界面建立在 React Bits Pro 源码组件上、界面按 UX 原型重做、补齐原型延后的四项能力（远程 ASR、模型下载与导入、可编辑 LLM 字段、卡片清晰度）、火山引擎极速版与标准版 ASR 提供方、macOS 未签名试用包的打包布局与云端 ASR 门禁、本地 ASR 单段解码上限 30 秒（Electron 内存边界）、LLM 请求超时与 5xx 重试一次、统一数据根与 dev 数据目录、模型下载改为显式触发并显示阶段日志、设置页表单统一为 React Bits Pro 控件（DOM 下拉、显式保存、密码可见性）、LLM 提供方配置单一来源（三字段表单、dev 种子、凭据事务）、设置页回显已保存的 LLM key 与模型下拉始终列全集、确认主题后再生成笔记、主题切片拼接为单文件、主题页播放器适配容器与库卡片即时刷新、结构化日志与 Windows x64 安装包。
 - `tmp/` 与 `runs/` 不进 git。
