@@ -1,3 +1,4 @@
+import { logger } from "../core/logger";
 import type { ChatMessage, LlmClient, LlmEndpoint, LlmUsage } from "../core/steps";
 const REQUEST_TIMEOUT_MS = 180_000;
 /** 一次超时/5xx 不值得让整条流水线作废：重试一次，仍失败才算失败（ADR-0019）。 */
@@ -28,6 +29,7 @@ export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch)
     model: endpoint.model,
     usage: () => ({ ...acc }),
     async chat(messages: ChatMessage[], opts?: { json?: boolean; temperature?: number }): Promise<string> {
+      const log = logger();
       const url = `${endpoint.baseUrl.replace(/\/+$/, "")}/chat/completions`;
       const body: Record<string, unknown> = {
         model: endpoint.model,
@@ -35,7 +37,9 @@ export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch)
         temperature: opts?.temperature ?? DEFAULT_TEMPERATURE,
       };
       if (opts?.json) body.response_format = { type: "json_object" };
-      const attempt = async (): Promise<string> => {
+      const attempt = async (n: number): Promise<string> => {
+        const startedAt = Date.now();
+        log.info("llm", "LLM 请求", { baseUrl: endpoint.baseUrl, model: endpoint.model, attempt: n, json: !!opts?.json });
         // 传输阶段 = 取响应头 + 读完响应体。端点常先回 200 头再挂住生成，超时落在读体上，
         // 只包住 fetch() 会漏掉正是这次遇到的故障形态（r26：200 头之后 180 秒没读完）。
         let res: Response;
@@ -59,13 +63,25 @@ export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch)
           throw new LlmRequestError(`LLM 请求失败：${err instanceof Error ? err.message : String(err)}`, true);
         }
         if (!res.ok) {
-          throw new LlmRequestError(
+          // 非 2xx：warn 带 redact 后的响应体尾部（≤300 字符），随后照常抛出
+          const err = new LlmRequestError(
             redact(
               `LLM 端点 ${endpoint.baseUrl} 返回 HTTP ${res.status}：${redact(text, endpoint.apiKey).slice(-300)}`,
               endpoint.apiKey,
             ),
             res.status === 429 || res.status >= 500,
           );
+          log.warn("llm", "LLM 响应", {
+            baseUrl: endpoint.baseUrl,
+            model: endpoint.model,
+            attempt: n,
+            json: !!opts?.json,
+            status: res.status,
+            durationMs: Date.now() - startedAt,
+            error: err.message,
+            bodyTail: redact(text, endpoint.apiKey).slice(-300),
+          });
+          throw err;
         }
         let data: {
           choices?: { message?: { content?: unknown } }[];
@@ -90,14 +106,29 @@ export function createLlmClient(endpoint: LlmEndpoint, fetchImpl?: typeof fetch)
           acc.completionTokens += completion;
           acc.totalTokens += total;
         }
+        // 响应日志只带 usage 里的数字计数，不记录补全正文
+        const fields: Record<string, unknown> = {
+          baseUrl: endpoint.baseUrl,
+          model: endpoint.model,
+          attempt: n,
+          json: !!opts?.json,
+          status: res.status,
+          durationMs: Date.now() - startedAt,
+        };
+        if (typeof usage?.prompt_tokens === "number") fields.promptTokens = usage.prompt_tokens;
+        if (typeof usage?.completion_tokens === "number") fields.completionTokens = usage.completion_tokens;
+        log.info("llm", "LLM 响应", fields);
         return content;
       };
-      for (let i = 0; ; i++) {
+      for (let i = 1; ; i++) {
         try {
-          return await attempt();
+          return await attempt(i);
         } catch (err) {
+          const message = redact(err instanceof Error ? err.message : String(err), endpoint.apiKey);
+          log.error("llm", "LLM 请求失败", { error: message, stack: err instanceof Error ? err.stack : undefined });
           const retryable = err instanceof LlmRequestError && err.retryable;
-          if (!retryable || i + 1 >= MAX_ATTEMPTS) throw err;
+          if (!retryable || i >= MAX_ATTEMPTS) throw err;
+          log.warn("llm", "LLM 重试", { attempt: i, reason: message });
           const { promise: delay, resolve } = Promise.withResolvers<void>();
           setTimeout(resolve, RETRY_DELAY_MS);
           await delay;
