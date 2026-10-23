@@ -77,6 +77,7 @@ export function resolveModelPaths(modelDir: string): SherpaPaths {
   };
   for (const spec of modelFileSpecs(modelDir)) {
     const key = names[spec.role];
+    if (key === undefined) continue;
     if (!existsSync(spec.path)) throw new Error(`缺少模型文件：${key}（${spec.path}）`);
     paths[key] = spec.path;
   }
