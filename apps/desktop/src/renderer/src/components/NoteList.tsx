@@ -6,6 +6,7 @@ export const TOPIC_STATUS_LABEL: Record<TopicInfo["status"], string> = {
   done: "完成",
   generating: "生成中",
   queued: "排队",
+  proposed: "待确认",
   "needs-rerun": "需重跑",
   failed: "失败",
 };
@@ -14,6 +15,7 @@ const STATUS_TONE: Record<TopicInfo["status"], string> = {
   done: "text-[#34d399]",
   generating: "text-[#60a5fa]",
   queued: "text-[#fbbf24]",
+  proposed: "text-[#22d3ee]",
   "needs-rerun": "text-[#fbbf24]",
   failed: "text-[#fda4af]",
 };

@@ -1,19 +1,19 @@
-import { statSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { probeVideo, extractAudio } from "../core/audio";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections } from "../core/corrections";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
-import { cleanupStaleOutputs } from "../core/outputs";
-import { emptyVideoData, readVideoData, writeVideoData } from "../core/video-data";
+import { sweepStaleTopicDirs } from "../core/outputs";
+import { emptyVideoData, readVideoData, writeVideoData, type TopicRecord } from "../core/video-data";
 import { settleRunWhileLocked } from "../core/edits";
-import type { TopicRecord } from "../core/video-data";
+import { ensureCoverFrame } from "../core/cover";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
-import type { CorrectionList, Note, Topic, TopicId, Video } from "../core/types";
+import type { CorrectionList, Note, Topic, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
 import { createAsrEngine, type AsrConfig } from "../asr/engine";
-import { correctionsFor, generateAll, writeIndexFromDoc } from "./notes-run";
+import { correctionsFor } from "./notes-run";
 import { segmentTopics } from "./segment-topics";
 
 export type ExtractInput = {
@@ -39,8 +39,12 @@ export type ExtractInput = {
 export type ExtractResult = {
   video: Video;
   topics: Topic[];
+  /** 导入只划主题、不生成笔记（r33 确认模型）：恒为空。 */
   notes: Note[];
+  /** 导入不写 index.md（r33）：恒为空串。 */
   indexMarkdown: string;
+  topicCount: number;
+  noteCount: number;
   timings: Record<string, number>;
   cacheHits: string[];
   usage: LlmUsage;
@@ -81,6 +85,12 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     if (data === undefined) data = { ...emptyVideoData(video), runToken };
     else data.runToken = runToken;
     writeVideoData(video.outputDir, data);
+    // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
+    try {
+      await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration });
+    } catch {
+      // 封面失败静默
+    }
     // 接收屏障：等 main 的 ACK 才继续（超时由调用方处理，不写主题）
     if (input.onPrepared !== undefined) {
       await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
@@ -126,7 +136,14 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     });
     timings["segment-topics"] = Math.round((performance.now() - topicsStarted) / 10) / 100;
 
-    // 每个新主题：分配目录名，写回 video.json（queued/selected），再逐主题生成
+    // r33 确认模型：划完主题写盘为 proposed（等用户确认才生成笔记），不再生成
+    // 写回前先清工具自有的旧主题目录（用户改过 topic.md 的目录由 hash 保护保留）与旧 index.md
+    const sweep = sweepStaleTopicDirs({ outputDir: video.outputDir, keep: [] });
+    try {
+      rmSync(`${video.outputDir}/index.md`, { force: true });
+    } catch {
+      // 旧 index 删除失败静默
+    }
     const used = new Set<string>();
     const records: TopicRecord[] = topics.map((x) => {
       const name = freshName(x.title, used);
@@ -137,7 +154,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
         summary: x.summary,
         segments: x.segments,
         dirName: name,
-        status: "queued",
+        status: "proposed",
         selected: true,
         keyPoints: [],
         clips: [],
@@ -149,42 +166,16 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     data.topics = records;
     writeVideoData(video.outputDir, data);
 
-    const notesStarted = performance.now();
-    const dirNameOf = (id: TopicId) => {
-      const topic = data.topics.find((x) => x.id === id);
-      if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-      return topic.dirName;
-    };
-    const r = await generateAll(
-      data,
-      records.map((x) => x.id),
-      dirNameOf,
-      corrections,
-      input.endpoint,
-      cacheDir,
-      client,
-      input.onProgress,
-    );
-    timings.notes = Math.round((performance.now() - notesStarted) / 10) / 100;
-
-    // index.md 与全部主题目录都落盘后才清：删目录不会碰掉本次刚写的笔记
-    // 清理失败只记耗时，不影响已生成的笔记与返回值
-    const cleanupStarted = performance.now();
-    const staleRemoved = cleanupStaleOutputs({
-      outputDir: video.outputDir,
-      keep: records.map((x) => x.dirName),
-      cacheDir,
-      noteCacheKeys: r.cacheHits,
-    });
-    timings.cleanup = Math.round((performance.now() - cleanupStarted) / 10) / 100;
     timings.total = Math.round((performance.now() - startedAt) / 10) / 100;
 
     const after = client.usage?.() ?? before;
     return {
       video,
       topics,
-      notes: r.notes,
-      indexMarkdown: writeIndexFromDoc(video.outputDir),
+      notes: [],
+      indexMarkdown: "",
+      topicCount: topics.length,
+      noteCount: 0,
       timings,
       cacheHits: run.cacheHits,
       usage: {
@@ -193,7 +184,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
         completionTokens: after.completionTokens - before.completionTokens,
         totalTokens: after.totalTokens - before.totalTokens,
       },
-      staleRemoved,
+      staleRemoved: sweep.removed,
     };
   } catch (err) {
     // 仍持锁时结算：只有该次运行写的主题变 failed，token 清 null，再把错误抛给调用方

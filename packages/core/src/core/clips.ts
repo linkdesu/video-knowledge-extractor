@@ -1,5 +1,5 @@
-import { renameSync, statSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { CLIP_PREROLL_SECONDS } from "./config";
 import { run } from "./exec";
 import { ensureDir } from "./paths";
@@ -19,6 +19,82 @@ export function planClips(segments: Segment[], preRoll: number = CLIP_PREROLL_SE
     }
   }
   return out;
+}
+
+/**
+ * 主题切片的单文件计划（r33）：`unions` 即 `planClips`（排序、前移、重叠或相接合并）；
+ * `segmentOffsets[i]` = 第 i 段起点在拼接文件里的秒数偏移（含前移与合并）——
+ * 前移后的区间落在哪个 union 内，就取该 union 之前所有 union 的时长之和加上段起点在 union 内的偏移；无匹配（不应发生）为 0。
+ */
+export function planTopicClip(segments: Segment[], preRoll: number = CLIP_PREROLL_SECONDS): { unions: Segment[]; segmentOffsets: number[] } {
+  const unions = planClips(segments, preRoll);
+  const segmentOffsets: number[] = [];
+  for (const seg of segments) {
+    const from = Math.max(0, seg.start - preRoll);
+    let offset = 0;
+    for (let j = 0; j < unions.length; j++) {
+      const u = unions[j]!;
+      if (from < u.end && seg.end > u.start) {
+        for (let k = 0; k < j; k++) {
+          const prev = unions[k]!;
+          offset += prev.end - prev.start;
+        }
+        offset += seg.start - u.start;
+        break;
+      }
+    }
+    segmentOffsets.push(offset);
+  }
+  return { unions, segmentOffsets };
+}
+
+/** 多个 mp4 part 拼成一个：ffmpeg concat 流拷贝（`-c copy`，不重编码）；1 个 part 直接 rename。失败清理临时文件后抛出；列表文件由调用方清理。 */
+export async function concatClips(input: { parts: string[]; outPath: string }): Promise<void> {
+  const { parts, outPath } = input;
+  if (parts.length === 0) throw new Error("concatClips 至少需要一个 part");
+  ensureDir(dirname(outPath));
+  if (parts.length === 1) {
+    const only = parts[0];
+    if (only === undefined) throw new Error("concatClips 至少需要一个 part");
+    renameSync(only, outPath);
+    return;
+  }
+  const listPath = `${outPath}.list-${process.pid}.txt`;
+  // 单引号转义：ffmpeg concat 列表里 `'` 要写成 `''`
+  const lines = parts.map((p) => `file '${p.replaceAll("'", "''")}'`).join("\n");
+  const partPath = `${outPath}.part-${process.pid}.mp4`;
+  try {
+    writeFileSync(listPath, `${lines}\n`);
+    await run(
+      [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        partPath,
+      ],
+      { label: "拼接主题切片" },
+    );
+    renameSync(partPath, outPath);
+  } finally {
+    try {
+      unlinkSync(partPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
 }
 
 /** `01-00-12-30-00-18-00.mp4`：1 起始序号补零 2 位，起止秒向下取整后渲染为 HH-MM-SS。 */

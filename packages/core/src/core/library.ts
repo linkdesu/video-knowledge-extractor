@@ -11,7 +11,7 @@ import { loadVideoData, projectRunState, readVideoData } from "./video-data";
 import type { VideoData } from "./video-data";
 
 /** 库卡片状态；规则见 ADR-0014 第 6 节。 */
-export type LibraryVideoStatus = "done" | "in-progress" | "needs-rerun" | "failed";
+export type LibraryVideoStatus = "done" | "in-progress" | "needs-rerun" | "failed" | "pending-confirm" | "partial";
 
 export type LibraryVideo = {
   id: VideoId;
@@ -153,23 +153,27 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
 }
 
 /**
- * 库卡片状态：没有 `video.json` 且没有旧主题目录 → `in-progress`，有旧主题目录 → `needs-rerun`；
- * 有 `failed`/`needs-rerun` → `needs-rerun`；无字幕 → `in-progress`；有主题且**已勾选**主题全部 `done` → `done`；
- * 其余（含字幕已落盘、主题还没出来）→ `in-progress`。
+ * 库卡片状态（r33 优先级）：
+ * 1. 任一主题 `failed`/`needs-rerun` → `needs-rerun`；
+ * 2. 无字幕 → `in-progress`（含导入后转写还没落盘的那段；`proposed` 主题此时还没出现）；
+ * 3. `selected` 主题非空且全部为 `proposed` → `pending-confirm`（导入完，等用户确认）；
+ * 4. `topics.length > 0` 且 selected 非空且 selected 全部 `done` → `done`；
+ * 5. selected 里 `done` 数 > 0 且 < selected 数 → `partial`；
+ * 6. 其余 → `in-progress`。
  * 空 `topics` 不能当「全部完成」：`[].every` 恒真，转写完、分段没落盘的那一段会误报 done。
  */
 function deriveStatus(data: VideoData): LibraryVideoStatus {
   if (data.topics.some((t) => t.status === "failed" || t.status === "needs-rerun")) return "needs-rerun";
   if (data.transcript.utterances.length === 0) return "in-progress";
-  const selectedDone = data.topics.filter((t) => t.selected).every((t) => t.status === "done");
-  if (data.topics.length > 0 && selectedDone) return "done";
+  const checked = data.topics.filter((t) => t.selected);
+  // 旧文档迁移出来的主题 selected 全为 false：此时按全部主题算，保持「已完成」口径
+  const scope = checked.length > 0 ? checked : data.topics;
+  if (checked.length > 0 && scope.every((t) => t.status === "proposed")) return "pending-confirm";
+  if (data.topics.length > 0 && scope.every((t) => t.status === "done")) return "done";
+  const doneCount = scope.filter((t) => t.status === "done").length;
+  if (doneCount > 0 && doneCount < scope.length) return "partial";
   return "in-progress";
 }
-
-/**
- * `busyVideoId`：该视频正在跑任务时，`video.json` 可能还是上一轮的完成态（重跑在 worker 起来前不改文档）；
- * 卡片一律按 `in-progress` 出，避免运行中显示「已完成」。
- */
 export function listLibrary(root: string = notesRoot(), opts: { busyVideoId?: string | null } = {}): LibraryVideo[] {
   const index = readVideoIndex(root);
   const out: LibraryVideo[] = [];

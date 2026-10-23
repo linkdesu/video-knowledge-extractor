@@ -9,9 +9,9 @@ import type { Chunk, Segment, SpeakerId, TopicId, Transcript, Utterance, Video, 
 export const VIDEO_DATA_FILE = "video.json";
 export const VIDEO_DATA_VERSION = 1;
 
-export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-rerun";
+export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-rerun" | "proposed";
 
-export type TopicClip = { file: string; start: number; end: number; segmentIndexes: number[] };
+export type TopicClip = { file: string; start: number; end: number; segmentIndexes: number[]; segmentOffsets: number[] };
 
 export type TopicRecord = {
   id: TopicId;
@@ -119,6 +119,11 @@ function parseNumberArray(v: unknown, where: string): number[] {
   if (!Array.isArray(v) || v.some((x) => typeof x !== "number")) throw new Error(`${where} 不是数字数组`);
   return v as number[];
 }
+function parseOptionalNumberArray(v: unknown): number[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+}
 function parseClips(v: unknown, where: string): TopicClip[] {
   return requireArray(v, where).map((c, i) => {
     if (!isObject(c)) throw new Error(`${where}[${i}] 不是对象`);
@@ -127,6 +132,7 @@ function parseClips(v: unknown, where: string): TopicClip[] {
       start: readNumber(c.start, `${where}[${i}].start`),
       end: readNumber(c.end, `${where}[${i}].end`),
       segmentIndexes: parseNumberArray(c.segmentIndexes, `${where}[${i}].segmentIndexes`),
+      segmentOffsets: parseOptionalNumberArray(c.segmentOffsets),
     };
   });
 }
@@ -337,7 +343,7 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
         const seg = segments[s]!;
         if (c.start <= seg.start && c.end >= seg.end - 0.4) covered.push(s);
       }
-      return { file: c.file, start: c.start, end: c.end, segmentIndexes: covered };
+      return { file: c.file, start: c.start, end: c.end, segmentIndexes: covered, segmentOffsets: [] };
     });
     topics.push({
       id: dirName as TopicId,

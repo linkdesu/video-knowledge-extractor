@@ -8,10 +8,10 @@ export type JobStep = CoreStep | "prepare" | "cleanup";
 /** 三类任务共用一条串行队列；界面按 kind 决定刷新什么。 */
 export type JobKind = "extract" | "notes" | "topics";
 
-/** 库卡片状态：完成、生成中、需重跑、失败。 */
-export type VideoStatus = "done" | "in-progress" | "needs-rerun" | "failed";
+/** 库卡片状态：完成、部分完成、待确认主题、生成中、需重跑、失败。 */
+export type VideoStatus = "done" | "pending-confirm" | "partial" | "in-progress" | "needs-rerun" | "failed";
 
-export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-rerun";
+export type TopicStatus = "proposed" | "queued" | "generating" | "done" | "failed" | "needs-rerun";
 
 export type CorrectionSource = "manual" | "from-subtitle";
 
@@ -31,6 +31,8 @@ export type ClipInfo = {
   endSeconds: number;
   /** 这个切片覆盖的主题段下标；一个切片可以覆盖多段（前移后重叠合一）。 */
   segmentIndexes: number[];
+  /** 每个主题段在拼接文件里的起点偏移（秒，含前移与合并）；旧文档没有时为 []。 */
+  segmentOffsets: number[];
 };
 
 export type SegmentInfo = { start: number; end: number };
@@ -83,6 +85,8 @@ export type LibraryVideo = {
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
+  /** 封面 media url；`cover.jpg` 不存在或为空时为 null。 */
+  coverUrl: string | null;
   status: VideoStatus;
 };
 
@@ -311,6 +315,9 @@ export type JobSnapshot =
   | { state: "failed"; jobId: string; kind: JobKind; videoId: VideoId; message: string }
   | { state: "cancelled"; jobId: string; kind: JobKind; videoId: VideoId };
 
+/** `library:covers` 事件 payload：本轮后台封面补齐成功补齐的 videoId 列表。 */
+export type LibraryCovers = string[];
+
 export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
   getVideo(videoId: VideoId): Promise<VideoDetail>;
@@ -335,6 +342,8 @@ export type VnoteApi = {
   cancelExtract(jobId: string): Promise<void>;
   activeJob(): Promise<JobSnapshot | null>;
   onJob(listener: (job: JobSnapshot) => void): () => void;
+  /** 封面后台补齐完成后广播；payload 是成功补齐的 videoId。 */
+  onLibraryCovers(listener: (videoIds: LibraryCovers) => void): () => void;
   settings(): Promise<SettingsStatus>;
   updateSettings(patch: SettingsPatch): Promise<SettingsStatus>;
   updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus>;
@@ -375,6 +384,7 @@ export const IPC = {
   cancelExtract: "extract:cancel",
   activeJob: "extract:active",
   jobEvent: "extract:event",
+  libraryCovers: "library:covers",
   settings: "settings:status",
   updateSettings: "settings:update",
   updateLlm: "settings:llm-update",

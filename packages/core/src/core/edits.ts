@@ -44,7 +44,7 @@ function rerender(outputDir: string, data: VideoData, affected: ReadonlySet<stri
       if (affected.size > 0 && !affected.has(t.id)) continue;
       const segments = t.segments;
       const utterances = data.transcript.utterances.filter((u) => segments.some((s) => u.end > s.start && u.start < s.end));
-      const clips = t.clips.map((c) => ({ topicId: t.id, segment: { start: c.start, end: c.end }, path: join(topicDir(outputDir, t.dirName), c.file), segmentIndexes: c.segmentIndexes }));
+      const clips = t.clips.map((c) => ({ topicId: t.id, segment: { start: c.start, end: c.end }, path: join(topicDir(outputDir, t.dirName), c.file), segmentIndexes: c.segmentIndexes, segmentOffsets: c.segmentOffsets }));
       const markdown = renderTopicMarkdown(
         { id: t.id, title: t.title, summary: t.summary, segments },
         utterances,
@@ -59,7 +59,7 @@ function rerender(outputDir: string, data: VideoData, affected: ReadonlySet<stri
   const notes = data.topics.map((t) => ({
     topicId: t.id,
     markdown: "",
-    clips: t.clips.map((c) => ({ topicId: t.id, segment: { start: c.start, end: c.end }, path: join(topicDir(outputDir, t.dirName), c.file), segmentIndexes: c.segmentIndexes })),
+    clips: t.clips.map((c) => ({ topicId: t.id, segment: { start: c.start, end: c.end }, path: join(topicDir(outputDir, t.dirName), c.file), segmentIndexes: c.segmentIndexes, segmentOffsets: c.segmentOffsets })),
   }));
   const video: Video = data.video;
   const dirs = new Map(data.topics.map((t) => [t.id, t.dirName]));
@@ -126,6 +126,7 @@ export function deleteTopicSegment(outputDir: string, topicId: string, segmentIn
         segmentIndexes: c.segmentIndexes
           .filter((i) => i !== segmentIndex)
           .map((i) => (i > segmentIndex ? i - 1 : i)),
+        segmentOffsets: c.segmentOffsets.filter((_, i) => i !== segmentIndex),
       }))
       .filter((c) => c.segmentIndexes.length > 0);
     topic.status = "needs-rerun";

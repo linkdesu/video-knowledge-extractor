@@ -80,6 +80,8 @@ export type Clip = {
   path: string;
   /** 该切片覆盖的 `TopicRecord.segments` 下标；渲染 `topic.md` 的段标题链接按它匹配。可选：渲染器缺省时回退到时间段重叠。 */
   segmentIndexes?: number[];
+  /** 各段起点在拼接文件里的秒数偏移（r33 单文件切片）；渲染与播放跳转按它定位。 */
+  segmentOffsets?: number[];
 };
 
 /** 一个主题的产物：`topic.md` 正文加上该主题的切片。 */

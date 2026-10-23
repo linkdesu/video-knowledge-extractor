@@ -19,11 +19,14 @@ import {
   ASR_MODEL_ID,
   cacheUsage,
   clearCache,
+  coverPath,
+  ensureCoverFrame,
   fetchModelIds,
   importModels,
   loadDotenvFiles,
   migrateStorageLayout,
   modelStatus,
+  probeVideo,
   recoverInterruptedRun,
   readGlobalCorrections,
   readLibraryVideo,
@@ -78,6 +81,7 @@ import {
   type ImportModelsResult,
   type JobKind,
   type JobStep,
+  type LibraryVideo,
   type LlmDraft,
   type LlmModelListResult,
   type LlmUpdatePatch,
@@ -92,7 +96,7 @@ import {
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
-import { createMediaHandler, encodeClipUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
+import { createMediaHandler, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
 import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
@@ -523,7 +527,19 @@ const queue = new JobQueue({
   },
 });
 
-function toVideoDto(v: CoreLibraryVideo) {
+function coverUrlOf(v: CoreLibraryVideo): string | null {
+  let size = 0;
+  try {
+    const st = statSync(coverPath(v.outputDir));
+    if (!st.isFile()) return null;
+    size = st.size;
+  } catch {
+    return null;
+  }
+  return size > 0 ? encodeCoverUrl(v.id) : null;
+}
+
+function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
   return {
     id: v.id,
     title: v.title,
@@ -536,8 +552,38 @@ function toVideoDto(v: CoreLibraryVideo) {
     topicCount: v.topicCount,
     clipCount: v.clipCount,
     updatedAt: v.updatedAt,
+    coverUrl: coverUrlOf(v),
     status: v.status,
   };
+}
+
+/**
+ * 封面后台补齐（r33）：`library:list` 返回后对 `coverUrl === null` 且有源路径的视频串行补齐，
+ * 每 videoId 去重（在途/本轮已排队的跳过），失败静默；时长缺失时先用 probeVideo 探测。
+ * 全部结束后广播 `library:covers`（payload 是本轮成功补齐的 videoId，空轮不广播）。
+ */
+const coverBackfillInflight = new Set<string>();
+let coverBackfillChain: Promise<void> = Promise.resolve();
+function backfillCovers(dtos: LibraryVideo[]): void {
+  const targets = dtos.filter((v): v is LibraryVideo & { sourcePath: string } => v.coverUrl === null && v.sourcePath !== null && !coverBackfillInflight.has(v.id));
+  if (targets.length === 0) return;
+  for (const v of targets) coverBackfillInflight.add(v.id);
+  coverBackfillChain = coverBackfillChain.then(async () => {
+    const succeeded: string[] = [];
+    for (const v of targets) {
+      coverBackfillInflight.delete(v.id);
+      try {
+        const durationSeconds = v.durationSeconds ?? (await probeVideo(v.sourcePath)).duration;
+        const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath: v.sourcePath, durationSeconds });
+        if (ok) succeeded.push(v.id);
+      } catch {
+        // 失败静默：个别封面补齐失败不影响其余视频
+      }
+    }
+    if (succeeded.length > 0) {
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.libraryCovers, succeeded);
+    }
+  });
 }
 
 const SPEAKER_COLORS = ["#6aa9ff", "#7ddc8f", "#ffb454", "#c792ea", "#ff7eb0", "#4dd0e1", "#f6c744", "#a3e635"];
@@ -600,6 +646,7 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
         startSeconds: c.start,
         endSeconds: c.end,
         segmentIndexes: "segmentIndexes" in c ? c.segmentIndexes : [],
+        segmentOffsets: c.segmentOffsets ?? [],
       })),
       startedAt: t.startedAt,
       elapsedSeconds: t.elapsedSeconds,
@@ -1305,6 +1352,7 @@ void app.whenReady().then(async () => {
     createMediaHandler({
       root: () => settings.notesRoot,
       resolveSource: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.sourcePath,
+      resolveOutputDir: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.outputDir,
     }),
   );
   // file:// 下 Chromium 拒绝执行 ES module；生产环境走自定义 standard scheme
@@ -1320,7 +1368,11 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle(
     IPC.listLibrary,
-    guard(() => listLibrary(settings.notesRoot, { busyVideoId: queue.active()?.videoId ?? null }).map(toVideoDto)),
+    guard(async () => {
+      const dtos = listLibrary(settings.notesRoot, { busyVideoId: queue.active()?.videoId ?? null }).map(toVideoDto);
+      backfillCovers(dtos);
+      return dtos;
+    }),
   );
   ipcMain.handle(
     IPC.getVideo,

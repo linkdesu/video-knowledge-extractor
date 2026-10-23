@@ -50,12 +50,12 @@ export function isSafeDirName(name: string): boolean {
   return name !== "" && !name.includes("/") && !name.includes("\\") && !name.includes("\0") && name !== "." && name !== "..";
 }
 
-/** 工具写出的切片文件名，如 `01-00-13-53-00-16-24.mp4`。 */
-const SLICE_RE = /^\d{2}(-\d{2}){6}\.mp4$/;
+/** 工具写出的切片文件名，如 `01-00-13-53-00-16-24.mp4`（旧数据）；新数据是单文件 `topic.mp4`。 */
+export const SLICE_RE = /^\d{2}(-\d{2}){6}\.mp4$/;
 
 /**
  * 纯工具目录：所有条目都是普通文件（用 lstat：符号链接与子目录一律 false），
- * 名字只能是 `topic.md`（必须存在）、`.DS_Store` 或切片命名 mp4，且至少一个切片 mp4。
+ * 名字只能是 `topic.md`（必须存在）、`.DS_Store`、`topic.mp4`（r33 单文件）或编号切片命名 mp4，且至少一个 mp4。
  */
 export function isToolTopicDir(outputDir: string, name: string): boolean {
   let dirStat;
@@ -72,7 +72,7 @@ export function isToolTopicDir(outputDir: string, name: string): boolean {
     return false;
   }
   let hasTopicMd = false;
-  let hasSlice = false;
+  let hasMp4 = false;
   for (const entry of entries) {
     let entryStat;
     try {
@@ -85,13 +85,13 @@ export function isToolTopicDir(outputDir: string, name: string): boolean {
       hasTopicMd = true;
     } else if (entry === ".DS_Store") {
       // 允许存在
-    } else if (SLICE_RE.test(entry)) {
-      hasSlice = true;
+    } else if (entry === "topic.mp4" || SLICE_RE.test(entry)) {
+      hasMp4 = true;
     } else {
       return false;
     }
   }
-  return hasTopicMd && hasSlice;
+  return hasTopicMd && hasMp4;
 }
 
 export type SweepResult = { removed: string[]; kept: string[] };

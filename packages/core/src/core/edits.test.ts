@@ -43,7 +43,7 @@ function topic(overrides: Partial<TopicRecord> = {}): TopicRecord {
     status: "done",
     selected: false,
     keyPoints: [],
-    clips: [{ file: "01-00-00-12-00-00-18.mp4", start: 12, end: 18, segmentIndexes: [0] }],
+    clips: [{ file: "01-00-00-12-00-00-18.mp4", start: 12, end: 18, segmentIndexes: [0], segmentOffsets: [] }],
     startedAt: null,
     elapsedSeconds: null,
     error: null,
@@ -81,7 +81,7 @@ function makeFixture(): { dir: string; data: VideoData } {
       ],
       dirName: "topic-a",
       keyPoints: ["要点一"],
-      clips: [{ file: "01-00-00-12-00-00-18.mp4", start: 12, end: 18, segmentIndexes: [0] }],
+      clips: [{ file: "01-00-00-12-00-00-18.mp4", start: 12, end: 18, segmentIndexes: [0], segmentOffsets: [] }],
     }),
     topic({
       id: "topic-2" as TopicId,
@@ -89,7 +89,7 @@ function makeFixture(): { dir: string; data: VideoData } {
       summary: "后段摘要",
       segments: [{ start: 130.3, end: 140 }],
       dirName: "topic-b",
-      clips: [{ file: "01-00-02-10-00-02-20.mp4", start: 130, end: 140, segmentIndexes: [0] }],
+      clips: [{ file: "01-00-02-10-00-02-20.mp4", start: 130, end: 140, segmentIndexes: [0], segmentOffsets: [] }],
     }),
   ];
   for (const t of data.topics) {
@@ -182,9 +182,9 @@ describe("deleteTopicSegment", () => {
     data.topics = [topic({
       segments: [{ start: 10, end: 20 }, { start: 30, end: 40 }],
       clips: [
-        { file: "a.mp4", start: 10, end: 20, segmentIndexes: [0] },
-        { file: "b.mp4", start: 30, end: 40, segmentIndexes: [1] },
-        { file: "c.mp4", start: 10, end: 40, segmentIndexes: [0, 1] },
+        { file: "a.mp4", start: 10, end: 20, segmentIndexes: [0], segmentOffsets: [] },
+        { file: "b.mp4", start: 30, end: 40, segmentIndexes: [1], segmentOffsets: [] },
+        { file: "c.mp4", start: 10, end: 40, segmentIndexes: [0, 1], segmentOffsets: [2, 14] },
       ],
     })];
     writeVideoData(dir2, data);
@@ -193,6 +193,26 @@ describe("deleteTopicSegment", () => {
     expect(files).toEqual(["b.mp4", "c.mp4"]);
     expect(out2.topics[0]!.clips.find((c) => c.file === "b.mp4")!.segmentIndexes).toEqual([0]);
     expect(out2.topics[0]!.clips.find((c) => c.file === "c.mp4")!.segmentIndexes).toEqual([0]);
+  });
+
+  test("删段同步收窄 segmentOffsets（单文件 topic.mp4 切片）", () => {
+    const dir = videoDir();
+    const data = {
+      ...emptyVideoData({ id: "vid-0001" as never, title: "t", sourcePath: "s", durationSeconds: 1, outputDir: dir }),
+    };
+    data.transcript = { speakers: [], utterances: [{ start: 1, end: 2, speakerId: "sp" as SpeakerId, text: "x" }] };
+    data.topics = [
+      topic({
+        segments: [{ start: 10, end: 20 }, { start: 50, end: 60 }],
+        clips: [{ file: "topic.mp4", start: 8, end: 60, segmentIndexes: [0, 1], segmentOffsets: [2, 14] }],
+      }),
+    ];
+    writeVideoData(dir, data);
+    const out = deleteTopicSegment(dir, "topic-1", 0);
+    const c = out.topics[0]!.clips[0]!;
+    expect(c.file).toBe("topic.mp4");
+    expect(c.segmentIndexes).toEqual([0]);
+    expect(c.segmentOffsets).toEqual([14]);
   });
 
   test("只剩一段时拒绝删除", () => {
@@ -296,14 +316,14 @@ describe("setTopicSelected / setTopicProgress", () => {
       status: "done",
       elapsedSeconds: 12,
       keyPoints: ["要点X"],
-      clips: [{ file: "x.mp4", start: 1, end: 2, segmentIndexes: [0] }],
+      clips: [{ file: "x.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [0] }],
       dirName: "topic-a-renamed",
     });
     const t = out.topics[0]!;
     expect(t.status).toBe("done");
     expect(t.elapsedSeconds).toBe(12);
     expect(t.keyPoints).toEqual(["要点X"]);
-    expect({ ...t.clips[0]! }).toEqual({ file: "x.mp4", start: 1, end: 2, segmentIndexes: [0] } as { file: string; start: number; end: number; segmentIndexes: number[] });
+    expect({ ...t.clips[0]! }).toEqual({ file: "x.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [0] } as { file: string; start: number; end: number; segmentIndexes: number[]; segmentOffsets: number[] });
     expect(t.dirName).toBe("topic-a-renamed");
   });
 });
