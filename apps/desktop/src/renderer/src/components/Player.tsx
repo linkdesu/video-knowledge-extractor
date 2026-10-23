@@ -53,11 +53,16 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
         borderRadius: 16,
         overflow: "hidden",
         border: "1px solid var(--vn-line)",
-        background:
-          "radial-gradient(200px 160px at 70% 20%, rgba(139,92,246,0.35), transparent 70%), linear-gradient(160deg,#101322,#07080d)",
-        aspectRatio: "16 / 10",
         display: "grid",
         placeItems: "center",
+        // 占位态保留渐变与 16/10；视频态让容器跟随视频真实尺寸居中。
+        ...(showPlaceholder
+          ? {
+              background:
+                "radial-gradient(200px 160px at 70% 20%, rgba(139,92,246,0.35), transparent 70%), linear-gradient(160deg,#101322,#07080d)",
+              aspectRatio: "16 / 10",
+            }
+          : { background: "#07080d", minHeight: 240 }),
       }}
     >
       {showPlaceholder ? (
@@ -101,7 +106,14 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
             setT(e.currentTarget.currentTime);
             onTime?.(e.currentTarget.currentTime);
           }}
-          style={{ width: "100%", height: "100%" }}
+          style={{
+            display: "block",
+            maxWidth: "100%",
+            maxHeight: "62vh",
+            width: "auto",
+            height: "auto",
+            background: "#000",
+          }}
         />
       )}
       {ranges !== undefined && ranges.length > 0 ? (
@@ -109,7 +121,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
           style={{
             position: "absolute",
             right: 14,
-            bottom: 12,
+            bottom: showPlaceholder ? 12 : 56,
             fontSize: 11,
             color: "var(--vn-muted)",
             fontVariantNumeric: "tabular-nums",

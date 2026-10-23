@@ -761,6 +761,8 @@ function llmStatus(): SettingsStatus["llm"] {
     baseUrl: baseUrl === "" ? null : displayUrl(baseUrl),
     model: settings.llm.model === "" ? null : settings.llm.model,
     discoveredModel: llmRuntime.discoveredModel,
+    // r32：设置页回显已保存的 key（掩码 + 眼睛看明文），key 明文经 IPC 回程（ADR-0024）。
+    apiKey: llmRuntime.credentials?.apiKey ?? null,
     hasKey: llmRuntime.keySource !== "none",
     keySource: llmRuntime.keySource,
     keyStorageAvailable: secretStore?.available() ?? false,

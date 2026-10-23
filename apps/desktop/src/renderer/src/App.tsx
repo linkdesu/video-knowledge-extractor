@@ -173,8 +173,8 @@ export function App() {
 
   const toLibrary = useCallback(() => setRoute({ name: "library" }), []);
 
-  // ADR-0014 §2：面包屑由路由推导；视频内三个页面仍高亮「视频库」，
-  // 面包屑「视频库」可点返回。
+  // ADR-0014 §2：面包屑只按路由层级推导。顶级页面（视频库 / 术语表 / 设置）只有自身一段；
+  // 视频内三页是「视频库 / 标题 / 页名」，首段可点返回视频库。
   const navKey =
     route.name === "glossary"
       ? "glossary"
@@ -194,7 +194,7 @@ export function App() {
     route.name === "library"
       ? { parts: ["视频库"] }
       : route.name === "glossary"
-        ? { parts: ["视频库", "术语表"] }
+        ? { parts: ["术语表"] }
         : route.name === "settings"
           ? { parts: ["设置"] }
           : {

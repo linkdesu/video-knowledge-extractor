@@ -17,7 +17,7 @@ The library is the landing screen. A user imports a video by dropping it on the 
 - The app opens on 视频库 (`nav-library`).
 - Drop a video file anywhere on the dropzone, or click the dropzone and choose a file.
 - Click a card title (`video-title`) to expand the per-video glossary panel.
-- Click 查看笔记切片 / 继续编辑 to enter the video workspace.
+- Click 查看笔记切片 / 继续编辑 to enter the video workspace. The card surface itself is not a button (r32): clicking the card body or its thumbnail does nothing and has no hover effect, so never treat a card click as navigation.
 - After expanding a card, click 修改后选择重跑范围 to open the rerun dialog.
 
 ## Driving it with verify.ts

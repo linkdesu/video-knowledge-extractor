@@ -34,8 +34,8 @@ Preconditions:
 - **Provider.** Run `$V eval "document.querySelector('[data-testid=settings-asr-provider-fixed]')?.innerText"`. It reads 本地 sherpa-onnx; the provider `<select>` is absent unless `VNOTE_ENABLE_CLOUD_ASR=1`.
 - **Model readiness.** Run `$V eval "[...document.querySelectorAll('[data-testid^=model-bundle-]')].map(e => e.innerText.replace(/\\n+/g, ' | '))"`. With the shared model cache each of the four bundles reads 就绪 with its size.
 - **Verify models (optional, slow).** Run `$V click '[data-testid=model-verify]'` and wait until the bundle states are no longer 未校验. This only reads files; it must not download.
-- **LLM fields.** Run `$V eval "document.querySelector('[data-testid=settings-llm]').innerText"`. No LLM field is ever locked by `.env` (r30); the key input is read-only only while `keyStorageAvailable` is false (with `settings-llm-key-no-storage` shown); a run with a saved key shows the `settings-llm-key-saved` hint and a fresh run shows `settings-llm-key-none`. All edits are local drafts until `settings-llm-save` is clicked (the single 保存 button); the key row is a password input with a reveal toggle and no separate key save button (「Key field」); with no pinned model the `settings-llm-discovered` hint reads 留空时自动发现 while discovery runs, then 已自动发现 <model>.
-- **Fetch models (network, no prior save needed).** Fill the draft first: `$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"` and `$V fill '[data-testid=settings-llm-key-input]' "$KEY"`. Then click `settings-llm-fetch-models` (it is disabled only while a fetch is in flight or while the draft baseUrl is empty), wait for the listbox, then read the option ids: `$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"`. Clicking an option row writes the local draft only; the value reaches the saved settings only after the 保存 click (「LLM 保存闭环」). A bad endpoint must show a readable message at `settings-llm-models-error` (a 401 reads `模型发现失败：API key 无效或已停用`, never a raw body), never only a toast.
+- **LLM fields.** Run `$V eval "document.querySelector('[data-testid=settings-llm]').innerText"`. No LLM field is ever locked by `.env` (r30); the key input is read-only only while `keyStorageAvailable` is false (with `settings-llm-key-no-storage` shown); a run with a saved key shows the `settings-llm-key-saved` hint, holds that key in the input (masked, eye shows plaintext — r32, ADR-0024), and a fresh run shows `settings-llm-key-none`. All edits are local drafts until `settings-llm-save` is clicked (the single 保存 button); the key row is a password input with a reveal toggle and no separate key save button (「Key field」); with no pinned model the `settings-llm-discovered` hint reads 留空时自动发现 while discovery runs, then 已自动发现 <model>.
+- **Fetch models (network, no prior save needed).** Fill the draft first: `$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"` and `$V fill '[data-testid=settings-llm-key-input]' "$KEY"`. Then click `settings-llm-fetch-models` (it is disabled only while a fetch is in flight or while the draft baseUrl is empty), wait for the listbox, then read the option ids: `$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"`. Expanding the combobox always lists every fetched id; only typing filters it (r32). Clicking an option row writes the local draft only; the value reaches the saved settings only after the 保存 click (「LLM 保存闭环」). A bad endpoint must show a readable message at `settings-llm-models-error` (a 401 reads `模型发现失败：API key 无效…
 - **Download journey (network, ~1.1 GB).** Start with `--model-dir` pointing at an empty directory, open 设置, confirm every bundle reads 缺失 and `models().download.state === 'idle'` (no automatic start). Click `model-download`, then capture `model-download-progress` and `model-download-log` during the download and again at 100% (the bar must still be there while the message reads 校验中 / 解压). Wait on `window.vnote.models().then(m => m.ready)`, then confirm all four bundles read 就绪 and the bar is gone.
 - **Storage paths.** Run `$V eval "[...document.querySelectorAll('[data-testid^=settings-path-input-]')].map(i => [i.getAttribute('aria-label'), i.value, i.readOnly])"`. With the helper, `VNOTE_HOME`, `VNOTE_CACHE_DIR` and `VNOTE_MODEL_DIR` are set, so the inputs are read-only and each `settings-path-locked-*` hint reads 由环境变量控制.
 - **About.** Run `$V eval "document.querySelector('[data-testid=settings-about]').innerText"`; compare the version with `apps/desktop/package.json`.
@@ -113,16 +113,34 @@ $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.l
 # expected: { "baseUrl": "<origin>+<pathname of $ENDPOINT>", "model": "<model>", "hasKey": true }
 cat tmp/verify/<run>/user-data/settings.json
 # expected: "llm" contains "baseUrl": "<same as the settings() readback>" and "model": "<model>"
-# 7) the key landed in the keychain; the input is cleared but the hint flips
+# 7) the key landed in the keychain; the input keeps it (masked) and the hint flips
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
-# expected: "" (cleared after a successful save that included a key)
-$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
-# expected: true (已保存 key；这里留空继续使用，输入则覆盖)
+# expected: the key you saved, still there (r32 never clears it; ADR-0024)
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
+# expected: "password" (masked by default)
+$V click '[data-testid=settings-llm-key-reveal]'
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
+# expected: "text" (the eye shows the plaintext of the saved key)
+$V click '[data-testid=settings-llm-key-reveal]'
+$V eval "document.querySelector('[data-testid=settings-llm-key-saved]').innerText"
+# expected: 已保存 key，掩码显示；点眼睛看明文，直接编辑即可替换
 $V shot settings-llm-saved
 $V snapshot settings-llm-saved
 ```
 
-A failed save must render at `settings-llm-save-error` (inline, readable text), never only as a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`. The button is disabled when the draft equals the saved values, or when a non-empty key is typed while `llm.keyStorageAvailable` is false (a key cannot be written without keychain access); that is the `llmSaveBlocked` rule, not a defect.
+Re-open the combobox after selecting a model: the listbox must show **every** fetched id again (filtering happens only while typing), with the selected one carrying `aria-selected="true"`:
+
+```bash
+$V click '[data-testid=settings-llm-model]'
+$V wait "document.querySelectorAll('[data-testid^=settings-llm-model-option-]').length > 1" --timeout 10000
+$V fill '[data-testid=settings-llm-model]' 'gpt'
+# expected: the list narrows to the ids containing "gpt" (typing filters)
+$V press Escape
+$V click '[data-testid=settings-llm-model]'
+# expected: the full list again (5 ids for the repo's mock) — the selected value does not filter it
+```
+
+A failed save must render at `settings-llm-save-error` (inline, readable text), never only as a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`. The button is disabled when the draft equals the saved values, or when a non-empty key differs from the saved one while `llm.keyStorageAvailable` is false (a key cannot be written without keychain access); that is the `llmSaveBlocked` rule, not a defect. An emptied key input means 「保留已存 key」 and does not enable 保存 by itself.
 
 Note on `settings().llm.baseUrl`: the preload bridge returns the effective base url normalized to origin+pathname (`displayUrl`), so compare against that shape, not the raw input text.
 
@@ -149,7 +167,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run $R1-restart
 
 ### Recipe: key field（password input + reveal，无独立 key 保存按钮）
 
-Preconditions: `window.vnote.settings()` reports `llm.keyStorageAvailable === true` (otherwise the input is read-only, the reveal button is disabled, `settings-llm-key-no-storage` shows 系统密钥存储不可用，无法保存新的 key, and the saved-key path is unavailable). There is no env lock (r30): a run with a stored key shows `settings-llm-key-saved`, a fresh run shows `settings-llm-key-none`, a dev run with a `.env` seed shows `settings-llm-key-env`.
+Preconditions: `window.vnote.settings()` reports `llm.keyStorageAvailable === true` (otherwise the input is read-only, `settings-llm-key-no-storage` shows 系统密钥存储不可用，无法保存新的 key, and the saved-key path is unavailable). There is no env lock (r30): a run with a stored key shows `settings-llm-key-saved` and the input already holds that key (r32), a fresh run shows `settings-llm-key-none`, a dev run with a `.env` seed shows `settings-llm-key-env` and the input holds the seed key.
 
 ```bash
 $V click-text '设置'
@@ -169,15 +187,19 @@ $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "password"
 # a form save lands the key in the keychain
-$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r30'
+$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r32'
 $V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
 $V click '[data-testid=settings-llm-save]'
 $V wait "window.vnote.settings().then(s => s.llm.hasKey)"
 # expected: true
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
-# expected: "" — the input is cleared after a save that included a key
-$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
-# expected: true (已保存 key；这里留空继续使用，输入则覆盖)
+# expected: "sk-verify-r32" — r32 keeps the saved key in the input (masked), never clears it
+$V click '[data-testid=settings-llm-key-reveal]'
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').type === 'text' && document.querySelector('[data-testid=settings-llm-key-input]').value === 'sk-verify-r32'"
+# expected: true (the eye shows the saved key's plaintext)
+$V click '[data-testid=settings-llm-key-reveal]'
+$V eval "document.querySelector('[data-testid=settings-llm-key-saved]').innerText"
+# expected: 已保存 key，掩码显示；点眼睛看明文，直接编辑即可替换
 $V status
 # expected: exit 0 — the app never crashed across the sequence
 ```
