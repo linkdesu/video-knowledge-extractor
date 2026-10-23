@@ -220,6 +220,8 @@ export type SettingsStatus = {
   ffmpeg: boolean;
   /** `ffmpeg -version` 第一行的版本号；未安装时为 null。 */
   ffmpegVersion: string | null;
+  /** 日志目录（r34）：userData/logs，main 侧打开文件夹/复制诊断用。 */
+  logDir: string;
   /** 被环境变量覆盖（因此设置页不可改）的字段。 */
   locked: {
     notesRoot: boolean;
@@ -363,6 +365,10 @@ export type VnoteApi = {
   onLlmChanged(listener: () => void): () => void;
   onModelDownload(listener: (event: ModelDownloadEvent) => void): () => void;
   reveal(outputDir: string): Promise<void>;
+  /** 打开日志文件夹（r34）：失败时抛可读错误。 */
+  openLogs(): Promise<void>;
+  /** 复制诊断信息（r34）：返回写进剪贴板的字符数。 */
+  copyDiagnostics(): Promise<{ chars: number }>;
 };
 
 export const IPC = {
@@ -402,4 +408,6 @@ export const IPC = {
   verifyModels: "models:verify",
   modelEvent: "models:event",
   reveal: "shell:reveal",
+  logsOpen: "logs:open",
+  diagnosticsCopy: "diagnostics:copy",
 } as const;

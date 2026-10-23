@@ -2,6 +2,7 @@ import { llmCredentialsFromEnv, type LlmCredentials } from "../core/config";
 import { redact } from "./openai";
 import { displayUrl, isTimeoutError, llmHttpErrorMessage, llmNetworkErrorMessage } from "./errors";
 import type { LlmEndpoint } from "../core/steps";
+import { logger } from "../core/logger";
 
 const MODELS_TIMEOUT_MS = 30_000;
 
@@ -28,6 +29,8 @@ export async function fetchModelIds(
 ): Promise<string[]> {
   const doFetch = fetchImpl ?? fetch;
   const url = modelsUrl(baseUrl);
+  const log = logger();
+  const startedAt = Date.now();
   let res: Response;
   try {
     res = await doFetch(url, {
@@ -35,19 +38,26 @@ export async function fetchModelIds(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    throw new Error(redact(`模型发现失败：${llmNetworkErrorMessage(err, url)}`, apiKey));
+    const e = new Error(redact(`模型发现失败：${llmNetworkErrorMessage(err, url)}`, apiKey));
+    log.error("llm", "模型发现失败", { baseUrl, error: e.message, stack: err instanceof Error ? err.stack : undefined });
+    throw e;
   }
   if (!res.ok) {
-    throw new Error(`模型发现失败：${llmHttpErrorMessage(res.status, url)}`);
+    const e = new Error(`模型发现失败：${llmHttpErrorMessage(res.status, url)}`);
+    log.error("llm", "模型发现失败", { baseUrl, status: res.status, error: e.message });
+    throw e;
   }
   let parsed: { data?: unknown };
   try {
     parsed = (await res.json()) as { data?: unknown };
   } catch (err) {
-    if (isTimeoutError(err)) throw new Error("模型发现失败：请求超时");
-    throw new Error("模型发现失败：服务端返回的不是合法 JSON");
+    const e = new Error(isTimeoutError(err) ? "模型发现失败：请求超时" : "模型发现失败：服务端返回的不是合法 JSON");
+    log.error("llm", "模型发现失败", { baseUrl, status: res.status, error: e.message, stack: err instanceof Error ? err.stack : undefined });
+    throw e;
   }
-  return extractIds(parsed.data);
+  const ids = extractIds(parsed.data);
+  log.info("llm", "模型发现", { baseUrl, status: res.status, durationMs: Date.now() - startedAt, modelCount: ids.length });
+  return ids;
 }
 
 /** 硬排除表：任一 token 全等即出局（ADR-0009）。 */
@@ -135,6 +145,7 @@ export async function resolveLlmEndpoint(
   creds: LlmCredentials,
   fetchImpl?: typeof fetch,
 ): Promise<LlmEndpoint> {
+  const log = logger();
   // 空模型名与缺省同义：设置层把「留空」规范成 ""，不能当成显式模型名返回 ""
   if (creds.model !== undefined && creds.model !== "") {
     return { baseUrl: creds.baseUrl, apiKey: creds.apiKey, model: creds.model };
@@ -142,12 +153,12 @@ export async function resolveLlmEndpoint(
   const ids = await fetchModelIds(creds.baseUrl, creds.apiKey, fetchImpl);
   const picked = pickChatModel(ids);
   if (picked === undefined) {
-    throw new Error(
-      redact(
-        `模型发现失败：${displayUrl(modelsUrl(creds.baseUrl))} 返回 ${ids.length} 个模型，其中没有可用的通用 chat 模型；请在设置页填写模型名显式指定（CLI 可用 VNOTE_LLM_MODEL / IDEALSOFT_API_MODEL）`,
-        creds.apiKey,
-      ),
+    const message = redact(
+      `模型发现失败：${displayUrl(modelsUrl(creds.baseUrl))} 返回 ${ids.length} 个模型，其中没有可用的通用 chat 模型；请在设置页填写模型名显式指定（CLI 可用 VNOTE_LLM_MODEL / IDEALSOFT_API_MODEL）`,
+      creds.apiKey,
     );
+    log.error("llm", "模型发现失败", { baseUrl: creds.baseUrl, error: message, modelCount: ids.length });
+    throw new Error(message);
   }
   return { baseUrl: creds.baseUrl, apiKey: creds.apiKey, model: picked };
 }

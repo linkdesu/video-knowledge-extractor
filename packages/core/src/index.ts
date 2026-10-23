@@ -3,6 +3,29 @@ export type { ExtractInput, ExtractResult } from "./pipeline/extract";
 export { runNotes, runTopics } from "./pipeline/notes-run";
 export { loadDotenvFiles } from "./core/env";
 export {
+  createLogger,
+  configureLogging,
+  logger,
+  runWithTask,
+  logFileName,
+  LOG_FILE_RE,
+  redactSecrets,
+  pruneOldLogs,
+  readTaskLog,
+  tailLog,
+} from "./core/logger";
+export { buildDiagnostics, errorLines } from "./core/diagnostics";
+export type { DiagnosticsInput } from "./core/diagnostics";
+export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
+export {
+  findExecutable,
+  checkPath,
+  collectEnvironment,
+  formatEnvironment,
+  logEnvironment,
+} from "./core/environment";
+export type { PathCheck, EnvironmentSnapshot } from "./core/environment";
+export {
   cacheRoot,
   dataRoot,
   llmCredentialsFromEnv,

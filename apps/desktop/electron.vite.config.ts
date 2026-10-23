@@ -1,17 +1,27 @@
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
+import { resolve } from "node:path";
 
 // core 是工作区源码，要打进 bundle；原生 addon 与 dotenv 留在 node_modules 里由 Node 运行时加载。
+// main bundle 内联构建时的 git 短 sha；失败回落 unknown
+function appCommit(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 const externalNative = ["sherpa-onnx-node"];
-
 export default defineConfig({
   main: {
     // core 是工作区 TS 源码，必须进 bundle；外部化后 Electron 运行时无法 require
     ssr: {
       noExternal: ["@video-notes/core"],
     },
+    // 内联构建时的 git 短 sha；只有 main 的启动日志使用
+    define: { __APP_COMMIT__: JSON.stringify(appCommit()) },
     build: {
       externalizeDeps: false,
       rollupOptions: {

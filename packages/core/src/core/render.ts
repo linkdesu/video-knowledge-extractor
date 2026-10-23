@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "./types";
 
 function hms(seconds: number): string {
@@ -24,7 +25,7 @@ export function renderTopicMarkdown(
       clips.find((c) => c.segment.start <= seg.start && seg.start < c.segment.end) ??
       clips[0];
     if (lines[lines.length - 1] !== "") lines.push("");
-    lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering?.path.split("/").pop() ?? ""})`);
+    lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering === undefined ? "" : basename(covering.path)})`);
     const inSeg = utterances.filter((u) => u.end > seg.start && u.start < seg.end).sort((a, b) => a.start - b.start);
     let turn: { speakerId: SpeakerId; texts: string[] } | undefined;
     for (const u of inSeg) {
@@ -51,7 +52,7 @@ export function renderIndexMarkdown(video: Video, topics: Topic[], dirs: Map<Top
     const note = byId.get(topic.id);
     if (dir === undefined || note === undefined) continue;
     let line = `- [${topic.title}](./${dir}/topic.md) — ${topic.summary}`;
-    for (const name of new Set(note.clips.map((c) => c.path.split("/").pop()))) line += ` [切片](./${dir}/${name})`;
+    for (const name of new Set(note.clips.map((c) => basename(c.path)))) line += ` [切片](./${dir}/${name})`;
     lines.push(line);
   }
   return `${lines.join("\n")}\n`;

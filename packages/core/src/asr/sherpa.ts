@@ -48,16 +48,38 @@ export type SherpaPaths = {
   punctuation: string;
 };
 
+// 模型文件清单是单一事实源：环境快照（core/environment）从这里取，不重复维护
+export function modelFileSpecs(modelDir: string): { role: "asr-model" | "asr-tokens" | "diarization" | "speaker-embedding" | "punctuation"; path: string }[] {
+  return [
+    { role: "asr-model", path: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx` },
+    { role: "asr-tokens", path: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt` },
+    { role: "diarization", path: `${modelDir}/sherpa-onnx-pyannote-segmentation-3-0/model.onnx` },
+    { role: "speaker-embedding", path: `${modelDir}/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx` },
+    { role: "punctuation", path: `${modelDir}/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx` },
+  ];
+}
+
 export function resolveModelPaths(modelDir: string): SherpaPaths {
   const paths: SherpaPaths = {
-    fireredModel: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx`,
-    fireredTokens: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt`,
-    segmentation: `${modelDir}/sherpa-onnx-pyannote-segmentation-3-0/model.onnx`,
-    embedding: `${modelDir}/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`,
-    punctuation: `${modelDir}/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx`,
+    fireredModel: "",
+    fireredTokens: "",
+    segmentation: "",
+    embedding: "",
+    punctuation: "",
   };
-  for (const [name, p] of Object.entries(paths)) {
-    if (!existsSync(p)) throw new Error(`缺少模型文件：${name}（${p}）`);
+  // 报错沿用原字段名（fireredModel 等），保持既有错误文本不变
+  const names: Record<string, keyof SherpaPaths> = {
+    "asr-model": "fireredModel",
+    "asr-tokens": "fireredTokens",
+    diarization: "segmentation",
+    "speaker-embedding": "embedding",
+    punctuation: "punctuation",
+  };
+  for (const spec of modelFileSpecs(modelDir)) {
+    const key = names[spec.role];
+    if (key === undefined) continue;
+    if (!existsSync(spec.path)) throw new Error(`缺少模型文件：${key}（${spec.path}）`);
+    paths[key] = spec.path;
   }
   return paths;
 }

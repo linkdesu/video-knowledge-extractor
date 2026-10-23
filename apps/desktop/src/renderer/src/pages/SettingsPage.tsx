@@ -92,6 +92,7 @@ export function SettingsPage() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
   const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
+  const [diagnosticsChars, setDiagnosticsChars] = useState<number | null>(null);
   const [pathDrafts, setPathDrafts] = useState<
     Record<"notesRoot" | "cacheRoot" | "modelDir", string>
   >({ notesRoot: "", cacheRoot: "", modelDir: "" });
@@ -347,6 +348,23 @@ export function SettingsPage() {
       .catch((err) => showToast(`清理缓存失败：${errMessage(err)}`))
       .then(reload)
       .finally(() => setClearing(false));
+  };
+
+  // 打开日志文件夹（r34）：失败给可读 toast
+  const openLogs = () => {
+    window.vnote
+      .openLogs()
+      .catch((err) => showToast(`打开日志文件夹失败：${errMessage(err)}`));
+  };
+
+  // 复制诊断信息（r34）：成功显示字符数；失败 toast
+  const copyDiagnostics = () => {
+    window.vnote
+      .copyDiagnostics()
+      .then((r) => {
+        setDiagnosticsChars(r.chars);
+      })
+      .catch((err) => showToast(`复制诊断信息失败：${errMessage(err)}`));
   };
 
   const runModelAction = (action: () => Promise<unknown>) =>
@@ -865,6 +883,27 @@ export function SettingsPage() {
           </div>
         </SettingsPanel>
 
+        <SettingsPanel title="日志与诊断" testId="settings-logs">
+          <SettingsField label="日志目录">
+            <span className="vn-read" data-testid="settings-logs-dir">{status.logDir}</span>
+          </SettingsField>
+          <p className="vn-hint">
+            诊断信息包含最近任务的日志与运行环境信息，可直接粘贴给排查问题的同事。
+          </p>
+          <div className="vn-row">
+            <Button size="sm" data-testid="settings-logs-open" onClick={openLogs}>
+              打开日志文件夹
+            </Button>
+            <Button size="sm" data-testid="settings-diagnostics-copy" onClick={copyDiagnostics}>
+              复制诊断信息
+            </Button>
+            {diagnosticsChars !== null ? (
+              <span className="vn-hint" data-testid="settings-diagnostics-status">
+                已复制 {diagnosticsChars} 字符
+              </span>
+            ) : null}
+          </div>
+        </SettingsPanel>
         <SettingsPanel title="关于" testId="settings-about">
           <div className="vn-meta" style={{ marginTop: 12, flexDirection: "column", gap: 6 }}>
             <span>VideoNotes {status.appVersion}</span>

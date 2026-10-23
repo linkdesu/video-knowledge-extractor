@@ -1,6 +1,7 @@
 import { copyFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CLIP_PREROLL_SECONDS } from "./config";
+import { logger } from "./logger";
 import { run } from "./exec";
 import { ensureDir } from "./paths";
 import type { Segment } from "./types";
@@ -168,6 +169,7 @@ export async function cutClip(input: { videoPath: string; segment: Segment; outP
       { label: "切主题切片" },
     );
     renameSync(partPath, outPath);
+    logger().debug("fs", "切片完成", { file: outPath });
   } finally {
     try {
       unlinkSync(partPath);

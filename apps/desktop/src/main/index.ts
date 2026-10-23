@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { basename, join, normalize, resolve, sep } from "node:path";
 import {
   BrowserWindow,
+  clipboard,
   app,
   dialog,
   ipcMain,
@@ -20,6 +21,12 @@ import {
   cacheUsage,
   clearCache,
   coverPath,
+  collectEnvironment,
+  buildDiagnostics,
+  formatEnvironment,
+  logEnvironment,
+  configureLogging,
+  logger,
   ensureCoverFrame,
   fetchModelIds,
   importModels,
@@ -101,6 +108,7 @@ import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
+import { defaultDataRoot, killProcessTree, prependPath } from "./platform";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
 // 仓库 tmp/dev-home 下，便于人工检查；打包后的 app 走正常路径（resolveDevHome 返回 null）。
@@ -124,7 +132,15 @@ if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !==
   mkdirSync(process.env.VNOTE_USER_DATA, { recursive: true });
   app.setPath("userData", resolve(process.env.VNOTE_USER_DATA));
 }
+// 默认数据根（r34）：用户没显式指定 VNOTE_HOME/VNOTE_DATA_ROOT 时，统一指到真实 Documents 下的
+// video-notes（与 core dataRoot 兜底同形，Windows 下避免落到盘符根）；dev 目录逻辑已在上面处理。
+if ((process.env.VNOTE_HOME === undefined || process.env.VNOTE_HOME === "") && (process.env.VNOTE_DATA_ROOT === undefined || process.env.VNOTE_DATA_ROOT === "")) {
+  process.env.VNOTE_DATA_ROOT = defaultDataRoot(app.getPath("documents"));
+}
 
+// 结构化日志（r34）：主进程与 worker 共用 userData/logs；console 只在 dev 开
+const LOG_DIR = join(app.getPath("userData"), "logs");
+configureLogging({ dir: LOG_DIR, level: "info", console: !app.isPackaged });
 const APP_SCHEME = "vnote-app";
 const RENDERER_ROOT = join(__dirname, "../renderer");
 
@@ -148,17 +164,16 @@ if (!app.isPackaged) {
 }
 const devSeed = app.isPackaged ? undefined : llmEnv(process.env);
 
-// 打包后从 Finder 启动的 GUI 进程拿到的是 launchd 的最小 PATH（/usr/bin:/bin:/usr/sbin:/sbin），
-// Homebrew 的 ffmpeg/ffprobe 不在里面。这里把常见安装位置补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
+// 从 Finder 启动的 GUI 进程拿到的 PATH 很窄（macOS 是 launchd 最小 PATH，Homebrew 的
+// ffmpeg/ffprobe 不在里面；Windows 打包版把 ffmpeg 打进 resources，同样要补上）。
+// 这里按平台把工具目录补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
 // VNOTE_FFMPEG_DIR 可显式指定（自定义安装或测试）。
-const TOOL_DIRS = [
-  process.env.VNOTE_FFMPEG_DIR,
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-].filter((dir): dir is string => dir !== undefined && dir !== "");
-process.env.PATH = `${TOOL_DIRS.join(":")}:${process.env.PATH ?? ""}`;
+process.env.PATH = prependPath({
+  platform: process.platform,
+  // resources 路径只在打包版存在，未打包时不传，避免把不存在的目录补进 PATH
+  resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+  env: process.env,
+});
 
 /**
  * 云端 ASR 开关（r26）：未签名试用版只启用本地 sherpa-onnx，云端提供方（OpenAI 兼容 / 火山）不暴露。
@@ -263,6 +278,44 @@ function sanitizeError(err: unknown): string {
   return message;
 }
 
+/** 日志脱敏集合：env 的 key 变量 + 密钥库全部值，与 sanitizeError 保持同一来源（ADR-0016 §7.1）。 */
+const ENV_SECRET_KEYS = [
+  "VNOTE_LLM_API_KEY",
+  "IDEALSOFT_API_KEY",
+  "VNOTE_ASR_API_KEY",
+  "VNOTE_VOLC_API_KEY",
+  "VOLC_ASR_API_KEY",
+  "VNOTE_VOLC_APP_KEY",
+  "VNOTE_VOLC_ACCESS_KEY",
+];
+function registerLogSecrets(): void {
+  const l = logger();
+  for (const key of ENV_SECRET_KEYS) {
+    const v = process.env[key];
+    if (v !== undefined && v !== "") l.addSecret(v);
+  }
+  for (const s of secretStore?.all() ?? []) {
+    if (s !== "") l.addSecret(s);
+  }
+}
+
+/** 运行时生效的 LLM api key 与 ASR key：轮换后重新登记，保证新值进脱敏集合。 */
+function registerRuntimeKeys(): void {
+  const l = logger();
+  if (llmRuntime.credentials?.apiKey !== undefined) l.addSecret(llmRuntime.credentials.apiKey);
+  const c = asrRuntime.config;
+  if (c === undefined) return;
+  if (c.provider === "openai") {
+    if (c.apiKey !== "") l.addSecret(c.apiKey);
+  } else if (c.provider === "volcengine") {
+    if (c.auth.kind === "apiKey") {
+      if (c.auth.apiKey !== "") l.addSecret(c.auth.apiKey);
+    } else {
+      if (c.auth.appKey !== "") l.addSecret(c.auth.appKey);
+      if (c.auth.accessKey !== "") l.addSecret(c.auth.accessKey);
+    }
+  }
+}
 /**
  * 端点发现：model 留空时后台 GET /models 自选；失败把脱敏错误留在运行时上。门禁期间不启动（ADR-0016 §5 硬规则 2）。
  * 结果直接替换 `llmRuntime.endpoint`：空 model 只是「等发现」的中间态，不能流到 worker（r26）。
@@ -353,6 +406,8 @@ function recomputeRuntimes(): void {
   } catch {
     // 重算失败（设置形状异常等）：保持旧值，界面走既有状态
   }
+  // 重算完成后登记当前生效的 key，轮换后的新值进入脱敏集合
+  registerRuntimeKeys();
 }
 
 
@@ -368,21 +423,10 @@ type WorkerState = {
 };
 
 const workers = new Map<string, WorkerState>();
-
-function killProcessTree(pid: number): void {
-  // 结束 worker 进程本身不会带走它 spawn 的 ffmpeg/ffprobe，按父 pid 补杀一层
-  const out = spawnSync("pgrep", ["-P", String(pid)]);
-  if (out.status !== 0) return;
-  for (const line of out.stdout.toString().split("\n")) {
-    const childPid = Number(line);
-    if (!Number.isInteger(childPid)) continue;
-    try {
-      process.kill(childPid, "SIGKILL");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ESRCH") console.warn(sanitizeError(err));
-    }
-  }
-}
+// 最近一次任务的诊断信息（r34）：launch 时设定，done/error/exit 更新 state；「复制诊断」取它定位任务日志
+let lastJobLog: { taskId: string; kind: string; videoId: string; state: string } | null = null;
+// 最近任务的输出目录（r34）：prepared 回调才确定，环境快照里作为 lastJobOutput 检查
+let lastJobOutputDir: string | null = null;
 
 /** 终态（cancelled、异常退出未交付、已交付 error）对已知 outputDir 调 recoverInterruptedRun（token 匹配才写，幂等）。 */
 function recoverJob(job: JobRequest, message: string): void {
@@ -403,6 +447,21 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     outputDir: job.outputDir,
     runToken: job.runToken,
   };
+  // 诊断定位（r34）：taskId 用 runToken，与日志 task= 字段一致
+  lastJobLog = { taskId: job.runToken, kind: job.kind, videoId: job.videoId, state: "running" };
+  lastJobOutputDir = job.outputDir;
+  // 任务日志（r34）：只记 baseUrl 与 model，key 绝不进字段；registered secret 由 logger 自动脱敏
+  logger()
+    .forTask(job.runToken)
+    .info("app", "任务启动", {
+      kind: job.kind,
+      videoId: job.videoId,
+      sourcePath: job.sourcePath,
+      outputDir: job.outputDir,
+      endpointBaseUrl: job.endpoint?.baseUrl ?? "",
+      model: job.endpoint?.model ?? "",
+      asrProvider: job.asr.provider,
+    });
   let stderr = "";
   proc.stderr?.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk.toString()}`.slice(-4000);
@@ -414,8 +473,10 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       const p = raw as { type: string; videoId: string; outputDir: string; runToken: string };
       job.outputDir = p.outputDir;
       job.runToken = p.runToken;
+      if (p.outputDir !== "") lastJobOutputDir = p.outputDir;
       state.outputDir = p.outputDir;
       state.runToken = p.runToken;
+      logger().forTask(p.runToken).debug("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
       proc.postMessage({ type: "prepared-ack" });
       return;
     }
@@ -433,34 +494,58 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       });
     } else if (raw.type === "done" && "result" in raw) {
       state.resultDelivered = true;
-      queue.finish(raw.result as Parameters<typeof queue.finish>[0]);
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "done";
+      const r = raw.result as Parameters<typeof queue.finish>[0];
+      queue.finish(r);
+      logger()
+        .forTask(job.runToken)
+        .info("app", "任务完成", {
+          noteCount: r.noteCount,
+          topicCount: r.topicCount,
+          timings: r.timings,
+          cacheHits: r.cacheHits,
+        });
     } else if (raw.type === "error" && "message" in raw) {
       state.resultDelivered = true;
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "error";
+      const m = raw.message;
+      const msg = typeof m === "string" ? m : String(m);
+      logger().forTask(job.runToken).error("app", "任务失败", { message: msg });
       // 已交付 error：流水线已在锁内结算过；main 侧再按 token 恢复（幂等）
       recoverJob(job, "本次生成未完成");
-      queue.fail(sanitizeError(new Error((raw as { message: string }).message)));
+      queue.fail(sanitizeError(new Error(msg)));
     }
   });
   let exited = false;
+  // 脱敏后的 stderr 尾部（最后 20 行）：registered secret 已由 logger 脱敏
+  const stderrTail = () => stderr.trim().split("\n").slice(-20).join("\n");
   proc.on("exit", (code) => {
     exited = true;
     clearTimeout(state.killTimer);
     workers.delete(jobId);
     if (state.cancelRequested) {
       // 取消的终态必须等 exit 后才落：此时 ffmpeg 子进程已确认收尸
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "cancelled";
+      logger().forTask(job.runToken).info("app", "worker 退出（取消）", { code, stderrTail: stderrTail() });
       recoverJob(job, "本次生成已取消");
       queue.cancelled(jobId);
       return;
     }
     if (state.resultDelivered) return; // done/error 已经定了终态
     // worker 异常退出且未交付结果：按 token 恢复
+    if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "exited";
     recoverJob(job, "本次生成未完成");
     const tail = stderr.trim().split("\n").slice(-8).join("\n");
+    logger()
+      .forTask(job.runToken)
+      .error("app", "worker 异常退出", { code, stderrTail: stderrTail() });
     queue.fail(sanitizeError(new Error(`worker 进程退出（退出码 ${code ?? "未知"}）${tail ? `\n${tail}` : ""}`)));
   });
   state.handle = {
     cancel() {
       if (state.cancelRequested) return;
+      // 取消请求日志（r34）：终态在 exit 事件定
+      logger().forTask(job.runToken).warn("app", "任务取消请求");
       state.cancelRequested = true;
       let posted = false;
       try {
@@ -514,6 +599,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
     asr: job.asr,
+    logDir: LOG_DIR,
   });
   return state.handle;
 }
@@ -728,46 +814,63 @@ async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: strin
   };
 }
 
-async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  let videoId: string;
-  let sourcePath: string;
-  let outputDir: string | null;
-  if (target.kind === "new") {
-    let st;
-    try {
-      st = statSync(target.sourcePath);
-    } catch {
-      throw new Error("源文件不存在");
-    }
-    if (!st.isFile()) throw new Error("所选路径不是文件");
-    videoId = videoIdFor(target.sourcePath);
-    sourcePath = target.sourcePath;
-    outputDir = null;
-  } else {
-    const entry = resolveVideo(target.videoId);
-    if (target.sourcePath !== undefined && videoIdFor(target.sourcePath) !== target.videoId) {
-      throw new Error("源文件与这个视频不符");
-    }
-    videoId = target.videoId;
-    sourcePath = target.sourcePath ?? entry.sourcePath ?? "";
-    if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
-    outputDir = entry.outputDir;
+/** 入队前的门禁失败也要进诊断：记一条 ERROR（含 stack），再按原样抛给渲染层。 */
+async function withStartLog<T>(kind: JobKind, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    logger().error("app", "任务未开始", { kind, error: sanitizeError(e), stack: e.stack });
+    throw err;
   }
-  return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
 }
 
-async function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  const entry = resolveVideo(videoId);
-  if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-  return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
+  return withStartLog("extract", async () => {
+    await ensurePipelineReady();
+    let videoId: string;
+    let sourcePath: string;
+    let outputDir: string | null;
+    if (target.kind === "new") {
+      let st;
+      try {
+        st = statSync(target.sourcePath);
+      } catch {
+        throw new Error("源文件不存在");
+      }
+      if (!st.isFile()) throw new Error("所选路径不是文件");
+      videoId = videoIdFor(target.sourcePath);
+      sourcePath = target.sourcePath;
+      outputDir = null;
+    } else {
+      const entry = resolveVideo(target.videoId);
+      if (target.sourcePath !== undefined && videoIdFor(target.sourcePath) !== target.videoId) {
+        throw new Error("源文件与这个视频不符");
+      }
+      videoId = target.videoId;
+      sourcePath = target.sourcePath ?? entry.sourcePath ?? "";
+      if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
+      outputDir = entry.outputDir;
+    }
+    return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
+  });
 }
 
-async function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  const entry = resolveVideo(videoId);
-  return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
+  return withStartLog("notes", async () => {
+    await ensurePipelineReady();
+    const entry = resolveVideo(videoId);
+    if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
+    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+  });
+}
+
+function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
+  return withStartLog("topics", async () => {
+    await ensurePipelineReady();
+    const entry = resolveVideo(videoId);
+    return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+  });
 }
 
 async function pickVideo(): Promise<string | null> {
@@ -791,6 +894,29 @@ function reveal(outputDir: string): void {
   if (dir !== root && !dir.startsWith(root + sep)) throw new Error("目录不在 notes 根目录内");
   if (!existsSync(dir)) throw new Error("目录不存在");
   shell.showItemInFolder(dir);
+}
+
+// 打开日志文件夹（r34）：目录不存在先建，保证首启/无日志时也能打开
+async function openLogs(): Promise<void> {
+  mkdirSync(LOG_DIR, { recursive: true });
+  const err = await shell.openPath(LOG_DIR);
+  if (err !== "") throw new Error(`打开日志文件夹失败：${err}`);
+}
+
+// 复制诊断信息（r34）：环境快照现取（版本、commit、模型目录、userData 与最近任务输出目录），
+// 任务日志定位 lastJobLog 的 runToken；clipboard.writeText 前的文本已经过 logger 脱敏
+function copyDiagnostics(): { chars: number } {
+  const extraDirs: { role: string; path: string }[] = [{ role: "userData", path: app.getPath("userData") }];
+  if (lastJobOutputDir !== null) extraDirs.push({ role: "lastJobOutput", path: lastJobOutputDir });
+  const envLines = formatEnvironment(
+    collectEnvironment({ appVersion: app.getVersion(), commit: __APP_COMMIT__, modelDir: settings.modelDir, extraDirs }),
+  );
+  const taskId = lastJobLog?.taskId ?? null;
+  const label =
+    lastJobLog !== null ? `${lastJobLog.kind} ${lastJobLog.videoId}（${lastJobLog.state}）` : null;
+  const text = buildDiagnostics({ logDir: LOG_DIR, environment: envLines, taskId, taskLabel: label });
+  clipboard.writeText(text);
+  return { chars: text.length };
 }
 
 function ffmpegProbe(): { ok: boolean; version: string | null } {
@@ -830,6 +956,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     notesRoot: settings.notesRoot,
     cacheRoot: settings.cacheRoot,
     modelDir: settings.modelDir,
+    logDir: LOG_DIR,
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),
@@ -1306,6 +1433,26 @@ function maybeAutoVerifyModels(): void {
     if (autoVerify === done) autoVerify = undefined;
   });
 }
+/**
+ * Windows 首启自动下载模型（r34）：Windows 没有包管理器可装 ffmpeg，模型也要用户自己拖进设置页，
+ * 首启直接后台下载。非 win32 / VNOTE_AUTO_DOWNLOAD_MODELS=0 / VNOTE_MODEL_DIR 已设置（用户自管）
+ * 都不做；下载器或任务队列忙、模型已 ready、有 unverified 包（启动校验流程管它）也不做。
+ * 失败把脱敏错误进 error 日志并补一行模型日志，让设置页日志面板能看到原因；UI 状态走既有事件。
+ */
+function maybeAutoDownloadModels(): void {
+  if (process.platform !== "win32") return;
+  if (process.env.VNOTE_AUTO_DOWNLOAD_MODELS === "0") return;
+  if (process.env.VNOTE_MODEL_DIR !== undefined && process.env.VNOTE_MODEL_DIR !== "") return;
+  if (queue.busy() || modelsDownloader.busy()) return;
+  const status = modelStatus(settings.modelDir);
+  if (status.ready) return;
+  if (status.bundles.some((b) => b.state === "unverified")) return;
+  void downloadModelsNow().catch((err) => {
+    const message = sanitizeError(err);
+    logger().error("import", `首启自动下载模型失败：${message}`);
+    appendModelLog({ level: "error", text: `首启自动下载模型失败：${message}` });
+  });
+}
 
 let quitting = false;
 app.on("before-quit", (event) => {
@@ -1335,6 +1482,7 @@ app.on("window-all-closed", () => {
 void app.whenReady().then(async () => {
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 后台模型校验（r28 起不自动下载）
   secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
+  registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
     settingsFile: SETTINGS_PATH(),
@@ -1344,6 +1492,31 @@ void app.whenReady().then(async () => {
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
   maybeAutoVerifyModels();
+  maybeAutoDownloadModels();
+
+  // 启动日志（r34）：版本/commit/打包标志/userData + 完整环境快照，先于窗口显示
+  let gpuModel: string | null = null;
+  // getGPUInfo 返回 unknown：逐层窄化后取型号；任何失败都是 null
+  try {
+    const gpu = await app.getGPUInfo("basic");
+    if (typeof gpu === "object" && gpu !== null && "gpuDevice" in gpu) {
+      const dev = (gpu as { gpuDevice?: unknown[] }).gpuDevice?.[0];
+      if (typeof dev === "object" && dev !== null) {
+        const d = dev as Record<string, unknown>;
+        const m = d.model ?? d.deviceString;
+        if (typeof m === "string" && m !== "") gpuModel = m;
+      }
+    }
+  } catch {
+    gpuModel = null;
+  }
+  logger().info("app", "app 启动", {
+    version: app.getVersion(),
+    commit: __APP_COMMIT__,
+    packaged: app.isPackaged,
+    userData: app.getPath("userData"),
+  });
+  logEnvironment(logger(), collectEnvironment({ appVersion: app.getVersion(), commit: __APP_COMMIT__, gpu: gpuModel, modelDir: settings.modelDir, extraDirs: [{ role: "userData", path: app.getPath("userData") }] }));
 
   // 媒体协议 root 读 settings 当前值；
   // 源视频路径用当前 notes 根目录的库记录来校验
@@ -1455,6 +1628,8 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.importModels, guard(() => importModelsNow()));
   ipcMain.handle(IPC.verifyModels, guard(() => verifyModelsNow()));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
+  ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
+  ipcMain.handle(IPC.diagnosticsCopy, guard(() => copyDiagnostics()));
 
   const win = new BrowserWindow({
     width: 1280,

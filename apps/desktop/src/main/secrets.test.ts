@@ -127,6 +127,8 @@ describe("createSecretStore", () => {
   });
 
   test("文件权限 0o600", () => {
+    // Windows 的 chmod 只映射只读位，POSIX 模式位没有意义
+    if (process.platform === "win32") return;
     const file = tempFile();
     const store = createSecretStore({ file, codec: fakeCodec() });
     store.set("asr", "k2");

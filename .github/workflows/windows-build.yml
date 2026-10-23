@@ -1,0 +1,51 @@
+name: windows-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/r34-windows-logging]
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Fetch ffmpeg (pinned)
+        run: bun run apps/desktop/scripts/fetch-ffmpeg.ts
+
+      # 把 ffmpeg.exe/ffprobe.exe 放进 PATH，供打包前的检查/后续步骤使用
+      - name: Add ffmpeg to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/apps/desktop/win-resources/ffmpeg" >> $GITHUB_PATH
+
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run --cwd apps/desktop build
+
+      - name: Package (NSIS)
+        run: bun run --cwd apps/desktop package:win
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-notes-windows-installer
+          path: apps/desktop/release-win/*.exe
+          if-no-files-found: error

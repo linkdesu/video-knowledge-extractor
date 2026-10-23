@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { detectSilences, planChunks, sliceWav, type ChunkLimits } from "../core/audio";
 import { cacheKey, readCache, sha256, writeCache } from "../core/cache";
 import { run } from "../core/exec";
+import { logger } from "../core/logger";
 import { readWav } from "../core/wav";
 import type { Speaker, SpeakerId, Utterance } from "../core/types";
 import type { AsrEngine, AsrInput, AsrRun } from "./engine";
@@ -224,6 +225,7 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
         const chunkDuration = chunk.end - chunk.start;
         const wavOut = `${input.cacheDir}/remote-chunk-${chunk.index}.wav`;
         await sliceWav(input.wavPath, chunk.start, chunk.end, wavOut);
+        logger().debug("asr", "切片完成", { wavPath: wavOut });
         let audioBytes: Uint8Array;
         let fileName: string;
         let format: RemoteChunkAudio["format"];
@@ -249,6 +251,7 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
         let lastRetriable = false;
         let ok = false;
         let result: RemoteTranscribeResult | undefined;
+        const requestStart = performance.now();
         for (let attempt = 1; attempt <= MAX_ATTEMPTS && !ok; attempt += 1) {
           try {
             result = await provider.transcribe({ bytes: audioBytes, fileName, format, duration: chunkDuration }, doFetch);
@@ -284,6 +287,14 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
           throw new Error("该端点不返回逐句时间戳，不能用于字幕");
         }
         writeCache(input.cacheDir, key, { segments });
+        logger().info("asr", "远程 ASR 请求完成", {
+          provider: provider.id,
+          chunkIndex: chunk.index,
+          chunkCount: chunks.length,
+          chunkSeconds: Math.round(chunkDuration * 100) / 100,
+          durationMs: Math.round(performance.now() - requestStart),
+          bytesSent: audioBytes.byteLength,
+        });
         for (const s of segments) {
           utterances.push({ ...s, start: chunk.start + s.start, end: chunk.start + s.end, speakerId: speaker.id });
         }

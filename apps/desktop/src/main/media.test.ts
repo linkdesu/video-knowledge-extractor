@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
-const ROOT = "/home/u/video-notes";
+// 路径断言走 resolve，Windows 上才会得到同一套盘符与分隔符
+const FIXTURE = resolve(process.cwd(), "media-fixture");
+const ROOT = resolve(FIXTURE, "root");
+const VIDEO_DIR = resolve(FIXTURE, "videos");
 // 测试用 fake realpath / stat：不碰真实文件系统，纯路径运算
 const fakeRealpath = (p: string) => p;
 const fakeStat = (p: string) => p.endsWith(".mp4");
@@ -13,7 +17,7 @@ describe("media url 编解码", () => {
     const url = encodeClipUrl(rel);
     const out = decodeClipUrl(url, ROOT, fakeRealpath, fakeStat);
     if ("code" in out) throw new Error(`expected location, got ${out.code}`);
-    expect(out.absolutePath).toBe(`${ROOT}/${rel}`);
+    expect(out.absolutePath).toBe(resolve(ROOT, rel));
   });
 
   test("拒绝 ..", () => {
@@ -43,7 +47,7 @@ describe("media url 编解码", () => {
 
   test("realpath 跑出 root 后拒绝", () => {
     const url = encodeClipUrl("a/b/c.mp4");
-    const escape = (p: string) => (p === `${ROOT}/a/b/c.mp4` ? "/etc" : p);
+    const escape = (p: string) => (p === resolve(ROOT, "a/b/c.mp4") ? resolve(FIXTURE, "etc") : p);
     expect(decodeClipUrl(url, ROOT, escape, fakeStat)).toMatchObject({ code: "forbidden" });
   });
 
@@ -55,17 +59,17 @@ describe("media url 编解码", () => {
 
 describe("源视频路由", () => {
   const library: Record<string, string> = {
-    v1: "/home/u/videos/a.mp4",
-    v2: "/home/u/videos/b.m4v",
-    v3: "/home/u/videos/c.mov",
-    v4: "/home/u/videos/d.webm",
-    vbad: "/home/u/videos/e.txt",
+    v1: resolve(VIDEO_DIR, "a.mp4"),
+    v2: resolve(VIDEO_DIR, "b.m4v"),
+    v3: resolve(VIDEO_DIR, "c.mov"),
+    v4: resolve(VIDEO_DIR, "d.webm"),
+    vbad: resolve(VIDEO_DIR, "e.txt"),
   };
   const resolveSource = (id: string) => library[id];
 
   test("库中已登记的 videoId：mp4/m4v/mov/webm 各自 content type 正确", () => {
     expect(decodeSourceUrl(encodeSourceUrl("v1"), resolveSource, fakeRealpath, () => true)).toMatchObject({
-      absolutePath: "/home/u/videos/a.mp4",
+      absolutePath: resolve(VIDEO_DIR, "a.mp4"),
       contentType: "video/mp4",
     });
     const contentType = (id: string): string | undefined => {
@@ -129,13 +133,13 @@ describe("源视频路由", () => {
 });
 
 describe("封面路由", () => {
-  const dirs: Record<string, string> = { v1: "/home/u/video-notes/vid-1" };
+  const dirs: Record<string, string> = { v1: resolve(ROOT, "vid-1") };
   const resolveDir = (id: string) => dirs[id];
 
   test("encode → decode 回环：解析到 <outputDir>/cover.jpg，content type 固定 image/jpeg", () => {
     const res = decodeCoverUrl(encodeCoverUrl("v1"), resolveDir, fakeRealpath, () => true);
     expect(res).toMatchObject({
-      absolutePath: "/home/u/video-notes/vid-1/cover.jpg",
+      absolutePath: resolve(ROOT, "vid-1/cover.jpg"),
       contentType: "image/jpeg",
     });
   });

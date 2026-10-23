@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { loadDotenvFiles } from "./env";
 
@@ -67,15 +68,15 @@ describe("loadDotenvFiles", () => {
   test("cwd .env 里的 VNOTE_HOME 决定第二份文件路径", () => {
     const cwd = tempDir();
     const root = tempDir();
-    mkdirSync(`${root}/inner`);
-    writeFileSync(`${cwd}/.env`, `VNOTE_HOME=${root}/inner\n`);
-    writeFileSync(`${root}/inner/.env`, "VNOTE_TEST_INNER=inner-only\n");
+    mkdirSync(join(root, "inner"));
+    writeFileSync(join(cwd, ".env"), `VNOTE_HOME=${join(root, "inner")}\n`);
+    writeFileSync(join(root, "inner", ".env"), "VNOTE_TEST_INNER=inner-only\n");
     withEnv({ VNOTE_HOME: undefined }, () => {
       const loaded = loadDotenvFiles({
         cwd,
-        resolveRoot: () => process.env.VNOTE_HOME ?? `${cwd}/no-such-root`,
+        resolveRoot: () => process.env.VNOTE_HOME ?? join(cwd, "no-such-root"),
       });
-      expect(loaded).toContain(`${root}/inner/.env`);
+      expect(loaded).toContain(join(root, "inner", ".env"));
       expect(process.env.VNOTE_TEST_INNER).toBe("inner-only");
     });
   });
@@ -90,9 +91,9 @@ describe("loadDotenvFiles", () => {
 
   test("去重：cwd 与 root 是同一文件时只加载一次", () => {
     const cwd = tempDir();
-    writeFileSync(`${cwd}/.env`, "VNOTE_TEST_SAME=once\n");
+    writeFileSync(join(cwd, ".env"), "VNOTE_TEST_SAME=once\n");
     withEnv({ VNOTE_HOME: undefined }, () => {
-      expect(loadDotenvFiles({ cwd, resolveRoot: () => cwd })).toEqual([`${cwd}/.env`]);
+      expect(loadDotenvFiles({ cwd, resolveRoot: () => cwd })).toEqual([join(cwd, ".env")]);
     });
   });
 });

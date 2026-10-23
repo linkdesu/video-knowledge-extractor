@@ -11,6 +11,7 @@ import type { VolcengineAuth } from "../../core/credentials";
 import { RemoteAsrError, sanitizeSegments } from "../remote";
 import type { RemoteChunkAudio, RemoteSegment, RemoteProvider, RemoteTranscribeResult, UrlProvider } from "../remote";
 import { redact } from "../../llm/openai";
+import { logger } from "../../core/logger";
 
 export const VOLCENGINE_FLASH_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 export const VOLCENGINE_FLASH_RESOURCE_ID = "volc.bigasr.auc_turbo";
@@ -266,58 +267,68 @@ export function createVolcengineFlashProvider(
   // endpoint 覆盖仅供测试注入（ADR-0016 §2）；生产用默认常量。
   const endpoint = opts?.endpoint ?? VOLCENGINE_FLASH_URL;
   const request = async (chunk: RemoteChunkAudio, fetchImpl: typeof fetch): Promise<RemoteTranscribeResult> => {
-    if (chunk.bytes.byteLength > VOLC_MAX_UPLOAD_BYTES) {
-      throw new RemoteAsrError(
-        `块 ${chunk.fileName} 的原始字节数 ${chunk.bytes.byteLength} 超过火山极速版单次建议上限 ${VOLC_MAX_UPLOAD_BYTES} 字节`,
-        false,
-      );
-    }
-    const body = JSON.stringify({
-      user: { uid: auth.kind === "appAccessKey" ? auth.appKey : "video-notes" },
-      audio: { format: "wav", data: Buffer.from(chunk.bytes).toString("base64") },
-      request: {
-        model_name: VOLCENGINE_FLASH_MODEL,
-        show_utterances: true,
-        enable_itn: true,
-        enable_punc: true,
-        enable_speaker_info: false,
-      },
-    });
-    const postOnce = () =>
-      post(
-        endpoint,
-        {
-          "X-Api-Resource-Id": VOLCENGINE_FLASH_RESOURCE_ID,
-          "X-Api-Request-Id": randomUUID(),
-          "X-Api-Sequence": "-1",
-          ...authHeaders(auth),
+    const log = logger();
+    const startedAt = Date.now();
+    try {
+      if (chunk.bytes.byteLength > VOLC_MAX_UPLOAD_BYTES) {
+        throw new RemoteAsrError(
+          `块 ${chunk.fileName} 的原始字节数 ${chunk.bytes.byteLength} 超过火山极速版单次建议上限 ${VOLC_MAX_UPLOAD_BYTES} 字节`,
+          false,
+        );
+      }
+      const body = JSON.stringify({
+        user: { uid: auth.kind === "appAccessKey" ? auth.appKey : "video-notes" },
+        audio: { format: "wav", data: Buffer.from(chunk.bytes).toString("base64") },
+        request: {
+          model_name: VOLCENGINE_FLASH_MODEL,
+          show_utterances: true,
+          enable_itn: true,
+          enable_punc: true,
+          enable_speaker_info: false,
         },
-        body,
-        FLASH_TIMEOUT_MS,
-        fetchImpl,
-      );
-    // 顺序 1-2 与 550 由 requestWithRetry 判定；这里发两次请求内的重试交给共享管线，
-    // 因此 flash 只做单次请求，把可重试性交给管线（与 ADR-0016 §6 的管线重试一致）。
-    const out = await postOnce();
-    if (!out.ok) throw new RemoteAsrError(out.message, out.retriable);
-    // 顺序 1：HTTP 非 2xx 优先，即使响应头带 20000000 也不当成功。
-    if (out.status < 200 || out.status >= 300) {
-      const f = httpFailure(out.status, out.bodyText, auth);
-      throw new RemoteAsrError(f.message, f.retriable);
+      });
+      const postOnce = () =>
+        post(
+          endpoint,
+          {
+            "X-Api-Resource-Id": VOLCENGINE_FLASH_RESOURCE_ID,
+            "X-Api-Request-Id": randomUUID(),
+            "X-Api-Sequence": "-1",
+            ...authHeaders(auth),
+          },
+          body,
+          FLASH_TIMEOUT_MS,
+          fetchImpl,
+        );
+      // 顺序 1-2 与 550 由 requestWithRetry 判定；这里发两次请求内的重试交给共享管线，
+      // 因此 flash 只做单次请求，把可重试性交给管线（与 ADR-0016 §6 的管线重试一致）。
+      const out = await postOnce();
+      // 每个请求一行 info：HTTP 状态（网络错误记 0）、耗时、音频字节数；base64 请求体永不入日志
+      log.info("asr", "远程 ASR 请求", { provider: "volcengine-flash", status: out.ok ? out.status : 0, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength });
+      if (!out.ok) throw new RemoteAsrError(out.message, out.retriable);
+      if (out.status < 200 || out.status >= 300) {
+        const f = httpFailure(out.status, out.bodyText, auth);
+        throw new RemoteAsrError(f.message, f.retriable);
+      }
+      // 顺序 2：HTTP 2xx 但缺 X-Api-Status-Code：报错，不重试。
+      const statusCode = out.headers["x-api-status-code"];
+      if (statusCode === undefined) {
+        throw new RemoteAsrError(`火山引擎响应缺少 X-Api-Status-Code（HTTP ${out.status}）`, false);
+      }
+      const classified = classifyBusiness(statusCode, out.bodyText, out.headers["x-tt-logid"] ?? "", auth);
+      if (classified.kind === "pending") {
+        throw new RemoteAsrError("火山极速版为同步接口，不应返回处理中状态码", false);
+      }
+      if (classified.kind === "silence") return { segments: [], rawText: "" };
+      if (classified.kind === "error") throw new RemoteAsrError(classified.message, classified.retriable);
+      const bodyData = validateBody(parseJson(classified.bodyText, auth), false);
+      return { segments: toSegments(bodyData, chunk.duration), rawText: bodyData.text };
+    } catch (err) {
+      // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附完整 stack
+      const message = redactAll(err instanceof Error ? err.message : String(err), auth);
+      log.error("asr", "远程 ASR 请求失败", { provider: "volcengine-flash", durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength, error: message, stack: err instanceof Error ? err.stack : undefined });
+      throw err;
     }
-    // 顺序 2：HTTP 2xx 但缺 X-Api-Status-Code：报错，不重试。
-    const statusCode = out.headers["x-api-status-code"];
-    if (statusCode === undefined) {
-      throw new RemoteAsrError(`火山引擎响应缺少 X-Api-Status-Code（HTTP ${out.status}）`, false);
-    }
-    const classified = classifyBusiness(statusCode, out.bodyText, out.headers["x-tt-logid"] ?? "", auth);
-    if (classified.kind === "pending") {
-      throw new RemoteAsrError("火山极速版为同步接口，不应返回处理中状态码", false);
-    }
-    if (classified.kind === "silence") return { segments: [], rawText: "" };
-    if (classified.kind === "error") throw new RemoteAsrError(classified.message, classified.retriable);
-    const bodyData = validateBody(parseJson(classified.bodyText, auth), false);
-    return { segments: toSegments(bodyData, chunk.duration), rawText: bodyData.text };
   };
   return {
     id: "volcengine-flash",
@@ -373,6 +384,7 @@ export function createVolcengineStandardProvider(
       fetchImpl: typeof fetch,
       onPoll?: (attempt: number) => void,
     ): Promise<{ segments: RemoteSegment[]; duration: number }> {
+      const log = logger();
       const requestId = randomUUID();
       const submitBody = JSON.stringify({
         user: { uid: authUid },
@@ -385,31 +397,44 @@ export function createVolcengineStandardProvider(
           enable_speaker_info: false,
         },
       });
-      const submitOnce = () =>
-        post(submitUrl, sharedHeaders(requestId), submitBody, STANDARD_REQUEST_TIMEOUT_MS, fetchImpl);
-      const submit = await requestWithRetry(submitOnce, auth);
-      const submitClassified = classifyBusiness(submit.headers["x-api-status-code"] ?? "", submit.bodyText, submit.headers["x-tt-logid"] ?? "", auth);
-      if (submitClassified.kind === "error") throw new RemoteAsrError(submitClassified.message, submitClassified.retriable);
-      // 提交成功（20000000；20000003 静音按成功处理，查询会给出空结果）。
-      const start = Date.now();
-      let attempt = 0;
-      for (;;) {
-        if (Date.now() - start > maxTotalMs) {
-          throw new RemoteAsrError(`火山标准版转写超时（${Math.round(maxTotalMs / 60000)} 分钟）`, false);
+      try {
+        const submitStartedAt = Date.now();
+        const submitOnce = () =>
+          post(submitUrl, sharedHeaders(requestId), submitBody, STANDARD_REQUEST_TIMEOUT_MS, fetchImpl);
+        const submit = await requestWithRetry(submitOnce, auth);
+        const submitClassified = classifyBusiness(submit.headers["x-api-status-code"] ?? "", submit.bodyText, submit.headers["x-tt-logid"] ?? "", auth);
+        if (submitClassified.kind === "error") throw new RemoteAsrError(submitClassified.message, submitClassified.retriable);
+        // 提交成功一行 info：body 是 URL 而非音频，可记录字节数
+        log.info("asr", "火山标准版提交", { provider: "volcengine-standard", status: submit.status, durationMs: Date.now() - submitStartedAt, bytes: submitBody.length });
+        // 提交成功（20000000；20000003 静音按成功处理，查询会给出空结果）。
+        const start = Date.now();
+        let attempt = 0;
+        for (;;) {
+          if (Date.now() - start > maxTotalMs) {
+            throw new RemoteAsrError(`火山标准版转写超时（${Math.round(maxTotalMs / 60000)} 分钟）`, false);
+          }
+          attempt += 1;
+          onPoll?.(attempt);
+          await sleep(pollInterval);
+          const queryStartedAt = Date.now();
+          const queryOnce = () =>
+            post(queryUrl, sharedHeaders(requestId), "{}", STANDARD_REQUEST_TIMEOUT_MS, fetchImpl);
+          const query = await requestWithRetry(queryOnce, auth);
+          // 每次查询一行 info（含轮询中的），bytes 是查询 body 长度
+          log.info("asr", "火山标准版查询", { provider: "volcengine-standard", attempt, status: query.status, durationMs: Date.now() - queryStartedAt, bytes: 2 });
+          const classified = classifyBusiness(query.headers["x-api-status-code"] ?? "", query.bodyText, query.headers["x-tt-logid"] ?? "", auth);
+          if (classified.kind === "pending") continue;
+          if (classified.kind === "silence") return { segments: [], duration: 0 };
+          if (classified.kind === "error") throw new RemoteAsrError(classified.message, classified.retriable);
+          const bodyData = validateBody(parseJson(classified.bodyText, auth), true);
+          const duration = bodyData.durationMs / 1000;
+          return { segments: toSegments(bodyData, duration), duration };
         }
-        attempt += 1;
-        onPoll?.(attempt);
-        await sleep(pollInterval);
-        const queryOnce = () =>
-          post(queryUrl, sharedHeaders(requestId), "{}", STANDARD_REQUEST_TIMEOUT_MS, fetchImpl);
-        const query = await requestWithRetry(queryOnce, auth);
-        const classified = classifyBusiness(query.headers["x-api-status-code"] ?? "", query.bodyText, query.headers["x-tt-logid"] ?? "", auth);
-        if (classified.kind === "pending") continue;
-        if (classified.kind === "silence") return { segments: [], duration: 0 };
-        if (classified.kind === "error") throw new RemoteAsrError(classified.message, classified.retriable);
-        const bodyData = validateBody(parseJson(classified.bodyText, auth), true);
-        const duration = bodyData.durationMs / 1000;
-        return { segments: toSegments(bodyData, duration), duration };
+      } catch (err) {
+        // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附完整 stack
+        const message = redactAll(err instanceof Error ? err.message : String(err), auth);
+        log.error("asr", "远程 ASR 请求失败", { provider: "volcengine-standard", error: message, stack: err instanceof Error ? err.stack : undefined });
+        throw err;
       }
     },
   };

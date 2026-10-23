@@ -6,6 +6,7 @@ import type { ImportResult, ModelBundle } from "./catalog";
 import { MODEL_BUNDLES, modelStatus } from "./catalog";
 import { assertInsideModelDir, extractArchive, streamSha256 } from "./extract";
 import { verifyBundle } from "./verify";
+import { logger } from "../core/logger";
 /**
  * 导入模型（ADR-0015 §4）：目录 / .tar.bz2 归档 / 单文件三种输入。
  * 目录先按清单完整相对路径查找，找不到再按 basename+sha256 匹配。
@@ -26,11 +27,17 @@ export async function importModels(
   const installed: string[] = [];
   const rejected: { bundleId: string; reason: string }[] = [];
   for (const bundle of bundles) {
+    // 每个包一条结果行：ok、文件数、耗时；失败另记 error 带 stack
+    const startedAt = Date.now();
     try {
       await installImportedBundle(modelDir, sourcePath, bundle, isDir, isArchive);
       installed.push(bundle.id);
+      logger().info("import", "模型包导入完成", { role: bundle.id, file: bundle.files.map((f) => f.path).join(","), ok: true, bytes: sourceStat.size, durationMs: Date.now() - startedAt });
     } catch (err) {
-      rejected.push({ bundleId: bundle.id, reason: err instanceof Error ? err.message : String(err) });
+      const reason = err instanceof Error ? err.message : String(err);
+      rejected.push({ bundleId: bundle.id, reason });
+      logger().info("import", "模型包导入完成", { role: bundle.id, file: bundle.files.map((f) => f.path).join(","), ok: false, bytes: sourceStat.size, durationMs: Date.now() - startedAt });
+      logger().error("import", "模型包导入失败", { role: bundle.id, error: reason, stack: err instanceof Error ? err.stack : undefined });
     }
   }
   // 已安装的包按清单校验并把结果写进缓存

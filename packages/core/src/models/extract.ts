@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createReadStream } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { run } from "../core/exec";
+import { logger } from "../core/logger";
 import type { ModelBundle } from "./catalog";
 
 export type TarExec = (args: string[]) => Promise<{ stdout: string; stderr: string }>;
@@ -25,8 +26,11 @@ export async function extractArchive(
   bundle: ModelBundle,
   execTar: TarExec = defaultExecTar,
 ): Promise<void> {
+  const startedAt = Date.now();
   if (bundle.source.kind !== "tar.bz2") throw new Error(`包 ${bundle.id} 是单文件，不走归档解包`);
   const members = await listMembers(archivePath, execTar);
+  // 成员清单读取（tar -tvjf）结果一条 debug；argv 由 run() 记录，这里不重复
+  logger().debug("fs", "归档成员清单", { members: members.length, durationMs: Date.now() - startedAt });
   validateMembers(members, bundle);
 
   const allowed = new Set(bundle.source.members);
@@ -42,6 +46,8 @@ export async function extractArchive(
     }
     await verifyAll(stagingDir, wanted, bundle);
   } catch (err) {
+    // 解包失败 error 带完整 stack；staging 清理后抛出，行为不变
+    logger().error("fs", "归档解包失败", { bundle: bundle.id, error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
     rmSync(stagingDir, { recursive: true, force: true });
     throw err;
   }
@@ -67,7 +73,9 @@ async function listMembers(archivePath: string, execTar: TarExec): Promise<Membe
 function parseMember(name: string, detail: string): Member {
   const fields = detail.trim().split(/\s+/);
   const perms = fields[0] ?? "";
-  const type = perms.startsWith("d") ? "directory" : perms.startsWith("-") ? "file" : "other";
+  // 权限列缺失（某些 tar 实现/截断的详例行）时无法判型，按普通文件放行；
+  // 权限列存在且非 d/- 前缀（符号链接、设备、socket 等）才算不安全类型，继续拒绝
+  const type = perms === "" ? "file" : perms.startsWith("d") ? "directory" : perms.startsWith("-") ? "file" : "other";
   const size = fields.length >= 8 ? Number(fields[4]) : NaN;
   return { name, type, size: Number.isFinite(size) ? size : null };
 }
@@ -103,7 +111,10 @@ function validateMembers(members: Member[], bundle: ModelBundle): void {
 
 async function extractOne(archivePath: string, stagingDir: string, member: string, execTar: TarExec): Promise<void> {
   mkdirSync(dirname(join(stagingDir, member)), { recursive: true });
+  const startedAt = Date.now();
   const result = await execTar(["-xjf", archivePath, "-C", stagingDir, member]);
+  // 单次成员解包结果一条 debug（argv 已由 run() 记录）
+  logger().debug("fs", "归档成员解包", { member, durationMs: Date.now() - startedAt });
   if (result.stdout.trim() !== "" || result.stderr.trim() !== "") {
     throw new Error(`解包 ${member} 失败：${result.stderr.trim() || result.stdout.trim()}`);
   }
@@ -160,7 +171,10 @@ export function listStagedInstalls(modelDir: string): { topDir: string; kind: "n
 export function assertInsideModelDir(modelDir: string, relativePath: string): void {
   const absModelDir = resolve(modelDir);
   const absTarget = resolve(absModelDir, relativePath);
-  if (absTarget !== absModelDir && !absTarget.startsWith(absModelDir + "/")) {
+  // 分隔符无关的包含校验：resolve 后 target 等于 modelDir，或位于 modelDir+sep 之下
+  // （直接拼 "/" 在 Windows 上失败：resolve 用反斜杠，且会误放 modelDir2 这类同级目录）
+  const prefix = absModelDir + sep;
+  if (absTarget !== absModelDir && !absTarget.startsWith(prefix)) {
     throw new Error(`落位路径 ${relativePath} 超出模型目录`);
   }
 }
