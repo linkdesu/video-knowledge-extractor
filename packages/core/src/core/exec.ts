@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { logger, type LogModule } from "./logger";
 
 /**
  * 子进程执行：收 stdout/stderr；非零退出默认抛错。
@@ -21,11 +22,16 @@ export function killActiveChildren(): void {
 
 export async function run(
   cmd: string[],
-  opts: { label?: string; allowFail?: boolean } = {},
+  opts: { label?: string; allowFail?: boolean; logModule?: LogModule } = {},
 ): Promise<ProcResult> {
   const [file, ...args] = cmd;
   if (file === undefined) throw new Error("run 至少需要一个命令");
   const label = opts.label ?? file;
+  const mod = opts.logModule ?? "ffmpeg";
+  const log = logger();
+  const startedAt = Date.now();
+  // 整条 argv 一次性记录，URL 内嵌的 key 也能被 redact 命中
+  log.info(mod, file, { cmd });
   const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
   if (child.stdout === null || child.stderr === null) throw new Error(`${label}: 子进程管道不可用`);
 
@@ -51,6 +57,20 @@ export async function run(
       resolveCode(exitCode ?? 1);
     });
   });
+
+  const durationMs = Date.now() - startedAt;
+  if (code !== 0) {
+    // 日志保留 50 行尾部，抛错消息保持 12 行不变
+    const tail50 = stderr
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .slice(-50)
+      .join("\n");
+    log.error(mod, "命令失败", { code, durationMs, stderrTail: tail50 });
+  } else {
+    log.info(mod, "命令完成", { code, durationMs });
+  }
 
   if (code !== 0 && !opts.allowFail) {
     const tail = stderr.trim().split("\n").slice(-12).join("\n");
