@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const CLIP_PREROLL_SECONDS = 2;
 
@@ -40,7 +41,7 @@ export type EnvRecord = Record<string, string | undefined>;
 
 /** 统一数据根：笔记就是根本身，cache/models 是其子目录（ADR-0020）。 */
 export function dataRoot(env: EnvRecord = process.env): string {
-  return env.VNOTE_DATA_ROOT ?? env.VNOTE_HOME ?? `${env.HOME ?? homedir()}/Documents/video-notes`;
+  return env.VNOTE_DATA_ROOT ?? env.VNOTE_HOME ?? join(env.HOME ?? homedir(), "Documents", "video-notes");
 }
 
 /** 读时求值：模块加载不再快照 env，.env 只要在调用前加载好（ADR-0009）。VNOTE_HOME 是更高优先级的显式覆盖（ADR-0020）。 */
@@ -50,7 +51,7 @@ export function notesRoot(env: EnvRecord = process.env): string {
 
 /** 读时求值：缓存根目录，env 优先，默认在数据根下（ADR-0014、ADR-0020）。 */
 export function cacheRoot(env: EnvRecord = process.env): string {
-  return env.VNOTE_CACHE_DIR ?? `${dataRoot(env)}/.cache`;
+  return env.VNOTE_CACHE_DIR ?? join(dataRoot(env), ".cache");
 }
 
 /**
@@ -59,8 +60,8 @@ export function cacheRoot(env: EnvRecord = process.env): string {
  */
 export function modelDir(env: EnvRecord = process.env): string {
   if (env.VNOTE_MODEL_DIR) return env.VNOTE_MODEL_DIR;
-  const next = `${dataRoot(env)}/models`;
-  const legacy = `${env.HOME ?? homedir()}/.cache/video-notes/models`;
+  const next = join(dataRoot(env), "models");
+  const legacy = join(env.HOME ?? homedir(), ".cache", "video-notes", "models");
   return existsSync(next) ? next : existsSync(legacy) ? legacy : next;
 }
 
