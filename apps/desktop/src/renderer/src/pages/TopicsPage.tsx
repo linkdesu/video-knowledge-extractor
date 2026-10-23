@@ -33,8 +33,11 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
     [topics, selectedId],
   );
 
-  const selectedCount = topics.filter((t) => t.selected).length;
-  const selectedIds = topics.filter((t) => t.selected).map((t) => t.id);
+  const selectedTopics = topics.filter((t) => t.selected);
+  const selectedCount = selectedTopics.length;
+  // 只有还没生成过的主题才计入按钮数量，与 core 的 `status !== "done"` 过滤一致。
+  const pendingTopics = selectedTopics.filter((t) => t.status !== "done");
+  const pendingCount = pendingTopics.length;
   const pickedCount = mergePicked.size;
   const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
 
@@ -86,11 +89,15 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   };
 
   const startNotes = () => {
-    if (selectedIds.length === 0) {
+    if (selectedCount === 0) {
       showToast("先勾选要生成的主题");
       return;
     }
-    void onStartNotes(selectedIds);
+    if (pendingCount === 0) {
+      showToast("所选主题笔记已生成");
+      return;
+    }
+    void onStartNotes(pendingTopics.map((t) => t.id));
   };
 
   const toggleMergePick = (topicId: string) => {
@@ -207,9 +214,14 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
             type="button"
             className="vn-btn primary sm"
             data-testid="topics-generate"
+            disabled={selectedCount > 0 && pendingCount === 0}
             onClick={startNotes}
           >
-            生成所选主题笔记 ({selectedCount})
+            {selectedCount === 0
+              ? "生成笔记（0 个新主题）"
+              : pendingCount === 0
+                ? "所选主题笔记已生成"
+                : `生成笔记（${pendingCount} 个新主题）`}
           </button>
         </>
       }
