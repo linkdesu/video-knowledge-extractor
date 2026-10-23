@@ -4,7 +4,7 @@
 
 ## Status
 
-已接受（accepted）。改变 [ADR-0011](./0011-stale-topic-output-cleanup.md)「整视频运行末尾清理」的触发点（现在导入时清理），目录布局、所有权哈希与保留集语义不变；`vnote topics`（重跑主题）与 `vnote notes` 的局部生成语义不变。
+已接受（accepted）。改变 [ADR-0011](./0011-stale-topic-output-cleanup.md)「整视频运行末尾清理」的触发点（现在导入时清理），目录布局、所有权哈希与保留集语义不变；`vnote topics`（重跑主题）与 `vnote notes` 的局部生成语义不变。主题页按钮的计数与禁用态后来由 [ADR-0027](./0027-topic-player-fit-and-library-refresh.md) 更新（只计未生成主题）。
 
 ## 决定
 
