@@ -814,46 +814,63 @@ async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: strin
   };
 }
 
-async function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  let videoId: string;
-  let sourcePath: string;
-  let outputDir: string | null;
-  if (target.kind === "new") {
-    let st;
-    try {
-      st = statSync(target.sourcePath);
-    } catch {
-      throw new Error("源文件不存在");
-    }
-    if (!st.isFile()) throw new Error("所选路径不是文件");
-    videoId = videoIdFor(target.sourcePath);
-    sourcePath = target.sourcePath;
-    outputDir = null;
-  } else {
-    const entry = resolveVideo(target.videoId);
-    if (target.sourcePath !== undefined && videoIdFor(target.sourcePath) !== target.videoId) {
-      throw new Error("源文件与这个视频不符");
-    }
-    videoId = target.videoId;
-    sourcePath = target.sourcePath ?? entry.sourcePath ?? "";
-    if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
-    outputDir = entry.outputDir;
+/** 入队前的门禁失败也要进诊断：记一条 ERROR（含 stack），再按原样抛给渲染层。 */
+async function withStartLog<T>(kind: JobKind, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    logger().error("app", "任务未开始", { kind, error: sanitizeError(e), stack: e.stack });
+    throw err;
   }
-  return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
 }
 
-async function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  const entry = resolveVideo(videoId);
-  if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-  return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
+  return withStartLog("extract", async () => {
+    await ensurePipelineReady();
+    let videoId: string;
+    let sourcePath: string;
+    let outputDir: string | null;
+    if (target.kind === "new") {
+      let st;
+      try {
+        st = statSync(target.sourcePath);
+      } catch {
+        throw new Error("源文件不存在");
+      }
+      if (!st.isFile()) throw new Error("所选路径不是文件");
+      videoId = videoIdFor(target.sourcePath);
+      sourcePath = target.sourcePath;
+      outputDir = null;
+    } else {
+      const entry = resolveVideo(target.videoId);
+      if (target.sourcePath !== undefined && videoIdFor(target.sourcePath) !== target.videoId) {
+        throw new Error("源文件与这个视频不符");
+      }
+      videoId = target.videoId;
+      sourcePath = target.sourcePath ?? entry.sourcePath ?? "";
+      if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
+      outputDir = entry.outputDir;
+    }
+    return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
+  });
 }
 
-async function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
-  await ensurePipelineReady();
-  const entry = resolveVideo(videoId);
-  return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
+  return withStartLog("notes", async () => {
+    await ensurePipelineReady();
+    const entry = resolveVideo(videoId);
+    if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
+    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+  });
+}
+
+function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
+  return withStartLog("topics", async () => {
+    await ensurePipelineReady();
+    const entry = resolveVideo(videoId);
+    return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+  });
 }
 
 async function pickVideo(): Promise<string | null> {
