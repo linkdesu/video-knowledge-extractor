@@ -1,4 +1,4 @@
-import { renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CLIP_PREROLL_SECONDS } from "./config";
 import { run } from "./exec";
@@ -56,7 +56,14 @@ export async function concatClips(input: { parts: string[]; outPath: string }): 
   if (parts.length === 1) {
     const only = parts[0];
     if (only === undefined) throw new Error("concatClips 至少需要一个 part");
-    renameSync(only, outPath);
+    // 临时目录常在 /var 卷上，目标在用户卷：跨设备 rename 会 EXDEV，退回复制再删
+    try {
+      renameSync(only, outPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+      copyFileSync(only, outPath);
+      unlinkSync(only);
+    }
     return;
   }
   const listPath = `${outPath}.list-${process.pid}.txt`;

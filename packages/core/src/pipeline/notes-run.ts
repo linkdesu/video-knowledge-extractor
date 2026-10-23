@@ -130,6 +130,7 @@ export async function generateAll(
       if (note !== undefined) notes.push(note);
       data = setTopicProgress(outputDir, id, {
         status: "done",
+        error: null,
         elapsedSeconds: Math.round((performance.now() - t0) / 100) / 10,
         keyPoints: note !== undefined ? keyPointsFromMarkdown(note.markdown) : [],
         clips:
