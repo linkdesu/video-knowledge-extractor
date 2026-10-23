@@ -52,11 +52,14 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   const playerRef = useRef<PlayerHandle>(null);
   const playerElRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState<number | null>(() => {
-    // 已保存的合法值优先；没有保存时竖屏默认 420，横屏自适应。
+    // 已保存的合法值优先（用户拖拽过就以用户的为准）；没有保存时竖屏默认
+    // min(420, 60% 窗口高)，横屏自适应。
     const stored = Number(window.localStorage.getItem(HEIGHT_STORAGE_KEY));
     if (Number.isFinite(stored) && stored >= 240 && stored <= 900) return stored;
     const r = detail.video.resolution;
-    return r !== null && r.height > r.width ? 420 : null;
+    return r !== null && r.height > r.width
+      ? Math.min(420, Math.round(window.innerHeight * 0.6))
+      : null;
   });
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   const startResize = (e: ReactPointerEvent<HTMLButtonElement>) => {
