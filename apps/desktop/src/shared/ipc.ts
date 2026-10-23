@@ -100,7 +100,7 @@ export type VideoDetail = {
   corrections: CorrectionEntry[];
 };
 
-/** 密钥来源：环境变量、系统密钥库、没有。 */
+/** 密钥来源：环境变量/种子（仅 dev 模式的 ASR 字段与 LLM 种子）、系统密钥库、没有。 */
 export type KeySource = "env" | "stored" | "none";
 
 export type AsrProvider = "local" | "openai" | "volcengine";
@@ -116,9 +116,9 @@ export type LlmStatus = {
   /** GET /models 发现并选中的模型名；显式配置或发现失败时为 null。 */
   discoveredModel: string | null;
   hasKey: boolean;
+  /** "env" 只可能来自 dev 模式的 .env 种子；打包版只有 "stored" 或 "none"。 */
   keySource: KeySource;
   keyStorageAvailable: boolean;
-  locked: { baseUrl: boolean; model: boolean };
   error: string | null;
 };
 
@@ -219,8 +219,6 @@ export type SettingsStatus = {
     notesRoot: boolean;
     cacheRoot: boolean;
     modelDir: boolean;
-    llmBaseUrl: boolean;
-    llmModel: boolean;
     asrProvider: boolean;
     asrBaseUrl: boolean;
     asrModel: boolean;
@@ -234,7 +232,6 @@ export type SettingsPatch = {
   notesRoot?: string;
   cacheRoot?: string;
   modelDir?: string;
-  llm?: { baseUrl?: string; model?: string };
   asr?: {
     provider?: AsrProvider;
     openai?: { baseUrl?: string; model?: string };
@@ -245,7 +242,11 @@ export type SettingsPatch = {
 /** 密钥补丁：只上行，永不下行；两者同传会被拒绝。 */
 export type SecretPatch = { apiKey?: string; clearApiKey?: boolean };
 
-export type LlmUpdatePatch = { baseUrl?: string; model?: string } & SecretPatch;
+/** LLM 表单草稿：测试连接与拉取模型都用它，不需要先保存。apiKey 为空时 main 依次回退已存密钥、dev 模式 .env 种子。 */
+export type LlmDraft = { baseUrl: string; apiKey: string };
+
+/** 一次保存整个 LLM 表单：baseUrl/model 写 settings.json，apiKey 非空时写密钥库，同一事务。 */
+export type LlmUpdatePatch = { baseUrl: string; model: string; apiKey?: string };
 
 export type AsrSecretField = "openaiKey" | "volcApiKey" | "volcAppKey" | "volcAccessKey";
 
@@ -338,9 +339,9 @@ export type VnoteApi = {
   updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus>;
   pickDirectory(kind: DirectoryKind): Promise<string | null>;
   clearCache(): Promise<{ freedBytes: number }>;
-  testLlm(): Promise<TestLlmResult>;
-  /** 用当前生效的 base url + key 拉取 <base>/models，结果交给用户选择。 */
-  listLlmModels(): Promise<LlmModelListResult>;
+  testLlm(draft: LlmDraft): Promise<TestLlmResult>;
+  /** 用草稿里的 base url + key 拉取 <base>/models，结果交给用户选择。 */
+  listLlmModels(draft: LlmDraft): Promise<LlmModelListResult>;
   testAsr(): Promise<TestAsrResult>;
   models(): Promise<ModelsStatus>;
   downloadModels(): Promise<ModelsStatus>;

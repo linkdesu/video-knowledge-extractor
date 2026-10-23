@@ -204,8 +204,7 @@ export function mediaResponse(
   return new Response(Readable.toWeb(body) as unknown as ReadableStream, { status, headers });
 }
 
-// 协议 handler 本体。root 与源路径解析都由 main 注入：
-// env 在 Finder 启动时可能还没被 .env 补全，settings 闭包值才和 settings() 一致。
+// 协议 handler 本体。root 与源路径解析都由 main 注入。
 export function createMediaHandler(opts: {
   root: () => string;
   resolveSource: (videoId: string) => string | undefined;

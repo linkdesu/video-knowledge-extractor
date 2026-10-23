@@ -25,16 +25,20 @@ export {
   VOLCENGINE_STANDARD_RESOURCE_ID,
   VOLCENGINE_STANDARD_MODEL_ID,
 } from "./core/config";
+export type { EnvRecord } from "./core/config";
 export { cacheDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
   SETTINGS_VERSION,
+  applyLlmSeed,
   defaultSettings,
   loadSettings,
   readSettingsFile,
   readSettingsFileSafe,
   resolveSettings,
   saveSettings,
+  prepareSettings,
+  validateSettingsPatch,
   settingsLockedByEnv,
 } from "./core/settings";
 export type {
@@ -54,6 +58,7 @@ export { cacheUsage, clearCache } from "./core/cache-usage";
 export { migrateStorageLayout } from "./core/storage-layout";
 export type { StorageMigrationResult } from "./core/storage-layout";
 export { resolveEndpointFromEnv, resolveLlmEndpoint, fetchModelIds } from "./llm/endpoint";
+export { displayUrl, isTimeoutError, llmHttpErrorMessage, llmNetworkErrorMessage } from "./llm/errors";
 export type { Progress, StepName, LlmEndpoint } from "./core/steps";
 export { videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo } from "./core/library";

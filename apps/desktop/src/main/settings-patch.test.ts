@@ -9,8 +9,6 @@ import { buildSettingsPatch } from "./settings-patch";
 /**
  * updateSettings 落盘验证（ADR-0015 §8，ADR-0016 §9）：buildSettingsPatch 是 updateSettings 交给
  * core saveSettings（deep merge + env 锁定拒绝 + 校验 + 写盘）之前唯一的转换。
- * 这里覆盖：白名单重建（llm/asr 各块透传、undefined 不写）+ 枚举与形状校验 + legacy asr.remote 拒绝
- * + 落盘到 settings.json + deep merge 不覆盖未传字段。
  */
 
 let envDir: string;
@@ -34,10 +32,9 @@ afterEach(() => {
 });
 
 describe("buildSettingsPatch 白名单重建 + updateSettings 落盘", () => {
-  test("只带 llm 时只写 llm 字段，undefined 不写", () => {
-    const clean = buildSettingsPatch({ llm: { baseUrl: "https://llm.test/v1" } });
-    expect(clean).toEqual({ llm: { baseUrl: "https://llm.test/v1" } });
-    expect("model" in (clean.llm ?? {})).toBe(false);
+  test("运行时带上 llm 块也会被丢弃：LLM 只走 updateLlm 一条写路径", () => {
+    const clean = buildSettingsPatch({ llm: { baseUrl: "https://llm.test/v1" } } as unknown as SettingsPatch);
+    expect(clean).toEqual({});
   });
 
   test("只带 asr.provider 时只写 provider（openai / volcengine / local 都接受）", () => {
@@ -70,11 +67,10 @@ describe("buildSettingsPatch 白名单重建 + updateSettings 落盘", () => {
     expect(() => buildSettingsPatch({ modelDir: "相对路径" })).toThrow("设置 modelDir 必须是非空绝对路径");
   });
 
-  test("llm 与 asr 同时带时都落进 clean", () => {
+  test("只带 asr 时只落 asr", () => {
     expect(
-      buildSettingsPatch({ llm: { model: "gpt-x" }, asr: { provider: "openai", openai: { model: "qwen3-asr" } } }),
+      buildSettingsPatch({ asr: { provider: "openai", openai: { model: "qwen3-asr" } } }),
     ).toEqual({
-      llm: { model: "gpt-x" },
       asr: { provider: "openai", openai: { model: "qwen3-asr" } },
     });
   });
@@ -116,8 +112,9 @@ describe("buildSettingsPatch 白名单重建 + updateSettings 落盘", () => {
     const dir = mkdtempSync(join(tmpdir(), "vnote-settings-"));
     const file = join(dir, "settings.json");
     try {
+      // LLM 已由 updateLlm 写入；通用设置 patch 不得改动它
+      saveSettings(file, { llm: { baseUrl: "https://llm.test/v1", model: "gpt-x" } });
       const patch: SettingsPatch = {
-        llm: { baseUrl: "https://llm.test/v1", model: "gpt-x" },
         asr: {
           provider: "volcengine",
           openai: { baseUrl: "https://asr.test/v1", model: "qwen3-asr" },

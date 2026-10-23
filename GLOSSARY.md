@@ -104,8 +104,16 @@ _Avoid_: 云端转写、语音识别 API
 本地 ASR 所需的四组模型文件：识别（`asr`）、说话人分离（`diarization`）、声纹（`speaker-embedding`）、标点（`punctuation`），合计约 1.1 GB。工具内置清单记录每个文件的路径、sha256 与字节数；文件按包整体校验并原子落位，校验不过的包不可用。模型放模型目录（`VNOTE_MODEL_DIR`，默认 `<数据根>/models`），获取方式只有两种：设置页手动下载（断点续传，不自动开始）或从本地目录/归档导入。
 _Avoid_: 模型文件、权重
 
+**LLM 提供方配置**（`LLM provider config`）：
+主题分析与笔记端点的三个用户自有字段：接口地址（baseUrl）、API key、模型名。桌面端以 `settings.json` 加系统密钥库为唯一真相来源，设置页是唯一写入入口，一次「保存」在一个 crash-recoverable 凭据事务里写两个存储；「测试连接」与「拉取模型」用当前草稿，无需先保存；模型字段是组合框（自由输入或从列表选）。CLI 保持 env-only 契约，不走设置页与密钥库。
+_Avoid_: 端点配置、LLM 设置项、env 配置
+
+**dev 模式种子**（dev seed）：
+桌面端 dev 模式启动时从 `.env` 读入的 LLM 种子数据：只填充 `settings.json` 尚无保存值的 baseUrl/model，API key 只在没有已存 key 时作回退；不覆盖已保存值、不锁定字段，用户保存后种子即失效。打包版没有种子，`.env` 与 LLM 环境变量一律不读，key 来源只有「已保存」与「无」两种。
+_Avoid_: env 覆盖、环境变量配置、dotenv 配置
+
 **密钥库**（`Secret Store`，Electron `safeStorage`）：
-桌面端系统级加密存储，保存 LLM 与远程 ASR 的 API key。密钥只存密文，不进 `settings.json`、不进 IPC 返回值与日志；界面不显示已存 key 的明文，只显示「已保存（系统密钥库）」或环境变量来源提示；输入框始终可用，可粘贴新 key 覆盖。系统密钥存储不可用时只能用环境变量。
+桌面端系统级加密存储，保存 LLM 与远程 ASR 的 API key。密钥只存密文，不进 `settings.json`、不进 IPC 返回值与日志；界面不显示已存 key 的明文，只显示「已保存（系统密钥库）」或「dev 模式种子」提示；输入框始终可用，可粘贴新 key 覆盖。系统密钥存储不可用时打包版没有其它 key 来源，设置页显示不可用并禁用保存。
 _Avoid_: 密码文件、token 存储
 
 ## 不使用的词

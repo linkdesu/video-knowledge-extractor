@@ -1,4 +1,4 @@
-import { asrEnv, llmEnv, type EnvRecord } from "./config";
+import { asrEnv, type EnvRecord } from "./config";
 import type { AppSettings, AsrProvider, VolcengineMode } from "./settings";
 
 export type KeySource = "env" | "stored" | "none";
@@ -27,15 +27,24 @@ function keyFor(envValueKey: string | undefined, secret: string | undefined): { 
   return { key: undefined, source: "none" };
 }
 
-/** env key > 传入的已解密 key；baseUrl/model 来自有效设置（env 已并入，ADR-0015）。 */
-export function resolveLlm(settings: AppSettings, secret: string | undefined, env: EnvRecord = process.env): Resolution<ResolvedLlm> {
-  const envKey = llmEnv(env).apiKey;
-  const { key, source } = keyFor(envKey, secret);
+/** 已存 key > 传入的种子 key（dev 模式 .env，keySource 记为 env）> 无；baseUrl/model 来自有效设置（r30 契约）。 */
+export function resolveLlm(settings: AppSettings, secret: string | undefined, seedKey?: string): Resolution<ResolvedLlm> {
+  let key: string | undefined;
+  let source: KeySource = "none";
+  if (secret !== undefined && secret !== "") {
+    key = secret;
+    source = "stored";
+  } else if (seedKey !== undefined && seedKey !== "") {
+    key = seedKey;
+    source = "env";
+  }
   const missing: string[] = [];
   if (settings.llm.baseUrl === "") missing.push("接口地址");
-  if (key === undefined) missing.push("API key");
+  if (key === undefined) {
+    missing.push("API key");
+    return { value: undefined, missing, keySource: source };
+  }
   if (missing.length > 0) return { value: undefined, missing, keySource: source };
-  if (key === undefined) return { value: undefined, missing: ["API key"], keySource: source };
   return { value: { baseUrl: settings.llm.baseUrl, model: settings.llm.model, apiKey: key }, missing, keySource: source };
 }
 

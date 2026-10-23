@@ -143,21 +143,14 @@ describe("commitCredentialUpdate", () => {
     writePending(w, {
       txId: "tx-2",
       createdAt: "2026-01-01T00:00:00.000Z",
-      settings: { llm: { baseUrl: "https://c.example" } },
+      // 非法 base url：core 的 saveSettings 校验拒绝这笔 pending
+      settings: { llm: { baseUrl: "not-a-url" } },
       secret: { id: "llm", kind: "set", value: "k-asr" },
     });
-    // env 锁定 llm.baseUrl：core saveSettings 拒绝该 patch
-    const prev = process.env.VNOTE_LLM_BASE_URL;
-    process.env.VNOTE_LLM_BASE_URL = "https://env.example";
-    try {
-      const err = replayCredentialTransaction(w);
-      expect(err).toContain("未完成的凭据更新");
-      expect(readFileSync(w.settingsFile, "utf8")).not.toContain("https://c.example");
-      expect(readFileSync(pendingPath(w), "utf8")).toContain("enc:");
-    } finally {
-      if (prev === undefined) delete process.env.VNOTE_LLM_BASE_URL;
-      else process.env.VNOTE_LLM_BASE_URL = prev;
-    }
+    const err = replayCredentialTransaction(w);
+    expect(err).toContain("未完成的凭据更新");
+    expect(readFileSync(w.settingsFile, "utf8")).not.toContain("not-a-url");
+    expect(readFileSync(pendingPath(w), "utf8")).toContain("enc:");
   });
 
   test("pending 解密失败：保留原文件并返回可读错误", () => {
@@ -194,28 +187,44 @@ describe("commitCredentialUpdate", () => {
     writePending(w, {
       txId: "tx-old",
       createdAt: "2026-01-01T00:00:00.000Z",
-      settings: { llm: { baseUrl: "https://blocked.example" } },
+      // 非法 base url：core 的 saveSettings 校验拒绝这笔 pending
+      settings: { llm: { baseUrl: "not-a-url" } },
       secret: { id: "llm", kind: "set", value: "old-key" },
     });
-    const prev = process.env.VNOTE_LLM_BASE_URL;
-    process.env.VNOTE_LLM_BASE_URL = "https://env.example";
-    try {
-      expect(() =>
-        commitCredentialUpdate({
-          ...w,
-          settingsPatch: { asr: { openai: { baseUrl: "https://new.example" } } },
-          secret: { id: "volcApiKey", patch: { apiKey: "new-key" } },
-        }),
-      ).toThrow("未完成的凭据更新");
-    } finally {
-      if (prev === undefined) delete process.env.VNOTE_LLM_BASE_URL;
-      else process.env.VNOTE_LLM_BASE_URL = prev;
-    }
+    expect(() =>
+      commitCredentialUpdate({
+        ...w,
+        settingsPatch: { asr: { openai: { baseUrl: "https://new.example" } } },
+        secret: { id: "volcApiKey", patch: { apiKey: "new-key" } },
+      }),
+    ).toThrow("未完成的凭据更新");
     const body = readPendingBody(w);
     expect(body.txId).toBe("tx-old");
-    expect(body.settings).toEqual({ llm: { baseUrl: "https://blocked.example" } });
+    expect(body.settings).toEqual({ llm: { baseUrl: "not-a-url" } });
     expect(w.secretStore.get("volcApiKey")).toBeUndefined();
     expect(readFileSync(w.settingsFile, "utf8")).not.toContain("https://new.example");
+  });
+
+  test("非法 baseUrl：校验在写任何文件之前拒绝，不写 pending、不动 settings 与密钥；修正后成功", () => {
+    const w = makeWorld();
+    w.secretStore.set("llm", "kept");
+    const before = readSettings(w);
+    expect(() =>
+      commitCredentialUpdate({ ...w, settingsPatch: { llm: { baseUrl: "api.example.com" } }, secret: { id: "llm", patch: { apiKey: "k-bad" } } }),
+    ).toThrow("必须是 http(s) 绝对 URL");
+    expect(() => readFileSync(pendingPath(w), "utf8")).toThrow();
+    expect(readSettings(w)).toEqual(before);
+    expect(w.secretStore.get("llm")).toBe("kept");
+    // 修正后成功
+    commitCredentialUpdate({
+      ...w,
+      settingsPatch: { llm: { baseUrl: "https://ok.example" } },
+      secret: { id: "llm", patch: { apiKey: "k-new" } },
+    });
+    expect((readSettings(w).llm as Record<string, unknown>).baseUrl).toBe("https://ok.example");
+    expect(w.secretStore.get("llm")).toBe("k-new");
+    // 全新重放报告无 pending
+    expect(replayCredentialTransaction(w)).toBe(null);
   });
 });
 

@@ -202,7 +202,7 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
   const { baseUrl, apiKey, model } = start.endpoint;
   if (baseUrl === "" || apiKey === "") {
     // 错误文案绝不含 key（ADR-0009）
-    parent.postMessage({ type: "error", message: "未配置 LLM 端点：请在设置或环境变量里设置 base url 与 api key" });
+    parent.postMessage({ type: "error", message: "未配置 LLM 端点：请在设置页填写接口地址与 API key" });
     return;
   }
   if (model === undefined || model === "") {

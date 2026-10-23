@@ -115,7 +115,7 @@ function readStored(s: StoreImpl): void {
 }
 
 function persist(s: StoreImpl): void {
-  if (!s.codec.available()) throw new Error("系统密钥存储不可用，请用环境变量配置密钥");
+  if (!s.codec.available()) throw new Error("系统密钥存储不可用，无法保存密钥");
   const body: { version: 2 } & Partial<Record<SecretId, string>> = { version: 2 };
   for (const id of SECRET_IDS) {
     const value = s.values[id];

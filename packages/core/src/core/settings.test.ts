@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   SETTINGS_VERSION,
+  applyLlmSeed,
   defaultSettings,
   loadSettings,
   readSettingsFile,
@@ -256,7 +257,7 @@ describe("v2 迁移", () => {
 });
 
 describe("resolveSettings 优先级", () => {
-  test("env > 文件 > 默认，逐字段生效", () => {
+  test("路径与 asr 是 env > 文件 > 默认；llm 只看文件层（env 不覆盖，r30 契约）", () => {
     const file: SettingsFile = {
       version: SETTINGS_VERSION,
       notesRoot: "/file/notes",
@@ -267,17 +268,18 @@ describe("resolveSettings 优先级", () => {
       HOME: "/h",
       VNOTE_CACHE_DIR: "/env/cache",
       VNOTE_LLM_BASE_URL: "https://env",
+      VNOTE_LLM_MODEL: "m-env",
       VNOTE_ASR_VOLC_MODE: "standard",
     });
     expect(settings.notesRoot).toBe("/file/notes");
     expect(settings.cacheRoot).toBe("/env/cache");
     expect(settings.modelDir).toBe("/h/Documents/video-notes/models");
-    expect(settings.llm.baseUrl).toBe("https://env");
-    expect(settings.llm.model).toBe("m-file");
+    expect(settings.llm).toEqual({ baseUrl: "https://file", model: "m-file" });
     expect(settings.asr.provider).toBe("volcengine");
     expect(settings.asr.volcengine.mode).toBe("standard");
+    expect(locked).not.toHaveProperty("llmBaseUrl");
+    expect(locked).not.toHaveProperty("llmModel");
     expect(locked.cacheRoot).toBe(true);
-    expect(locked.llmBaseUrl).toBe(true);
     expect(locked.volcMode).toBe(true);
     expect(locked.volcAuthMode).toBe(false);
   });
@@ -350,7 +352,7 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
   });
 
 
-  test("env 锁定字段保存被拒，错误文案点名字段", () => {
+  test("env 锁定字段保存被拒，错误文案点名字段；llm 不被 env 锁定（r30 契约）", () => {
     const path = resolve(tempRoot(), "settings.json");
     writeFileSync(path, JSON.stringify(base));
     const env = {
@@ -364,6 +366,7 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
     };
     expect(() => saveSettings(path, { notesRoot: "/x" }, env)).toThrow("notesRoot 由环境变量控制");
     expect(() => saveSettings(path, { llm: { model: "m-x" }, asr: { openai: { baseUrl: "https://x" }, volcengine: { mode: "flash", authMode: "apiKey" } } }, env)).toThrow("由环境变量控制");
+    expect(() => saveSettings(path, { llm: { model: "m-new-llm" } }, env)).not.toThrow();
   });
 
   test("baseUrl 校验拒绝 userinfo、query、fragment 与非法协议（未选中的 openai 块同样拒绝）", () => {
@@ -381,7 +384,7 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
     }
   });
 
-  test("settingsLockedByEnv 覆盖 10 个布尔字段", () => {
+  test("settingsLockedByEnv 覆盖 8 个布尔字段，不含 llm（r30 契约）", () => {
     const env = {
       VNOTE_HOME: "/a",
       VNOTE_CACHE_DIR: "/b",
@@ -398,8 +401,6 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
       notesRoot: true,
       cacheRoot: true,
       modelDir: true,
-      llmBaseUrl: true,
-      llmModel: true,
       asrProvider: true,
       asrBaseUrl: true,
       asrModel: true,
@@ -410,13 +411,39 @@ describe("saveSettings 逐层 patch 与 env 锁定", () => {
       notesRoot: false,
       cacheRoot: false,
       modelDir: false,
-      llmBaseUrl: false,
-      llmModel: false,
       asrProvider: false,
       asrBaseUrl: false,
       asrModel: false,
       volcMode: false,
       volcAuthMode: false,
     });
+  });
+});
+
+describe("applyLlmSeed", () => {
+  test("空文件 + 种子填充两项", () => {
+    const seeded = applyLlmSeed({ version: SETTINGS_VERSION }, { baseUrl: "  https://seed  ", model: " m-seed " });
+    expect(seeded.llm).toEqual({ baseUrl: "https://seed", model: "m-seed" });
+  });
+
+  test("已存值优先，种子不覆盖", () => {
+    const file: SettingsFile = { version: SETTINGS_VERSION, llm: { baseUrl: "https://saved", model: "m-saved" } };
+    expect(applyLlmSeed(file, { baseUrl: "https://seed", model: "m-seed" })).toBe(file);
+  });
+
+  test("空白种子视为未提供，不覆盖已存值", () => {
+    const file: SettingsFile = { version: SETTINGS_VERSION, llm: { baseUrl: "https://saved", model: "m-saved" } };
+    expect(applyLlmSeed(file, { baseUrl: "   ", model: "" })).toBe(file);
+  });
+
+  test("undefined 种子不改动内容", () => {
+    const file: SettingsFile = { version: SETTINGS_VERSION, llm: { baseUrl: "https://saved", model: "m-saved" } };
+    expect(applyLlmSeed(file, undefined)).toBe(file);
+  });
+
+  test("部分字段：只补缺的那项，已存的另一项保持", () => {
+    const file: SettingsFile = { version: SETTINGS_VERSION, llm: { baseUrl: "https://saved" } };
+    const seeded = applyLlmSeed(file, { baseUrl: "https://seed", model: "m-seed" });
+    expect(seeded.llm).toEqual({ baseUrl: "https://saved", model: "m-seed" });
   });
 });

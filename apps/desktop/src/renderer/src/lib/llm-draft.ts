@@ -1,57 +1,38 @@
+import type { LlmDraft, LlmUpdatePatch } from "../../../shared/ipc";
+
 export type LlmSaved = { baseUrl: string; model: string | null };
-export type LlmDraft = { baseUrl: string; model: string };
-export type LlmSavePatch = { baseUrl?: string; model?: string };
-export type LlmLocked = { baseUrl: boolean; model: boolean };
+export type LlmFormDraft = LlmDraft & { model: string };
 export type LlmModelOption = { value: string; label: string };
 
-export function draftFrom(saved: LlmSaved): LlmDraft {
-  return { baseUrl: saved.baseUrl, model: saved.model ?? "" };
+export function draftFrom(saved: LlmSaved): LlmFormDraft {
+  return { baseUrl: saved.baseUrl, apiKey: "", model: saved.model ?? "" };
 }
 
-export function llmDirty(saved: LlmSaved, draft: LlmDraft, locked: LlmLocked): boolean {
-  if (!locked.baseUrl && draft.baseUrl.trim() !== saved.baseUrl) return true;
-  if (!locked.model && draft.model.trim() !== (saved.model ?? "")) return true;
-  return false;
+export function llmDirty(saved: LlmSaved, draft: LlmFormDraft): boolean {
+  if (draft.baseUrl.trim() !== saved.baseUrl) return true;
+  if (draft.model.trim() !== (saved.model ?? "")) return true;
+  return draft.apiKey.trim() !== "";
 }
 
-export function llmBaseUrlChanged(saved: LlmSaved, draft: LlmDraft, locked: LlmLocked): boolean {
-  if (!locked.baseUrl && draft.baseUrl.trim() !== saved.baseUrl) return true;
-  return false;
-}
-
-export function llmPatch(
-  saved: LlmSaved,
-  draft: LlmDraft,
-  locked: LlmLocked,
-): LlmSavePatch | null {
-  const patch: LlmSavePatch = {};
-  if (!locked.baseUrl && draft.baseUrl.trim() !== saved.baseUrl) {
-    patch.baseUrl = draft.baseUrl.trim();
-  }
-  if (!locked.model) {
-    const next = draft.model.trim();
-    const prev = saved.model ?? "";
-    if (next !== prev) patch.model = next;
-  }
-  if (Object.keys(patch).length === 0) return null;
+export function llmPatch(saved: LlmSaved, draft: LlmFormDraft): LlmUpdatePatch | null {
+  const baseUrl = draft.baseUrl.trim();
+  const model = draft.model.trim();
+  const apiKey = draft.apiKey.trim();
+  if (baseUrl === saved.baseUrl && model === (saved.model ?? "") && apiKey === "") return null;
+  const patch: LlmUpdatePatch = { baseUrl, model };
+  if (apiKey !== "") patch.apiKey = apiKey;
   return patch;
 }
 
-export function modelOptions(
-  fetched: string[] | null,
-  selected: string,
-): LlmModelOption[] {
-  const options: LlmModelOption[] = [{ value: "", label: "自动发现（留空）" }];
-  if (fetched !== null) {
-    const seen = new Set<string>([""]);
-    for (const name of fetched) {
-      if (seen.has(name)) continue;
-      seen.add(name);
-      options.push({ value: name, label: name });
-    }
-  }
-  if (selected !== "" && !options.some((o) => o.value === selected)) {
-    options.push({ value: selected, label: selected });
+export function modelOptions(fetched: string[] | null, typed: string): LlmModelOption[] {
+  const q = typed.trim().toLowerCase();
+  const seen = new Set<string>();
+  const options: LlmModelOption[] = [];
+  if (fetched === null) return options;
+  for (const id of fetched) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (q === "" || id.toLowerCase().includes(q)) options.push({ value: id, label: id });
   }
   return options;
 }

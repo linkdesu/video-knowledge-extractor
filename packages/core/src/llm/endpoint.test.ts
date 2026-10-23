@@ -77,33 +77,92 @@ describe("fetchModelIds", () => {
     expect(requestLog[0]?.authorization).toBe("Bearer k-test");
   });
 
-  test("非 2xx 抛错，body 里回显的 key 被抹掉", async () => {
+  test("非 2xx 抛状态码文案，不回显 key，不读响应正文", async () => {
     const base = startServer(true);
     const promise = fetchModelIds(base, "k-test");
-    await expect(promise).rejects.toThrow(/500/);
+    await expect(promise).rejects.toThrow(/服务端错误（HTTP 500）/);
     const err = await promise.catch((e: unknown) => e);
+    expect((err as Error).message).toBe("模型发现失败：服务端错误（HTTP 500）");
     expect((err as Error).message).not.toContain("k-test");
-    expect((err as Error).message).toContain("[redacted]");
+    expect((err as Error).message).not.toContain("echo");
+  });
+
+  test("401 带 JSON 正文：只报文案，不含正文与 key", async () => {
+    const base = startServer();
+    status = 401;
+    body = JSON.stringify({ error: { message: "invalid api key secret-body" } });
+    const err = await fetchModelIds(base, "k-test").catch((e: unknown) => e);
+    expect((err as Error).message).toBe("模型发现失败：API key 无效或已停用");
+    expect((err as Error).message).not.toContain("invalid api key");
+    expect((err as Error).message).not.toContain("k-test");
+  });
+
+  test("404 文案带展示地址", async () => {
+    const base = startServer();
+    status = 404;
+    body = "";
+    const err = await fetchModelIds(base, "k-test").catch((e: unknown) => e);
+    expect((err as Error).message).toContain("接口地址不存在");
+    expect((err as Error).message).toContain("/models");
   });
 
   test("网络异常抛出中文错误", async () => {
-    await expect(fetchModelIds("http://127.0.0.1:1", "k-test")).rejects.toThrow(/模型发现失败：无法连接/);
+    await expect(fetchModelIds("http://127.0.0.1:1", "k-test")).rejects.toThrow(/模型发现失败：连接被拒绝/);
   });
 
-  test("网络异常文本里的 key 也被抹掉", async () => {
+  test("网络异常文本不回显原始报错里的 key", async () => {
     const throwing = (() => Promise.reject(new Error("connect failed, authorization Bearer k-test"))) as unknown as typeof fetch;
     const err = await fetchModelIds("https://x.test/v1", "k-test", throwing).catch((e: unknown) => e);
     expect((err as Error).message).not.toContain("k-test");
-    expect((err as Error).message).toContain("[redacted]");
+    expect((err as Error).message).toContain("无法连接");
+  });
+
+  test("域名解析失败与超时各有专属文案", async () => {
+    const dns = (() => {
+      const e = new Error("getaddrinfo failed") as Error & { code: string };
+      e.code = "ENOTFOUND";
+      return Promise.reject(e);
+    }) as unknown as typeof fetch;
+    const dnsErr = await fetchModelIds("https://x.test/v1", "k-test", dns).catch((e: unknown) => e);
+    expect((dnsErr as Error).message).toContain("域名解析失败");
+    const timeout = (() => {
+      const e = new Error("timed out") as Error & { name: string; code: string };
+      e.name = "TimeoutError";
+      e.code = "23";
+      return Promise.reject(e);
+    }) as unknown as typeof fetch;
+    const toErr = await fetchModelIds("https://x.test/v1", "k-test", timeout).catch((e: unknown) => e);
+    expect((toErr as Error).message).toBe("模型发现失败：请求超时");
   });
 
   test("错误文案丢掉 baseUrl 里的 query", async () => {
     const base = startServer();
+    status = 500;
     body = modelsResponse([]);
     const err = await resolveLlmEndpoint({ baseUrl: `${base}/v1?trace=private`, apiKey: "k-test" }).catch(
       (e: unknown) => e,
     );
     expect((err as Error).message).not.toContain("trace=private");
+  });
+
+  test("200 非 JSON 正文（含 key）：报不是合法 JSON，不含 key 与正文", async () => {
+    const base = startServer();
+    status = 200;
+    body = "plain-text not json k-test";
+    const err = await fetchModelIds(base, "k-test").catch((e: unknown) => e);
+    expect((err as Error).message).toBe("模型发现失败：服务端返回的不是合法 JSON");
+    expect((err as Error).message).not.toContain("k-test");
+    expect((err as Error).message).not.toContain("plain-text");
+  });
+
+  test("body 读取超时：报请求超时", async () => {
+    const e = new Error("timed out") as Error & { name: string; code: string };
+    e.name = "TimeoutError";
+    e.code = "23";
+    const fakeResponse = { ok: true, json: () => Promise.reject(e) } as unknown as Response;
+    const throwingFetch = (() => Promise.resolve(fakeResponse)) as unknown as typeof fetch;
+    const err = await fetchModelIds("https://x.test/v1", "k-test", throwingFetch).catch((e: unknown) => e);
+    expect((err as Error).message).toBe("模型发现失败：请求超时");
   });
 });
 
@@ -147,6 +206,7 @@ describe("resolveLlmEndpoint", () => {
 
   test("缺 model 时调 /models 发现并选择", async () => {
     const base = startServer();
+    status = 200;
     body = modelsResponse(REAL_IDS);
     const endpoint = await resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test" });
     expect(endpoint.model).toBe("ai-02/qwen3.8-27b");
@@ -155,6 +215,7 @@ describe("resolveLlmEndpoint", () => {
 
   test("空 model 字符串按缺省处理：走发现，不返回空模型名", async () => {
     const base = startServer();
+    status = 200;
     body = modelsResponse(REAL_IDS);
     const endpoint = await resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test", model: "" });
     expect(endpoint.model).toBe("ai-02/qwen3.8-27b");
@@ -163,6 +224,7 @@ describe("resolveLlmEndpoint", () => {
 
   test("空列表报错文本不含 key 且给出显式指定提示", async () => {
     const base = startServer();
+    status = 200;
     body = modelsResponse([]);
     const promise = resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test" });
     await expect(promise).rejects.toThrow(/没有可用的通用 chat 模型/);
@@ -170,12 +232,23 @@ describe("resolveLlmEndpoint", () => {
     expect((err as Error).message).not.toContain("k-test");
   });
 
-  test("非 2xx 报错文本不含 key，桩把收到的 authorization 回显进 500 body", async () => {
+  test("非 2xx 报错不含 key 与 body 回显", async () => {
     const base = startServer(true);
     const promise = resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test" });
-    await expect(promise).rejects.toThrow(/模型发现失败/);
+    await expect(promise).rejects.toThrow(/模型发现失败：服务端错误（HTTP 500）/);
     const err = await promise.catch((e: unknown) => e);
     expect((err as Error).message).not.toContain("k-test");
-    expect((err as Error).message).toContain("[redacted]");
+    expect((err as Error).message).not.toContain("echo");
+  });
+
+  test("200 JSON 错误字段回显 key：发现失败文案不含 key 与正文", async () => {
+    const base = startServer();
+    status = 200;
+    body = JSON.stringify({ error: { message: "bad api key k-test" }, data: [] });
+    const promise = resolveLlmEndpoint({ baseUrl: base, apiKey: "k-test" });
+    await expect(promise).rejects.toThrow(/没有可用的通用 chat 模型/);
+    const err = await promise.catch((e: unknown) => e);
+    expect((err as Error).message).not.toContain("k-test");
+    expect((err as Error).message).not.toContain("bad api key");
   });
 });
