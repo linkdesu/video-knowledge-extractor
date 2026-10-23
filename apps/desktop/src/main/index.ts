@@ -108,6 +108,7 @@ import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
+import { defaultDataRoot, killProcessTree, prependPath } from "./platform";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
 // 仓库 tmp/dev-home 下，便于人工检查；打包后的 app 走正常路径（resolveDevHome 返回 null）。
@@ -130,6 +131,11 @@ if (devHome !== null) {
 if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !== "") {
   mkdirSync(process.env.VNOTE_USER_DATA, { recursive: true });
   app.setPath("userData", resolve(process.env.VNOTE_USER_DATA));
+}
+// 默认数据根（r34）：用户没显式指定 VNOTE_HOME/VNOTE_DATA_ROOT 时，统一指到真实 Documents 下的
+// video-notes（与 core dataRoot 兜底同形，Windows 下避免落到盘符根）；dev 目录逻辑已在上面处理。
+if ((process.env.VNOTE_HOME === undefined || process.env.VNOTE_HOME === "") && (process.env.VNOTE_DATA_ROOT === undefined || process.env.VNOTE_DATA_ROOT === "")) {
+  process.env.VNOTE_DATA_ROOT = defaultDataRoot(app.getPath("documents"));
 }
 
 // 结构化日志（r34）：主进程与 worker 共用 userData/logs；console 只在 dev 开
@@ -158,17 +164,16 @@ if (!app.isPackaged) {
 }
 const devSeed = app.isPackaged ? undefined : llmEnv(process.env);
 
-// 打包后从 Finder 启动的 GUI 进程拿到的是 launchd 的最小 PATH（/usr/bin:/bin:/usr/sbin:/sbin），
-// Homebrew 的 ffmpeg/ffprobe 不在里面。这里把常见安装位置补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
+// 从 Finder 启动的 GUI 进程拿到的 PATH 很窄（macOS 是 launchd 最小 PATH，Homebrew 的
+// ffmpeg/ffprobe 不在里面；Windows 打包版把 ffmpeg 打进 resources，同样要补上）。
+// 这里按平台把工具目录补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
 // VNOTE_FFMPEG_DIR 可显式指定（自定义安装或测试）。
-const TOOL_DIRS = [
-  process.env.VNOTE_FFMPEG_DIR,
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  "/bin",
-].filter((dir): dir is string => dir !== undefined && dir !== "");
-process.env.PATH = `${TOOL_DIRS.join(":")}:${process.env.PATH ?? ""}`;
+process.env.PATH = prependPath({
+  platform: process.platform,
+  // resources 路径只在打包版存在，未打包时不传，避免把不存在的目录补进 PATH
+  resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+  env: process.env,
+});
 
 /**
  * 云端 ASR 开关（r26）：未签名试用版只启用本地 sherpa-onnx，云端提供方（OpenAI 兼容 / 火山）不暴露。
@@ -422,21 +427,6 @@ const workers = new Map<string, WorkerState>();
 let lastJobLog: { taskId: string; kind: string; videoId: string; state: string } | null = null;
 // 最近任务的输出目录（r34）：prepared 回调才确定，环境快照里作为 lastJobOutput 检查
 let lastJobOutputDir: string | null = null;
-
-function killProcessTree(pid: number): void {
-  // 结束 worker 进程本身不会带走它 spawn 的 ffmpeg/ffprobe，按父 pid 补杀一层
-  const out = spawnSync("pgrep", ["-P", String(pid)]);
-  if (out.status !== 0) return;
-  for (const line of out.stdout.toString().split("\n")) {
-    const childPid = Number(line);
-    if (!Number.isInteger(childPid)) continue;
-    try {
-      process.kill(childPid, "SIGKILL");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ESRCH") console.warn(sanitizeError(err));
-    }
-  }
-}
 
 /** 终态（cancelled、异常退出未交付、已交付 error）对已知 outputDir 调 recoverInterruptedRun（token 匹配才写，幂等）。 */
 function recoverJob(job: JobRequest, message: string): void {
@@ -1426,6 +1416,26 @@ function maybeAutoVerifyModels(): void {
     if (autoVerify === done) autoVerify = undefined;
   });
 }
+/**
+ * Windows 首启自动下载模型（r34）：Windows 没有包管理器可装 ffmpeg，模型也要用户自己拖进设置页，
+ * 首启直接后台下载。非 win32 / VNOTE_AUTO_DOWNLOAD_MODELS=0 / VNOTE_MODEL_DIR 已设置（用户自管）
+ * 都不做；下载器或任务队列忙、模型已 ready、有 unverified 包（启动校验流程管它）也不做。
+ * 失败把脱敏错误进 error 日志并补一行模型日志，让设置页日志面板能看到原因；UI 状态走既有事件。
+ */
+function maybeAutoDownloadModels(): void {
+  if (process.platform !== "win32") return;
+  if (process.env.VNOTE_AUTO_DOWNLOAD_MODELS === "0") return;
+  if (process.env.VNOTE_MODEL_DIR !== undefined && process.env.VNOTE_MODEL_DIR !== "") return;
+  if (queue.busy() || modelsDownloader.busy()) return;
+  const status = modelStatus(settings.modelDir);
+  if (status.ready) return;
+  if (status.bundles.some((b) => b.state === "unverified")) return;
+  void downloadModelsNow().catch((err) => {
+    const message = sanitizeError(err);
+    logger().error("import", `首启自动下载模型失败：${message}`);
+    appendModelLog({ level: "error", text: `首启自动下载模型失败：${message}` });
+  });
+}
 
 let quitting = false;
 app.on("before-quit", (event) => {
@@ -1465,6 +1475,7 @@ void app.whenReady().then(async () => {
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
   maybeAutoVerifyModels();
+  maybeAutoDownloadModels();
 
   // 启动日志（r34）：版本/commit/打包标志/userData + 完整环境快照，先于窗口显示
   let gpuModel: string | null = null;
