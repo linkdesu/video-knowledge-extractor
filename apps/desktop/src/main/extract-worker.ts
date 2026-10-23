@@ -1,4 +1,4 @@
-import { killActiveChildren, runExtract, runNotes, runTopics } from "@video-notes/core";
+import { configureLogging, killActiveChildren, logger, runExtract, runNotes, runTopics, runWithTask } from "@video-notes/core";
 import type { AsrConfig, Progress } from "@video-notes/core";
 
 type StartMessage = {
@@ -14,6 +14,8 @@ type StartMessage = {
   runToken: string;
   endpoint: { baseUrl: string; apiKey: string; model?: string };
   asr: AsrConfig;
+  /** main 传入的日志目录；缺省时 worker 不 configureLogging（测试路径保持无日志） */
+  logDir?: string;
 };
 
 // utility process 用 process.parentPort 通信；node:worker_threads 的 parentPort 在这里是 null
@@ -137,6 +139,7 @@ export function parseStart(raw: unknown): ParsedStartResult {
       runToken: raw.runToken,
       endpoint: { baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, ...(model === undefined ? {} : { model }) },
       asr: asrResult.config,
+      ...("logDir" in raw && typeof raw.logDir === "string" && raw.logDir !== "" ? { logDir: raw.logDir } : {}),
     },
   };
 }
@@ -199,6 +202,23 @@ function awaitPreparedAck(port: ParentPort): Promise<void> {
 }
 
 async function run(start: StartMessage, parent: ParentPort): Promise<void> {
+  // r34：main 传了 logDir 才配置 worker 自己的日志；key 登记后所有字段自动脱敏
+  if (start.logDir !== undefined) {
+    const log = configureLogging({ dir: start.logDir, level: "info", console: false });
+    if (start.endpoint.apiKey !== "") log.addSecret(start.endpoint.apiKey);
+    const asr = start.asr;
+    if (asr.provider === "openai") {
+      if (asr.apiKey !== "") log.addSecret(asr.apiKey);
+    } else if (asr.provider === "volcengine") {
+      const auth = asr.auth;
+      if (auth.kind === "apiKey") {
+        if (auth.apiKey !== "") log.addSecret(auth.apiKey);
+      } else {
+        if (auth.appKey !== "") log.addSecret(auth.appKey);
+        if (auth.accessKey !== "") log.addSecret(auth.accessKey);
+      }
+    }
+  }
   const { baseUrl, apiKey, model } = start.endpoint;
   if (baseUrl === "" || apiKey === "") {
     // 错误文案绝不含 key（ADR-0009）
@@ -221,68 +241,74 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
       topicPercent: "topicPercent" in p ? p.topicPercent : undefined,
     });
   try {
-    let result: DoneResult;
-    if (start.kind === "extract") {
-      const r = await runExtract({
-        videoPath: start.videoPath,
-        endpoint: { baseUrl, apiKey, model },
-        notesRoot: start.notesRoot,
-        modelDir: start.modelDir,
-        cacheRoot: start.cacheRoot,
-        asr: start.asr,
-        runToken: start.runToken,
-        // 接收屏障：发 prepared 后等 main 的 ACK；main 在取消过滤之前处理
-        onPrepared: (info) => {
-          parent.postMessage({ type: "prepared", ...info });
-          return awaitPreparedAck(parent);
-        },
-        onProgress: progress,
-      });
-      result = {
-        videoId: start.videoId,
-        outputDir: r.video.outputDir,
-        topicCount: r.topics.length,
-        noteCount: r.notes.length,
-        cacheHits: r.cacheHits,
-        timings: r.timings,
-      };
-    } else if (start.kind === "notes") {
-      const r = await runNotes({
-        outputDir: start.outputDir,
-        topicIds: start.topicIds,
-        endpoint: { baseUrl, apiKey, model },
-        cacheRoot: start.cacheRoot,
-        runToken: start.runToken,
-        onProgress: progress,
-      });
-      result = {
-        videoId: start.videoId,
-        outputDir: start.outputDir,
-        topicCount: 0,
-        noteCount: r.noteCount,
-        cacheHits: r.cacheHits,
-        timings: r.timings,
-      };
-    } else {
-      const r = await runTopics({
-        outputDir: start.outputDir,
-        endpoint: { baseUrl, apiKey, model },
-        cacheRoot: start.cacheRoot,
-        runToken: start.runToken,
-        onProgress: progress,
-      });
-      result = {
-        videoId: start.videoId,
-        outputDir: start.outputDir,
-        topicCount: r.topicCount,
-        noteCount: r.noteCount,
-        cacheHits: r.cacheHits,
-        timings: r.timings,
-      };
-    }
-    parent.postMessage({ type: "done", result });
+    // r34：整段流水线挂在 runToken 任务作用域里，日志带上 task id
+    await runWithTask(start.runToken, async () => {
+      let result: DoneResult;
+      if (start.kind === "extract") {
+        const r = await runExtract({
+          videoPath: start.videoPath,
+          endpoint: { baseUrl, apiKey, model },
+          notesRoot: start.notesRoot,
+          modelDir: start.modelDir,
+          cacheRoot: start.cacheRoot,
+          asr: start.asr,
+          runToken: start.runToken,
+          // 接收屏障：发 prepared 后等 main 的 ACK；main 在取消过滤之前处理
+          onPrepared: (info) => {
+            parent.postMessage({ type: "prepared", ...info });
+            return awaitPreparedAck(parent);
+          },
+          onProgress: progress,
+        });
+        result = {
+          videoId: start.videoId,
+          outputDir: r.video.outputDir,
+          topicCount: r.topics.length,
+          noteCount: r.notes.length,
+          cacheHits: r.cacheHits,
+          timings: r.timings,
+        };
+      } else if (start.kind === "notes") {
+        const r = await runNotes({
+          outputDir: start.outputDir,
+          topicIds: start.topicIds,
+          endpoint: { baseUrl, apiKey, model },
+          cacheRoot: start.cacheRoot,
+          runToken: start.runToken,
+          onProgress: progress,
+        });
+        result = {
+          videoId: start.videoId,
+          outputDir: start.outputDir,
+          topicCount: 0,
+          noteCount: r.noteCount,
+          cacheHits: r.cacheHits,
+          timings: r.timings,
+        };
+      } else {
+        const r = await runTopics({
+          outputDir: start.outputDir,
+          endpoint: { baseUrl, apiKey, model },
+          cacheRoot: start.cacheRoot,
+          runToken: start.runToken,
+          onProgress: progress,
+        });
+        result = {
+          videoId: start.videoId,
+          outputDir: start.outputDir,
+          topicCount: r.topicCount,
+          noteCount: r.noteCount,
+          cacheHits: r.cacheHits,
+          timings: r.timings,
+        };
+      }
+      parent.postMessage({ type: "done", result });
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // r34：完整错误与 stack 落日志（字段自动脱敏）；回给 main 的仍是脱敏消息
+    const e = err instanceof Error ? err : new Error(String(err));
+    logger().error("app", "worker 任务异常", { message: e.message, stack: e.stack ?? null });
+    const message = e.message;
     parent.postMessage({ type: "error", message: message.includes(apiKey) ? "任务失败（详细信息已脱敏，见日志）" : message });
   }
 }

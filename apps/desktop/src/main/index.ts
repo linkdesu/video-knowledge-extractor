@@ -20,6 +20,10 @@ import {
   cacheUsage,
   clearCache,
   coverPath,
+  collectEnvironment,
+  logEnvironment,
+  configureLogging,
+  logger,
   ensureCoverFrame,
   fetchModelIds,
   importModels,
@@ -125,6 +129,9 @@ if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !==
   app.setPath("userData", resolve(process.env.VNOTE_USER_DATA));
 }
 
+// 结构化日志（r34）：主进程与 worker 共用 userData/logs；console 只在 dev 开
+const LOG_DIR = join(app.getPath("userData"), "logs");
+configureLogging({ dir: LOG_DIR, level: "info", console: !app.isPackaged });
 const APP_SCHEME = "vnote-app";
 const RENDERER_ROOT = join(__dirname, "../renderer");
 
@@ -263,6 +270,44 @@ function sanitizeError(err: unknown): string {
   return message;
 }
 
+/** 日志脱敏集合：env 的 key 变量 + 密钥库全部值，与 sanitizeError 保持同一来源（ADR-0016 §7.1）。 */
+const ENV_SECRET_KEYS = [
+  "VNOTE_LLM_API_KEY",
+  "IDEALSOFT_API_KEY",
+  "VNOTE_ASR_API_KEY",
+  "VNOTE_VOLC_API_KEY",
+  "VOLC_ASR_API_KEY",
+  "VNOTE_VOLC_APP_KEY",
+  "VNOTE_VOLC_ACCESS_KEY",
+];
+function registerLogSecrets(): void {
+  const l = logger();
+  for (const key of ENV_SECRET_KEYS) {
+    const v = process.env[key];
+    if (v !== undefined && v !== "") l.addSecret(v);
+  }
+  for (const s of secretStore?.all() ?? []) {
+    if (s !== "") l.addSecret(s);
+  }
+}
+
+/** 运行时生效的 LLM api key 与 ASR key：轮换后重新登记，保证新值进脱敏集合。 */
+function registerRuntimeKeys(): void {
+  const l = logger();
+  if (llmRuntime.credentials?.apiKey !== undefined) l.addSecret(llmRuntime.credentials.apiKey);
+  const c = asrRuntime.config;
+  if (c === undefined) return;
+  if (c.provider === "openai") {
+    if (c.apiKey !== "") l.addSecret(c.apiKey);
+  } else if (c.provider === "volcengine") {
+    if (c.auth.kind === "apiKey") {
+      if (c.auth.apiKey !== "") l.addSecret(c.auth.apiKey);
+    } else {
+      if (c.auth.appKey !== "") l.addSecret(c.auth.appKey);
+      if (c.auth.accessKey !== "") l.addSecret(c.auth.accessKey);
+    }
+  }
+}
 /**
  * 端点发现：model 留空时后台 GET /models 自选；失败把脱敏错误留在运行时上。门禁期间不启动（ADR-0016 §5 硬规则 2）。
  * 结果直接替换 `llmRuntime.endpoint`：空 model 只是「等发现」的中间态，不能流到 worker（r26）。
@@ -353,6 +398,8 @@ function recomputeRuntimes(): void {
   } catch {
     // 重算失败（设置形状异常等）：保持旧值，界面走既有状态
   }
+  // 重算完成后登记当前生效的 key，轮换后的新值进入脱敏集合
+  registerRuntimeKeys();
 }
 
 
@@ -403,6 +450,18 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     outputDir: job.outputDir,
     runToken: job.runToken,
   };
+  // 任务日志（r34）：只记 baseUrl 与 model，key 绝不进字段；registered secret 由 logger 自动脱敏
+  logger()
+    .forTask(job.runToken)
+    .info("app", "任务启动", {
+      kind: job.kind,
+      videoId: job.videoId,
+      sourcePath: job.sourcePath,
+      outputDir: job.outputDir,
+      endpointBaseUrl: job.endpoint?.baseUrl ?? "",
+      model: job.endpoint?.model ?? "",
+      asrProvider: job.asr.provider,
+    });
   let stderr = "";
   proc.stderr?.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk.toString()}`.slice(-4000);
@@ -416,6 +475,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       job.runToken = p.runToken;
       state.outputDir = p.outputDir;
       state.runToken = p.runToken;
+      logger().forTask(p.runToken).debug("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
       proc.postMessage({ type: "prepared-ack" });
       return;
     }
@@ -433,21 +493,36 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       });
     } else if (raw.type === "done" && "result" in raw) {
       state.resultDelivered = true;
-      queue.finish(raw.result as Parameters<typeof queue.finish>[0]);
+      const r = raw.result as Parameters<typeof queue.finish>[0];
+      queue.finish(r);
+      logger()
+        .forTask(job.runToken)
+        .info("app", "任务完成", {
+          noteCount: r.noteCount,
+          topicCount: r.topicCount,
+          timings: r.timings,
+          cacheHits: r.cacheHits,
+        });
     } else if (raw.type === "error" && "message" in raw) {
       state.resultDelivered = true;
+      const m = raw.message;
+      const msg = typeof m === "string" ? m : String(m);
+      logger().forTask(job.runToken).error("app", "任务失败", { message: msg });
       // 已交付 error：流水线已在锁内结算过；main 侧再按 token 恢复（幂等）
       recoverJob(job, "本次生成未完成");
-      queue.fail(sanitizeError(new Error((raw as { message: string }).message)));
+      queue.fail(sanitizeError(new Error(msg)));
     }
   });
   let exited = false;
+  // 脱敏后的 stderr 尾部（最后 20 行）：registered secret 已由 logger 脱敏
+  const stderrTail = () => stderr.trim().split("\n").slice(-20).join("\n");
   proc.on("exit", (code) => {
     exited = true;
     clearTimeout(state.killTimer);
     workers.delete(jobId);
     if (state.cancelRequested) {
       // 取消的终态必须等 exit 后才落：此时 ffmpeg 子进程已确认收尸
+      logger().forTask(job.runToken).info("app", "worker 退出（取消）", { code, stderrTail: stderrTail() });
       recoverJob(job, "本次生成已取消");
       queue.cancelled(jobId);
       return;
@@ -456,11 +531,16 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     // worker 异常退出且未交付结果：按 token 恢复
     recoverJob(job, "本次生成未完成");
     const tail = stderr.trim().split("\n").slice(-8).join("\n");
+    logger()
+      .forTask(job.runToken)
+      .error("app", "worker 异常退出", { code, stderrTail: stderrTail() });
     queue.fail(sanitizeError(new Error(`worker 进程退出（退出码 ${code ?? "未知"}）${tail ? `\n${tail}` : ""}`)));
   });
   state.handle = {
     cancel() {
       if (state.cancelRequested) return;
+      // 取消请求日志（r34）：终态在 exit 事件定
+      logger().forTask(job.runToken).warn("app", "任务取消请求");
       state.cancelRequested = true;
       let posted = false;
       try {
@@ -514,6 +594,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
     asr: job.asr,
+    logDir: LOG_DIR,
   });
   return state.handle;
 }
@@ -1335,6 +1416,7 @@ app.on("window-all-closed", () => {
 void app.whenReady().then(async () => {
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 后台模型校验（r28 起不自动下载）
   secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
+  registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
     settingsFile: SETTINGS_PATH(),
@@ -1344,6 +1426,30 @@ void app.whenReady().then(async () => {
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
   maybeAutoVerifyModels();
+
+  // 启动日志（r34）：版本/commit/打包标志/userData + 完整环境快照，先于窗口显示
+  let gpuModel: string | null = null;
+  // getGPUInfo 返回 unknown：逐层窄化后取型号；任何失败都是 null
+  try {
+    const gpu = await app.getGPUInfo("basic");
+    if (typeof gpu === "object" && gpu !== null && "gpuDevice" in gpu) {
+      const dev = (gpu as { gpuDevice?: unknown[] }).gpuDevice?.[0];
+      if (typeof dev === "object" && dev !== null) {
+        const d = dev as Record<string, unknown>;
+        const m = d.model ?? d.deviceString;
+        if (typeof m === "string" && m !== "") gpuModel = m;
+      }
+    }
+  } catch {
+    gpuModel = null;
+  }
+  logger().info("app", "app 启动", {
+    version: app.getVersion(),
+    commit: __APP_COMMIT__,
+    packaged: app.isPackaged,
+    userData: app.getPath("userData"),
+  });
+  logEnvironment(logger(), collectEnvironment({ appVersion: app.getVersion(), commit: __APP_COMMIT__, gpu: gpuModel, modelDir: settings.modelDir, extraDirs: [{ role: "userData", path: app.getPath("userData") }] }));
 
   // 媒体协议 root 读 settings 当前值；
   // 源视频路径用当前 notes 根目录的库记录来校验
