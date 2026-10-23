@@ -57,6 +57,9 @@ export async function run(
       resolveCode(exitCode ?? 1);
     });
   });
+  // Windows 子进程管道输出 CRLF；统一成 LF，下游解析（tar 清单、ffprobe JSON、silencedetect）只看到 LF
+  stdout = stdout.replace(/\r\n/g, "\n");
+  stderr = stderr.replace(/\r\n/g, "\n");
 
   const durationMs = Date.now() - startedAt;
   if (code !== 0) {
