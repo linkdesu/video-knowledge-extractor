@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ModelBundle, ModelsStatus } from "./catalog";
+import { logger } from "../core/logger";
 import { MODEL_BUNDLES, modelStatus, rememberVerified } from "./catalog";
 import { streamSha256 } from "./extract";
 
@@ -32,8 +33,12 @@ export async function verifyBundle(
         continue;
       }
       if (!stat.isFile()) continue;
+      // 逐文件一行 info：ok = sha 是否匹配清单
+      const startedAt = Date.now();
       const sha = await streamSha256(absPath);
-      rememberVerified(absPath, stat.size, stat.mtimeMs, spec.sha256, sha === spec.sha256);
+      const ok = sha === spec.sha256;
+      logger().info("import", "模型文件校验", { role: bundle.id, file: spec.path, ok, bytes: stat.size, durationMs: Date.now() - startedAt });
+      rememberVerified(absPath, stat.size, stat.mtimeMs, spec.sha256, ok);
     }
   }
 }

@@ -7,6 +7,7 @@ import { MODEL_BUNDLES, modelStatus } from "./catalog";
 import { assertInsideModelDir, extractArchive, listStagedInstalls, streamSha256 } from "./extract";
 import { verifyBundle } from "./verify";
 import { acquireModelLock } from "./oplock";
+import { logger } from "../core/logger";
 
 export type HttpResponse = { status: number; headers: Headers; body: ReadableStream<Uint8Array> };
 export type FetchImpl = (
@@ -80,6 +81,7 @@ export async function downloadBundle(
   const fetchImpl: FetchImpl =
     input.fetchImpl ?? ((url, init) => fetch(url, init) as Promise<HttpResponse>);
   const signal = input.signal ?? new AbortController().signal;
+  const startedAt = Date.now();
   const modelDir = resolve(modelDirArg);
   for (const spec of bundle.files) assertInsideModelDir(modelDir, spec.path);
   const part = partPath(modelDir, bundle);
@@ -122,9 +124,15 @@ export async function downloadBundle(
     log("info", `下载 ${bundle.title} ${milestone}%（${received}/${total}）`);
   };
   log("info", `开始下载 ${bundle.title}（${fmtBytes(manifestBytes)}）`);
-  if (haveBytes > 0) log("info", `续传：从 ${haveBytes} 继续`);
+  if (haveBytes > 0) {
+    log("info", `续传：从 ${haveBytes} 继续`);
+    // 续传起点另记一条 warn，方便定位断点位置
+    logger().warn("import", "模型包续传", { bundle: bundle.id, resumedFrom: haveBytes });
+  }
   try {
     await downloadWithResume(fetchImpl, part, sidecarPath, sidecar, haveBytes, signal, emit, logProgress);
+    // 下载完成一行 info：来源 URL 走全局 redact，URL 内嵌 key 会被抹掉
+    logger().info("import", "模型包下载完成", { bundle: bundle.id, url: bundle.source.url, bytes: partSize(part), durationMs: Date.now() - startedAt });
     logProgress(partSize(part));
     emit("verifying", partSize(part), `校验 ${bundle.title}…`);
     log("info", `校验 ${bundle.title} sha256`);
@@ -140,7 +148,11 @@ export async function downloadBundle(
       const sha = await streamSha256(part);
       const spec = bundle.files[0];
       if (spec === undefined) throw new Error(`包 ${bundle.id} 没有文件`);
-      if (sha !== spec.sha256) throw new Error(`sha256 不符（期望 ${spec.sha256.slice(0, 12)}…，实际 ${sha.slice(0, 12)}…）`);
+      if (sha !== spec.sha256) {
+        // 只记 hash 前缀，不记完整 hash
+        logger().error("import", "模型包校验失败", { bundle: bundle.id, expectedSha: spec.sha256.slice(0, 12), actualSha: sha.slice(0, 12) });
+        throw new Error(`sha256 不符（期望 ${spec.sha256.slice(0, 12)}…，实际 ${sha.slice(0, 12)}…）`);
+      }
     }
 
     emit("installing", partSize(part), `安装 ${bundle.title}…`);
@@ -152,6 +164,8 @@ export async function downloadBundle(
     rmSync(stagingDir, { recursive: true, force: true });
     // 校验结果写进进程内缓存，modelStatus 直接 ready
     await verifyBundle(modelDir, [bundle]);
+    // 每个安装完成的包一行 info
+    logger().info("import", "模型包安装完成", { bundle: bundle.id, files: bundle.files.length, durationMs: Date.now() - startedAt });
     emit("done", totalBytes(), null);
     log("info", `完成 ${bundle.title}`);
     return modelStatus(modelDirArg, [bundle]);
