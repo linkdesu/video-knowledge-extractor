@@ -8,6 +8,7 @@ The library is the landing screen. A user imports a video by dropping it on the 
 - `import-dialog` clicks the dropzone to open the native file picker (not automatable, see Gotchas).
 - `library-list` shows one card per video with title, import time, size, resolution, topic count and status tag.
 - `library-status` distinguishes 待确认主题 / 部分完成 / 处理中 / 需重跑 / 失败 / 已完成.
+- `library-refresh` (r33-fix) re-reads `listLibrary()` whenever the route returns to 视频库 and whenever the window regains focus, so a status change made inside the workspace (checking an ungenerated topic, merging topics) shows on the card without a restart.
 - `library-open` opens the workspace: 查看笔记切片 for a finished video, 确认主题 for a `pending-confirm` video, 继续编辑 otherwise.
 - `library-confirm` clicks 确认主题 on a pending-confirm card, opening the 主题 page where the confirm job generates the selected topics.
 - `cover-img` shows the generated mid-video cover frame (`cover.jpg`, `video-cover`) on the card thumbnail.
@@ -116,6 +117,28 @@ $V shot library-card-foot
 ```
 
 The literal assertion: with the two foot bottoms read as `b0` and `b1`, `Math.abs(b0 - b1) <= 1`. A 3-px+ gap means the `margin-top:auto` pin is broken (the action row drifted with the title height).
+
+### Recipe: Immediate status refresh（r33-fix P2, no restart）
+
+Editing topics (checking a not-yet-generated topic, merging two topics into `needs-rerun`) changes the derived card status without producing a job event. Before r33-fix the card stayed 已完成 until the app restarted; now returning to 视频库 re-reads the list. The proof is the tag changing within the same app session.
+
+```bash
+# preconditions: a video whose selected topics are all done (card reads 已完成)
+$V click '[data-testid=nav-library]'
+$V eval "[...document.querySelectorAll('[data-testid=video-status]')].map(x => x.innerText)"
+# expected: includes "已完成" for the target card
+# enter the workspace, check one not-yet-done topic (real click), go back
+$V click '[data-testid=card-open-notes]' --index <target card index>
+$V click-text '主题'
+$V click-text '生成笔记：<a proposed / needs-rerun topic title>'
+$V click '[data-testid=nav-library]'
+$V wait "document.querySelectorAll('[data-testid=video-status]')[<target card index>].innerText === '部分完成'" --timeout 5000
+$V eval "window.vnote.listLibrary().then(v => v.map(x => x.status))"
+# expected: the target reads "n" (partial) in the same session — no restart, no job event
+$V shot library-refresh-partial
+```
+
+The literal assertion is the tag text read right after the 视频库 click: `video-status` equals 部分完成 and `listLibrary()` agrees. A card that still reads 已完成 here (while `listLibrary()` already returns `n`) is the P2 regression: the renderer cached the old list.
 
 ## Gotchas
 

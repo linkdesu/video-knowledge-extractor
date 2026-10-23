@@ -5,7 +5,7 @@ The 主题 page is where a user confirms the automatically detected topics (r33:
 ## Sub-features
 
 - `topics-list` lists topic cards with title, time ranges, summary, selection checkbox and status (`proposed` 待确认 / `queued` / `generating` / `done` / `failed` / `needs-rerun`).
-- `topics-generate` is the confirm action: 生成所选主题笔记 (N) generates the selected topics that are not `done` yet (r33 — it submits all selected ids; the core filters `done`).
+- `topics-generate` is the confirm action. Since r33-fix its label counts **only the selected topics that are not `done` yet** (e.g. 生成笔记（1 个新主题）), matching the core's `status !== "done"` filter; when every selected topic is already `done` the button is disabled and reads 所选主题笔记已生成. With nothing selected it reads 生成笔记（0 个新主题） and explains 先勾选要生成的主题 by toast.
 - `topics-seg-seek` clicks a segment label (`topic-seg-<i>`) on the selected topic and seeks the player to that segment's offset in the concatenated `topic.mp4`.
 - `player-resize` drags the player's bottom-right handle to change the player height; the value persists in `localStorage` across restarts.
 - `topics-delete-segment` removes one time segment from the selected topic.
@@ -28,7 +28,7 @@ Preconditions:
 - **Open the page.** Arrive via 确认主题 (the confirm entry point, [library.md](./library.md) 「Pending-confirm import」) or `$V click-text '主题'` (the helper strips the step badge). Wait for `$V wait "document.querySelector('[data-testid=topics-generate]') !== null"`. The breadcrumb ends in `主题`.
 - **Read the topic set.** Run `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.map(t => ({ title: t.title, selected: t.selected, status: t.status, segments: t.segments.length, dirName: t.dirName })))"`. Two topics after the fixture import is the expected shape, but assert on the actual titles the run produced.
 - **Select a topic.** Run `$V click-text '生成笔记：<exact topic title>'`. Then `$V wait "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.find(t => t.title === '<exact topic title>')?.selected === false)"`. This proves a real checkbox path; toggle it back afterwards.
-- **Generate (confirm).** Run `$V click '[data-testid=topics-generate]'` and `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000`. With cache hits the job ends almost immediately; `$V status` shows `kind: "notes"` while running. It generates **only the selected topics that are not `done` yet** (the core filters `done`), so a second confirm with one extra checked topic creates exactly one new topic dir and leaves the earlier `topic.md` mtimes untouched (see 「Confirm and generate」). Selecting none and clicking the button only shows the toast 先勾选要生成的主题.
+- **Generate (confirm).** Read the button first: its label counts the selected topics that are not `done` (`生成笔记（N 个新主题）`), and it is disabled with 所选主题笔记已生成 when the selected set is all `done`. Run `$V click '[data-testid=topics-generate]'` and `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000`. With cache hits the job ends almost immediately; `$V status` shows `kind: "notes"` while running. It generates **only the selected topics that are not `done` yet** (the renderer submits only those ids and the core filters `done` again), so a second confirm with one extra checked topic creates exactly one new topic dir and leaves the earlier `topic.md` mtimes untouched (see 「Confirm and generate」). Selecting none and clicking the button only shows the toast 先勾选要生成的主题.
 - **Merge.** Record the current count first: `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.length)"` (call it `N`). Run `$V click '[data-testid=topics-merge-start]'`, then `$V click-text '选入合并：<title A>'` and `$V click-text '选入合并：<title B>'`, then `$V click '[data-testid=topics-merge-confirm]'`. Wait for `$V wait "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.length === N - 1)" --timeout 15000` and for the toast 已合并 2 个主题. Then `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.filter(t => t.title.includes(' / ')).map(t => t.status))"` — the merged topic's status is **`needs-rerun`, not `queued`** (the structure changed; products must be regenerated), and it loses its generated clips until notes are regenerated.
 - **Delete a segment.** Select a card with `$V click '[data-testid=topic-view-<topicId>]'`, then `$V click '[data-testid=topic-delete-seg-0]'`; `getVideo(id).topics.find(...).segments.length` decreases. There is no confirmation dialog.
 - **Delete a cue.** Run `$V click '[data-testid=subtitle-delete-<index>]'` on a visible subtitle row; `detail.transcript.utterances.length` decreases and the toast reads 已删除该条字幕.
@@ -153,13 +153,59 @@ $V shot topics-resize
 
 The literal state assertions: `$V drag '[data-testid=player-resize]' 0 120` (the real pointer gesture), `H1 != $H0` (the player element's `getBoundingClientRect().height` changed), and `localStorage['vn.topics.playerHeight']` equals the stored value before and after a restart. The `player-resize` handle is a real `button` with `aria-label="调整播放器高度"`; a drag of `-120` (up) shrinks the player the same way.
 
+### Recipe: Player fits its container（r33-fix P1: 竖屏不裁切、控件在视口内）
+
+In fixed-height mode the `<video>` is absolutely positioned to fill `[data-testid=player]` with `object-fit: contain`; a percentage `max-height` inside the grid container used to resolve against the video's intrinsic size, so a portrait video grew to 507×1099 and the 420-px container (with `overflow:hidden`) cut off both the picture and the native control row. The assertions below are the regression test; run them on a **portrait** and a **landscape** video, and once more after a real `player-resize` drag in each direction.
+
+```bash
+# use a fresh run (no localStorage vn.topics.playerHeight) so the default height applies;
+# to reuse a run, first reset it: $V eval "localStorage.removeItem('vn.topics.playerHeight'); location.reload(); true"
+# open the portrait video's 主题 page and wait for the video element
+$V wait "document.querySelector('[data-testid=player] video') !== null" --timeout 10000
+# measure container, video and controls geometry
+$V eval "(() => { const p = document.querySelector('[data-testid=player]'); const v = p.querySelector('video'); const pr = p.getBoundingClientRect(), vr = v.getBoundingClientRect(); return { innerH, innerW, playerH: pr.height, playerW: pr.width, videoH: vr.height, videoW: vr.width, videoTop: vr.top, videoBottom: vr.bottom, playerTop: pr.top, playerBottom: pr.bottom, controls: v.controls, stored: localStorage.getItem('vn.topics.playerHeight') }; })()"
+# expected (portrait, no stored height): stored === null, playerH <= innerH * 0.6,
+#   videoH <= playerH + 0.5, videoW <= playerW + 0.5,
+#   max(videoTop, playerTop) >= 0 and min(videoBottom, playerBottom) <= innerH
+# a real drag down (+150) then up (-300): the height changes and the video still fits
+$V drag '[data-testid=player-resize]' 0 150
+$V eval "(() => { const p = document.querySelector('[data-testid=player]'); const v = p.querySelector('video'); const pr = p.getBoundingClientRect(), vr = v.getBoundingClientRect(); return { playerH: pr.height, videoH: vr.height, fits: vr.height <= pr.height + 0.5 && vr.width <= pr.width + 0.5 && Math.min(vr.bottom, pr.bottom) <= innerHeight + 0.5, stored: localStorage.getItem('vn.topics.playerHeight') }; })()"
+# expected: fits === true at every height (240 … min(900, innerH*0.8))
+$V drag '[data-testid=player-resize]' 0 -300
+# repeat the measurement: fits === true
+# repeat the whole block on a landscape video: with no stored height the container is
+# auto-sized (no aspect-ratio box), so playerH is the video's own height (<= 62vh) and
+# videoH <= playerH + 0.5 still holds
+$V shot topics-player-fit
+```
+
+Literal assertions: `video.getBoundingClientRect().height <= player.getBoundingClientRect().height + 0.5`, `video.width <= player.width + 0.5` (no overflow in either axis), `min(video.bottom, player.bottom) <= innerHeight` and `max(video.top, player.top) >= 0` (the control row at the video's bottom edge is inside the viewport), and for a portrait video on a fresh profile `player.height <= innerHeight * 0.6`. Do not assert on the `<video>`'s intrinsic size (`videoWidth`/`videoHeight` are the source resolution and stay 886×1920 / 3840×2160) and do not assert pixel colours — the geometry is the proof.
+
+### Recipe: Generate button counts pending topics only（r33-fix P3）
+
+`topics-generate` labels the **new** work: selected topics whose status is not `done`. With every selected topic already done the button is disabled and reads 所选主题笔记已生成.
+
+```bash
+# a video whose selected topics are all done: button disabled + done label
+$V eval "(() => { const b = document.querySelector('[data-testid=topics-generate]'); return { text: b.textContent, disabled: b.disabled }; })()"
+# expected: { text: "所选主题笔记已生成", disabled: true }
+# check one not-yet-done topic with a real click (its checkbox is labelled 生成笔记：<title>)
+$V click-text '生成笔记：<a proposed / needs-rerun topic title>'
+$V wait "document.querySelector('[data-testid=topics-generate]').textContent === '生成笔记（1 个新主题）'" --timeout 5000
+$V eval "(() => { const b = document.querySelector('[data-testid=topics-generate]'); return { text: b.textContent, disabled: b.disabled }; })()"
+# expected: { text: "生成笔记（1 个新主题）", disabled: false } — not the total selected count
+$V shot topics-generate-count
+```
+
+Unchecking that topic returns the button to the disabled 所选主题笔记已生成 state. With nothing selected the label is 生成笔记（0 个新主题） and a click only shows the toast 先勾选要生成的主题.
+
 ## Gotchas
 
 - The step tabs have no test ids. Their accessible names are `1 字幕`, `2 主题`, `3 笔记`; pass `主题` to `click-text`, which strips the leading number. Do not click by position — the tab order is a UI detail.
 - Topic checkboxes are labelled `生成笔记：<title>`; merge checkboxes are labelled `选入合并：<title>`. Titles come from the model and vary per run — read them first with `getVideo`, never hardcode fixture titles.
 - Merge mode swaps the toolbar: 合并主题 disappears, 取消 and `确认合并 (N)` appear. Merging fewer than two topics only shows the toast 至少勾选两个主题.
 - Deleting a segment or a subtitle edits the persisted topic/transcript immediately. There is no undo; rerun the pipeline to regenerate from cache if the fixture must stay pristine.
-- `topics-generate` (确认) submits all selected ids; the core generates only those not `done` yet. A merged topic is `needs-rerun`, **not `queued`** (its structure changed, so products must be regenerated) — a `needs-rerun` topic needs an explicit generate step before clips exist again.
+- `topics-generate` (确认) submits only the selected ids that are not `done` (r33-fix), and its label counts exactly those; the core filters `done` again. A merged topic is `needs-rerun`, **not `queued`** (its structure changed, so products must be regenerated) — a `needs-rerun` topic needs an explicit generate step before clips exist again.
 - `drive drag <selector> <dx> <dy> [--index N] [--steps N]` is the real pointer-drag primitive (r33): it presses at the element center, moves in `--steps` steps (default 8) to center+(dx,dy), and releases at the end — use it for the `player-resize` resize gesture. Do not `eval`-set the height — that bypasses the pointer handler and does not count.
 - The 主题 player's source switches to the concatenated `topic.mp4` only when the topic has one clip with non-empty `segmentOffsets`; otherwise it plays the source with per-segment ranges. A segment-label click seeks `segmentOffsets[i]` (clip) or `seg.start` (source fallback) — assert the right branch from `getVideo` first.
 - The player and subtitle rows share the selected-topic state. After deleting a segment, the selected card may re-render; re-read `getVideo` instead of trusting the old DOM.

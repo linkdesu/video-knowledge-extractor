@@ -33,8 +33,11 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
     [topics, selectedId],
   );
 
-  const selectedCount = topics.filter((t) => t.selected).length;
-  const selectedIds = topics.filter((t) => t.selected).map((t) => t.id);
+  const selectedTopics = topics.filter((t) => t.selected);
+  const selectedCount = selectedTopics.length;
+  // 只有还没生成过的主题才计入按钮数量，与 core 的 `status !== "done"` 过滤一致。
+  const pendingTopics = selectedTopics.filter((t) => t.status !== "done");
+  const pendingCount = pendingTopics.length;
   const pickedCount = mergePicked.size;
   const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
 
@@ -52,11 +55,14 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   const playerRef = useRef<PlayerHandle>(null);
   const playerElRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState<number | null>(() => {
-    // 已保存的合法值优先；没有保存时竖屏默认 420，横屏自适应。
+    // 已保存的合法值优先（用户拖拽过就以用户的为准）；没有保存时竖屏默认
+    // min(420, 60% 窗口高)，横屏自适应。
     const stored = Number(window.localStorage.getItem(HEIGHT_STORAGE_KEY));
     if (Number.isFinite(stored) && stored >= 240 && stored <= 900) return stored;
     const r = detail.video.resolution;
-    return r !== null && r.height > r.width ? 420 : null;
+    return r !== null && r.height > r.width
+      ? Math.min(420, Math.round(window.innerHeight * 0.6))
+      : null;
   });
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   const startResize = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -83,11 +89,15 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   };
 
   const startNotes = () => {
-    if (selectedIds.length === 0) {
+    if (selectedCount === 0) {
       showToast("先勾选要生成的主题");
       return;
     }
-    void onStartNotes(selectedIds);
+    if (pendingCount === 0) {
+      showToast("所选主题笔记已生成");
+      return;
+    }
+    void onStartNotes(pendingTopics.map((t) => t.id));
   };
 
   const toggleMergePick = (topicId: string) => {
@@ -204,9 +214,14 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
             type="button"
             className="vn-btn primary sm"
             data-testid="topics-generate"
+            disabled={selectedCount > 0 && pendingCount === 0}
             onClick={startNotes}
           >
-            生成所选主题笔记 ({selectedCount})
+            {selectedCount === 0
+              ? "生成笔记（0 个新主题）"
+              : pendingCount === 0
+                ? "所选主题笔记已生成"
+                : `生成笔记（${pendingCount} 个新主题）`}
           </button>
         </>
       }

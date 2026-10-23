@@ -124,10 +124,18 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
           }}
           style={{
             display: "block",
-            // 固定高度模式（r33）：容器定高，视频 contain 铺满；否则保持自适应。
+            // 固定高度模式（r33）：容器定高，视频 contain 铺满容器。
+            // 必须绝对定位：grid 行高按内容回推，百分比 max-height/max-width 会以视频
+            // 自身固有尺寸为基准，竖屏视频撑到 507×1099 后被 overflow:hidden 裁掉（r33 QA P1）。
             ...(height !== null && height !== undefined
-              ? { maxHeight: "100%", maxWidth: "100%", objectFit: "contain" as const }
-              : { maxHeight: "62vh", width: "auto", height: "auto" }),
+              ? {
+                  position: "absolute" as const,
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain" as const,
+                }
+              : { maxHeight: "62vh", maxWidth: "100%", width: "auto", height: "auto" }),
             background: "#000",
           }}
         />

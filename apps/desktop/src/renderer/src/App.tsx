@@ -45,8 +45,17 @@ export function App() {
       .catch((err) => setLibError(errMessage(err)));
   }, []);
 
+  // 视频库刷新：每次切回视频库、窗口重新获得焦点时重拉列表（r33 QA P2）。
+  // 勾选/合并主题不会产生 job 事件，只刷新详情会让卡片状态停在「已完成」直到重启。
+  // 初始路由是 video 库，首帧刷新由这条 effect 覆盖。
   useEffect(() => {
-    void refreshLibrary();
+    if (route.name === "library") void refreshLibrary();
+  }, [route.name, refreshLibrary]);
+
+  useEffect(() => {
+    const onFocus = () => void refreshLibrary();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [refreshLibrary]);
 
   // 主进程后台补齐封面后广播 videoId 列表，刷新库让封面 url 出现。
