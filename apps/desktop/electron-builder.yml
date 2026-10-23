@@ -1,0 +1,43 @@
+# Windows x64 NSIS 打包配置，配合 scripts/package-win.ts 的 staging 目录使用。
+# 仓库没有图标文件，icon 相关键全部省略（electron-builder 26 允许缺省）。
+appId: me.xieal.video-notes
+productName: Video Notes
+copyright: Copyright © 2026 xieal
+
+directories:
+  app: release-win/stage
+  output: release-win
+  buildResources: build
+
+files:
+  - "out/**"
+  - "package.json"
+  - "node_modules/**"
+
+# sherpa 的 .node 与 dll 不能被 asar 虚拟文件系统加载，必须解包
+asarUnpack:
+  - "**/node_modules/sherpa-onnx-*/**"
+
+extraResources:
+  - from: win-resources/ffmpeg
+    to: ffmpeg
+
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 仓库暂无图标：icon 键省略；NSIS 签名占位关闭
+  artifactName: "${productName}-${version}-setup.${ext}"
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  shortcutName: Video Notes
