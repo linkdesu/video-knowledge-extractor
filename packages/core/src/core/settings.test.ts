@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import {
   SETTINGS_VERSION,
   applyLlmSeed,
@@ -191,7 +191,8 @@ describe("readSettingsFile 迁移与校验", () => {
     expect(file).toEqual({ version: SETTINGS_VERSION });
     expect(error).not.toBeNull();
     expect(quarantinedPath).toMatch(/\.bad-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/);
-    expect(quarantinedPath).not.toContain(":");
+    // 只看文件名：完整路径在 Windows 上有盘符冒号
+    expect(basename(quarantinedPath ?? "")).not.toContain(":");
     if (quarantinedPath) {
       expect(readFileSync(quarantinedPath, "utf8")).toBe("{ not json");
     }

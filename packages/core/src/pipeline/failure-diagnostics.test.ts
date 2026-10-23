@@ -55,11 +55,12 @@ describe("三种失败都能从诊断文本里看出来", () => {
       // 产品日志分两行：info 行记整条 argv（含 ffprobe 与输入路径），
       // error 行记 code 与 50 行 stderrTail；合起来才能诊断出 ffprobe 失败
       const infoLine = lines.find((l) => l.includes("INFO") && l.includes(" ffmpeg ") && l.includes("ffprobe")) ?? "";
-      expect(infoLine).toContain(mp4);
+      // 日志字段是 JSON.stringify，Windows 的 \\ 会被转义成 \\\\
+      expect(infoLine).toContain(JSON.stringify(mp4).slice(1, -1));
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" ffmpeg ") && l.includes("命令失败")) ?? "";
       expect(errLine).toContain("stderrTail=");
       expect(errLine).toContain("code=1");
-      expect(errLine).toContain(mp4); // stderr 里带输入文件名
+      expect(errLine).toContain(JSON.stringify(mp4).slice(1, -1)); // stderr 里带输入文件名
       // stderrTail 是真实 ffmpeg 输出（非空、非占位）
       expect(errLine).toContain("stderrTail=\"");
       expect(errLine.length).toBeGreaterThan("stderrTail=\"".length + 20);
@@ -138,7 +139,7 @@ describe("三种失败都能从诊断文本里看出来", () => {
       expect(err.message).toContain(missingPath);
       // step 的 error 行（module asr）带同一缺失路径
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" asr ") && l.includes("失败")) ?? "";
-      expect(errLine).toContain(missingPath);
+      expect(errLine).toContain(JSON.stringify(missingPath).slice(1, -1));
       expect(errLine).toContain("缺少模型文件");
     });
   });

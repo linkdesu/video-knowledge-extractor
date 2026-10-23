@@ -25,7 +25,8 @@ function mkdtemp(): string {
 
 /** 写一个外部活 pid 的锁：编辑命令应据此拒绝（pid 1 恒存活且不是本进程，避免 pid 复用歧义）。 */
 function holdLock(dir: string): void {
-  writeFileSync(join(dir, ".vnote-run.lock"), `${JSON.stringify({ pid: 1, startedAt: Date.now(), token: "x" })}\n`);
+  // 用父进程 pid 模拟「别人持锁」：Windows 上 pid 1 不存在，会被当陈旧锁接管
+  writeFileSync(join(dir, ".vnote-run.lock"), `${JSON.stringify({ pid: process.ppid, startedAt: Date.now(), token: "x" })}\n`);
 }
 
 /** 用本进程 pid 写 `.vnote-run.lock`：模拟流水线进程自己持锁。 */
