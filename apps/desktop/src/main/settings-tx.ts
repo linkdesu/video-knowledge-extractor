@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { saveSettings } from "@video-notes/core/storage";
-import type { SettingsPatch as CoreSettingsPatch, AppSettings } from "@video-notes/core/storage";
+import { saveSettings, validateSettingsPatch } from "@video-notes/core/storage";
+import type { SettingsPatch as CoreSettingsPatch, AppSettings, EnvRecord } from "@video-notes/core/storage";
 import type { SecretPatch } from "../shared/ipc";
 import { SECRET_IDS, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 
@@ -104,6 +104,7 @@ function applySecret(secret: SecretChange, store: SecretStore): void {
 
 /**
  * 提交一次「设置 + 密钥」更新。校验在写任何文件之前：
+ * 先跑设置形状校验（不合法 baseUrl 等直接抛错，不碰 pending 与密钥存储）；
  * apiKey 与 clearApiKey 同传拒绝；带 apiKey 时存储必须可用。
  * 写新 pending 之前先重放旧 pending：重放失败就抛错，绝不覆盖旧记录（ADR-0016 §5 硬规则 1）。
  * 任一步失败保留 pending 并抛错，运行时保持旧值。
@@ -115,14 +116,22 @@ export function commitCredentialUpdate(input: {
   secretStore: SecretStore;
   settingsPatch: CoreSettingsPatch;
   secret: { id: SecretId; patch: SecretPatch };
+  env?: EnvRecord;
 }): AppSettings {
   const { userData, settingsFile, codec, secretStore, settingsPatch, secret } = input;
+  const env = input.env ?? process.env;
+  // 写 pending 与密钥存储之前先跑设置校验，坏输入不留下不可重放的 pending
+  validateSettingsPatch(settingsFile, settingsPatch, env);
   const { apiKey, clearApiKey } = secret.patch;
   if (apiKey !== undefined && clearApiKey === true) {
     throw new Error("不能同时保存和清除 API key");
   }
   if (apiKey !== undefined && !secretStore.available()) {
-    throw new Error("系统密钥存储不可用，请用环境变量配置密钥");
+    throw new Error(
+      secret.id === "llm"
+        ? "系统密钥存储不可用，无法保存密钥"
+        : "系统密钥存储不可用，请用环境变量配置 ASR 密钥（VNOTE_ASR_API_KEY / VNOTE_VOLC_API_KEY / VNOTE_VOLC_APP_KEY / VNOTE_VOLC_ACCESS_KEY）",
+    );
   }
   // 旧 pending 未清时先幂等重放；失败则抛错且不写新记录，否则第二次保存会丢掉第一笔未完成的更新。
   const replayError = replayCredentialTransaction({ userData, settingsFile, codec, secretStore });

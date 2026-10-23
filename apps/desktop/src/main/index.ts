@@ -27,6 +27,7 @@ import {
   recoverInterruptedRun,
   readGlobalCorrections,
   readLibraryVideo,
+  readSettingsFile,
   readSettingsFileSafe,
   readVideoCorrections,
   renameSpeaker,
@@ -35,7 +36,10 @@ import {
   mergeTopics,
   asrEnv,
   resolveAsrFor,
+  applyLlmSeed,
+  llmEnv,
   resolveLlm,
+  displayUrl,
   resolveLlmEndpoint,
   resolveSettings,
   saveGlobalCorrections,
@@ -74,6 +78,7 @@ import {
   type ImportModelsResult,
   type JobKind,
   type JobStep,
+  type LlmDraft,
   type LlmModelListResult,
   type LlmUpdatePatch,
   type ModelDownloadEvent,
@@ -91,6 +96,7 @@ import { createMediaHandler, encodeClipUrl, encodeSourceUrl, MEDIA_SCHEME } from
 import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
+import { llmDraftCredentials } from "./llm-draft-creds";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
 // 仓库 tmp/dev-home 下，便于人工检查；打包后的 app 走正常路径（resolveDevHome 返回 null）。
@@ -131,10 +137,13 @@ if (!app.requestSingleInstanceLock()) app.quit();
 // 1) readSettingsFileSafe —— 文件层唯一入口，坏文件隔离成 .bad-* 后按空文件继续
 const SETTINGS_PATH = () => join(app.getPath("userData"), "settings.json");
 const settingsRead = readSettingsFileSafe(SETTINGS_PATH());
-// 2) cwd .env → 3) 用此时 env 求 notes 根 → 根 .env
-loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => process.env.VNOTE_HOME ?? settingsRead.file.notesRoot ?? `${process.env.HOME ?? process.env.USERPROFILE ?? "."}/Documents/video-notes` });
+// 2) 打包版永不读取 .env（r30）：设置页与密钥库是唯一来源。
+// dev 模式才加载 cwd/.env 与根 .env，并把其中的 LLM 值当种子，只填没有已保存值的字段。
+if (!app.isPackaged) {
+  loadDotenvFiles({ cwd: process.cwd(), resolveRoot: () => process.env.VNOTE_HOME ?? settingsRead.file.notesRoot ?? `${process.env.HOME ?? process.env.USERPROFILE ?? "."}/Documents/video-notes` });
+}
+const devSeed = app.isPackaged ? undefined : llmEnv(process.env);
 
-// .env 加载之后才读这两个变量：Finder 启动的进程没有 shell 的 env，靠 <cwd>/.env 与 <notes 根>/.env 提供（ADR-0009）。
 // 打包后从 Finder 启动的 GUI 进程拿到的是 launchd 的最小 PATH（/usr/bin:/bin:/usr/sbin:/sbin），
 // Homebrew 的 ffmpeg/ffprobe 不在里面。这里把常见安装位置补到 PATH 最前，供 core 的 spawn 与 ffmpegProbe 使用。
 // VNOTE_FFMPEG_DIR 可显式指定（自定义安装或测试）。
@@ -152,8 +161,15 @@ process.env.PATH = `${TOOL_DIRS.join(":")}:${process.env.PATH ?? ""}`;
  * 设置文件里的 provider 仍按原样读写（r24 代码保留），但运行时一律求值为 local。
  */
 const CLOUD_ASR_ENABLED = process.env.VNOTE_ENABLE_CLOUD_ASR === "1";
-// 4) 文件层 + 完整 env 求有效设置与 locked（不重读磁盘）
-const resolved = resolveSettings(settingsRead.file, process.env);
+// 文件层 + 完整 env 求有效设置与 locked（不重读磁盘）。dev 种子只填没有已保存值的 LLM 字段。
+const resolved = resolveSettings(applyLlmSeed(settingsRead.file, devSeed), process.env);
+/**
+ * 写后重建规则：任何一次写（updateSettings / updateLlm / updateAsr）之后，有效设置都从磁盘重新读
+ * + 应用 dev 种子 + 完整 env 求值。打包版 devSeed 为 undefined；.env 种子只填没有已保存值的字段。
+ */
+function effectiveSettings(): AppSettings {
+  return resolveSettings(applyLlmSeed(readSettingsFile(SETTINGS_PATH()), devSeed), process.env).settings;
+}
 let settings: AppSettings = resolved.settings;
 const locked = resolved.locked;
 let settingsFileError: string | null = settingsRead.error;
@@ -197,7 +213,7 @@ function withSettingsWrite<T>(fn: () => T | Promise<T>): Promise<T> {
 
 /** 运行时配置：设置变更后重算；key 只在 main/worker 内存里。 */
 type LlmRuntime = {
-  /** 已配齐 base url 与 key 的凭据；连接测试只用它，不要求 model 已解析。 */
+  /** 已配齐 base url 与 key 的凭据（stored/seed 解析，model 可空）：requireLlmEndpoint 用它区分「发现失败」与「未配置」，llmStatus 读它。 */
   credentials: { baseUrl: string; apiKey: string } | undefined;
   /** 可交给 worker 的端点：credentials + 非空 model；model 留空时等发现填好才出现（r26）。 */
   endpoint: LlmEndpoint | undefined;
@@ -244,7 +260,7 @@ function sanitizeError(err: unknown): string {
 }
 
 /**
- * 端点发现：model 留空时后台 GET /models 自选；失败把脱敏错误留在运行时上给界面。门禁期间不启动（ADR-0016 §5 硬规则 2）。
+ * 端点发现：model 留空时后台 GET /models 自选；失败把脱敏错误留在运行时上。门禁期间不启动（ADR-0016 §5 硬规则 2）。
  * 结果直接替换 `llmRuntime.endpoint`：空 model 只是「等发现」的中间态，不能流到 worker（r26）。
  * 世代号让迟到的旧凭据结果不覆盖新设置。
  */
@@ -255,7 +271,7 @@ function startDiscovery(): void {
   const generation = ++discoveryGeneration;
   discovery = undefined;
   if (credentialTxError !== null) return;
-  const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
+  const llm = resolveLlm(settings, secretStore?.get("llm"), devSeed?.apiKey);
   if (llm.value === undefined || llm.value.model !== "") return;
   const creds = llm.value;
   discovery = (async () => {
@@ -282,7 +298,7 @@ async function requireLlmEndpoint(): Promise<LlmEndpoint> {
   if (llmRuntime.credentials !== undefined) {
     throw new Error(`模型发现失败：请在设置里显式指定 model（${llmRuntime.error ?? "未知原因"}）`);
   }
-  throw new Error("未配置 LLM 端点：请在设置里保存 base url 与 api key，或用环境变量配置");
+  throw new Error("未配置 LLM 端点：请在设置页填写接口地址与 API key");
 }
 
 /** 设置/密钥变更后重算两个运行时；失败时不重算，保持旧值（ADR-0015 §3）。 */
@@ -304,7 +320,7 @@ function recomputeRuntimes(): void {
     return;
   }
   try {
-    const llm = resolveLlm(settings, secretStore?.get("llm"), process.env);
+    const llm = resolveLlm(settings, secretStore?.get("llm"), devSeed?.apiKey);
     // model 留空时 endpoint 先不发布：空 model 是「等发现」的中间态，discovery 成功后才补上（r26）
     llmRuntime = {
       credentials: llm.value !== undefined ? { baseUrl: llm.value.baseUrl, apiKey: llm.value.apiKey } : undefined,
@@ -748,19 +764,10 @@ function llmStatus(): SettingsStatus["llm"] {
     hasKey: llmRuntime.keySource !== "none",
     keySource: llmRuntime.keySource,
     keyStorageAvailable: secretStore?.available() ?? false,
-    locked: { baseUrl: locked.llmBaseUrl, model: locked.llmModel },
     error: llmRuntime.error,
   };
 }
 
-function displayUrl(value: string): string {
-  try {
-    const u = new URL(value);
-    return `${u.origin}${u.pathname === "" ? "/" : u.pathname}`;
-  } catch {
-    return value;
-  }
-}
 
 function modelsStatusDto(): ModelsStatus {
   return modelsDownloader.status(settings.modelDir);
@@ -786,8 +793,6 @@ async function settingsStatus(): Promise<SettingsStatus> {
       notesRoot: locked.notesRoot,
       cacheRoot: locked.cacheRoot,
       modelDir: locked.modelDir,
-      llmBaseUrl: locked.llmBaseUrl,
-      llmModel: locked.llmModel,
       asrProvider: locked.asrProvider,
       asrBaseUrl: locked.asrBaseUrl,
       asrModel: locked.asrModel,
@@ -862,7 +867,8 @@ async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
     if (clean.asr?.provider !== undefined && clean.asr.provider !== "local" && !CLOUD_ASR_ENABLED) {
       throw new Error("此版本只启用本地 ASR，云端提供方不可用");
     }
-    settings = saveSettings(SETTINGS_PATH(), clean);
+    saveSettings(SETTINGS_PATH(), clean);
+    settings = effectiveSettings();
     recomputeRuntimes();
     return settingsStatus();
   });
@@ -882,38 +888,25 @@ function clearCacheNow(): { freedBytes: number } {
   return { freedBytes: clearCache(settings.cacheRoot, listLibrary(settings.notesRoot).map((v) => v.outputDir)) };
 }
 
-async function testLlm(): Promise<TestLlmResult> {
+
+async function testLlm(draft: LlmDraft): Promise<TestLlmResult> {
   if (credentialTxError !== null) return { ok: false, model: null, message: credentialTxError };
-  // 连接测试只验证凭据与网络：model 还没发现成功时也要能测（r26 的诊断曾因此误报「未配置」）
-  const creds = llmRuntime.credentials;
-  if (creds === undefined) {
-    return { ok: false, model: null, message: `未配置 LLM 端点：${llmRuntime.error ?? "请在设置里保存 base url 与 api key"}` };
-  }
-  const url = `${creds.baseUrl.replace(/\/$/, "")}/models`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  // 连接测试只验证草稿里的地址与 key：不需要先保存，也不要求 model 已配置
+  const creds = llmDraftCredentials(draft, secretStore?.get("llm"), devSeed?.apiKey);
+  if (typeof creds === "string") return { ok: false, model: null, message: creds };
   try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${creds.apiKey}` },
-      signal: controller.signal,
-    });
-    if (!res.ok) return { ok: false, model: null, message: `连接失败：HTTP ${res.status}` };
-    const body = (await res.json().catch(() => undefined)) as { data?: { id: string }[] } | undefined;
-    const model = body?.data?.[0]?.id ?? null;
+    const ids = await fetchModelIds(creds.baseUrl, creds.apiKey, undefined, 10_000);
+    const model = ids[0] ?? null;
     return { ok: true, model, message: model === null ? "连接成功，但返回的模型列表为空" : `连接成功，已发现模型 ${model}` };
   } catch (err) {
     return { ok: false, model: null, message: sanitizeError(err) };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
-/** 「拉取模型」：当前生效的 base url + key 请求 <base>/models；key 只在请求里用，不进日志、不进返回值。 */
-async function listLlmModels(): Promise<LlmModelListResult> {
-  const creds = llmRuntime.credentials;
-  if (creds === undefined) {
-    return { ok: false, models: [], message: `未配置 LLM 端点：${llmRuntime.error ?? "请在设置里保存 base url 与 api key"}` };
-  }
+/** 「拉取模型」：用草稿里的 base url + key 请求 <base>/models；key 只在请求里用，不进日志、不进返回值。 */
+async function listLlmModels(draft: LlmDraft): Promise<LlmModelListResult> {
+  const creds = llmDraftCredentials(draft, secretStore?.get("llm"), devSeed?.apiKey);
+  if (typeof creds === "string") return { ok: false, models: [], message: creds };
   try {
     const ids = await fetchModelIds(creds.baseUrl, creds.apiKey);
     const deduped = [...new Set(ids)].sort();
@@ -930,15 +923,17 @@ function requireStore(): SecretStore {
 
 async function updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus> {
   if (credentialTxError !== null) throw new Error(credentialTxError);
+  const apiKey = patch.apiKey?.trim();
   return withSettingsWrite(() => {
-    settings = commitCredentialUpdate({
+    commitCredentialUpdate({
       userData: app.getPath("userData"),
       settingsFile: SETTINGS_PATH(),
       codec: electronCodec,
       secretStore: requireStore(),
       settingsPatch: { llm: { baseUrl: patch.baseUrl, model: patch.model } },
-      secret: { id: "llm", patch: { apiKey: patch.apiKey, clearApiKey: patch.clearApiKey } },
+      secret: { id: "llm", patch: apiKey === undefined || apiKey === "" ? {} : { apiKey } },
     });
+    settings = effectiveSettings();
     clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
@@ -1025,7 +1020,7 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
         if (patch.secret.value === "") secretPatch = { clearApiKey: true };
       }
     }
-    settings = commitCredentialUpdate({
+    commitCredentialUpdate({
       userData: app.getPath("userData"),
       settingsFile: SETTINGS_PATH(),
       codec: electronCodec,
@@ -1033,6 +1028,7 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
       settingsPatch: Object.keys(asrOut).length > 0 ? { asr: asrOut } : {},
       secret: { id: secretId ?? "asr", patch: secretPatch },
     });
+    settings = effectiveSettings();
     clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
@@ -1300,7 +1296,7 @@ void app.whenReady().then(async () => {
   recomputeRuntimes();
   maybeAutoVerifyModels();
 
-  // 媒体协议 root 读 settings 当前值（env 启动时可能没被 .env 补全，settings 才和界面一致）；
+  // 媒体协议 root 读 settings 当前值；
   // 源视频路径用当前 notes 根目录的库记录来校验
   protocol.handle(
     MEDIA_SCHEME,
@@ -1396,8 +1392,8 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.updateAsr, guard((_e, patch: AsrUpdatePatch) => updateAsr(patch)));
   ipcMain.handle(IPC.pickDirectory, guard((_e, kind: DirectoryKind) => pickDirectory(kind)));
   ipcMain.handle(IPC.clearCache, guard(() => clearCacheNow()));
-  ipcMain.handle(IPC.testLlm, guard(() => testLlm()));
-  ipcMain.handle(IPC.listLlmModels, guard(() => listLlmModels()));
+  ipcMain.handle(IPC.testLlm, guard((_e, draft: LlmDraft) => testLlm(draft)));
+  ipcMain.handle(IPC.listLlmModels, guard((_e, draft: LlmDraft) => listLlmModels(draft)));
   ipcMain.handle(IPC.testAsr, guard(() => testAsr()));
   ipcMain.handle(IPC.models, guard(() => modelsStatusNow()));
   ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));

@@ -1,21 +1,12 @@
 import { llmCredentialsFromEnv, type LlmCredentials } from "../core/config";
 import { redact } from "./openai";
+import { displayUrl, isTimeoutError, llmHttpErrorMessage, llmNetworkErrorMessage } from "./errors";
 import type { LlmEndpoint } from "../core/steps";
 
 const MODELS_TIMEOUT_MS = 30_000;
 
 export function modelsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/models`;
-}
-
-/** 错误文案里的地址只留 origin 与路径，丢掉 query 与片段。 */
-function displayUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
 }
 
 function extractIds(data: unknown): string[] {
@@ -33,6 +24,7 @@ export async function fetchModelIds(
   baseUrl: string,
   apiKey: string,
   fetchImpl?: typeof fetch,
+  timeoutMs: number = MODELS_TIMEOUT_MS,
 ): Promise<string[]> {
   const doFetch = fetchImpl ?? fetch;
   const url = modelsUrl(baseUrl);
@@ -40,18 +32,21 @@ export async function fetchModelIds(
   try {
     res = await doFetch(url, {
       headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(MODELS_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    throw new Error(redact(`模型发现失败：无法连接 ${displayUrl(url)}（${(err as Error).message}）`, apiKey));
+    throw new Error(redact(`模型发现失败：${llmNetworkErrorMessage(err, url)}`, apiKey));
   }
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(
-      redact(`模型发现失败：GET ${displayUrl(url)} 返回 HTTP ${res.status}：${redact(body, apiKey).slice(-200)}`, apiKey),
-    );
+    throw new Error(`模型发现失败：${llmHttpErrorMessage(res.status, url)}`);
   }
-  const parsed = (await res.json()) as { data?: unknown };
+  let parsed: { data?: unknown };
+  try {
+    parsed = (await res.json()) as { data?: unknown };
+  } catch (err) {
+    if (isTimeoutError(err)) throw new Error("模型发现失败：请求超时");
+    throw new Error("模型发现失败：服务端返回的不是合法 JSON");
+  }
   return extractIds(parsed.data);
 }
 
@@ -149,7 +144,7 @@ export async function resolveLlmEndpoint(
   if (picked === undefined) {
     throw new Error(
       redact(
-        `模型发现失败：${displayUrl(modelsUrl(creds.baseUrl))} 返回 ${ids.length} 个模型，其中没有可用的通用 chat 模型；可用 VNOTE_LLM_MODEL 或 IDEALSOFT_API_MODEL 显式指定`,
+        `模型发现失败：${displayUrl(modelsUrl(creds.baseUrl))} 返回 ${ids.length} 个模型，其中没有可用的通用 chat 模型；请在设置页填写模型名显式指定（CLI 可用 VNOTE_LLM_MODEL / IDEALSOFT_API_MODEL）`,
         creds.apiKey,
       ),
     );

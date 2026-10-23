@@ -53,11 +53,6 @@ export function buildSettingsPatch(patch: SettingsPatch): CoreSettingsPatch {
     if (!isAbsolute(patch.modelDir) || patch.modelDir === "") throw new Error("设置 modelDir 必须是非空绝对路径");
     clean.modelDir = patch.modelDir;
   }
-  if (patch.llm !== undefined) {
-    clean.llm = {};
-    if (patch.llm.baseUrl !== undefined) clean.llm.baseUrl = patch.llm.baseUrl;
-    if (patch.llm.model !== undefined) clean.llm.model = patch.llm.model;
-  }
   if (patch.asr !== undefined) {
     const asr = patch.asr as AsrPatchInput;
     if (asr.remote !== undefined) throw new Error("设置 asr.remote 已废弃，请改用 asr.openai");

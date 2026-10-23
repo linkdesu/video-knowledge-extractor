@@ -803,6 +803,28 @@ textarea {
   color: var(--vn-violet);
   flex-shrink: 0;
 }
+/* 可输入 Combobox：输入框 + 右侧 lucide caret，列表复用 vn-select-list。 */
+.vn-combobox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vn-combobox > .vn-input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 32px;
+}
+.vn-combobox-caret {
+  all: unset;
+  position: absolute;
+  right: 10px;
+  top: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  color: var(--vn-dim);
+  cursor: pointer;
+}
 .vn-password {
   position: relative;
   display: flex;

@@ -13,11 +13,19 @@ import type {
 } from "../../../shared/ipc";
 import { ModelPanel } from "../components/ModelPanel";
 import { errMessage, fmtBytes } from "../lib/format";
-import { draftFrom, llmBaseUrlChanged, llmDirty, llmPatch, modelOptions, type LlmSaved } from "../lib/llm-draft";
+import {
+  draftFrom,
+  llmDirty,
+  llmPatch,
+  modelOptions,
+  type LlmFormDraft,
+  type LlmSaved,
+} from "../lib/llm-draft";
 import { showToast } from "../lib/toast";
 import { VOLC_MODE_INFO } from "../../../shared/volc";
 import {
   Button,
+  Combobox,
   PasswordInput,
   Select,
   SettingsField,
@@ -60,7 +68,6 @@ type KeyState = { draft: string; saving: boolean; clearing: boolean };
 const EMPTY_KEY: KeyState = { draft: "", saving: false, clearing: false };
 
 const KEY_FIELDS = [
-  "llm",
   "openaiKey",
   "volcApiKey",
   "volcAppKey",
@@ -89,7 +96,6 @@ export function SettingsPage() {
     Record<"notesRoot" | "cacheRoot" | "modelDir", string>
   >({ notesRoot: "", cacheRoot: "", modelDir: "" });
   const [keys, setKeys] = useState<Record<KeyFieldId, KeyState>>({
-    llm: EMPTY_KEY,
     openaiKey: EMPTY_KEY,
     volcApiKey: EMPTY_KEY,
     volcAppKey: EMPTY_KEY,
@@ -97,22 +103,22 @@ export function SettingsPage() {
   });
   const reloadTimers = useRef<number[]>([]);
   const fetchGeneration = useRef(0);
-  const prevBaseUrl = useRef<string | null>(null);
-  const baseUrl = status?.llm.baseUrl ?? null;
+  const [llmCard, setLlmCard] = useState<{
+    draft: LlmFormDraft;
+    saving: boolean;
+    saveError: string | null;
+  } | null>(null);
+  const draftBaseUrl = llmCard !== null ? llmCard.draft.baseUrl.trim() : null;
+  const prevDraftBaseUrl = useRef<string | null>(null);
   useEffect(() => {
-    if (prevBaseUrl.current !== null && prevBaseUrl.current !== baseUrl) {
+    if (prevDraftBaseUrl.current !== null && prevDraftBaseUrl.current !== draftBaseUrl) {
       setFetchedModels(null);
       // baseUrl 变了：在途的 listLlmModels 是旧端点的响应，丢弃。
       fetchGeneration.current += 1;
     }
-    prevBaseUrl.current = baseUrl;
-  }, [baseUrl]);
+    prevDraftBaseUrl.current = draftBaseUrl;
+  }, [draftBaseUrl]);
 
-  const [llmCard, setLlmCard] = useState<{
-    draft: { baseUrl: string; model: string };
-    saving: boolean;
-    saveError: string | null;
-  } | null>(null);
   const [asrText, setAsrText] = useState<{ baseUrl: string; model: string } | null>(null);
 
   const llmInited = useRef(false);
@@ -199,12 +205,16 @@ export function SettingsPage() {
   }, [models]);
 
   const fetchLlmModels = () => {
+    if (llmCard === null) return;
     setFetchingModels(true);
     setModelsFetchError(null);
     fetchGeneration.current += 1;
     const gen = fetchGeneration.current;
     window.vnote
-      .listLlmModels()
+      .listLlmModels({
+        baseUrl: llmCard.draft.baseUrl.trim(),
+        apiKey: llmCard.draft.apiKey.trim(),
+      })
       .then((r) => {
         if (gen !== fetchGeneration.current) return;
         if (r.ok) {
@@ -227,22 +237,27 @@ export function SettingsPage() {
     const patch = llmPatch(
       { baseUrl: status.llm.baseUrl ?? "", model: status.llm.model },
       llmCard.draft,
-      status.llm.locked,
     );
     if (patch === null) return;
-    const atSave = { ...llmCard.draft };
+    const atSave = { baseUrl: llmCard.draft.baseUrl, model: llmCard.draft.model, apiKey: llmCard.draft.apiKey };
     setLlmCard({ ...llmCard, saving: true, saveError: null });
     window.vnote
-      .updateSettings({ llm: patch })
+      .updateLlm(patch)
       .then((next) => {
         showToast("已保存");
         setLlmCard((cur) => {
           if (cur === null) return null;
-          const unchanged = cur.draft.baseUrl === atSave.baseUrl && cur.draft.model === atSave.model;
+          const keyUntouched = cur.draft.apiKey === atSave.apiKey;
+          const unchanged =
+            cur.draft.baseUrl === atSave.baseUrl &&
+            cur.draft.model === atSave.model &&
+            keyUntouched;
           return {
             draft: unchanged
               ? draftFrom({ baseUrl: next.llm.baseUrl ?? "", model: next.llm.model })
-              : cur.draft,
+              : keyUntouched
+                ? { ...cur.draft, apiKey: "" }
+                : cur.draft,
             saving: false,
             saveError: null,
           };
@@ -287,9 +302,13 @@ export function SettingsPage() {
   };
 
   const testLlm = () => {
+    if (llmCard === null) return;
     setTestingLlm(true);
     window.vnote
-      .testLlm()
+      .testLlm({
+        baseUrl: llmCard.draft.baseUrl.trim(),
+        apiKey: llmCard.draft.apiKey.trim(),
+      })
       .then((r) =>
         showToast(r.ok ? `连接正常${r.model !== null ? ` · ${r.model}` : ""}` : r.message),
       )
@@ -382,14 +401,10 @@ export function SettingsPage() {
       ? models.bundles.filter((b) => b.state !== "ready").map((b) => b.title)
       : asr.local.missing;
 
-  const saveLlmBlocked =
-    llmCard === null ||
-    llmCard.saving ||
-    (llm.locked.baseUrl && llm.locked.model);
-  const llmDirtyNow =
-    llmCard !== null && llmDirty({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft, llm.locked);
-  const llmBaseUrlDirty =
-    llmCard !== null && llmBaseUrlChanged({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft, llm.locked);
+  const llmDirtyNow = llmCard !== null && llmDirty({ baseUrl: llm.baseUrl ?? "", model: llm.model }, llmCard.draft);
+  // 保存整表单需要凭证事务：有 key 且密钥库不可用时无法落库，按钮禁用。
+  const llmSaveBlocked =
+    llmCard === null || llmCard.saving || !llmDirtyNow || (llmCard.draft.apiKey.trim() !== "" && !llm.keyStorageAvailable);
 
   const pickDir = (field: PathField) => {
     window.vnote
@@ -677,82 +692,85 @@ export function SettingsPage() {
             </>
           )}
         </SettingsPanel>
-
         <SettingsPanel title="总结分析" testId="settings-llm">
-          <SettingsField label="接口地址" locked={llm.locked.baseUrl} htmlFor="settings-llm-base-url">
+          <SettingsField label="接口地址" htmlFor="settings-llm-base-url">
             <TextInput
               id="settings-llm-base-url"
               value={llmCard?.draft.baseUrl ?? ""}
               placeholder="https://api.example.com/v1"
-              readOnly={llm.locked.baseUrl}
               aria-label="接口地址"
               data-testid="settings-llm-base-url"
               onChange={(e) =>
                 setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, baseUrl: e.target.value } } : c))
               }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  saveLlm();
-                }
-              }}
             />
           </SettingsField>
-          <SettingsField label="模型名" locked={llm.locked.model} htmlFor="settings-llm-model">
-            <div className="vn-row">
-              <TextInput
-                id="settings-llm-model"
-                value={llmCard?.draft.model ?? ""}
-                placeholder="留空时自动发现"
-                readOnly={llm.locked.model}
-                aria-label="模型名"
-                data-testid="settings-llm-model"
-                style={{ flex: 1 }}
-                onChange={(e) =>
-                  setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: e.target.value } } : c))
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    saveLlm();
-                  }
-                }}
-              />
+          <SettingsField label="API key" htmlFor="settings-llm-key-input">
+            <PasswordInput
+              value={llmCard?.draft.apiKey ?? ""}
+              onChange={(v) =>
+                setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, apiKey: v } } : c))
+              }
+              id="settings-llm-key-input"
+              testId="settings-llm-key"
+              ariaLabel="API key"
+              readOnly={!llm.keyStorageAvailable}
+              placeholder="粘贴新 key"
+            />
+            {!llm.keyStorageAvailable ? (
+              <span className="vn-hint" data-testid="settings-llm-key-no-storage">
+                系统密钥存储不可用，无法保存新的 key
+              </span>
+            ) : llm.keySource === "env" ? (
+              <span className="vn-hint" data-testid="settings-llm-key-env">
+                尚未保存 key，当前使用 dev 模式 .env 种子；保存的 key 优先
+              </span>
+            ) : llm.hasKey ? (
+              <span className="vn-hint" data-testid="settings-llm-key-saved">
+                已保存 key；这里留空继续使用，输入则覆盖
+              </span>
+            ) : (
+              <span className="vn-hint" data-testid="settings-llm-key-none">
+                尚未保存 key；可在此输入并随表单一起保存
+              </span>
+            )}
+          </SettingsField>
+          <SettingsField label="模型名" htmlFor="settings-llm-model">
+            <Combobox
+              id="settings-llm-model"
+              value={llmCard?.draft.model ?? ""}
+              onChange={(v) =>
+                setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: v } } : c))
+              }
+              options={modelOptions(fetchedModels, llmCard?.draft.model ?? "")}
+              placeholder="留空时自动发现"
+              testId="settings-llm-model"
+              ariaLabel="模型名"
+            />
+            <div className="vn-row" style={{ marginTop: 8 }}>
               <Button
                 size="sm"
                 data-testid="settings-llm-fetch-models"
-                disabled={fetchingModels || llmBaseUrlDirty}
+                disabled={fetchingModels || (llmCard?.draft.baseUrl.trim() ?? "") === ""}
                 onClick={fetchLlmModels}
               >
                 {fetchingModels ? "拉取中…" : "拉取模型"}
               </Button>
+              <Button
+                size="sm"
+                data-testid="settings-test-llm"
+                onClick={testLlm}
+                disabled={testingLlm}
+              >
+                {testingLlm ? "测试中…" : "测试连接"}
+              </Button>
             </div>
-            {llmBaseUrlDirty ? (
-              <span className="vn-hint" data-testid="settings-llm-fetch-hint">
-                先保存接口地址
-              </span>
-            ) : null}
-            {fetchedModels !== null ? (
-              <Select
-                id="settings-llm-model-select"
-                value={llmCard?.draft.model ?? ""}
-                disabled={llm.locked.model}
-                testId="settings-llm-model-select"
-                ariaLabel="模型名"
-                options={modelOptions(fetchedModels, llmCard?.draft.model ?? "")}
-                onChange={(v) =>
-                  setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, model: v } } : c))
-                }
-              />
-            ) : null}
             {modelsFetchError !== null ? (
               <p className="vn-hint" data-testid="settings-llm-models-error">
                 {modelsFetchError}
               </p>
             ) : null}
-            {llm.locked.model ? (
-              <span className="vn-hint">由环境变量控制</span>
-            ) : llm.model === null ? (
+            {llm.model === null ? (
               <span className="vn-hint" data-testid="settings-llm-discovered">
                 {llm.discoveredModel === null ? "留空时自动发现" : `已自动发现 ${llm.discoveredModel}`}
               </span>
@@ -762,7 +780,7 @@ export function SettingsPage() {
             variant="primary"
             size="sm"
             data-testid="settings-llm-save"
-            disabled={saveLlmBlocked || !llmDirtyNow}
+            disabled={llmSaveBlocked}
             onClick={saveLlm}
           >
             {llmCard?.saving ? "保存中…" : "保存"}
@@ -772,52 +790,8 @@ export function SettingsPage() {
               {llmCard.saveError}
             </p>
           ) : null}
-          <KeyRow
-            label="API key"
-            state={keys.llm}
-            hasKey={llm.hasKey}
-            keySource={llm.keySource}
-            keyStorageAvailable={llm.keyStorageAvailable}
-            testId="settings-llm-key"
-            onDraft={(v) => setKey("llm", { draft: v })}
-            onSave={() => {
-              const key = keys.llm.draft.trim();
-              if (key === "") return;
-              setKey("llm", { saving: true });
-              window.vnote
-                .updateLlm({ apiKey: key })
-                .then(setStatus)
-                .then(() => showToast("API key 已保存"))
-                .catch((err) => showToast(`保存失败：${errMessage(err)}`))
-                .finally(() => setKey("llm", { saving: false }));
-            }}
-            onClear={() => {
-              setKey("llm", { clearing: true });
-              const draftAtStart = keys.llm.draft;
-              window.vnote
-                .updateLlm({ clearApiKey: true })
-                .then(setStatus)
-                .then(() => {
-                  showToast("API key 已清除");
-                  setKeys((k) =>
-                    k.llm.draft === draftAtStart
-                      ? { ...k, llm: { ...k.llm, draft: "" } }
-                      : k,
-                  );
-                })
-                .catch((err) => showToast(`清除失败：${errMessage(err)}`))
-                .finally(() => setKey("llm", { clearing: false }));
-            }}
-          />
-          <Button
-            size="sm"
-            data-testid="settings-test-llm"
-            onClick={testLlm}
-            disabled={testingLlm}
-          >
-            {testingLlm ? "测试中…" : "测试连接"}
-          </Button>
         </SettingsPanel>
+
 
         <SettingsPanel title="存储" testId="settings-storage">
           <div style={{ marginTop: 12 }}>

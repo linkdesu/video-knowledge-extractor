@@ -10,6 +10,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { ChevronDown, Eye, EyeOff } from "lucide-react";
 
 // settings-form-3 改造：上游演示页改为设置页 primitives（ADR-0022）；重跑 rbp:vendor 会用上游原文覆盖本文件。
 
@@ -254,6 +255,221 @@ export function Select({
   );
 }
 
+export function Combobox({
+  id,
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+  testId,
+  ariaLabel,
+}: {
+  id?: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: readonly SelectOption[];
+  placeholder?: string;
+  disabled?: boolean;
+  testId?: string;
+  ariaLabel?: string;
+}) {
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [flip, setFlip] = useState(false);
+  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const blurTimer = useRef(0);
+
+  const openList = () => {
+    window.clearTimeout(blurTimer.current);
+    const node = rootRef.current;
+    if (node !== null) {
+      const box = node.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      let el: HTMLElement | null = node.parentElement;
+      while (el !== null) {
+        const style = window.getComputedStyle(el);
+        if (style.overflowY !== "visible") {
+          const clip = el.getBoundingClientRect();
+          top = Math.max(top, clip.top);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        el = el.parentElement;
+      }
+      const listHeight = Math.min(options.length * 32 + 10, 264);
+      const roomBelow = bottom - box.bottom;
+      const roomAbove = box.top - top;
+      const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
+      const room = (up ? roomAbove : roomBelow) - 10;
+      setFlip(up);
+      setMaxHeight(room < listHeight ? Math.max(room, 72) : undefined);
+    }
+    setActive(0);
+    setOpen(true);
+  };
+
+  const closeList = () => {
+    window.clearTimeout(blurTimer.current);
+    blurTimer.current = window.setTimeout(() => setOpen(false), 120);
+  };
+
+  const cancelBlur = () => {
+    window.clearTimeout(blurTimer.current);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const node = rootRef.current;
+    if (node === null) return;
+    const doc = node.ownerDocument;
+    if (doc === null) return;
+    const onPointer = (e: Event) => {
+      if (!node.contains(e.target as Node)) {
+        window.clearTimeout(blurTimer.current);
+        setOpen(false);
+      }
+    };
+    doc.addEventListener("mousedown", onPointer);
+    doc.addEventListener("touchstart", onPointer);
+    return () => {
+      doc.removeEventListener("mousedown", onPointer);
+      doc.removeEventListener("touchstart", onPointer);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (list === null || !row) return;
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight)
+      list.scrollTop = bottom - list.clientHeight;
+  }, [open, active]);
+  useEffect(() => {
+    if (options.length > 0) setActive((i) => Math.min(i, options.length - 1));
+  }, [options.length]);
+  useEffect(() => () => window.clearTimeout(blurTimer.current), []);
+
+  const commit = (index: number) => {
+    const option = options[index];
+    if (option === undefined) return;
+    onChange(option.value);
+    setOpen(false);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      if (open) {
+        e.stopPropagation();
+        setOpen(false);
+      }
+      return;
+    }
+    if (!open) {
+      if (e.key === "ArrowDown" || e.key === "Enter") {
+        e.preventDefault();
+        openList();
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((i) => Math.min(i + 1, options.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setActive(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setActive(options.length - 1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      commit(active);
+    }
+  };
+
+  return (
+    <div ref={rootRef} className="vn-select-wrap vn-combobox">
+      <input
+        id={id}
+        type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-haspopup="listbox"
+        aria-activedescendant={open && options.length > 0 ? `${listId}-opt-${active}` : undefined}
+        aria-label={ariaLabel}
+        data-testid={testId}
+        value={value}
+        placeholder={placeholder}
+        disabled={disabled}
+        className="vn-input"
+        onChange={(e) => {
+          onChange(e.target.value);
+          if (!open) openList();
+        }}
+        onFocus={openList}
+        onBlur={closeList}
+        onKeyDown={onKeyDown}
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        className="vn-combobox-caret"
+        aria-hidden="true"
+        onClick={() => (open ? setOpen(false) : openList())}
+      >
+        <ChevronDown size={15} style={{ transform: open ? "rotate(180deg)" : undefined }} />
+      </button>
+
+      {open ? (
+        <ul
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          tabIndex={-1}
+          data-testid={testId !== undefined ? `${testId}-listbox` : undefined}
+          style={maxHeight !== undefined ? { maxHeight } : undefined}
+          className={`vn-select-list${flip ? " up" : ""}`}
+        >
+          {options.map((o, i) => (
+            <li
+              key={o.value}
+              id={`${listId}-opt-${i}`}
+              role="option"
+              aria-selected={o.value === value}
+              data-highlighted={i === active ? "" : undefined}
+              data-index={i}
+              data-testid={testId !== undefined ? `${testId}-option-${i}` : undefined}
+              data-value={o.value}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                cancelBlur();
+              }}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => commit(i)}
+              className="vn-select-option"
+            >
+              <span className="vn-select-option-text">{o.label}</span>
+              {o.value === value ? <span className="vn-select-check" aria-hidden="true">✓</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+
 export function TextInput({
   className,
   ...rest
@@ -318,7 +534,7 @@ export function PasswordInput({
         disabled={readOnly}
         onClick={() => setRevealed((r) => !r)}
       >
-        <span aria-hidden="true">👁</span>
+        {revealed ? <EyeOff size={15} /> : <Eye size={15} />}
       </button>
     </div>
   );

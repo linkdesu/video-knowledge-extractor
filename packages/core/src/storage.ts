@@ -4,16 +4,20 @@
  * 不导出 `runExtract` 流水线——桌面端按这个契约取数，流水线走 `@video-notes/core` 主入口。
  */
 export { cacheRoot, dataRoot, notesRoot, modelDir, llmCredentialsFromEnv, ASR_MODEL_ID } from "./core/config";
+export type { EnvRecord } from "./core/config";
 export { cacheDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
   SETTINGS_VERSION,
+  applyLlmSeed,
   defaultSettings,
   loadSettings,
   readSettingsFile,
   readSettingsFileSafe,
   resolveSettings,
   saveSettings,
+  prepareSettings,
+  validateSettingsPatch,
   settingsLockedByEnv,
 } from "./core/settings";
 export type {

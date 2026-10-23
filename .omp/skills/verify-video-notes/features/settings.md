@@ -1,6 +1,6 @@
 # Settings
 
-Settings shows what the app will actually use: local ASR model bundles and their readiness, the LLM endpoint and model, storage directories, cache size and the app/ffmpeg versions. Some fields are editable, some are locked by environment variables; the trial build exposes only local ASR.
+Settings shows what the app will actually use: local ASR model bundles and their readiness, the LLM endpoint and model, storage directories, cache size and the app/ffmpeg versions. The LLM panel is a single-card form (baseUrl, key, model) saved atomically by one 保存 button; no LLM field is ever locked by environment variables (r30), and the trial build exposes only local ASR.
 
 ## Sub-features
 
@@ -9,9 +9,9 @@ Settings shows what the app will actually use: local ASR model bundles and their
 - `settings-model-verify` recomputes sha256 for files present but not yet verified (read-only on disk).
 - `settings-model-download` downloads missing files (network).
 - `settings-model-import` imports models from a directory/archive via a native picker (not automatable).
-- `settings-llm` shows the endpoint (text input, commits on Enter or blur), the model name (text input plus 拉取模型 plus a DOM dropdown: trigger button `settings-llm-model-select` role=combobox, list `settings-llm-model-select-listbox`, options `settings-llm-model-select-option-<i>` role=option with `data-value` the model id) and the key field. All edits are local drafts; nothing is written until `settings-llm-save` is clicked (disabled while the draft equals the saved values), and a failed save renders inline at `settings-llm-save-error`.
-- `settings-llm-key` is always an editable password input (`type=password`) with a reveal toggle `settings-llm-key-reveal` (aria-label 显示密钥 / 隐藏密钥, flips the input to `type=text`); the value survives a successful save (not cleared); `settings-llm-key-saved` is present when a key is in the keychain. The four ASR key fields share the shape with prefixes `settings-asr-key` / `settings-asr-volc-api-key` / `settings-asr-volc-app-key` / `settings-asr-volc-access-key`.
-- `settings-llm-fetch-models` calls `<base>/models` with the effective credentials and renders every returned id as an option in `settings-llm-model-select-listbox` (plus 自动发现（留空）); a failure renders inline at `settings-llm-models-error`.
+- `settings-llm` is a single-card form: 接口地址 (text input `settings-llm-base-url`), API key (password input `settings-llm-key-input` with reveal toggle `settings-llm-key-reveal`), 模型名 (combobox input `settings-llm-model` role=combobox plus listbox `settings-llm-model-listbox` role=listbox and option rows `settings-llm-model-option-<i>` role=option with `data-value` the model id), 拉取模型 (`settings-llm-fetch-models`, disabled only while a fetch is in flight or while the draft baseUrl is empty), 测试连接 (`settings-test-llm`) and the single 保存 button (`settings-llm-save`). 拉取模型 and 测试连接 use the draft values in front of you and require no prior save. All edits are local drafts; the one save submits baseUrl + model to `settings.json` and the key to the system keychain in one credential transaction, and the button is disabled when the draft equals the saved values, or when a non-empty key is typed while `keyStorageAvailable` is false. A failed save renders inline at `settings-llm-save-error`, never only as a toast. Key hints: `settings-llm-key-no-storage` (系统密钥存储不可用，无法保存新的 key; shown instead of the other key hints while `keyStorageAvailable` is false, input read-only), `settings-llm-key-saved` (已保存 key；这里留空继续使用，输入则覆盖), `settings-llm-key-env` (尚未保存 key，当前使用 dev 模式 .env 种子；保存的 key 优先), `settings-llm-key-none` (尚未保存 key). `settings-llm-discovered` (only while no model is pinned) reads 留空时自动发现, then 已自动发现 <model>.
+- `settings-llm-key` is an editable password input (`type=password`) with a reveal toggle `settings-llm-key-reveal` (aria-label 显示密钥 / 隐藏密钥, flips the input to `type=text`); it is cleared after a successful save that included a key, and stays filled (with the form still dirty) when the user typed a new key during the save. There is no separate key save or clear button — the key rides the single form 保存. The four ASR key fields share the full shape (input + save + reveal + clear) with prefixes `settings-asr-key` / `settings-asr-volc-api-key` / `settings-asr-volc-app-key` / `settings-asr-volc-access-key`.
+- `settings-llm-fetch-models` calls `<base>/models` with the draft's base url and key (falling back to the stored or dev-seeded key when the key input is empty) and renders every returned id as an option in `settings-llm-model-listbox`; a failure renders inline at `settings-llm-models-error`, and a 401 reads `模型发现失败：API key 无效或已停用` with the response body never echoed.
 - `model-download-log` is a scrollable phase log (下载 / 校验 / 解压 / 安装 / 完成) under the progress bar; the bar stays visible from the click until every bundle reads 就绪.
 - `settings-test-llm` calls the configured endpoint (network).
 - `settings-storage` shows notesRoot, cacheRoot and modelDir; locked fields display 由环境变量控制.
@@ -34,68 +34,97 @@ Preconditions:
 - **Provider.** Run `$V eval "document.querySelector('[data-testid=settings-asr-provider-fixed]')?.innerText"`. It reads 本地 sherpa-onnx; the provider `<select>` is absent unless `VNOTE_ENABLE_CLOUD_ASR=1`.
 - **Model readiness.** Run `$V eval "[...document.querySelectorAll('[data-testid^=model-bundle-]')].map(e => e.innerText.replace(/\\n+/g, ' | '))"`. With the shared model cache each of the four bundles reads 就绪 with its size.
 - **Verify models (optional, slow).** Run `$V click '[data-testid=model-verify]'` and wait until the bundle states are no longer 未校验. This only reads files; it must not download.
-- **LLM fields.** Run `$V eval "document.querySelector('[data-testid=settings-llm]').innerText"`. Endpoint shows 由环境变量控制 when `.env`/shell provide it (input read-only); all edits are local drafts until `settings-llm-save` is clicked; the key row is a password input with a reveal toggle (「Key field」); with no pinned model the `settings-llm-discovered` hint reads 留空时自动发现 while discovery runs, then 已自动发现 <model>.
-- **Fetch models (network).** Click `settings-llm-fetch-models`, wait for `settings-llm-model-select-listbox`, then read `[...document.querySelectorAll('[data-testid^=settings-llm-model-select-option-]')].map(o => o.getAttribute('data-value'))`. Clicking an option writes the local draft only; confirm `llm.model` via `window.vnote.settings()` after clicking `settings-llm-save` (「LLM save closed loop」). A bad endpoint must show a readable message at `settings-llm-models-error`, never only a toast.
+- **LLM fields.** Run `$V eval "document.querySelector('[data-testid=settings-llm]').innerText"`. No LLM field is ever locked by `.env` (r30); the key input is read-only only while `keyStorageAvailable` is false (with `settings-llm-key-no-storage` shown); a run with a saved key shows the `settings-llm-key-saved` hint and a fresh run shows `settings-llm-key-none`. All edits are local drafts until `settings-llm-save` is clicked (the single 保存 button); the key row is a password input with a reveal toggle and no separate key save button (「Key field」); with no pinned model the `settings-llm-discovered` hint reads 留空时自动发现 while discovery runs, then 已自动发现 <model>.
+- **Fetch models (network, no prior save needed).** Fill the draft first: `$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"` and `$V fill '[data-testid=settings-llm-key-input]' "$KEY"`. Then click `settings-llm-fetch-models` (it is disabled only while a fetch is in flight or while the draft baseUrl is empty), wait for the listbox, then read the option ids: `$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"`. Clicking an option row writes the local draft only; the value reaches the saved settings only after the 保存 click (「LLM 保存闭环」). A bad endpoint must show a readable message at `settings-llm-models-error` (a 401 reads `模型发现失败：API key 无效或已停用`, never a raw body), never only a toast.
 - **Download journey (network, ~1.1 GB).** Start with `--model-dir` pointing at an empty directory, open 设置, confirm every bundle reads 缺失 and `models().download.state === 'idle'` (no automatic start). Click `model-download`, then capture `model-download-progress` and `model-download-log` during the download and again at 100% (the bar must still be there while the message reads 校验中 / 解压). Wait on `window.vnote.models().then(m => m.ready)`, then confirm all four bundles read 就绪 and the bar is gone.
 - **Storage paths.** Run `$V eval "[...document.querySelectorAll('[data-testid^=settings-path-input-]')].map(i => [i.getAttribute('aria-label'), i.value, i.readOnly])"`. With the helper, `VNOTE_HOME`, `VNOTE_CACHE_DIR` and `VNOTE_MODEL_DIR` are set, so the inputs are read-only and each `settings-path-locked-*` hint reads 由环境变量控制.
 - **About.** Run `$V eval "document.querySelector('[data-testid=settings-about]').innerText"`; compare the version with `apps/desktop/package.json`.
 - **No side effects expected.** This journal is read-only. Confirm `git status` is unchanged and no new files appear under the run home unless you clicked verify/cache actions.
 - **Proof.** `$V shot settings-proof`, `$V snapshot settings-proof`, and the `drive status` JSON (contains notesRoot, modelDir, cacheRoot, appVersion, modelsReady, llmConfigured, ffmpeg).
 
-### Recipe: LLM save closed loop
+### Recipe: LLM 拉取模型 + 测试连接（draft 值，无需先保存）
 
-Two paths, decided by whether the run's LLM is env-locked (see Gotchas):
-
-- **env-locked** (the repo root `.env` or the shell sets `IDEALSOFT_API_URL`/`IDEALSOFT_API_KEY` or `VNOTE_LLM_*`): the endpoint is real but the input is read-only. Verify only "fetch + select model + save the model field" (when the model field itself is not locked): skip the base-url fill/press lines below and the baseUrl write assertions.
-- **not locked** (no `.env` / no LLM env): the endpoint is whatever you type. Use `$ENDPOINT` = an OpenAI-compatible endpoint the operator can use; when the verification machine has no usable endpoint, use a local mock instead, e.g. in a second terminal
-
-  ```bash
-  bun -e 'Bun.serve({ port: 9599, fetch: () => new Response(JSON.stringify({ data: [{ id: "mock-a" }] }), { headers: { "Content-Type": "application/json" } }) })'
-  ```
-
-  (returns `{"data":[{"id":"mock-a"}]}` for every request; then `$ENDPOINT=http://127.0.0.1:9599/v1`). Not locked you may also verify the baseUrl write (the fill/press lines below); everything else is identical.
+拉取模型 and 测试连接 both send the draft values in front of you: the base url input plus the key input (an empty key input falls back to the stored key, then the dev seed). Neither requires a prior save.
 
 ```bash
 $V click-text '设置'
 $V wait "document.querySelector('[data-testid=settings-page]') !== null"
-# not locked only (env-locked: the input is read-only, skip these lines):
+$V eval "window.vnote.settings().then(s => s.llm.baseUrl)"
+# record this value; the recipe must end with the same value (no save happens here)
 $V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"
-$V press Enter
+$V fill '[data-testid=settings-llm-key-input]' "$KEY"
+# 拉取模型 is disabled only while in flight or while the draft baseUrl is empty; it needs no prior save
+$V click '[data-testid=settings-llm-fetch-models]'
+# the button is disabled for the duration of the fetch and re-enables when it settles
+$V wait "document.querySelector('[data-testid=settings-llm-fetch-models]').disabled === false" --timeout 30000
+# expected: condition met; a failed fetch renders the inline error instead, e.g. a 401 key reads 模型发现失败：API key 无效或已停用
+$V eval "document.querySelector('[data-testid=settings-llm-models-error]')?.innerText ?? null"
+# open the combobox (the listbox renders only while the input is open); fetched ids become its options
+$V click '[data-testid=settings-llm-model]'
+$V wait "document.querySelector('[data-testid=settings-llm-model-listbox]') !== null" --timeout 10000
+$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"
+# expected: the model ids <base>/models returned (deduplicated, sorted)
+# 测试连接 sends the same draft values (baseUrl + key, 10 s timeout); the toast is visible ~2.4 s
+$V click '[data-testid=settings-test-llm]'
+$V wait "document.querySelector('[data-testid=toast-host]') !== null" --timeout 30000
+$V eval "document.querySelector('[data-testid=toast-host]').innerText"
+# expected toast (success): 连接正常 · <first returned model id>
+# expected toast (failure): 测试失败：<readable message>; a 401 key reads 测试失败：模型发现失败：API key 无效或已停用
+# no save happened: the settings readback is unchanged
+$V eval "window.vnote.settings().then(s => s.llm.baseUrl)"
+# expected: the pre-journey value (null or a previous save), not $ENDPOINT
+```
+
+On a metered connection skip both clicks; type the model instead: `$V fill '[data-testid=settings-llm-model]' '<model>'` — a local draft only. Do **not** dispatch `input`/`change` events through `eval` to fake a selection; a selection counts only when an option row was clicked (「LLM 保存闭环」).
+
+### Recipe: LLM 保存闭环（single save, write closed loop）
+
+One save button submits the whole form atomically: baseUrl + model into `settings.json`, the key into the system keychain in one credential transaction. The button is disabled while the draft equals the saved values, so fill at least one field first.
+
+```bash
+$V click-text '设置'
+$V wait "document.querySelector('[data-testid=settings-page]') !== null"
+# 1) fill the base url (the input commits the draft on key events; Enter does not save the form)
+$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"
 $V eval "document.querySelector('[data-testid=settings-llm-base-url]').value"
 # expected: $ENDPOINT
-```
-
-`fill` leaves focus on the input; `press Enter` saves the card (the same action as the 保存 button) — it does not merely blur. Pick the model through the DOM dropdown — never a native popup, never a dispatched change:
-
-```bash
+# 2) fill the key (there is no separate key save button; the key rides the form save)
+$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r30'
+# 3) fetch the model list with the draft values (no prior save needed); the button reads 拉取中… while in flight
 $V click '[data-testid=settings-llm-fetch-models]'
-$V wait "document.querySelector('[data-testid=settings-llm-model-select]') !== null" --timeout 30000
-$V click '[data-testid=settings-llm-model-select]'
-$V wait "document.querySelector('[data-testid=settings-llm-model-select-listbox]') !== null"
-$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-select-option-]')].map(o => o.getAttribute('data-value'))"
-# expected: "" first (自动发现（留空）), then the model ids <base>/models returned
-$V click '[data-testid=settings-llm-model-select-option-1]'
+$V wait "document.querySelector('[data-testid=settings-llm-fetch-models]').disabled === false" --timeout 30000
+# a failed fetch renders the inline error instead, e.g. a 401 key reads 模型发现失败：API key 无效或已停用
+# 4) open the combobox (the listbox renders only while the input is open); fetched ids are its options
+$V click '[data-testid=settings-llm-model]'
+$V wait "document.querySelector('[data-testid=settings-llm-model-listbox]') !== null && document.querySelectorAll('[data-testid^=settings-llm-model-option-]').length > 0" --timeout 10000
+$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"
+# expected: the model ids <base>/models returned (deduplicated, sorted)
+$V snapshot settings-llm-model-open   # accessibility tree showing the open listbox with role=option rows
+# 5) select a model: click an option row (never a dispatched input/change event)
+$V click '[data-testid=settings-llm-model-option-1]'
 $V eval "document.querySelector('[data-testid=settings-llm-model]').value"
 # expected: the data-value of option-1 (the first returned model id)
-$V snapshot settings-llm-model-open   # accessibility tree showing the listbox open with role=option rows
-```
-
-On a metered connection type the model instead: `$V fill '[data-testid=settings-llm-model]' '<model>'` — a local draft only, no network. Do **not** press Enter here: Enter commits the card (the same action as the 保存 button), and this recipe's save is the 保存-button click below. Then save and read back:
-
-```bash
+# 6) the single 保存 button is enabled only because the draft changed; save and read back
 $V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
 $V click '[data-testid=settings-llm-save]'
-$V wait "window.vnote.settings().then(s => s.llm.model === '<model>')"   # <model> = the selected or typed model
+$V wait "window.vnote.settings().then(s => s.llm.model !== null && s.llm.model === document.querySelector('[data-testid=settings-llm-model]').value)"
 # expected: condition met, not a timeout
-$V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model }))"
-# not locked: { "baseUrl": "$ENDPOINT", "model": "<model>" } (baseUrl is echoed as origin+pathname); env-locked: baseUrl is the env endpoint
-cat tmp/verify/<run>/user-data/settings.json | grep -A2 '"llm"'
-# not locked: expected: "baseUrl": "$ENDPOINT" and "model": "<model>"; env-locked: expected: "model": "<model>"
+$V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model, hasKey: s.llm.hasKey }))"
+# expected: { "baseUrl": "<origin>+<pathname of $ENDPOINT>", "model": "<model>", "hasKey": true }
+cat tmp/verify/<run>/user-data/settings.json
+# expected: "llm" contains "baseUrl": "<same as the settings() readback>" and "model": "<model>"
+# 7) the key landed in the keychain; the input is cleared but the hint flips
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
+# expected: "" (cleared after a successful save that included a key)
+$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
+# expected: true (已保存 key；这里留空继续使用，输入则覆盖)
 $V shot settings-llm-saved
 $V snapshot settings-llm-saved
 ```
 
-A failed save must render at `settings-llm-save-error` (inline, readable text), never only a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`.
+A failed save must render at `settings-llm-save-error` (inline, readable text), never only as a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`. The button is disabled when the draft equals the saved values, or when a non-empty key is typed while `llm.keyStorageAvailable` is false (a key cannot be written without keychain access); that is the `llmSaveBlocked` rule, not a defect.
+
+Note on `settings().llm.baseUrl`: the preload bridge returns the effective base url normalized to origin+pathname (`displayUrl`), so compare against that shape, not the raw input text.
 
 ### Recipe: restart persistence
 
@@ -118,56 +147,110 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run $R1-restart
 # expected: exit 0 — the first check is that the process from state.json is alive and is the executable recorded in state.json (a packaged app's process name is not Electron)
 ```
 
-### Recipe: key field
+### Recipe: key field（password input + reveal，无独立 key 保存按钮）
 
-Preconditions: `window.vnote.settings()` reports `llm.keyStorageAvailable === true` (otherwise the `settings-llm-key-save` button is absent, `settings-llm-key-no-storage` is present, and env is the only key path), and no env key (otherwise the hint is `settings-llm-key-env`, not `-saved`).
+Preconditions: `window.vnote.settings()` reports `llm.keyStorageAvailable === true` (otherwise the input is read-only, the reveal button is disabled, `settings-llm-key-no-storage` shows 系统密钥存储不可用，无法保存新的 key, and the saved-key path is unavailable). There is no env lock (r30): a run with a stored key shows `settings-llm-key-saved`, a fresh run shows `settings-llm-key-none`, a dev run with a `.env` seed shows `settings-llm-key-env`.
 
 ```bash
 $V click-text '设置'
 $V wait "document.querySelector('[data-testid=settings-page]') !== null"
+# starts masked
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "password"
-$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r29'
-$V wait "document.querySelector('[data-testid=settings-llm-key-save]').disabled === false"
-$V click '[data-testid=settings-llm-key-save]'
-$V wait "window.vnote.settings().then(s => s.llm.hasKey)"
+# no separate key save/clear buttons (removed in r30; the key rides the form 保存)
+$V eval "document.querySelector('[data-testid=settings-llm-key-save]') === null && document.querySelector('[data-testid=settings-llm-key-clear]') === null"
 # expected: true
-$V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
-# expected: "sk-verify-r29" — the value survives the save, not cleared
-$V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
-# expected: "password" still
-$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
-# expected: true (已保存（系统密钥库）)
+# reveal toggles to text…
 $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "text"
+# …and back to password
 $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "password"
+# a form save lands the key in the keychain
+$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r30'
+$V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
+$V click '[data-testid=settings-llm-save]'
+$V wait "window.vnote.settings().then(s => s.llm.hasKey)"
+# expected: true
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
+# expected: "" — the input is cleared after a save that included a key
+$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
+# expected: true (已保存 key；这里留空继续使用，输入则覆盖)
 $V status
 # expected: exit 0 — the app never crashed across the sequence
 ```
 
-The four ASR key fields are the same shape: prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, each with `-input`, `-reveal`, `-saved`, `-no-storage` (the volc trio only when their provider panel is rendered).
+The four ASR key fields are the full shape: prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, each with `-input`, `-save`, `-reveal`, `-saved`, `-clear`, `-no-storage` (the volc trio only when their provider panel is rendered). Only the LLM key row has no `-save`/`-clear` buttons.
+
+### Recipe: 401 错误文案（readable，正文不回显）
+
+Same as the 「拉取模型 + 测试连接」 recipe, with a mock that rejects the key with a 401 and a non-empty body. The body must never appear in any UI text:
+
+```bash
+bun -e 'Bun.serve({ port: 9599, fetch: () => new Response("secret-body-abc123", { status: 401 }) })'   # second terminal
+# fill the draft with $ENDPOINT=http://127.0.0.1:9599/v1 and a key, click 拉取模型, wait for the button to re-enable
+$V eval "document.querySelector('[data-testid=settings-llm-models-error]')?.innerText"
+# expected: 模型发现失败：API key 无效或已停用 — "secret-body-abc123" appears nowhere
+$V click '[data-testid=settings-test-llm]'
+$V wait "document.querySelector('[data-testid=toast-host]') !== null" --timeout 30000
+$V eval "document.querySelector('[data-testid=toast-host]').innerText"
+# expected: 测试失败：模型发现失败：API key 无效或已停用
+```
+
+This proves the status-code table end to end (packages/core `llmHttpErrorMessage`): 400 请求无效（HTTP 400）、401 API key 无效或已停用、403 没有访问权限（API key 可能受限）、404 接口地址不存在（…）、408/504 服务端超时、429 请求过于频繁或额度不足、5xx 服务端错误（HTTP 5xx）. Response bodies are never echoed into error text.
+
+### Recipe: dev 种子（.env 只填没有已保存值的字段）
+
+The helper's run is an unpacked (dev) app, so this applies to a helper run with the repo-root `.env` present (`IDEALSOFT_API_URL` / `IDEALSOFT_API_KEY` or `VNOTE_LLM_*`) and a fresh `user-data` (no saved LLM value).
+
+```bash
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --run r30-devseed
+$V click-text '设置'
+$V wait "document.querySelector('[data-testid=settings-page]') !== null"
+# before any save, the input shows the seeded value
+$V eval "document.querySelector('[data-testid=settings-llm-base-url]').value"
+# expected: the .env baseUrl (seeded — no save happened)
+# the dev-seeded key is the effective key
+$V eval "window.vnote.settings().then(s => s.llm.keySource)"
+# expected: "env"
+$V eval "!!document.querySelector('[data-testid=settings-llm-key-env]')"
+# expected: true (尚未保存 key，当前使用 dev 模式 .env 种子；保存的 key 优先)
+# typing and saving overrides the seed
+$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"
+$V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r30'
+$V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
+$V click '[data-testid=settings-llm-save]'
+$V wait "window.vnote.settings().then(s => s.llm.keySource === 'stored')"
+# expected: condition met — the stored key wins over the seed
+$V eval "window.vnote.settings().then(s => s.llm.baseUrl)"
+# expected: <origin>+<pathname of $ENDPOINT>, not the .env value
+$V eval "!!document.querySelector('[data-testid=settings-llm-key-saved]')"
+# expected: true — the -key-env hint is gone
+```
+
+A run that already has a saved baseUrl/model is never re-seeded (`applyLlmSeed` fills only fields without a saved value), and the packaged app never sees the seed at all (it never reads `.env`).
 
 ### Recipe: packaged closed loop
 
-Same as the existing Packaged app install, then run the two recipes above inside the packaged run — nothing is substituted for the write loop:
+Same as the Packaged app install in the skill, then run the 「LLM 保存闭环」 recipe inside the packaged run — nothing is substituted for the write loop (the packaged app never reads `.env`, so 设置 is its only credential path):
 
 ```bash
 hdiutil attach apps/desktop/release/Video\ Notes-0.1.0-arm64.dmg -nobrowse -readonly
-ditto "/Volumes/Video Notes/Video Notes.app" tmp/r29-install/"Video Notes.app"
+ditto "/Volumes/Video Notes/Video Notes.app" tmp/r30-install/"Video Notes.app"
 hdiutil detach "/Volumes/Video Notes"
-bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r29-install/Video Notes.app" --min-path --run pkg-r29
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r30-install/Video Notes.app" --min-path --run pkg-r30
 ```
 
-1. Run the 「LLM save closed loop」 commands against `pkg-r29` (the 设置 page is available without a video).
-2. `$V shot pkg-llm-saved` (settings page with the saved endpoint + model), then run 「restart persistence」 with `$R1=pkg-r29`, adding `--app "tmp/r29-install/Video Notes.app" --min-path` to the second `up`.
+1. Run the 「LLM 保存闭环」 commands against `pkg-r30` (the 设置 page is available without a video).
+2. `$V shot pkg-llm-saved` (settings page with the saved endpoint + model), then run 「restart persistence」 with `$R1=pkg-r30`, adding `--app "tmp/r30-install/Video Notes.app" --min-path` to the second `up`.
 3. `$V shot pkg-restart`, `$V snapshot pkg-restart`, `doctor` exit 0 for both runs.
 
-Evidence for the run pair: `tmp/verify/pkg-r29/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r29/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. On a machine without a repo `.env`, the key field recipe is the only credential path and must be part of the loop.
-
+Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
 ## Gotchas
+- **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
+- **The old key save/clear buttons are gone (r30).** `settings-llm-key-save` / `-clear` no longer exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without keychain access).
 
 - The app never downloads models by itself (r28); a fresh process starts no download. The 下载模型 button is the only way to download and it hits the network. Never click it on a metered connection; a download journey must be explicitly started and waited out until every bundle reads 就绪.
 - Storage root (r28): notes are the root itself; `.cache` and `models` are subdirectories of it, so the three rows read `<root>`, `<root>/.cache`, `<root>/models` unless env overrides them. An unpacked dev process launched inside the repo uses `<repo>/tmp/dev-home` instead.

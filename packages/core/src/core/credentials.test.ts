@@ -34,16 +34,24 @@ function asrRemote(overrides?: { openai?: { baseUrl?: string; model?: string }; 
 const asrLocal = { provider: "local", openai: { baseUrl: "", model: "" }, volcengine: volc } as const;
 
 describe("resolveLlm", () => {
-  test("env key 优先于传入 key", () => {
-    const result = resolveLlm(settings({ llm, asr: asrLocal }), "stored-key", { VNOTE_LLM_API_KEY: "env-key" });
-    expect(result).toEqual({ value: { baseUrl: "https://llm", model: "m-llm", apiKey: "env-key" }, missing: [], keySource: "env" });
+  test("已存 key 优先于种子 key（r30 契约）", () => {
+    const result = resolveLlm(settings({ llm, asr: asrLocal }), "stored-key", "seed-key");
+    expect(result).toEqual({ value: { baseUrl: "https://llm", model: "m-llm", apiKey: "stored-key" }, missing: [], keySource: "stored" });
   });
 
-  test("没有 env key 时用传入的密钥库 key", () => {
-    const { settings: s } = resolveSettings({ version: 3, llm: { baseUrl: "https://llm", model: "m-llm" } }, {});
-    const result = resolveLlm(s, "stored-key", {});
-    expect(result.value?.apiKey).toBe("stored-key");
-    expect(result.keySource).toBe("stored");
+  test("没有已存 key 时用种子 key，keySource 记为 env", () => {
+    const result = resolveLlm(settings({ llm, asr: asrLocal }), undefined, "seed-key");
+    expect(result.value?.apiKey).toBe("seed-key");
+    expect(result.keySource).toBe("env");
+  });
+
+  test("env 变量不再影响 key 选取（r30 契约）", () => {
+    const { settings: s } = resolveSettings({ version: 3, llm: { baseUrl: "https://llm", model: "m-llm" } }, { VNOTE_LLM_API_KEY: "env-key" });
+    expect(s.llm).toEqual({ baseUrl: "https://llm", model: "m-llm" });
+    const result = resolveLlm(s, undefined);
+    expect(result.value?.apiKey).toBeUndefined();
+    expect(result.missing).toEqual(["API key"]);
+    expect(result.keySource).toBe("none");
   });
 
   test("接口地址缺失时 value 为 undefined，missing 点名", () => {
@@ -54,10 +62,16 @@ describe("resolveLlm", () => {
 
   test("key 全缺时 missing 同时列出地址与 key", () => {
     const { settings: s } = resolveSettings({ version: 3, llm: { baseUrl: "", model: "m" } }, {});
-    const result = resolveLlm(s, undefined, {});
+    const result = resolveLlm(s, undefined);
     expect(result.value).toBeUndefined();
     expect(result.missing).toEqual(["接口地址", "API key"]);
     expect(result.keySource).toBe("none");
+  });
+
+  test("空串已存 key 视为无，回落到种子 key", () => {
+    const result = resolveLlm(settings({ llm, asr: asrLocal }), "", "seed-key");
+    expect(result.value?.apiKey).toBe("seed-key");
+    expect(result.keySource).toBe("env");
   });
 });
 

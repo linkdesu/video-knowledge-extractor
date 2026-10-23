@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { cacheRoot, asrEnv, envValue, llmEnv, modelDir, notesRoot, type EnvRecord } from "./config";
+import { cacheRoot, asrEnv, envValue, modelDir, notesRoot, type EnvRecord, type LlmEnv } from "./config";
 import { writeJsonAtomic } from "./paths";
 
 export const SETTINGS_VERSION = 3;
@@ -45,8 +45,6 @@ export type LockedSettings = {
   notesRoot: boolean;
   cacheRoot: boolean;
   modelDir: boolean;
-  llmBaseUrl: boolean;
-  llmModel: boolean;
   asrProvider: boolean;
   asrBaseUrl: boolean;
   asrModel: boolean;
@@ -54,7 +52,7 @@ export type LockedSettings = {
   volcAuthMode: boolean;
 };
 
-/** 界面 patch：只碰用户可编辑字段。 */
+/** 界面 patch：只碰用户可编辑字段；llm 块是内部存储写路径（用户三件套），不再被 env 锁定。 */
 export type SettingsPatch = {
   notesRoot?: string;
   cacheRoot?: string;
@@ -67,9 +65,22 @@ export type SettingsPatch = {
   };
 };
 
-/** 默认值与 config 同口径：路径、llm/asr 全部按 env 求值（ADR-0015、ADR-0016）。 */
+/** 默认值与 config 同口径：路径、asr 按 env 求值，llm 只在 dev 模式由 .env 种子填充（r30 契约）。 */
 export function defaultSettings(env: EnvRecord = process.env): AppSettings {
   return resolveSettings({ version: SETTINGS_VERSION }, env).settings;
+}
+
+/** dev 模式 .env 种子：文件缺值才填（trim 后），空/空白种子视为未提供，绝不覆盖已存值；不做校验。 */
+export function applyLlmSeed(file: SettingsFile, seed: LlmEnv | undefined): SettingsFile {
+  const baseUrl = seed?.baseUrl?.trim();
+  const model = seed?.model?.trim();
+  if ((baseUrl === undefined || file.llm?.baseUrl !== undefined) && (model === undefined || file.llm?.model !== undefined)) {
+    return file;
+  }
+  const llm = { ...file.llm };
+  if (file.llm?.baseUrl === undefined && baseUrl !== undefined) llm.baseUrl = baseUrl;
+  if (file.llm?.model === undefined && model !== undefined) llm.model = model;
+  return { ...file, llm };
 }
 
 /**
@@ -190,9 +201,8 @@ export function readSettingsFileSafe(path: string): { file: SettingsFile; error:
   }
 }
 
-/** 不读磁盘：文件层 + env 求有效值与 locked（env > 文件 > 默认，ADR-0015、ADR-0016）。 */
+/** 不读磁盘：文件层 + env 求有效值与 locked（env > 文件 > 默认仅路径与 asr；llm 只看文件层，r30 契约）。 */
 export function resolveSettings(file: SettingsFile, env: EnvRecord): { settings: AppSettings; locked: LockedSettings } {
-  const llmEnvValue = llmEnv(env);
   const asrEnvValue = asrEnv(env);
   const settings: AppSettings = {
     version: SETTINGS_VERSION,
@@ -200,8 +210,8 @@ export function resolveSettings(file: SettingsFile, env: EnvRecord): { settings:
     cacheRoot: envValue(env, ["VNOTE_CACHE_DIR"]) ?? file.cacheRoot ?? cacheRoot(env),
     modelDir: envValue(env, ["VNOTE_MODEL_DIR"]) ?? file.modelDir ?? modelDir(env),
     llm: {
-      baseUrl: llmEnvValue.baseUrl ?? file.llm?.baseUrl?.trim() ?? "",
-      model: llmEnvValue.model ?? file.llm?.model?.trim() ?? "",
+      baseUrl: file.llm?.baseUrl?.trim() ?? "",
+      model: file.llm?.model?.trim() ?? "",
     },
     asr: {
       provider:
@@ -233,13 +243,28 @@ export function loadSettings(configPath: string, env: EnvRecord = process.env): 
   return resolveSettings(readSettingsFile(configPath), env).settings;
 }
 
-/** 拒绝被 env 锁定的字段（后端约束，不靠界面 readOnly），再深度合并到文件层并写盘（ADR-0015）。 */
-export function saveSettings(configPath: string, patch: SettingsPatch, env: EnvRecord = process.env): AppSettings {
+function prepareAndMerge(configPath: string, patch: SettingsPatch, env: EnvRecord): { merged: SettingsFile; settings: AppSettings } {
   const locked = settingsLockedByEnv(env);
   rejectLockedPatch(patch, locked);
   const file = readSettingsFile(configPath);
   const merged = mergePatch(file, patch);
   const { settings } = resolveSettings(merged, env);
+  return { merged, settings };
+}
+
+/** 纯校验与求值：env 锁定拒绝、读文件、合并、resolve（含校验），不写盘。 */
+export function prepareSettings(configPath: string, patch: SettingsPatch, env: EnvRecord = process.env): AppSettings {
+  return prepareAndMerge(configPath, patch, env).settings;
+}
+
+/** 与 saveSettings 同一条校验路径，但不写盘；校验不过抛错。 */
+export function validateSettingsPatch(configPath: string, patch: SettingsPatch, env: EnvRecord = process.env): void {
+  prepareAndMerge(configPath, patch, env);
+}
+
+/** 拒绝被 env 锁定的字段（后端约束，不靠界面 readOnly），再深度合并到文件层并写盘（ADR-0015）。 */
+export function saveSettings(configPath: string, patch: SettingsPatch, env: EnvRecord = process.env): AppSettings {
+  const { merged, settings } = prepareAndMerge(configPath, patch, env);
   writeJsonAtomic(configPath, merged);
   return settings;
 }
@@ -249,8 +274,6 @@ function rejectLockedPatch(patch: SettingsPatch, locked: LockedSettings): void {
   if (locked.notesRoot && patch.notesRoot !== undefined) rejected.push("notesRoot");
   if (locked.cacheRoot && patch.cacheRoot !== undefined) rejected.push("cacheRoot");
   if (locked.modelDir && patch.modelDir !== undefined) rejected.push("modelDir");
-  if (locked.llmBaseUrl && patch.llm?.baseUrl !== undefined) rejected.push("llm.baseUrl");
-  if (locked.llmModel && patch.llm?.model !== undefined) rejected.push("llm.model");
   if (locked.asrProvider && patch.asr?.provider !== undefined) rejected.push("asr.provider");
   if (locked.asrBaseUrl && patch.asr?.openai?.baseUrl !== undefined) rejected.push("asr.openai.baseUrl");
   if (locked.asrModel && patch.asr?.openai?.model !== undefined) rejected.push("asr.openai.model");
@@ -346,16 +369,13 @@ function assertBaseUrl(value: string, field: string): void {
   }
 }
 
-/** 某字段被 env 覆盖时只能改 env，界面上标记为不可改（ADR-0014、ADR-0015、ADR-0016）。 */
+/** 某字段被 env 覆盖时只能改 env，界面上标记为不可改（ADR-0014、ADR-0015、ADR-0016）；llm 字段永不锁定（r30 契约）。 */
 export function settingsLockedByEnv(env: EnvRecord = process.env): LockedSettings {
-  const llm = llmEnv(env);
   const asr = asrEnv(env);
   return {
     notesRoot: envValue(env, ["VNOTE_HOME"]) !== undefined,
     cacheRoot: envValue(env, ["VNOTE_CACHE_DIR"]) !== undefined,
     modelDir: envValue(env, ["VNOTE_MODEL_DIR"]) !== undefined,
-    llmBaseUrl: llm.baseUrl !== undefined,
-    llmModel: llm.model !== undefined,
     asrProvider: asr.provider !== undefined,
     asrBaseUrl: asr.baseUrl !== undefined,
     asrModel: asr.model !== undefined,
