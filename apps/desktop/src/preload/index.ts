@@ -85,6 +85,8 @@ const api: VnoteApi = {
     };
   },
   reveal: (outputDir) => ipcRenderer.invoke(IPC.reveal, outputDir) as Promise<void>,
+  openLogs: () => ipcRenderer.invoke(IPC.logsOpen) as Promise<void>,
+  copyDiagnostics: () => ipcRenderer.invoke(IPC.diagnosticsCopy) as Promise<{ chars: number }>,
 };
 
 contextBridge.exposeInMainWorld("vnote", api);

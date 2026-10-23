@@ -13,6 +13,8 @@ export {
   pruneOldLogs,
   readTaskLog,
 } from "./core/logger";
+export { buildDiagnostics, errorLines } from "./core/diagnostics";
+export type { DiagnosticsInput } from "./core/diagnostics";
 export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
 export {
   findExecutable,

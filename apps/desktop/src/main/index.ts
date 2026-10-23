@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { basename, join, normalize, resolve, sep } from "node:path";
 import {
   BrowserWindow,
+  clipboard,
   app,
   dialog,
   ipcMain,
@@ -21,6 +22,8 @@ import {
   clearCache,
   coverPath,
   collectEnvironment,
+  buildDiagnostics,
+  formatEnvironment,
   logEnvironment,
   configureLogging,
   logger,
@@ -415,6 +418,10 @@ type WorkerState = {
 };
 
 const workers = new Map<string, WorkerState>();
+// 最近一次任务的诊断信息（r34）：launch 时设定，done/error/exit 更新 state；「复制诊断」取它定位任务日志
+let lastJobLog: { taskId: string; kind: string; videoId: string; state: string } | null = null;
+// 最近任务的输出目录（r34）：prepared 回调才确定，环境快照里作为 lastJobOutput 检查
+let lastJobOutputDir: string | null = null;
 
 function killProcessTree(pid: number): void {
   // 结束 worker 进程本身不会带走它 spawn 的 ffmpeg/ffprobe，按父 pid 补杀一层
@@ -450,6 +457,9 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     outputDir: job.outputDir,
     runToken: job.runToken,
   };
+  // 诊断定位（r34）：taskId 用 runToken，与日志 task= 字段一致
+  lastJobLog = { taskId: job.runToken, kind: job.kind, videoId: job.videoId, state: "running" };
+  lastJobOutputDir = job.outputDir;
   // 任务日志（r34）：只记 baseUrl 与 model，key 绝不进字段；registered secret 由 logger 自动脱敏
   logger()
     .forTask(job.runToken)
@@ -473,6 +483,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       const p = raw as { type: string; videoId: string; outputDir: string; runToken: string };
       job.outputDir = p.outputDir;
       job.runToken = p.runToken;
+      if (p.outputDir !== "") lastJobOutputDir = p.outputDir;
       state.outputDir = p.outputDir;
       state.runToken = p.runToken;
       logger().forTask(p.runToken).debug("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
@@ -493,6 +504,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       });
     } else if (raw.type === "done" && "result" in raw) {
       state.resultDelivered = true;
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "done";
       const r = raw.result as Parameters<typeof queue.finish>[0];
       queue.finish(r);
       logger()
@@ -505,6 +517,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
         });
     } else if (raw.type === "error" && "message" in raw) {
       state.resultDelivered = true;
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "error";
       const m = raw.message;
       const msg = typeof m === "string" ? m : String(m);
       logger().forTask(job.runToken).error("app", "任务失败", { message: msg });
@@ -522,6 +535,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     workers.delete(jobId);
     if (state.cancelRequested) {
       // 取消的终态必须等 exit 后才落：此时 ffmpeg 子进程已确认收尸
+      if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "cancelled";
       logger().forTask(job.runToken).info("app", "worker 退出（取消）", { code, stderrTail: stderrTail() });
       recoverJob(job, "本次生成已取消");
       queue.cancelled(jobId);
@@ -529,6 +543,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     }
     if (state.resultDelivered) return; // done/error 已经定了终态
     // worker 异常退出且未交付结果：按 token 恢复
+    if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "exited";
     recoverJob(job, "本次生成未完成");
     const tail = stderr.trim().split("\n").slice(-8).join("\n");
     logger()
@@ -874,6 +889,29 @@ function reveal(outputDir: string): void {
   shell.showItemInFolder(dir);
 }
 
+// 打开日志文件夹（r34）：目录不存在先建，保证首启/无日志时也能打开
+async function openLogs(): Promise<void> {
+  mkdirSync(LOG_DIR, { recursive: true });
+  const err = await shell.openPath(LOG_DIR);
+  if (err !== "") throw new Error(`打开日志文件夹失败：${err}`);
+}
+
+// 复制诊断信息（r34）：环境快照现取（版本、commit、模型目录、userData 与最近任务输出目录），
+// 任务日志定位 lastJobLog 的 runToken；clipboard.writeText 前的文本已经过 logger 脱敏
+function copyDiagnostics(): { chars: number } {
+  const extraDirs: { role: string; path: string }[] = [{ role: "userData", path: app.getPath("userData") }];
+  if (lastJobOutputDir !== null) extraDirs.push({ role: "lastJobOutput", path: lastJobOutputDir });
+  const envLines = formatEnvironment(
+    collectEnvironment({ appVersion: app.getVersion(), commit: __APP_COMMIT__, modelDir: settings.modelDir, extraDirs }),
+  );
+  const taskId = lastJobLog?.taskId ?? null;
+  const label =
+    lastJobLog !== null ? `${lastJobLog.kind} ${lastJobLog.videoId}（${lastJobLog.state}）` : null;
+  const text = buildDiagnostics({ logDir: LOG_DIR, environment: envLines, taskId, taskLabel: label });
+  clipboard.writeText(text);
+  return { chars: text.length };
+}
+
 function ffmpegProbe(): { ok: boolean; version: string | null } {
   const ff = spawnSync("ffmpeg", ["-version"]);
   if (ff.status !== 0) return { ok: false, version: null };
@@ -911,6 +949,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     notesRoot: settings.notesRoot,
     cacheRoot: settings.cacheRoot,
     modelDir: settings.modelDir,
+    logDir: LOG_DIR,
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),
@@ -1561,6 +1600,8 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.importModels, guard(() => importModelsNow()));
   ipcMain.handle(IPC.verifyModels, guard(() => verifyModelsNow()));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
+  ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
+  ipcMain.handle(IPC.diagnosticsCopy, guard(() => copyDiagnostics()));
 
   const win = new BrowserWindow({
     width: 1280,
