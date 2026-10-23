@@ -41,7 +41,7 @@ describe("notesRoot", () => {
   });
 
   test("VNOTE_HOME 缺失时回落到数据根", () => {
-    expect(notesRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes");
+    expect(notesRoot({ HOME: "/h" })).toBe(join("/h", "Documents", "video-notes"));
     expect(notesRoot({ VNOTE_DATA_ROOT: "/dr" })).toBe("/dr");
   });
 });
@@ -50,7 +50,7 @@ describe("dataRoot", () => {
   test("优先级 VNOTE_DATA_ROOT > VNOTE_HOME > HOME 默认", () => {
     expect(dataRoot({ VNOTE_DATA_ROOT: "/dr", VNOTE_HOME: "/home2", HOME: "/h" })).toBe("/dr");
     expect(dataRoot({ VNOTE_HOME: "/home2", HOME: "/h" })).toBe("/home2");
-    expect(dataRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes");
+    expect(dataRoot({ HOME: "/h" })).toBe(join("/h", "Documents", "video-notes"));
   });
   test("VNOTE_DATA_ROOT 未设置时，VNOTE_HOME 决定根", () => {
     expect(dataRoot({ VNOTE_HOME: "/notes" })).toBe("/notes");
@@ -63,21 +63,21 @@ describe("三个路径从同一数据根派生", () => {
     const env: Record<string, string | undefined> = { VNOTE_DATA_ROOT: "/dr", HOME: "/h" };
     expect(dataRoot(env)).toBe("/dr");
     expect(notesRoot(env)).toBe("/dr");
-    expect(cacheRoot(env)).toBe("/dr/.cache");
+    expect(cacheRoot(env)).toBe(join("/dr", ".cache"));
   });
 
   test("VNOTE_HOME 存在时笔记根是 VNOTE_HOME，数据根仍是 VNOTE_DATA_ROOT", () => {
     const env: Record<string, string | undefined> = { VNOTE_DATA_ROOT: "/dr", VNOTE_HOME: "/notes", HOME: "/h" };
     expect(notesRoot(env)).toBe("/notes");
     expect(dataRoot(env)).toBe("/dr");
-    expect(cacheRoot(env)).toBe("/dr/.cache");
+    expect(cacheRoot(env)).toBe(join("/dr", ".cache"));
   });
 });
 
 describe("cacheRoot", () => {
   test("VNOTE_CACHE_DIR 缺失时回落到 <数据根>/.cache", () => {
-    expect(cacheRoot({ HOME: "/h" })).toBe("/h/Documents/video-notes/.cache");
-    expect(cacheRoot({ VNOTE_DATA_ROOT: "/dr" })).toBe("/dr/.cache");
+    expect(cacheRoot({ HOME: "/h" })).toBe(join("/h", "Documents", "video-notes", ".cache"));
+    expect(cacheRoot({ VNOTE_DATA_ROOT: "/dr" })).toBe(join("/dr", ".cache"));
   });
 });
 

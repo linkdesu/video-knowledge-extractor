@@ -34,9 +34,9 @@ describe("defaultSettings", () => {
     const settings = defaultSettings({ HOME: "/home/u" });
     expect(settings).toEqual({
       version: SETTINGS_VERSION,
-      notesRoot: "/home/u/Documents/video-notes",
-      cacheRoot: "/home/u/Documents/video-notes/.cache",
-      modelDir: "/home/u/Documents/video-notes/models",
+      notesRoot: join("/home/u", "Documents", "video-notes"),
+      cacheRoot: join("/home/u", "Documents", "video-notes", ".cache"),
+      modelDir: join("/home/u", "Documents", "video-notes", "models"),
       llm: { baseUrl: "", model: "" },
       asr: {
         provider: "local",
@@ -80,8 +80,8 @@ describe("loadSettings", () => {
   test("文件缺字段时补默认值", () => {
     const path = resolve(tempRoot(), "settings.json");
     writeFileSync(path, JSON.stringify({ cacheRoot: "/data/cache" }));
-    expect(loadSettings(path, { HOME: "/home/u" }).notesRoot).toBe("/home/u/Documents/video-notes");
-    expect(loadSettings(path, { HOME: "/home/u" }).modelDir).toBe("/home/u/Documents/video-notes/models");
+    expect(loadSettings(path, { HOME: "/home/u" }).notesRoot).toBe(join("/home/u", "Documents", "video-notes"));
+    expect(loadSettings(path, { HOME: "/home/u" }).modelDir).toBe(join("/home/u", "Documents", "video-notes", "models"));
   });
 
   test("env 优先于文件", () => {
@@ -112,9 +112,9 @@ describe("saveSettings", () => {
     const saved = saveSettings(path, { cacheRoot: "/new/cache" }, { HOME: "/home/u" });
     expect(saved).toEqual({
       version: SETTINGS_VERSION,
-      notesRoot: "/home/u/Documents/video-notes",
+      notesRoot: join("/home/u", "Documents", "video-notes"),
       cacheRoot: "/new/cache",
-      modelDir: "/home/u/Documents/video-notes/models",
+      modelDir: join("/home/u", "Documents", "video-notes", "models"),
       llm: { baseUrl: "", model: "" },
       asr: {
         provider: "local",
@@ -274,7 +274,7 @@ describe("resolveSettings 优先级", () => {
     });
     expect(settings.notesRoot).toBe("/file/notes");
     expect(settings.cacheRoot).toBe("/env/cache");
-    expect(settings.modelDir).toBe("/h/Documents/video-notes/models");
+    expect(settings.modelDir).toBe(join("/h", "Documents", "video-notes", "models"));
     expect(settings.llm).toEqual({ baseUrl: "https://file", model: "m-file" });
     expect(settings.asr.provider).toBe("volcengine");
     expect(settings.asr.volcengine.mode).toBe("standard");
