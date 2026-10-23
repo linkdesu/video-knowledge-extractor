@@ -15,6 +15,14 @@ export {
 } from "./core/logger";
 export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
 export {
+  findExecutable,
+  checkPath,
+  collectEnvironment,
+  formatEnvironment,
+  logEnvironment,
+} from "./core/environment";
+export type { PathCheck, EnvironmentSnapshot } from "./core/environment";
+export {
   cacheRoot,
   dataRoot,
   llmCredentialsFromEnv,
