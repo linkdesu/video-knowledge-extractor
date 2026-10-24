@@ -3,7 +3,7 @@
 import type { JobSnapshot, TopicInfo } from "../../../shared/ipc";
 import { useEffect, useState } from "react";
 import { fmtClock } from "@/lib/format";
-import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
+import { topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 
 type TopicListProps = {
   topics: TopicInfo[];
@@ -15,13 +15,6 @@ type TopicListProps = {
   onToggleSelected: (topicId: string, selected: boolean) => void;
   onToggleMergePick: (topicId: string) => void;
 };
-export function generatingProgress(topic: TopicInfo, now: number): number {
-  const startedIso = topic.startedAt;
-  return startedIso === null
-    ? (topic.elapsedSeconds ?? 0)
-    : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
-}
-
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -140,7 +133,7 @@ function Row({
           fontVariantNumeric: "tabular-nums",
         }}
       >
-        {topicStateLabel(state, generatingProgress(topic, now))}
+        {topicStateLabel(state, topicElapsedSeconds(topic, job, now))}
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
         <button
@@ -168,7 +161,7 @@ export function TopicList({
   onToggleSelected,
   onToggleMergePick,
 }: TopicListProps) {
-  const anyGenerating = topics.some((t) => t.status === "generating");
+  const anyGenerating = topics.some((t) => topicGenerating(t, job));
   const now = useNow(anyGenerating);
   return (
     <div className="vn-card" style={{ padding: 8 }}>

@@ -1,5 +1,5 @@
 import type { JobSnapshot, TopicInfo } from "../../../shared/ipc";
-import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
+import { topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 
 const TOPIC_STATUS_LABEL: Record<TopicInfo["status"], string> = {
   done: "完成",
@@ -18,14 +18,6 @@ const STATUS_TONE: Record<TopicInfo["status"], string> = {
   "needs-rerun": "text-[#fbbf24]",
   failed: "text-[#fda4af]",
 };
-
-/** 已用时长：主题的 startedAt 起算，缺失时回退 elapsedSeconds。 */
-function elapsedSeconds(topic: TopicInfo, now: number): number {
-  const startedIso = topic.startedAt;
-  return startedIso === null
-    ? (topic.elapsedSeconds ?? 0)
-    : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
-}
 
 type NoteListProps = {
   topics: TopicInfo[];
@@ -55,7 +47,7 @@ export function NoteList({ topics, selectedId, onSelect, onRegenerate, job, now 
           >
             <h4 className="text-[14px] font-[450]">{t.title}</h4>
             <span className={`mt-1.5 inline-block text-[12px] tabular-nums ${STATUS_TONE[t.status]}`}>
-              {liveState ? topicStateLabel(state, elapsedSeconds(t, now)) : TOPIC_STATUS_LABEL[t.status]}
+              {liveState ? topicStateLabel(state, topicElapsedSeconds(t, job, now)) : TOPIC_STATUS_LABEL[t.status]}
             </span>
             {t.status === "failed" && t.error !== null ? (
               <div className="mt-1 text-[11px] text-[#fda4af]">{t.error}</div>

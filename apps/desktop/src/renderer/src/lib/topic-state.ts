@@ -11,7 +11,8 @@ export type TopicUiState =
   | { kind: "proposed" };
 
 /** 在途 notes 任务的 generate-notes 步骤正针对该主题时视为生成中（磁盘状态刷新前也成立）。 */
-const notesJobForTopic = (topicId: string, job: JobSnapshot | null) =>
+type RunningJob = Extract<JobSnapshot, { state: "running" }>;
+const notesJobForTopic = (topicId: string, job: JobSnapshot | null): job is RunningJob =>
   job !== null &&
   job.state === "running" &&
   job.kind === "notes" &&
@@ -24,6 +25,23 @@ export function topicGenerating(
   job: JobSnapshot | null,
 ): boolean {
   return topic.status === "generating" || notesJobForTopic(topic.id, job);
+}
+
+/**
+ * 已用秒数：磁盘 status=generating 时按该轮 `startedAt` 起算；磁盘还没刷新到本轮
+ * 「生成中」时，`topic.startedAt` 仍是上一轮的时间戳，改用当前任务的 `startedAt`，
+ * 首帧才不会闪出上一轮到现在的超长耗时。
+ */
+export function topicElapsedSeconds(
+  topic: { id: string; status: string; startedAt: string | null; elapsedSeconds: number | null },
+  job: JobSnapshot | null,
+  now: number,
+): number {
+  const jobStartedAt = notesJobForTopic(topic.id, job) ? job.startedAt : null;
+  const startedIso = topic.status === "generating" ? topic.startedAt : (jobStartedAt ?? topic.startedAt);
+  return startedIso === null
+    ? (topic.elapsedSeconds ?? 0)
+    : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
 }
 
 /** 主题 UI 状态：generating 优先，其余按磁盘状态映射；failed 原因缺省、needs-rerun 原因可空。 */

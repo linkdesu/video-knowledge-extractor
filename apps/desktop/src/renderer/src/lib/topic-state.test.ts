@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JobSnapshot } from "../../shared/ipc";
-import { hasReadyNote, topicGenerating, topicStateLabel, topicUiState } from "./topic-state";
+import { hasReadyNote, topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } from "./topic-state";
 
 function topic(overrides: Partial<{ status: string; error: string | null; startedAt: string | null }> = {}) {
   return { status: "done", error: null, startedAt: null, ...overrides };
@@ -42,6 +42,34 @@ describe("topicGenerating", () => {
     expect(
       topicGenerating({ id: "t2", status: "queued" }, { ...notesJob("t2"), state: "queued" } as JobSnapshot),
     ).toBe(false);
+  });
+});
+
+describe("topicElapsedSeconds", () => {
+  const now = new Date("2026-10-20T10:00:00.000Z").getTime();
+
+  function card(overrides: Partial<{ status: string; startedAt: string | null; elapsedSeconds: number | null }> = {}) {
+    return { id: "t1", status: "done", startedAt: null, elapsedSeconds: null, ...overrides };
+  }
+
+  test("磁盘已刷新成本轮 generating：按该轮 startedAt 起算", () => {
+    expect(
+      topicElapsedSeconds(card({ status: "generating", startedAt: "2026-10-20T09:58:00.000Z" }), null, now),
+    ).toBe(120);
+  });
+
+  test("磁盘仍是上一轮 done、旧 startedAt 陈旧：改用当前任务的 startedAt，不闪旧耗时", () => {
+    const stale = card({ status: "done", startedAt: "2026-10-19T08:00:00.000Z", elapsedSeconds: 42 });
+    expect(topicElapsedSeconds(stale, notesJob("t1", { startedAt: "2026-10-20T09:50:00.000Z" }), now)).toBe(600);
+  });
+
+  test("没有在途任务时仍按磁盘 startedAt（queued 也按磁盘值）", () => {
+    expect(topicElapsedSeconds(card({ status: "queued", startedAt: "2026-10-20T09:59:00.000Z" }), null, now)).toBe(60);
+  });
+
+  test("startedAt 缺失回退 elapsedSeconds，再缺省为 0", () => {
+    expect(topicElapsedSeconds(card({ status: "generating", elapsedSeconds: 7 }), null, now)).toBe(7);
+    expect(topicElapsedSeconds(card({ status: "generating" }), null, now)).toBe(0);
   });
 });
 
