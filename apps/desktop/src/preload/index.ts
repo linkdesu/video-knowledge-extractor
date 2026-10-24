@@ -4,13 +4,12 @@ import type {
   CorrectionEntry,
   DirectoryKind,
   ExtractTarget,
-  ImportModelsResult,
   JobSnapshot,
   LlmDraft,
   LlmUpdatePatch,
   LlmModelListResult,
+  ModelsCheck,
   ModelsStatus,
-  ModelDownloadEvent,
   SettingsPatch,
   SettingsStatus,
   TestAsrResult,
@@ -68,23 +67,13 @@ const api: VnoteApi = {
   updateLlm: (patch: LlmUpdatePatch) => ipcRenderer.invoke(IPC.updateLlm, patch) as Promise<SettingsStatus>,
   updateAsr: (patch: AsrUpdatePatch) => ipcRenderer.invoke(IPC.updateAsr, patch) as Promise<SettingsStatus>,
   testAsr: () => ipcRenderer.invoke(IPC.testAsr) as Promise<TestAsrResult>,
+  checkModels: () => ipcRenderer.invoke(IPC.checkModels) as Promise<ModelsCheck>,
   models: () => ipcRenderer.invoke(IPC.models) as Promise<ModelsStatus>,
-  downloadModels: () => ipcRenderer.invoke(IPC.downloadModels) as Promise<ModelsStatus>,
-  cancelModelDownload: () => ipcRenderer.invoke(IPC.cancelModelDownload) as Promise<ModelsStatus>,
-  importModels: () => ipcRenderer.invoke(IPC.importModels) as Promise<ImportModelsResult>,
-  verifyModels: () => ipcRenderer.invoke(IPC.verifyModels) as Promise<ModelsStatus>,
   onLlmChanged: (listener: () => void) => {
     const listenerWrapper = (): void => listener();
     ipcRenderer.on(IPC.llmEvent, listenerWrapper);
     return () => {
       ipcRenderer.removeListener(IPC.llmEvent, listenerWrapper);
-    };
-  },
-  onModelDownload: (listener: (event: ModelDownloadEvent) => void) => {
-    const listenerWrapper = (_event: Electron.IpcRendererEvent, event: ModelDownloadEvent): void => listener(event);
-    ipcRenderer.on(IPC.modelEvent, listenerWrapper);
-    return () => {
-      ipcRenderer.removeListener(IPC.modelEvent, listenerWrapper);
     };
   },
   reveal: (outputDir) => ipcRenderer.invoke(IPC.reveal, outputDir) as Promise<void>,

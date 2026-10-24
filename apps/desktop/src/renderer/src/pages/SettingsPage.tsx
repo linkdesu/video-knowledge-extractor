@@ -3,10 +3,7 @@ import type {
   AsrProvider,
   AsrSecretField,
   DirectoryKind,
-  DownloadSnapshot,
-  ModelLogEntry,
-  ModelDownloadEvent,
-  ModelsStatus,
+  ModelsCheck,
   SettingsStatus,
   VolcengineAuthMode,
   VolcengineMode,
@@ -82,13 +79,8 @@ export function SettingsPage() {
   const [testingLlm, setTestingLlm] = useState(false);
   const [testingAsr, setTestingAsr] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [models, setModels] = useState<ModelsStatus | null>(null);
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  const [started, setStarted] = useState(false);
-  const [downloadLog, setDownloadLog] = useState<ModelLogEntry[]>([]);
-  const [importing, setImporting] = useState(false);
-  const [verifying, setVerifying] = useState(false);
-  const [snapshot, setSnapshot] = useState<DownloadSnapshot | null>(null);
+  const [check, setCheck] = useState<ModelsCheck | null>(null);
+  const [checking, setChecking] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
   const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
@@ -102,7 +94,6 @@ export function SettingsPage() {
     volcAppKey: EMPTY_KEY,
     volcAccessKey: EMPTY_KEY,
   });
-  const reloadTimers = useRef<number[]>([]);
   const fetchGeneration = useRef(0);
   const [llmCard, setLlmCard] = useState<{
     draft: LlmFormDraft;
@@ -175,40 +166,21 @@ export function SettingsPage() {
 
   useEffect(reload, [reload]);
 
-  const reloadModels = useCallback(() => {
-    setModelsError(null);
-    window.vnote
-      .models()
-      .then(setModels)
-      .catch((err) => setModelsError(errMessage(err)));
-  }, []);
+  // 进入设置页即重新检测本地模型（r37）
   useEffect(() => {
-    reloadModels();
-    return () => {
-      for (const t of reloadTimers.current) window.clearTimeout(t);
-    };
-  }, [reloadModels]);
+    setChecking(true);
+    window.vnote
+      .checkModels()
+      .then(setCheck)
+      .catch((err) => showToast(`检测失败：${errMessage(err)}`))
+      .finally(() => setChecking(false));
+  }, []);
 
   useEffect(() => {
     // 端点发现是后台异步的：落定后重拉一次，模型名提示才不会是「留空时自动发现」
     const off = window.vnote.onLlmChanged(reload);
     return off;
   }, [reload]);
-
-  useEffect(() => {
-    const off = window.vnote.onModelDownload((event: ModelDownloadEvent) => {
-      setSnapshot(event.snapshot);
-      setDownloadLog(event.log);
-      if (event.snapshot.state === "failed" || event.snapshot.state === "cancelled") {
-        setStarted(false);
-      }
-      reloadModels();
-    });
-    return off;
-  }, []);
-  useEffect(() => {
-    if (models !== null && models.ready) setStarted(false);
-  }, [models]);
 
   const fetchLlmModels = () => {
     if (llmCard === null) return;
@@ -394,40 +366,6 @@ export function SettingsPage() {
       .catch((err) => showToast(`复制诊断信息失败：${errMessage(err)}`));
   };
 
-  const runModelAction = (action: () => Promise<unknown>) =>
-    action()
-      .then(() => reloadModels())
-      .catch((err) => showToast(`操作失败：${errMessage(err)}`));
-
-  const verify = () => {
-    setVerifying(true);
-    runModelAction(() => window.vnote.verifyModels()).finally(() => setVerifying(false));
-  };
-
-  const importModels = () => {
-    setImporting(true);
-    window.vnote
-      .importModels()
-      .then((r) => {
-        if (!r.canceled) {
-          if (r.rejected.length > 0) {
-            showToast(`导入完成，${r.rejected.length} 个包被拒绝`);
-          } else if (r.installed.length > 0) {
-            showToast(`已导入 ${r.installed.length} 个模型包`);
-          } else {
-            showToast("未找到可导入的模型文件");
-          }
-        }
-      })
-      .catch((err) => showToast(`导入失败：${errMessage(err)}`))
-      .then(() => {
-        reloadModels();
-        const t = window.setTimeout(reloadModels, 2000);
-        reloadTimers.current.push(t);
-      })
-      .finally(() => setImporting(false));
-  };
-
   if (loadError !== null) {
     return (
       <div className="vn-hint">
@@ -448,11 +386,7 @@ export function SettingsPage() {
   // r26：试用版只启用本地 ASR；隐藏提供方切换与云端面板（存盘值由 main 求值为 local）
   const cloudAsr = status.features.cloudAsr;
   const volcModeInfo = VOLC_MODE_INFO[asr.volcengine.mode];
-  const busyModel = started || importing || verifying;
-  const localMissing =
-    models !== null
-      ? models.bundles.filter((b) => b.state !== "ready").map((b) => b.title)
-      : asr.local.missing;
+  const localMissing = asr.local.missing;
 
   const llmSaved: LlmSaved = { baseUrl: llm.baseUrl ?? "", model: llm.model, apiKey: llm.apiKey };
   const llmDirtyNow = llmCard !== null && llmDirty(llmSaved, llmCard.draft);
@@ -710,43 +644,25 @@ export function SettingsPage() {
               {localMissing.length > 0 ? (
                 <p className="vn-hint">缺失文件：{localMissing.join("、")}</p>
               ) : null}
-              {models !== null ? (
-                <ModelPanel
-                  status={models}
-                  snapshot={snapshot}
-                  started={started}
-                  log={downloadLog}
-                  busy={busyModel}
-                  verifying={verifying}
-                  onDownload={() => {
-                    setStarted(true);
-                    setDownloadLog([]);
-                    runModelAction(() => window.vnote.downloadModels());
-                  }}
-                  onCancel={() => runModelAction(() => window.vnote.cancelModelDownload())}
-                  onImport={importModels}
-                  onVerify={verify}
-                />
-              ) : (
+              {check === null ? (
                 <p className="vn-hint" data-testid="models-loading">
-                  加载模型状态中…
+                  检测本地模型中…
                 </p>
+              ) : (
+                <ModelPanel
+                  modelDir={status.modelDir}
+                  check={check}
+                  checking={checking}
+                  onVerify={() => {
+                    setChecking(true);
+                    window.vnote
+                      .checkModels()
+                      .then(setCheck)
+                      .catch((err) => showToast(`检测失败：${errMessage(err)}`))
+                      .finally(() => setChecking(false));
+                  }}
+                />
               )}
-              {modelsError !== null ? (
-                <p className="vn-hint" data-testid="models-error">
-                  加载模型状态失败：{modelsError}
-                  <Button
-                    size="sm"
-                    style={{ marginLeft: 12 }}
-                    onClick={reloadModels}
-                  >
-                    重试
-                  </Button>
-                </p>
-              ) : null}
-              <p className="vn-hint" style={{ marginTop: 8 }}>
-                网络不通时：从网盘/离线包下载模型 → 导入本地模型，或解压到模型目录。
-              </p>
             </>
           )}
         </SettingsPanel>

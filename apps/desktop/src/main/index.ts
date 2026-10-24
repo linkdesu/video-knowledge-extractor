@@ -29,7 +29,6 @@ import {
   logger,
   ensureCoverFrame,
   fetchModelIds,
-  importModels,
   loadDotenvFiles,
   migrateStorageLayout,
   modelStatus,
@@ -39,6 +38,7 @@ import {
   clearVideoFailure,
   describeFailure,
   deleteVideo as coreDeleteVideo,
+  checkModels,
   prerequisiteProblems,
   formatPrerequisiteError,
   readSettingsFile,
@@ -61,14 +61,12 @@ import {
   saveGlobalCorrections,
   saveVideoCorrections,
   setTopicSelected,
-  verifyModels,
   videoIdFor,
   listLibrary,
   readLibraryVideo,
   readGlobalCorrections,
   logDirFor,
   saveSettings,
-  acquireModelLock,
   VOLCENGINE_STANDARD_RESOURCE_ID,
   VOLCENGINE_STANDARD_SUBMIT_URL,
 } from "@video-notes/core";
@@ -76,7 +74,6 @@ import { createVolcengineFlashProvider } from "../../../../packages/core/src/asr
 import type {
   AppSettings,
   AsrSecrets,
-  DownloadLogLine,
   CorrectionFileEntry,
   KeySource,
   LibraryDetail as CoreLibraryDetail,
@@ -92,17 +89,13 @@ import {
   type AsrUpdatePatch,
   type CorrectionEntry,
   type DirectoryKind,
-  type DownloadSnapshot,
   type ExtractTarget,
-  type ImportModelsResult,
   type JobKind,
   type JobStep,
   type LibraryVideo,
   type LlmDraft,
   type LlmModelListResult,
   type LlmUpdatePatch,
-  type ModelDownloadEvent,
-  type ModelLogEntry,
   type ModelsStatus,
   type NotesStartOptions,
   type SettingsPatch,
@@ -114,7 +107,6 @@ import {
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
-import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
@@ -198,6 +190,11 @@ const resolved = resolveSettings(applyLlmSeed(settingsRead.file, devSeed), proce
 function effectiveSettings(): AppSettings {
   return resolveSettings(applyLlmSeed(readSettingsFile(SETTINGS_PATH()), devSeed), process.env).settings;
 }
+
+/** 有效模型目录：沿用已删除 verifyModelsNow 的取值方式（settings 已是 env 求值后的有效设置）。 */
+function modelDirOfCurrentSettings(): string {
+  return settings.modelDir;
+}
 let settings: AppSettings = resolved.settings;
 // 结构化日志（r34/r35）：日志跟随 notes 根目录，落在 <notesRoot>/.logs；console 只在 dev 开。
 // 设置变更（notesRoot 切换）时由 recomputeRuntimes 重新配置到新目录。
@@ -233,9 +230,6 @@ function clearTxAfterCommit(): void {
   });
   if (err === null) credentialTxError = null;
 }
-
-/** 单个 in-flight 下载器；状态查询与操作共用（ADR-0015 §4）。 */
-const modelsDownloader = createModelDownloader();
 
 /** 所有设置写操作串成一条链，避免 lost update（ADR-0015 §2）。 */
 let settingsWriteChain: Promise<void> = Promise.resolve();
@@ -842,7 +836,6 @@ async function ensurePipelineReady(): Promise<void> {
         : null;
   let localModel: { ready: boolean; missing: string[] } | null = null;
   if (provider === "local") {
-    if (autoVerify !== undefined) await autoVerify;
     const status = modelStatus(settings.modelDir);
     localModel = { ready: status.ready, missing: status.bundles.filter((b) => b.state !== "ready").map((b) => b.title) };
   }
@@ -1001,7 +994,7 @@ function llmStatus(): SettingsStatus["llm"] {
 
 
 function modelsStatusDto(): ModelsStatus {
-  return modelsDownloader.status(settings.modelDir);
+  return modelStatus(settings.modelDir);
 }
 
 async function settingsStatus(): Promise<SettingsStatus> {
@@ -1092,9 +1085,6 @@ export { buildSettingsPatch };
 
 async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
   return withSettingsWrite(async () => {
-    if (patch.modelDir !== undefined && modelsDownloader.busy()) {
-      throw new Error("模型正在下载中，请完成后再修改模型目录");
-    }
     const clean = buildSettingsPatch(patch);
     if (clean.asr?.provider !== undefined && clean.asr.provider !== "local" && !CLOUD_ASR_ENABLED) {
       throw new Error("此版本只启用本地 ASR，云端提供方不可用");
@@ -1271,7 +1261,6 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
 async function testAsr(): Promise<TestAsrResult> {
   if (credentialTxError !== null) return { ok: false, modelsFound: null, message: credentialTxError };
   if (effectiveAsrProvider() === "local") {
-    if (autoVerify !== undefined) await autoVerify;
     const status = modelStatus(settings.modelDir);
     const ready = status.bundles.filter((b) => b.state === "ready").length;
     return ready === status.bundles.length
@@ -1371,77 +1360,8 @@ async function testAsr(): Promise<TestAsrResult> {
   }
 }
 
-const MODEL_LOG_LIMIT = 200;
-let downloadLog: ModelLogEntry[] = [];
-
-function appendModelLog(line: DownloadLogLine): void {
-  downloadLog.push({ at: new Date().toISOString(), level: line.level, text: line.text });
-  if (downloadLog.length > MODEL_LOG_LIMIT) downloadLog = downloadLog.slice(-MODEL_LOG_LIMIT);
-  broadcastModelEvent();
-}
-
-/** 快照与日志共用一条出口：payload 是 { snapshot, log }，log 是截至此刻的缓冲（有上限）。 */
-function broadcastModelEvent(snapshot?: DownloadSnapshot): void {
-  const event: ModelDownloadEvent = { snapshot: snapshot ?? modelsDownloader.snapshot(), log: downloadLog };
-  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, event);
-}
-
 function modelsStatusNow(): ModelsStatus {
-  return modelsDownloader.status(settings.modelDir);
-}
-
-async function downloadModelsNow(): Promise<ModelsStatus> {
-  if (queue.busy()) throw new Error("已有任务在运行，完成后再安装模型");
-  if (modelsDownloader.busy()) return modelsStatusNow();
-  downloadLog = [];
-  broadcastModelEvent();
-  modelsDownloader.start(settings.modelDir, {
-    onSnapshot: broadcastModelEvent,
-    onLog: appendModelLog,
-    busy: () => queue.busy(),
-  });
-  // 下载循环结束后复核（不阻塞 IPC 返回）：core 报 done 但目录仍不 ready 时补一条带原因的 failed 快照；
-  // failed/cancelled 终态已由下载器发出，不覆盖
-  void modelsDownloader.done().then(() => {
-    if (modelsDownloader.snapshot().state !== "done") return;
-    const finalStatus = modelStatus(settings.modelDir);
-    if (finalStatus.ready) return;
-    const missing = finalStatus.bundles.filter((b) => b.state !== "ready").map((b) => b.title).join("、");
-    appendModelLog({ level: "error", text: `下载结束但模型未就绪${missing === "" ? "" : `（${missing}）`}` });
-    broadcastModelEvent({ state: "failed", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: `模型未就绪${missing === "" ? "" : `：${missing}`}` });
-  });
-  return modelsStatusNow();
-}
-
-function cancelModelDownload(): ModelsStatus {
-  // 取消由下载器内部发 cancelled 快照；这里只补一行日志让界面日志面板有交代
-  appendModelLog({ level: "warn", text: "下载已取消" });
-  modelsDownloader.cancel();
-  return modelsStatusNow();
-}
-
-/** 导入在模型锁内跑（core importModels 不取锁，写方入口持锁，ADR-0015 §4）。 */
-async function importModelsNow(): Promise<ImportModelsResult> {
-  if (queue.busy()) throw new Error("已有任务在运行，完成后再导入模型");
-  const res = await dialog.showOpenDialog({ properties: ["openFile", "openDirectory"], title: "选择模型目录或 .tar.bz2 归档" });
-  if (res.canceled || res.filePaths[0] === undefined) return { canceled: true, installed: [], rejected: [], status: modelsStatusNow() };
-  const lock = acquireModelLock(settings.modelDir);
-  try {
-    const r = await importModels(settings.modelDir, res.filePaths[0]);
-    return { canceled: false, installed: r.installed, rejected: r.rejected, status: modelsStatusNow() };
-  } finally {
-    lock.release();
-  }
-}
-
-async function verifyModelsNow(): Promise<ModelsStatus> {
-  const lock = acquireModelLock(settings.modelDir);
-  try {
-    await verifyModels(settings.modelDir);
-    return modelsStatusNow();
-  } finally {
-    lock.release();
-  }
+  return modelStatus(settings.modelDir);
 }
 // 所有 IPC handler 统一过脱敏出口：key 绝不进 renderer 的异常消息
 function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknown>): (...args: T) => Promise<unknown> {
@@ -1454,69 +1374,12 @@ function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknow
   };
 }
 
-/**
- * 启动时的模型校验（r26）：校验缓存只在进程内，重启后曾下载好的模型会回到「未校验」，
- * 而提取要求 ready。文件齐、字节数对的所有包在这里后台校验一遍，免掉每次启动手点「校验模型」。
- * 缺文件或已判 invalid 的包不在这里处理，交给设置页导入或手动下载。
- */
-let autoVerify: Promise<void> | undefined;
-function maybeAutoVerifyModels(): void {
-  if (modelsDownloader.busy()) return;
-  const status = modelStatus(settings.modelDir);
-  if (status.ready) return;
-  if (!status.bundles.every((b) => b.state === "unverified")) return;
-  let lock: ReturnType<typeof acquireModelLock>;
-  try {
-    lock = acquireModelLock(settings.modelDir);
-  } catch (err) {
-    // 另一个实例正在校验/下载同一模型目录：保持「未校验」，用户可在设置页手动校验；不能让它中断启动
-    console.warn(sanitizeError(err));
-    return;
-  }
-  const done = (async () => {
-    try {
-      await verifyModels(settings.modelDir);
-    } catch (err) {
-      console.warn(sanitizeError(err));
-    } finally {
-      lock.release();
-    }
-    // 校验完把快照与既有日志一起发出去，让界面进度条随 ready 状态收起
-    broadcastModelEvent({ state: "done", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: null });
-  })();
-  autoVerify = done;
-  void done.finally(() => {
-    if (autoVerify === done) autoVerify = undefined;
-  });
-}
-/**
- * Windows 首启自动下载模型（r34）：Windows 没有包管理器可装 ffmpeg，模型也要用户自己拖进设置页，
- * 首启直接后台下载。非 win32 / VNOTE_AUTO_DOWNLOAD_MODELS=0 / VNOTE_MODEL_DIR 已设置（用户自管）
- * 都不做；下载器或任务队列忙、模型已 ready、有 unverified 包（启动校验流程管它）也不做。
- * 失败把脱敏错误进 error 日志并补一行模型日志，让设置页日志面板能看到原因；UI 状态走既有事件。
- */
-function maybeAutoDownloadModels(): void {
-  if (process.platform !== "win32") return;
-  if (process.env.VNOTE_AUTO_DOWNLOAD_MODELS === "0") return;
-  if (process.env.VNOTE_MODEL_DIR !== undefined && process.env.VNOTE_MODEL_DIR !== "") return;
-  if (queue.busy() || modelsDownloader.busy()) return;
-  const status = modelStatus(settings.modelDir);
-  if (status.ready) return;
-  if (status.bundles.some((b) => b.state === "unverified")) return;
-  void downloadModelsNow().catch((err) => {
-    const message = sanitizeError(err);
-    logger().error("import", `首启自动下载模型失败：${message}`);
-    appendModelLog({ level: "error", text: `首启自动下载模型失败：${message}` });
-  });
-}
-
 let quitting = false;
 app.on("before-quit", (event) => {
-  // 退出前：停下载器（最多等 2s 刷盘）+ 取消运行中任务并等 worker 退出（ADR-0015 §4）
+  // 退出前：取消运行中任务并等 worker 退出（ADR-0015 §4）
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  void modelsDownloader.stop();
   if (queue.busy()) {
     queue.cancelAll();
     const forceQuit = setTimeout(() => {
@@ -1536,7 +1399,7 @@ app.on("window-all-closed", () => {
 });
 
 void app.whenReady().then(async () => {
-  // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 后台模型校验（r28 起不自动下载）
+  // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 本地模型检测（r37）
   secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
   registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
@@ -1547,8 +1410,9 @@ void app.whenReady().then(async () => {
   });
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
   recomputeRuntimes();
-  maybeAutoVerifyModels();
-  maybeAutoDownloadModels();
+  // 启动检测（r37）：跑一次 checkModels，把就绪标志与缺失相对路径进日志，供排查
+  const startupCheck = checkModels(modelDirOfCurrentSettings());
+  logger().info("app", "本地模型检测", { ready: startupCheck.ready, missing: startupCheck.models.flatMap((m) => m.missing) });
 
   // 启动日志（r34）：版本/commit/打包标志/userData + 完整环境快照，先于窗口显示
   let gpuModel: string | null = null;
@@ -1696,10 +1560,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.listLlmModels, guard((_e, draft: LlmDraft) => listLlmModels(draft)));
   ipcMain.handle(IPC.testAsr, guard(() => testAsr()));
   ipcMain.handle(IPC.models, guard(() => modelsStatusNow()));
-  ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));
-  ipcMain.handle(IPC.cancelModelDownload, guard(() => cancelModelDownload()));
-  ipcMain.handle(IPC.importModels, guard(() => importModelsNow()));
-  ipcMain.handle(IPC.verifyModels, guard(() => verifyModelsNow()));
+  ipcMain.handle(IPC.checkModels, guard(() => checkModels(modelDirOfCurrentSettings())));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
   ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
   ipcMain.handle(IPC.diagnosticsCopy, guard(() => copyDiagnostics()));
