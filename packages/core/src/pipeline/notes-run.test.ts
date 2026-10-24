@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { LlmClient } from "../core/steps";
 import { configureLogging } from "../core/logger";
-import { runNotes, runTopics } from "./notes-run";
+import { notesTrigger, runNotes, runTopics } from "./notes-run";
 
 const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
 
@@ -107,8 +107,9 @@ describe("runNotes", () => {
     const dirB = join(out, "b");
     mkdirSync(dirB, { recursive: true });
     writeFileSync(join(dirB, "topic.md"), "# B\n\n## 要点\n- 要点B\n\n## 正文\n\n");
-    writeFileSync(join(dirB, "01-00-04-57-00-05-30.mp4"), "bclip");
     const bMdMtime = statSync(join(dirB, "topic.md")).mtimeMs;
+    // 补上 topic.mp4：done 的产物齐全，投影后仍是 done，才谈得上「跳过」
+    writeFileSync(join(dirB, "topic.mp4"), "bclip-mp4");
     const bClipMtime = statSync(join(dirB, "01-00-04-57-00-05-30.mp4")).mtimeMs;
 
     const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点A"] }) };
@@ -147,10 +148,10 @@ describe("runNotes", () => {
     expect(index).toContain("[切片](./a/topic.mp4)");
     expect(index).toContain("[切片](./b/01-00-04-57-00-05-30.mp4)");
 
-    // 再确认：两个主题都已 done → 不生成、不报错、B 的产物 mtime 仍不变
-    const r2 = await runNotes({ outputDir: out, topicIds: ["topicA", "topicB"], endpoint, cacheRoot: join(out, ".cache"), client });
-    expect(r2.noteCount).toBe(0);
-    expect(statSync(join(dirB, "topic.md")).mtimeMs).toBe(bMdMtime);
+    // 再确认：两个主题都已 done 且产物齐全 → 待生成队列为空，明确报错
+    await expect(
+      runNotes({ outputDir: out, topicIds: ["topicA", "topicB"], endpoint, cacheRoot: join(out, ".cache"), client }),
+    ).rejects.toThrow("本次没有需要生成的主题：所选主题均已生成完成");
   });
 
   test("导入后的 proposed 状态：全部未生成时生成；子集确认只动未 done 的主题", async () => {
@@ -230,7 +231,7 @@ describe("runNotes", () => {
     expect(readFileSync(join(dirA, "topic.md"), "utf8")).toContain("新要点");
   });
 
-  test("done 主题不带 force：跳过，noteCount 0，产物原样", async () => {
+  test("done 主题不带 force：产物齐全时队列为空，明确报错，产物原样", async () => {
     const out = join(tmpdir(), "rn-skip-" + Date.now());
     makeVideo(out, (d) => {
       d.transcript = {
@@ -257,8 +258,10 @@ describe("runNotes", () => {
     const clipMtime = statSync(join(dirA, "topic.mp4")).mtimeMs;
 
     const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["新要点"] }) };
-    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client });
-    expect(r.noteCount).toBe(0);
+    // 产物齐全的 done 主题：投影后仍是 done，队列为空 -> 明确报错，不再静默返回 0
+    await expect(
+      runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client }),
+    ).rejects.toThrow("本次没有需要生成的主题：所选主题均已生成完成");
     const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
     const a = json.topics.find((t) => t.id === "topicA") as Record<string, unknown>;
     expect(a.status).toBe("done");
@@ -335,8 +338,12 @@ describe("runTopics", () => {
     let call = 0;
     const client: LlmClient = {
       model: endpoint.model,
-      chat: async (_m, opts) => {
+      chat: async (messages, opts) => {
         if (!opts?.json) throw new Error("需要 json");
+        // 要点请求按提示词识别：格式错误会被判为失败（r37），所以必须先于调用序判断
+        if ((messages[0]?.content ?? "").startsWith("根据主题与字幕抽取")) {
+          return JSON.stringify({ keyPoints: ["要点"] });
+        }
         call += 1;
         if (call === 1) {
           // 块候选
@@ -395,6 +402,9 @@ describe("中断结算（runToken 与锁内结算）", () => {
         topicRecord({ id: "topicB", title: "B", segments: [{ start: 300, end: 330 }], dirName: "b", status: "queued" }),
       ];
     });
+    // A 的 done 产物齐全：投影后保持 done，才谈得上被过滤
+    mkdirSync(join(out, "a"), { recursive: true });
+    writeFileSync(join(out, "a", "topic.mp4"), "aclip");
     let call = 0;
     const client: LlmClient = {
       model: endpoint.model,
@@ -420,26 +430,51 @@ describe("中断结算（runToken 与锁内结算）", () => {
     expect(typeof b.elapsedSeconds).toBe("number");
     // token 清 null
     expect(json.runToken).toBeNull();
+    // 失败也追加轨迹记录
+    const traj = JSON.parse(readFileSync(join(out, "b", "trajectory.json"), "utf8")) as { history: Array<Record<string, unknown>> };
+    expect(traj.history.length).toBe(1);
+    expect(traj.history[0]?.response).toEqual({ status: "failed", rawText: null, parsedSummary: null, error: "LLM 爆炸" });
     // 锁释放
     expect(existsSync(join(out, ".vnote-run.lock"))).toBe(false);
   });
 
-  test("runNotes 全部已 done：不生成不报错，token 不清（下一次运行覆盖）", async () => {
-    const out = join(tmpdir(), "rn-ok-" + Date.now());
+  test("done 主题缺 topic.mp4（界面 needs-rerun）：被重新生成；产物齐全时拒绝「没有需要生成的主题」", async () => {
+    const out = join(tmpdir(), "rn-rerun-" + Date.now());
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
         utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
       };
-      d.topics = [topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "done" })];
+      d.topics = [
+        topicRecord({
+          id: "topicA",
+          title: "A",
+          segments: [{ start: 0, end: 30 }],
+          dirName: "a",
+          status: "done",
+          clips: [{ file: "topic.mp4", start: 0, end: 30, segmentIndexes: [0] }],
+        }),
+      ];
     });
-    let calls = 0;
-    const client: LlmClient = { model: endpoint.model, chat: async () => (calls += 1, JSON.stringify({ keyPoints: ["要点A"] })) };
-    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client, runToken: "tok-keep" });
-    expect(r.noteCount).toBe(0);
-    expect(calls).toBe(0);
-    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { runToken: string | null };
-    expect(json.runToken).toBe("tok-keep");
+    const dirA = join(out, "a");
+    mkdirSync(dirA, { recursive: true });
+    writeFileSync(join(dirA, "topic.md"), "# A\n\n## 要点\n- 旧要点\n\n## 正文\n\n");
+    // topic.mp4 缺失：读侧投影为 needs-rerun，必须重新生成而不是静默返回 0
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["新要点"] }) };
+    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client });
+    expect(r.noteCount).toBe(1);
+    expect(existsSync(join(dirA, "topic.mp4"))).toBe(true);
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    const a = json.topics.find((t) => t.id === "topicA") as Record<string, unknown>;
+    expect(a.status).toBe("done");
+    expect(a.keyPoints).toEqual(["新要点"]);
+    const traj = JSON.parse(readFileSync(join(dirA, "trajectory.json"), "utf8")) as { history: Array<Record<string, unknown>> };
+    expect(traj.history.length).toBe(1);
+    // 第二次运行：topic.mp4 已补齐 → 投影保持 done，队列为空，明确报错
+    await expect(
+      runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client }),
+    ).rejects.toThrow("本次没有需要生成的主题：所选主题均已生成完成");
+    // 失败结算后锁释放
     expect(existsSync(join(out, ".vnote-run.lock"))).toBe(false);
   });
 
@@ -603,5 +638,15 @@ describe("runTopics 术语表接线", () => {
     expect(log).toContain("global=2");
     expect(log).toContain("video=1");
     expect(log).toContain("merged=2");
+  });
+});
+
+
+describe("notesTrigger", () => {
+  test("force 优先；其次说话人变更标记；否则首次", () => {
+    expect(notesTrigger({ speakerChangedAt: null }, undefined)).toBe("initial");
+    expect(notesTrigger({ speakerChangedAt: null }, true)).toBe("regenerate");
+    expect(notesTrigger({ speakerChangedAt: "2026-10-01T00:00:00.000Z" }, undefined)).toBe("speaker-changed");
+    expect(notesTrigger({ speakerChangedAt: "2026-10-01T00:00:00.000Z" }, true)).toBe("regenerate");
   });
 });

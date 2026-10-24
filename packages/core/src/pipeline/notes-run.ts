@@ -10,11 +10,12 @@ import { applyCorrections, resolveCorrections } from "../core/corrections";
 import { setTopicProgress, settleRunWhileLocked } from "../core/edits";
 import { renderIndexMarkdown } from "../core/render";
 import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/types";
-import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
+import type { LlmClient, LlmEndpoint, Progress, TrajectoryTrigger } from "../core/steps";
 import { createLlmClient } from "../llm/openai";
-import { generateNotes } from "./generate-notes";
-import { logger, runWithTask } from "../core/logger";
 import { segmentTopics } from "./segment-topics";
+import { generateNotes } from "./generate-notes";
+import { projectTopicArtifacts } from "../core/topic-artifacts";
+import { logger, runWithTask } from "../core/logger";
 
 function emptyRef(): VideoRef {
   return { id: "" as VideoId, title: "" };
@@ -99,6 +100,13 @@ export function writeIndexFromDoc(outputDir: string): string {
 
 type GenerateAllResult = { noteCount: number; cacheHits: string[]; notes: Note[] };
 
+/** 触发原因：force 优先于说话人变更标记，否则按首次生成。 */
+export function notesTrigger(data: Pick<VideoData, "speakerChangedAt">, force: boolean | undefined): TrajectoryTrigger {
+  if (force === true) return "regenerate";
+  if (data.speakerChangedAt !== null) return "speaker-changed";
+  return "initial";
+}
+
 /**
  * 对一批主题生成笔记:逐个记 `generating`+`startedAt`、跑 `generateNotes`、回写
  * `keyPoints`/`clips`(带 `segmentIndexes`)/`elapsedSeconds`,`done` 或 `failed`+`error` 后抛出。
@@ -112,6 +120,7 @@ export async function generateAll(
   endpoint: LlmEndpoint,
   cacheDir: string,
   client: LlmClient,
+  trigger: TrajectoryTrigger,
   onProgress?: (p: Progress) => void,
 ): Promise<GenerateAllResult> {
   const outputDir = data.video.outputDir;
@@ -134,6 +143,7 @@ export async function generateAll(
         endpoint,
         cacheDir,
         client,
+        trigger,
         onProgress,
       });
       const note = result.notes[0];
@@ -190,6 +200,8 @@ export async function runNotes(input: {
   return runWithTask(taskId, async () => {
     if (input.topicIds.length === 0) throw new Error("请先勾选要生成的主题");
     const data = loadVideoData(input.outputDir, emptyRef());
+    // 读侧产物投影：缺切片的 done 主题按 needs-rerun 对待，与界面口径一致
+    const projected = projectTopicArtifacts(data, input.outputDir);
     if (data.transcript.utterances.length === 0) throw new Error("该视频还没有结构化字幕，请先重新转写");
     const cacheDir = cacheDirFor(input.cacheRoot, data.video.id);
     const client = input.client ?? createLlmClient(input.endpoint);
@@ -203,23 +215,18 @@ export async function runNotes(input: {
     logger().info("app", "笔记生成开始", { kind: "notes", outputDir: input.outputDir, topicIds: input.topicIds.length });
     try {
       const ids = (input.topicIds as TopicId[]).filter((id) => {
-        const topic = data.topics.find((x) => x.id === id);
+        const topic = projected.topics.find((x) => x.id === id);
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return input.force === true || topic.status !== "done";
       });
-      if (ids.length === 0) {
-        // 全部已 done：不生成、不碰任何产物，index 从完整文档重建（条目本来就在）
-        timings.total = t();
-        writeIndexFromDoc(input.outputDir);
-        logger().info("app", "笔记生成完成", { noteCount: 0, topicCount: data.topics.length, timings });
-        return { noteCount: 0, cacheHits: [], timings };
-      }
+      // 待生成队列为空：明确报错，不再静默返回 0 个笔记
+      if (ids.length === 0) throw new Error("本次没有需要生成的主题：所选主题均已生成完成");
       const dirNameOf = (id: TopicId) => {
         const topic = data.topics.find((x) => x.id === id);
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return topic.dirName;
       };
-      const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir, "notes"), input.endpoint, cacheDir, client, input.onProgress);
+      const r = await generateAll(projected, ids, dirNameOf, correctionsFor(input.outputDir, "notes"), input.endpoint, cacheDir, client, notesTrigger(projected, input.force), input.onProgress);
       timings.notes = t();
       timings.total = t();
       // 重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）
@@ -309,7 +316,7 @@ export async function runTopics(input: {
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return topic.dirName;
       };
-      const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, input.onProgress);
+      const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, notesTrigger(data, undefined), input.onProgress);
       timings.notes = t();
       timings.total = t();
       // 全部主题重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）

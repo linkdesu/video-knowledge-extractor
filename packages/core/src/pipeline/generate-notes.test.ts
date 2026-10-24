@@ -73,12 +73,12 @@ describe("renderTopicMarkdown", () => {
         "## 正文",
         "",
         "### [00:00:15 - 00:00:20](01-00-00-12-00-02-30.mp4)",
-        "**说话人1**: 开头",
+        "- [00:15] **说话人1**：开头",
         "",
         "### [00:02:00 - 00:02:30](01-00-00-12-00-02-30.mp4)",
-        "**说话人1**: 第一句",
-        "**说话人2**: 第二句",
-        "**说话人1**: 第三句",
+        "- [02:00] **说话人1**：第一句",
+        "- [02:07] **说话人2**：第二句",
+        "- [02:11] **说话人1**：第三句",
         "",
       ].join("\n"),
     );
@@ -106,7 +106,7 @@ describe("renderTopicMarkdown", () => {
         "## 正文",
         "",
         "### [00:00:00 - 00:00:05]()",
-        "**sp9**: 只有一句",
+        "- [00:01] **sp9**：只有一句",
         "",
       ].join("\n"),
     );
@@ -121,6 +121,22 @@ describe("renderTopicMarkdown", () => {
     };
     const md = renderTopicMarkdown(topic, [], [], [], new Map());
     expect(md).toBe(["# 无摘要", "", "## 要点", "", "## 正文", "", "### [00:00:00 - 00:00:05]()", ""].join("\n"));
+  });
+
+  test("一小时边界：65 秒是 MM:SS，3600 秒是 HH:MM:SS", () => {
+    const topic: Topic = {
+      id: "t4" as never,
+      title: "边界",
+      summary: "",
+      segments: [{ start: 0, end: 3700 }],
+    };
+    const utterances = [
+      { start: 65, end: 70, speakerId: "sp1" as SpeakerId, text: "分界前" },
+      { start: 3600, end: 3610, speakerId: "sp1" as SpeakerId, text: "分界后" },
+    ];
+    const md = renderTopicMarkdown(topic, utterances, [], [], new Map());
+    expect(md).toContain("- [01:05] **sp1**：分界前");
+    expect(md).toContain("- [01:00:00] **sp1**：分界后");
   });
 });
 
@@ -382,5 +398,119 @@ describe("generateNotes 无时间段主题", () => {
     // 没有写出 topic.md，主题不能在没有 topic.mp4 时到达 done
     expect(existsSync(join(out, "主题A", "topic.md"))).toBe(false);
     expect(existsSync(join(out, "主题A", "topic.mp4"))).toBe(false);
+  });
+});
+
+
+describe("generateNotes 重新生成的 topic.md 格式", () => {
+  test("needs-rerun 主题重新生成：topic.md 按当前 renderTopicMarkdown 格式覆盖旧正文", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vnote-refmt-"));
+    const out = join(root, "out");
+    mkdirSync(out, { recursive: true });
+    const src = join(root, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=60", "-f", "lavfi", "-i", `sine=d=60`, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+      { stdio: "pipe" },
+    );
+    const topic: Topic = {
+      id: "t1" as never,
+      title: "主题A",
+      summary: "这是摘要",
+      segments: [{ start: 10, end: 20 }],
+    };
+    const utterance: Utterance = { start: 11, end: 12, speakerId: "s1" as SpeakerId, text: "内容" };
+    const transcript: Transcript = { speakers: [], utterances: [utterance] };
+    const topicDir = join(out, "主题A");
+    mkdirSync(topicDir, { recursive: true });
+    // 旧格式正文：重新生成后必须被当前格式覆盖
+    writeFileSync(join(topicDir, "topic.md"), "# 旧格式\n- 旧要点\n");
+    const input = {
+      video: { id: "v1" as never, title: "测试视频", sourcePath: src, durationSeconds: 60, outputDir: out },
+      transcript,
+      topics: [topic],
+      dirNames: new Map([[topic.id, "主题A"]]),
+      corrections,
+      endpoint,
+      cacheDir: join(out, ".cache"),
+      client: makeClient(["要点一"], []),
+    };
+    const r = await generateNotes(input);
+    expect(r.notes).toHaveLength(1);
+    const clips = r.notes[0]!.clips;
+    expect(clips).toHaveLength(1);
+    expect(clips[0]!.path).toBe(join(topicDir, "topic.mp4"));
+    // 按真实切片结果复算当前格式：旧正文必须被覆盖成同一渲染输出
+    const expected = renderTopicMarkdown(topic, [utterance], ["要点一"], clips, new Map());
+    const body = readFileSync(join(topicDir, "topic.md"), "utf8");
+    expect(body).toBe(expected);
+    // 旧正文被覆盖，当前格式的关键行都在
+    expect(body).not.toContain("旧格式");
+    expect(body).toContain("# 主题A");
+    expect(body).toContain("这是摘要");
+    expect(body).toContain("## 要点");
+    expect(body).toContain("- 要点一");
+    expect(body).toContain("## 正文");
+    expect(body).toContain("### [00:00:10 - 00:00:20](topic.mp4)");
+  });
+});
+
+describe("generateNotes 模型输出格式错误", () => {
+  test("不是合法要点 JSON：按格式错误拒绝，不落缓存，失败轨迹 rawText 为 null", async () => {
+    const { input, topic, utterances, cacheDir } = makeGenerateNotesFixture();
+    const calls: number[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async () => {
+        calls.push(1);
+        return "这不是 JSON，只有散话";
+      },
+    };
+    await expect(generateNotes({ ...input, client })).rejects.toThrow("LLM 返回格式错误：无法解析要点 JSON");
+    expect(calls.length).toBe(1);
+    // 失败不落缓存
+    expect(() => readFileSync(noteCachePath(cacheDir, topic, utterances, input), "utf8")).toThrow();
+    // 失败轨迹：rawText 在响应到达前保持 null
+    const traj = JSON.parse(readFileSync(join(input.video.outputDir, "主题A", "trajectory.json"), "utf8")) as {
+      history: Array<Record<string, unknown>>;
+    };
+    expect(traj.history.length).toBe(1);
+    expect(traj.history[0]?.response).toEqual({
+      status: "failed",
+      rawText: null,
+      parsedSummary: null,
+      error: "LLM 返回格式错误：无法解析要点 JSON",
+    });
+  });
+
+  test("合法 JSON 对象 + 空 keyPoints 数组仍是成功：要点为空，不报错", async () => {
+    const root2 = mkdtempSync(join(tmpdir(), "vnote-okempty-"));
+    const out2 = join(root2, "out");
+    mkdirSync(out2, { recursive: true });
+    const src2 = join(root2, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=60", "-f", "lavfi", "-i", "sine=d=60", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src2],
+      { stdio: "pipe" },
+    );
+    const topic2: Topic = { id: "t2" as never, title: "空要点", summary: "", segments: [{ start: 10, end: 20 }] };
+    const client2: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: [] }) };
+    const input2 = {
+      video: { id: "v1" as never, title: "测试视频", sourcePath: src2, durationSeconds: 60, outputDir: out2 },
+      transcript: { speakers: [], utterances: [] },
+      topics: [topic2],
+      dirNames: new Map([[topic2.id, "空要点"]]),
+      corrections,
+      endpoint,
+      cacheDir: join(out2, ".cache"),
+      client: client2,
+    } as Parameters<typeof generateNotes>[0];
+    const r2 = await generateNotes(input2);
+    expect(r2.notes).toHaveLength(1);
+    // 空要点照样写出笔记，正文格式行完整
+    const body = readFileSync(join(out2, "空要点", "topic.md"), "utf8");
+    expect(body).toContain("## 要点");
+    expect(body).toContain("## 正文");
+    expect(r2.notes[0]!.markdown).toContain("## 要点");
   });
 });

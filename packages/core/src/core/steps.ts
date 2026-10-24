@@ -13,7 +13,8 @@ export type Progress = {
   topicPercent?: number;
 };
 
-/** 设置里只配一个 OpenAI 兼容端点，云端或本地由用户决定（ADR-0005）。 */
+/** 本次运行的触发原因：首次生成、强制重生成、说话人合并后重生成。 */
+export type TrajectoryTrigger = "initial" | "regenerate" | "speaker-changed";
 export type LlmEndpoint = {
   baseUrl: string;
   apiKey: string;
@@ -89,6 +90,8 @@ export type GenerateNotesInput = {
   onProgress?: (p: Progress) => void;
   /** 单主题内部进度(开始/切完片段),供调用方记回 `video.json` 的 startedAt 等字段。 */
   onTopicProgress?: (p: { topicId: TopicId; percent: number; phase: "start" | "clips-done" }) => void;
+  /** 本次运行的触发原因（缺省按首次生成），写进主题目录的 trajectory.json。 */
+  trigger?: TrajectoryTrigger;
 };
 
 export type GenerateNotesResult = {
