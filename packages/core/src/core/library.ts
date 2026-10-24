@@ -1,8 +1,8 @@
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { notesRoot } from "./config";
 import { parseClipFileName } from "./clips";
-import { readVideoIndex } from "./paths";
+import { readVideoIndex, writeVideoIndex } from "./paths";
 import { isSafeDirName } from "./outputs";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
@@ -72,6 +72,23 @@ function dirIsDirectChild(root: string, dirName: string): boolean {
   if (!isSafeDirName(dirName)) return false;
   const rel = relative(root, resolve(root, dirName));
   return rel !== "" && !rel.startsWith("..") && !rel.includes("/");
+}
+/** 删除一个视频：删输出目录与其缓存目录、摘除 index 条目；用户的源文件不碰。未知 id 返回 false；越界 outputDir 抛错不删。 */
+export function deleteVideo(root: string, cacheRoot: string, id: string): boolean {
+  const index = readVideoIndex(root);
+  const entry = index.videos.find((v) => v.id === id);
+  if (entry === undefined || typeof entry.outputDir !== "string") return false;
+  if (!dirIsDirectChild(root, entry.outputDir)) {
+    throw new Error(`index.json 条目 ${id} 的 outputDir 越出 notes 根目录：${entry.outputDir}`);
+  }
+  rmSync(resolve(root, entry.outputDir), { recursive: true, force: true });
+  const cacheDir = resolve(cacheRoot, id);
+  if (dirIsDirectChild(cacheRoot, id) && lstatSync(cacheDir, { throwIfNoEntry: false }) !== undefined) {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+  const rest = index.videos.filter((v) => v.id !== id);
+  if (rest.length !== index.videos.length) writeVideoIndex({ videos: rest }, root);
+  return true;
 }
 
 function videoSummary(root: string, entry: Entry, propagateParseError: boolean): LibraryVideo {

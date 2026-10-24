@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLibrary, readLibraryVideo } from "./library";
+import { deleteVideo, listLibrary, readLibraryVideo } from "./library";
 import { emptyVideoData, writeVideoData } from "./video-data";
 import type { SpeakerId, TopicId, VideoId } from "./types";
 
@@ -86,7 +86,7 @@ describe("readLibraryVideo", () => {
     expect(detail.data.topics).toHaveLength(2);
     const a = detail.data.topics.find((t) => t.dirName === "前段")!;
     expect(a.title).toBe("前段标题");
-    expect(a.clips).toEqual([{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] }]);
+    expect(a.clips).toEqual([]);
     expect(a.status).toBe("needs-rerun");
     expect(a.error).toBe("切片文件缺失");
     const b = detail.data.topics.find((t) => t.dirName === "后段")!;
@@ -489,5 +489,71 @@ describe("卡片状态：proposed / pending-confirm / partial", () => {
     const { root, id } = fixture();
     writeCard(root, id, [topic("t1", "proposed", false), topic("t2", "proposed", false)]);
     expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("in-progress");
+  });
+});
+
+describe("deleteVideo", () => {
+  function deleteFixture(): { root: string; cacheRoot: string; ids: [string, string]; source: string } {
+    const root = mkdtemp();
+    const cacheRoot = join(mkdtemp(), "cache");
+    mkdirSync(cacheRoot, { recursive: true });
+    const source = join(tmpdir(), "vnote-source-" + Date.now() + ".mp4");
+    writeFileSync(source, "source-bytes");
+    for (const [i, title] of [["vid-aaa1", "视频一"], ["vid-bbb2", "视频二"]] as const) {
+      const dir = join(root, title);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "index.md"), "# 目录\n");
+      const cache = join(cacheRoot, i);
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(join(cache, "audio.bin"), "cache");
+    }
+    writeFileSync(
+      join(root, "index.json"),
+      JSON.stringify({
+        videos: [
+          { id: "vid-aaa1", title: "视频一", outputDir: "视频一", sourcePath: source },
+          { id: "vid-bbb2", title: "视频二", outputDir: "视频二", sourcePath: source },
+        ],
+      }),
+    );
+    return { root, cacheRoot, ids: ["vid-aaa1", "vid-bbb2"], source };
+  }
+
+  test("删一个视频：输出目录、缓存目录、index 条目全删；另一个视频与源文件不动", () => {
+    const { root, cacheRoot, ids, source } = deleteFixture();
+    expect(deleteVideo(root, cacheRoot, ids[0])).toBe(true);
+    expect(deleteVideo(root, cacheRoot, ids[0])).toBe(false);
+    expect(listLibrary(root).map((v) => v.id as string)).toEqual([ids[1]]);
+    expect(existsSync(join(root, "视频一"))).toBe(false);
+    expect(existsSync(join(cacheRoot, ids[0]))).toBe(false);
+    expect(existsSync(join(root, "视频二"))).toBe(true);
+    expect(existsSync(join(cacheRoot, ids[1]))).toBe(true);
+    expect(existsSync(source)).toBe(true);
+    expect(readFileSync(source, "utf8")).toBe("source-bytes");
+  });
+
+  test("未知 id 返回 false 且什么都不改", () => {
+    const { root, cacheRoot, ids, source } = deleteFixture();
+    expect(deleteVideo(root, cacheRoot, "vid-9999")).toBe(false);
+    expect(listLibrary(root).map((v) => v.id as string).sort()).toEqual(ids);
+    expect(existsSync(join(root, "视频一"))).toBe(true);
+    expect(existsSync(join(cacheRoot, ids[0]))).toBe(true);
+    expect(existsSync(join(cacheRoot, ids[1]))).toBe(true);
+    expect(existsSync(source)).toBe(true);
+  });
+
+  test("越界 outputDir 抛错且不删任何东西", () => {
+    const root = mkdtemp();
+    const cacheRoot = join(mkdtemp(), "cache");
+    mkdirSync(cacheRoot, { recursive: true });
+    const outside = mkdtemp();
+    writeFileSync(join(outside, "keep.txt"), "keep");
+    writeFileSync(
+      join(root, "index.json"),
+      JSON.stringify({ videos: [{ id: "vid-evil", title: "越界的", outputDir: "../evil" }] }),
+    );
+    expect(() => deleteVideo(root, cacheRoot, "vid-evil")).toThrow(/越出/);
+    expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(root, "index.json"), "utf8")).videos).toHaveLength(1);
   });
 });
