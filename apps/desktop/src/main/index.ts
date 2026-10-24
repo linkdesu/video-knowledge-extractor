@@ -119,6 +119,7 @@ import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } 
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
 import { applyDetailCorrections } from "./detail-corrections";
+import { buildLlmUpdate } from "./llm-update";
 import { defaultDataRoot, killProcessTree, prependPath } from "./platform";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
@@ -1154,15 +1155,15 @@ function requireStore(): SecretStore {
 
 async function updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus> {
   if (credentialTxError !== null) throw new Error(credentialTxError);
-  const apiKey = patch.apiKey?.trim();
+  const plan = buildLlmUpdate(patch);
   return withSettingsWrite(() => {
     commitCredentialUpdate({
       userData: app.getPath("userData"),
       settingsFile: SETTINGS_PATH(),
       codec: electronCodec,
       secretStore: requireStore(),
-      settingsPatch: { llm: { baseUrl: patch.baseUrl, model: patch.model } },
-      secret: { id: "llm", patch: apiKey === undefined || apiKey === "" ? {} : { apiKey } },
+      settingsPatch: plan.settingsPatch,
+      secret: { id: "llm", patch: plan.secretPatch },
     });
     settings = effectiveSettings();
     clearTxAfterCommit();

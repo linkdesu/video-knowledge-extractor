@@ -109,6 +109,7 @@ export function SettingsPage() {
     saving: boolean;
     saveError: string | null;
   } | null>(null);
+  const [clearingLlmKey, setClearingLlmKey] = useState(false);
   const draftBaseUrl = llmCard !== null ? llmCard.draft.baseUrl.trim() : null;
   const prevDraftBaseUrl = useRef<string | null>(null);
   useEffect(() => {
@@ -280,6 +281,27 @@ export function SettingsPage() {
 
   const setKey = (id: KeyFieldId, patch: Partial<KeyState>) =>
     setKeys((k) => ({ ...k, [id]: { ...k[id], ...patch } }));
+
+  // 显式清空已存 key：留空再保存仍是「保持原 key」，这里才是唯一删除入口。
+  const clearLlmKey = () => {
+    if (llmCard === null || clearingLlmKey) return;
+    setClearingLlmKey(true);
+    const draftAtStart = llmCard.draft.apiKey;
+    window.vnote
+      .updateLlm({ clearApiKey: true })
+      .then((next) => {
+        showToast("API key 已清空");
+        // 只在草稿仍等于点击时的快照时清空输入框；等待期间用户又输入过就不动。
+        setLlmCard((cur) =>
+          cur !== null && cur.draft.apiKey === draftAtStart
+            ? { ...cur, draft: { ...cur.draft, apiKey: "" } }
+            : cur,
+        );
+        setStatus(next);
+      })
+      .catch((err) => showToast(`清空失败：${errMessage(err)}`))
+      .finally(() => setClearingLlmKey(false));
+  };
 
   const saveAsrSecret = (field: AsrSecretField, label: string, id: KeyFieldId) => {
     const key = keys[id].draft.trim();
@@ -737,17 +759,31 @@ export function SettingsPage() {
             />
           </SettingsField>
           <SettingsField label="API key" htmlFor="settings-llm-key-input">
-            <PasswordInput
-              value={llmCard?.draft.apiKey ?? ""}
-              onChange={(v) =>
-                setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, apiKey: v } } : c))
-              }
-              id="settings-llm-key-input"
-              testId="settings-llm-key"
-              ariaLabel="API key"
-              readOnly={!llm.keyStorageAvailable}
-              placeholder="输入 API key"
-            />
+            <div className="vn-row">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <PasswordInput
+                  value={llmCard?.draft.apiKey ?? ""}
+                  onChange={(v) =>
+                    setLlmCard((c) => (c !== null ? { ...c, draft: { ...c.draft, apiKey: v } } : c))
+                  }
+                  id="settings-llm-key-input"
+                  testId="settings-llm-key"
+                  ariaLabel="API key"
+                  readOnly={!llm.keyStorageAvailable}
+                  placeholder="输入 API key"
+                />
+              </div>
+              {llm.hasKey || (llmCard?.draft.apiKey.trim() ?? "") !== "" ? (
+                <Button
+                  size="sm"
+                  data-testid="settings-llm-key-clear"
+                  disabled={clearingLlmKey}
+                  onClick={clearLlmKey}
+                >
+                  {clearingLlmKey ? "清空中…" : "清空"}
+                </Button>
+              ) : null}
+            </div>
             {!llm.keyStorageAvailable ? (
               <span className="vn-hint" data-testid="settings-llm-key-no-storage">
                 系统密钥存储不可用，无法保存新的 key

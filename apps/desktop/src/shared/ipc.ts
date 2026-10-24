@@ -257,8 +257,8 @@ export type SecretPatch = { apiKey?: string; clearApiKey?: boolean };
 /** LLM 表单草稿：测试连接与拉取模型都用它，不需要先保存。apiKey 为空时 main 依次回退已存密钥、dev 模式 .env 种子。 */
 export type LlmDraft = { baseUrl: string; apiKey: string };
 
-/** 一次保存整个 LLM 表单：baseUrl/model 写 settings.json，apiKey 非空时写密钥库，同一事务。 */
-export type LlmUpdatePatch = { baseUrl: string; model: string; apiKey?: string };
+/** 一次保存 LLM 表单：只传要改的字段；apiKey 非空时写密钥库，clearApiKey 显式清空已存 key，同一事务。 */
+export type LlmUpdatePatch = { baseUrl?: string; model?: string; apiKey?: string; clearApiKey?: boolean };
 
 export type AsrSecretField = "openaiKey" | "volcApiKey" | "volcAppKey" | "volcAccessKey";
 
