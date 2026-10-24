@@ -5,8 +5,10 @@ Settings shows what the app will actually use: local ASR model bundles and their
 ## Sub-features
 
 - `settings-asr` shows the ASR provider. In this build the trial gate fixes it to 本地 sherpa-onnx.
-- `settings-models` is the local-model area (r37): a model directory path row (`model-dir-path`, read-only, 打开模型目录 button `model-open-dir`) and the single 检测本地模型 action (`model-verify`, recomputes sha256 for files present but not yet verified, read-only on disk). There is no download, import or progress UI anymore.
-- `settings-model-required` lists the four required models (`model-required-asr`, `model-required-diarization`, `model-required-speaker-embedding`, `model-required-punctuation`), each reading 就绪 or 缺失 with the expected relative path under the model directory.
+- `settings-models` is the local-model area (r38): a model directory row (`model-dir-path`, 打开模型目录 `model-open-dir`), plus **two** ways to make models usable — 检测本地模型 for files the user put in the directory by hand, and 下载模型 for the online bundles. No 导入本地模型 picker: a file dialog asking "which folder?" confuses more than it helps.
+- `settings-model-required` lists the four required models (`model-required-asr`, `model-required-diarization`, `model-required-speaker-embedding`, `model-required-punctuation`). Each `.vn-model` card is a left/right flex row: the left side (`flex: 1; min-width: 0`) holds the label and the expected relative path in monospace with `word-break: break-all`, then the missing paths in red; the right side (`flex-shrink: 0`) holds one short status `.vn-tag` — 就绪 (`ok`), 缺失 (`err`), 下载中 (`accent`, that bundle only) — and, while the model is missing, a per-model 下载 button (`model-download-<id>`). The tag never takes the path text, so a long multi-line path cannot squeeze it into an ellipse (`white-space: nowrap; flex-shrink: 0; align-self: center; line-height: 1.4` in `styles.css`).
+- `settings-model-download` is the bottom action row: 下载模型 (`model-download`, every missing bundle; disabled while a download runs or when all four are ready), 取消 (`model-cancel`, enabled only while a download runs), 检测本地模型 (`model-verify`, re-runs `checkModels` and refreshes `settings().asr.local.ready`). A running download renders `model-download-progress` (`.vn-progress`), `model-download-message` (state, percent, received/total) and the fixed-height `model-download-log` fed by `models:event`.
+- **Readiness is file presence** (r38, unchanged from r37's 检测本地模型): `checkModels(modelDir)` only checks that every required path exists. A model copied into `modelDir` while the app runs is usable after one 检测本地模型 click — no restart, no sha256 pass, no download. The same `checkModels` verdict gates 提取前检查 (`ensurePipelineReady`), `settings().asr.local.ready` and `测试连接` for local ASR.
 - `settings-llm` is a single-card form: 接口地址 (text input `settings-llm-base-url`), API key (password input `settings-llm-key-input` with reveal toggle `settings-llm-key-reveal`), 模型名 (combobox input `settings-llm-model` role=combobox plus listbox `settings-llm-model-listbox` role=listbox and option rows `settings-llm-model-option-<i>` role=option with `data-value` the model id), 拉取模型 (`settings-llm-fetch-models`, disabled only while a fetch is in flight or while the draft baseUrl is empty), 测试连接 (`settings-test-llm`) and the single 保存 button (`settings-llm-save`). 拉取模型 and 测试连接 use the draft values in front of you and require no prior save. All edits are local drafts; the one save submits baseUrl + model to `settings.json` and the key to the system keychain in one credential transaction.
 - `settings-llm-key` is an editable password input (`type=password`, test ids `settings-llm-key-input` / `settings-llm-key-reveal`) prefilled with the saved key (r32, masked; the eye shows plaintext). The single form 保存 keeps the saved key when the input is empty, and replaces it when the input holds a different key. Since r36 the row also has an explicit 清空 button (`settings-llm-key-clear`), shown while `llm.keyStorageAvailable` and either `llm.hasKey` or the input has text: it deletes the stored key in the same credential-transaction path, empties the input and flips the hint to `settings-llm-key-none`, with no 保存 click. The four ASR key fields follow the same pattern.
 - `settings-llm-fetch-models` calls `<base>/models` with the draft's base url and key (falling back to the stored or dev-seeded key when the key input is empty) and renders every returned id as an option in `settings-llm-model-listbox`; a failure renders inline at `settings-llm-models-error`, and a 401 reads `模型发现失败：API key 无效或已停用` with the response body never echoed.
@@ -25,19 +27,60 @@ Settings shows what the app will actually use: local ASR model bundles and their
 Preconditions:
 
 - A running instance; `doctor` reports the app version and ffmpeg.
-- For network-free verification, do not click 测试连接 or 拉取模型 (there is no download or import control in 设置 anymore, r37).
+- For network-free verification, do not click 测试连接, 拉取模型 or 下载模型 (the download controls exist since r38, but a full set is ~1.1 GB).
 
 - **Open the page.** Run `$V click-text '设置'` and `$V wait "document.querySelector('[data-testid=settings-page]') !== null"`.
 - **Provider.** Run `$V eval "document.querySelector('[data-testid=settings-asr-provider-fixed]')?.innerText"`. It reads 本地 sherpa-onnx; the provider `<select>` is absent unless `VNOTE_ENABLE_CLOUD_ASR=1`.
 - **Model directory.** Run `$V eval "document.querySelector('[data-testid=model-dir-path]')?.innerText"`. It reads the model directory the run was started with (the shared model cache by default). `model-open-dir` opens that folder in Finder (side effect outside the app; avoid in automation).
 - **Required models.** Run `$V eval "[...document.querySelectorAll('[data-testid^=model-required-]')].map(e => e.innerText.replace(/\\n+/g, ' | '))"`. Each of the four rows reads 就绪 with its expected relative path when the files are present, 缺失 when not (the shared model cache makes them 就绪).
-- **Verify models (optional, slow).** Run `$V click '[data-testid=model-verify]'` and wait until every required-model row reads 就绪 (the fresh-process background check leaves them 未校验 until one verification pass finishes). This only reads files; it must not download.
+- **Verify models.** Run `$V click '[data-testid=model-verify]'` and wait until every required-model row reads the expected status. This only reads files (existence check, no hash, no download).
+
 - **LLM fields.** Run `$V eval "document.querySelector('[data-testid=settings-llm]').innerText"`. No LLM field is ever locked by `.env` (r30); the key input is read-only only while `keyStorageAvailable` is false (with `settings-llm-key-no-storage` shown); a run with a saved key shows the `settings-llm-key-saved` hint, holds that key in the input (masked, eye shows plaintext — r32, ADR-0024), and a fresh run shows `settings-llm-key-none`. All edits are local drafts until `settings-llm-save` is clicked (the single 保存 button); the key row is a password input with a reveal toggle and no separate key save button (「Key field」); with no pinned model the `settings-llm-discovered` hint reads 留空时自动发现 while discovery runs, then 已自动发现 <model>.
 - **Fetch models (network, no prior save needed).** Fill the draft first: `$V fill '[data-testid=settings-llm-base-url]' "$ENDPOINT"` and `$V fill '[data-testid=settings-llm-key-input]' "$KEY"`. Then click `settings-llm-fetch-models` (it is disabled only while a fetch is in flight or while the draft baseUrl is empty), wait for the listbox, then read the option ids: `$V eval "[...document.querySelectorAll('[data-testid^=settings-llm-model-option-]')].map(o => o.getAttribute('data-value'))"`. Expanding the combobox always lists every fetched id; only typing filters it (r32). Clicking an option row writes the local draft only; the value reaches the saved settings only after the 保存 click (「LLM 保存闭环」). A bad endpoint must show a readable message at `settings-llm-models-error` (a 401 reads `模型发现失败：API key 无效…
 - **Storage paths.** Run `$V eval "[...document.querySelectorAll('[data-testid^=settings-path-input-]')].map(i => [i.getAttribute('aria-label'), i.value, i.readOnly])"`. With the helper, `VNOTE_HOME`, `VNOTE_CACHE_DIR` and `VNOTE_MODEL_DIR` are set, so the inputs are read-only and each `settings-path-locked-*` hint reads 由环境变量控制.
 - **About.** Run `$V eval "document.querySelector('[data-testid=settings-about]').innerText"`; compare the version with `apps/desktop/package.json`.
 - **No side effects expected.** This journal is read-only. Confirm `git status` is unchanged and no new files appear under the run home unless you clicked verify/cache actions.
 - **Proof.** `$V shot settings-proof`, `$V snapshot settings-proof`, and the `drive status` JSON (contains notesRoot, modelDir, cacheRoot, appVersion, modelsReady, llmConfigured, ffmpeg).
+
+### Recipe: 启动后放入模型即用（hot-drop，Link 必测项）
+
+Precondition: a running instance whose model directory contains the four required bundles. One file is moved aside to make a card read 缺失, then put back **without restarting the app**.
+
+```bash
+MD=/Users/link/Documents/video-notes/models   # state.json modelDir
+F="$MD/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx"
+mv "$F" "$F.aside"                     # same volume, atomic
+$V click-text '设置'
+$V click '[data-testid=model-verify]'
+$V wait "document.querySelector('[data-testid=model-required-punctuation]').innerText.includes('缺失')" --timeout 20000
+$V eval "[...document.querySelectorAll('.vn-tag')].map(t => { const r = t.getBoundingClientRect(); return { text: t.textContent, h: Math.round(r.height), w: Math.round(r.width), ws: getComputedStyle(t).whiteSpace }; })"
+# expected per tag: h <= 28, w >= 36, ws === "nowrap" — the pill never collapses on a multi-line path
+$V eval "document.querySelector('[data-testid=model-download-punctuation]') !== null && document.querySelector('[data-testid=model-download]').disabled === false"
+# expected: true — the missing card offers its own 下载 and the bottom 下载模型 is enabled
+$V shot model-missing
+mv "$F.aside" "$F"                     # put it back; no restart
+$V click '[data-testid=model-verify]'
+$V wait "window.vnote.checkModels().then(c => c.ready)" --timeout 20000
+$V eval "window.vnote.settings().then(s => ({ ready: s.asr.local.ready, missing: s.asr.local.missing }))"
+# expected: { ready: true, missing: [] } — usable for the next extraction immediately
+$V shot settings-model-check
+```
+
+The literal assertions: after 检测本地模型 every `.vn-tag` keeps `h <= 28 / w >= 36 / white-space: nowrap`, the missing card shows 缺失 plus `model-download-<id>`, and putting the file back flips all four to 就绪 with `asr.local.ready === true` in the same process.
+
+### Recipe: 下载模型 + 取消（online path, network）
+
+```bash
+$V click '[data-testid=model-download]'   # starts the missing bundles, one at a time
+$V wait "document.querySelector('[data-testid=model-download-progress]') !== null" --timeout 30000
+$V eval "document.querySelector('[data-testid=model-download-message]').innerText"
+$V click '[data-testid=model-cancel]'     # must abort promptly, not sit at 下载中
+$V wait "document.querySelector('[data-testid=model-cancel]').disabled === true" --timeout 30000
+$V eval "document.querySelector('[data-testid=model-download-log]').innerText.slice(0, 200)"
+# expected: a 已取消 log line and the progress area settles; nothing keeps downloading
+```
+
+Downloading the real set moves ~1.1 GB; for a smoke test use a scratch `--model-dir` so the shared cache is untouched, and cancel early.
 
 ### Recipe: LLM 拉取模型 + 测试连接（draft 值，无需先保存）
 
@@ -305,11 +348,12 @@ Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-save
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
 - **The separate key save button is gone (r30); the explicit clear button is back (r36).** `settings-llm-key-save` does not exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without keychain access). `settings-llm-key-clear` exists only while the key store is available and a key is stored or the input has text; an empty input plus 保存 still means 「保持原 key」 and never deletes it.
 
-- The app never downloads models by itself (r28) and the 下载模型 / 导入模型 controls are gone (r37): the local-model area shows only the model directory (`model-dir-path`, `model-open-dir`) and the four required models checked by 检测本地模型 (`model-verify`). Models must already be in the model directory, so a missing model is a 缺失 row, not a journey.
+- The app never downloads models by itself (r28). Since r38 设置 offers both paths explicitly: 下载模型 downloads the missing bundles (with per-bundle 下载 on each missing card and a 取消 that aborts the in-flight one), while a model the user drops into the model directory is usable after one 检测本地模型 click.
+- Model files placed manually are 就绪 as soon as they exist (r37/r38: `checkModels` is existence-only, no sha256 pass, no 未校验 state); there is nothing to run after copying files but 检测本地模型. The online downloader skips a bundle whose files already exist, so a mixed manual/online directory does not re-download what is there.
 - Storage root (r28): notes are the root itself; `.cache` and `models` are subdirectories of it, so the three rows read `<root>`, `<root>/.cache`, `<root>/models` unless env overrides them. An unpacked dev process launched inside the repo uses `<repo>/tmp/dev-home` instead.
 - `VNOTE_HOME`, `VNOTE_CACHE_DIR` and `VNOTE_MODEL_DIR` lock the corresponding path inputs (read-only + 由环境变量控制). Editing them requires a run started without those variables, which also points the app at the real user data; prefer not to.
 - The trial build resolves the ASR provider to `local` regardless of the stored setting unless `VNOTE_ENABLE_CLOUD_ASR=1`. Do not report cloud ASR as missing behavior; it is gated by design.
 - 测试连接 for LLM and ASR performs real network requests to the configured endpoint and can fail on missing keys. Treat a failure as an environment observation, not an app defect.
 - 清理缓存 deletes `<cacheRoot>` content for the isolated home only. It does not touch topic outputs or the notes root.
-- Model files placed manually show 未校验 until 检测本地模型 (`model-verify`) is run in the same process; `doctor`'s "models ready" is the same required-model check.
+- The downloader's progress events share one `models:event` channel (`{snapshot, log}`); every event also re-runs `checkModels`, so a bundle's card flips to 就绪 as soon as its install lands, without another click.
 - The trial gate hides the provider selector and cloud-ASR panels, so `settings-asr-provider`, `settings-asr-volc-*` and `settings-test-asr` are not rendered. If a journey needs them, start a separate run with `VNOTE_ENABLE_CLOUD_ASR=1` and record that as a different configuration.
