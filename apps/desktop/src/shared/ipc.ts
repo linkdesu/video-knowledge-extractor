@@ -1,4 +1,8 @@
 /** renderer 与 main 之间的线上契约。core 内部类型不直接穿过 IPC（ADR-0012、ADR-0014、ADR-0015）。 */
+import type { ModelsCheck } from "@video-notes/core";
+
+/** 模型检测结果直接沿用 core 的形状（单一事实源，不在 IPC 层复制一份）。 */
+export type { ModelsCheck };
 
 export type VideoId = string;
 
@@ -202,12 +206,6 @@ export type ModelsStatus = {
   download: DownloadSnapshot;
 };
 
-/** 下载日志一行；at 是 main 收到 core 输出时的时间戳（ISO）。 */
-export type ModelLogEntry = { at: string; level: "info" | "warn" | "error"; text: string };
-
-/** 下载事件：进度快照 + 截至此刻的全部日志（有上限，旧行被裁掉）。 */
-export type ModelDownloadEvent = { snapshot: DownloadSnapshot; log: ModelLogEntry[] };
-
 export type SettingsStatus = {
   notesRoot: string;
   cacheRoot: string;
@@ -278,13 +276,6 @@ export type TestLlmResult = { ok: boolean; model: string | null; message: string
 export type LlmModelListResult = { ok: boolean; models: string[]; message: string };
 
 export type TestAsrResult = { ok: boolean; modelsFound: number | null; message: string };
-
-export type ImportModelsResult = {
-  canceled: boolean;
-  installed: string[];
-  rejected: { bundleId: string; reason: string }[];
-  status: ModelsStatus;
-};
 
 export type ExtractTarget =
   | { kind: "new"; sourcePath: string }
@@ -369,13 +360,9 @@ export type VnoteApi = {
   listLlmModels(draft: LlmDraft): Promise<LlmModelListResult>;
   testAsr(): Promise<TestAsrResult>;
   models(): Promise<ModelsStatus>;
-  downloadModels(): Promise<ModelsStatus>;
-  cancelModelDownload(): Promise<ModelsStatus>;
-  importModels(): Promise<ImportModelsResult>;
-  verifyModels(): Promise<ModelsStatus>;
+  checkModels(): Promise<ModelsCheck>;
   /** 端点发现落定（成功或失败）：重新拉一次 settings 即可拿到 discoveredModel。 */
   onLlmChanged(listener: () => void): () => void;
-  onModelDownload(listener: (event: ModelDownloadEvent) => void): () => void;
   reveal(outputDir: string): Promise<void>;
   /** 打开日志文件夹（r34）：失败时抛可读错误。 */
   openLogs(): Promise<void>;
@@ -416,12 +403,8 @@ export const IPC = {
   testLlm: "settings:test-llm",
   listLlmModels: "settings:list-llm-models",
   testAsr: "settings:test-asr",
+  checkModels: "models:check",
   models: "models:status",
-  downloadModels: "models:download",
-  cancelModelDownload: "models:cancel",
-  importModels: "models:import",
-  verifyModels: "models:verify",
-  modelEvent: "models:event",
   reveal: "shell:reveal",
   logsOpen: "logs:open",
   diagnosticsCopy: "diagnostics:copy",

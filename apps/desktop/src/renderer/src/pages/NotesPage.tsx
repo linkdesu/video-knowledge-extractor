@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { PageContext } from "./types";
-import { NoteList, generatingProgress } from "../components/NoteList";
-import { ProgressBar } from "@/rbp/blocks/monitoring-9";
-import { fmtClock, fmtElapsed } from "@/lib/format";
+import { NoteList } from "../components/NoteList";
+import { fmtClock } from "@/lib/format";
 import { clipSeekTarget } from "@/lib/playback";
-import { showToast } from "@/lib/toast";
 import { resolveSpeakerName } from "@/lib/speaker-resolve";
 
 const BTN =
@@ -21,7 +19,6 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
     () => topics.find((t) => t.status !== "queued")?.id ?? topics[0]?.id ?? null,
   );
   const [now, setNow] = useState(() => Date.now());
-  const [rerunPending, setRerunPending] = useState(false);
 
   useEffect(() => {
     setNow(Date.now());
@@ -33,22 +30,10 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
   }, []);
 
   const selected = topics.find((t) => t.id === selectedId) ?? null;
-  const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
-  // 本视频的 notes 任务在途（queued/running）或当前主题在排/生成中时禁用重生成按钮。
-  const jobActiveForVideo =
-    job !== null && (job.state === "queued" || job.state === "running") && job.videoId === detail.video.id;
-  const topicBusy = selected !== null && (selected.status === "queued" || selected.status === "generating");
 
-  const rerunOne = async () => {
-    if (selected === null) return;
-    setRerunPending(true);
-    try {
-      await onStartNotes([selected.id], { force: true });
-    } catch {
-      // App 层已弹「生成笔记失败」toast，这里不重复弹
-    } finally {
-      setRerunPending(false);
-    }
+  // 单主题重生成：force 连 done 也重跑；App 层失败会弹 toast，这里不重复弹。
+  const regenerateOne = (topicId: string) => {
+    void onStartNotes([topicId], { force: true }).catch(() => undefined);
   };
 
   const reveal = () => void window.vnote.reveal(detail.video.outputDir);
@@ -63,7 +48,6 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
     v.currentTime = Math.max(0, seconds);
     void v.play().catch(() => undefined);
   };
-
 
   return (
     <div className="flex h-full min-w-0 flex-col gap-3.5 overflow-y-auto p-4">
@@ -138,15 +122,6 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
                       <li key={i}>{p}</li>
                     ))}
                   </ul>
-                ) : null}
-                {selProg !== null ? (
-                  <div className="mt-3">
-                    <ProgressBar percent={selProg.percent ?? 0} />
-                    <div className="mt-1 flex justify-between text-[10px] tabular-nums text-neutral-900/66 dark:text-neutral-100/66">
-                      <span>已用 {fmtElapsed(selProg.elapsedSeconds)}</span>
-                      {selProg.percent !== null ? <span>{Math.round(selProg.percent)}%</span> : null}
-                    </div>
-                  </div>
                 ) : null}
               </div>
 
@@ -231,23 +206,19 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
                   ) : null}
                 </div>
               </div>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => void rerunOne()}
-                  disabled={rerunPending || jobActiveForVideo || topicBusy}
-                  className={`${BTN} ${BTN_SM}`}
-                >
-                  {rerunPending ? "生成中…" : "单独重新生成"}
-                </button>
-              </div>
             </>
           )}
         </div>
 
         <div className={`${CARD} min-h-0 overflow-hidden`}>
-          <NoteList topics={topics} selectedId={selectedId} onSelect={setSelectedId} job={job} now={now} />
+          <NoteList
+            topics={topics}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onRegenerate={regenerateOne}
+            job={job}
+            now={now}
+          />
         </div>
       </div>
     </div>

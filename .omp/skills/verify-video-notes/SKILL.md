@@ -24,7 +24,7 @@ node node_modules/electron/install.js   # a fresh worktree install skips Electro
 ffmpeg -version          # required by every extraction; Homebrew is fine
 ls ~/.cache/video-notes/models   # ~1.1 GB of local ASR models, required for import journeys
 # A fresh Electron process reports the models as unverified until they are checked once:
-# open 设置 and click [data-testid=model-verify]; startExtract refuses unverified models.
+# open 设置 and click [data-testid=model-verify]（检测本地模型）; startExtract refuses unverified models.
 ```
 
 The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root. The desktop app does not take its LLM config from env: the packaged app never reads `.env` at all; a dev (unpacked) app loads `.env` only as a seed for the settings fields that have no saved value, and a saved value always wins.
@@ -47,7 +47,7 @@ Isolation limits:
 
 - One instance per `VNOTE_USER_DATA` because the main process takes Electron's single-instance lock. Two runs side by side need both a distinct `--port` and a distinct `--run`.
 - The model directory is shared read-only. Never point `--model-dir` at a scratch copy unless the journey verifies model files.
-- There is no automatic model download (r28): a fresh process never starts one. The manual 「下载模型」 button in Settings is the only way to download, and it hits the network, so do not click it on a metered connection.
+- There is no automatic model download (r28, r37): a fresh process never starts one, and there is no download or import control in 设置 anymore — the local-model area shows the model directory (`model-dir-path`, 打开模型目录) and the four required models checked by 检测本地模型 (`model-verify`).
 - Extraction with only `IDEALSOFT_API_URL`/`KEY` and no pinned model now works: the main process awaits model discovery before it builds a job (r26). A pin via `VNOTE_LLM_MODEL` or 设置 still wins and skips discovery.
 - A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
 - Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
@@ -74,7 +74,9 @@ Teardown (always, including after a failed journey):
 bun .omp/skills/verify-video-notes/scripts/verify.ts down
 ```
 
-`down` sends SIGTERM only to the pid recorded in `state.json`, after checking `ps` reports an Electron process for that pid, then waits for that process to exit. It never kills by name.
+`down` stops only the pid recorded in `state.json` (SIGTERM after `ps` confirms the process name, wait for exit; it never kills by name), records `stoppedAt` in `state.json`, keeps the flat evidence set (`state.json`, `status.json`, `app.log`, `build.log`, `cli.log`, every `*.png` and `*.aria.txt`, and any artifact snapshots in the run directory such as `trajectory.json`), and prunes only the renderer caches (`home/.cache`, `user-data/Cache`, `Code Cache`, `GPUCache`, `DawnGraphiteCache`, `DawnWebGPUCache`, `ShaderCache`, `GrShaderCache`, `Partitions`, plus `user-data/Local Storage` only when it contains no evidence). It refuses to delete the run directory unless `--purge` is passed; `down --purge` removes the whole directory and prints a warning that the evidence is gone. `<repo>/tmp/verify/<run-id>/` is the single legal evidence location: do not copy evidence into a repo-root `artifacts/` directory, and the directory is kept after the work lands.
+
+`state.json` records the run: `commit` (the `git rev-parse HEAD` at launch time, `null` when git failed), `startedAt` (the launch ISO timestamp), and, after `down`, `stoppedAt`. `doctor` may compare `commit` against the current `git rev-parse HEAD` as a warning only (a mismatch means the sources moved since launch; it never fails the check).
 
 ### Simulating a restart
 
@@ -104,6 +106,7 @@ Read-only checks, exit code 1 on failure:
 - `settings().appVersion` equals `apps/desktop/package.json`;
 - the listening port is owned by the recorded pid (`lsof`);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`.
+- `state.json`'s `commit` differs from the current `git rev-parse HEAD` (warning only: the sources moved since launch; never fails the check).
 
 Doctor also prints readiness warnings that decide which journeys can run: ffmpeg, local ASR models, LLM endpoint. Those are warnings for UI-only journeys and blockers for extraction journeys.
 
@@ -153,7 +156,7 @@ Stable handles in this repo:
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
 | Notes | `note-row`, `note-open`, `clip-block`, `clip-player` (one `<video>` per topic, the concatenated `topic.mp4`), `clip-seg-<i>` (clickable segment-label chips, seek to `segmentOffsets[i]`), `clip-sub` (clickable subtitle rows), `player` (the 主题-page player; not the notes clip-player) |
 | Glossary | `glossary-add`, `glossary-row`, `glossary-wrong`, `glossary-right`, `glossary-remove` (per row, use `--index`) |
-| Settings | `settings-page`, `settings-asr-provider-fixed`, `settings-llm-base-url`, `settings-llm-model` (combobox input, role=combobox), `settings-llm-model-listbox` (role=listbox), `settings-llm-model-option-<i>` (role=option, `data-value` is the model id), `settings-llm-key-input` (password input; already holds the saved key, masked — r32), `settings-llm-key-reveal` (eye toggle, aria-label 显示密钥 / 隐藏密钥; shows the plaintext), explicit clear `settings-llm-key-clear` (shown while a key is stored or the input has text), key hints `settings-llm-key-saved` / `settings-llm-key-env` / `settings-llm-key-none`, `settings-llm-fetch-models`, `settings-test-llm`, single save `settings-llm-save` (disabled while the draft equals the saved values), `settings-llm-save-error`, `settings-llm-models-error`, `settings-llm-discovered`, the four ASR key fields follow the `<prefix>-input` / `-save` / `-reveal` / `-saved` / `-clear` pattern with prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, `settings-clear-cache`, `settings-about`, `model-panel`, `model-bundle-<id>`, `model-verify`, `model-import`, `model-download` |
+| Settings | `settings-page`, `settings-asr-provider-fixed`, `settings-llm-base-url`, `settings-llm-model` (combobox input, role=combobox), `settings-llm-model-listbox` (role=listbox), `settings-llm-model-option-<i>` (role=option, `data-value` is the model id), `settings-llm-key-input` (password input; already holds the saved key, masked — r32), `settings-llm-key-reveal` (eye toggle, aria-label 显示密钥 / 隐藏密钥; shows the plaintext), explicit clear `settings-llm-key-clear` (shown while a key is stored or the input has text), key hints `settings-llm-key-saved` / `settings-llm-key-env` / `settings-llm-key-none`, `settings-llm-fetch-models`, `settings-test-llm`, single save `settings-llm-save` (disabled while the draft equals the saved values), `settings-llm-save-error`, `settings-llm-models-error`, `settings-llm-discovered`, the four ASR key fields follow the `<prefix>-input` / `-save` / `-reveal` / `-saved` / `-clear` pattern with prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, `settings-clear-cache`, `settings-about`, `model-dir-path` (the model directory display row), `model-open-dir` (打开模型目录), `model-verify` (the single 检测本地模型 action), `model-required-<id>` (one row per required model, `id` ∈ asr / diarization / speaker-embedding / punctuation; reads 就绪 or 缺失 with the expected relative path) |
 | Logs and diagnostics (settings) | `settings-logs` (日志与诊断 card), `settings-logs-dir` (read-only log folder row), `settings-logs-open` (打开日志文件夹), `settings-diagnostics-copy` (复制诊断信息), `settings-diagnostics-status` (已复制 N 字符) |
 | Video glossary (in library card) | `video-title`, `video-glossary-add`, `video-glossary-wrong`, `video-glossary-right`, `video-glossary-remove` |
 
@@ -178,9 +181,9 @@ Proof standards:
 - Verify side effects alongside pixels. A glossary row is proven by `<home>/corrections.json`; an import is proven by `index.json` plus topic dirs with `topic.md` and clips.
 - Record the exact command, its stdout/stderr and its exit code for CLI proofs.
 - Extraction journeys call the endpoint configured in `.env`: real network, real token spend. Say so in the report.
-- There is no automatic model download (r28): a fresh process never starts one, and the acceptance script no longer sets any flag for it. The manual 下载模型 button is the only way to download; it hits the network, so a download journey must be explicitly clicked and waited out until ready, and is skipped on a metered connection.
+- There is no automatic model download (r28, r37): a fresh process never starts one, and the 下载模型 / 导入模型 buttons no longer exist — models must already be in the model directory (`model-dir-path`), where 检测本地模型 (`model-verify`) checks them.
 
-Last proven runs (r32, evidence copied to `tmp/report/r32-evidence/`): `r32-before/` (the packaged app built at `583fba0`: portrait video clipped inside the 16/10 player, subtitle header line, clickable-looking cards, `视频库 / 术语表` breadcrumb, cleared key input, one-model combobox) and `r32-after2/` (the fixed build on the same home/user-data: portrait and landscape players sized to the video, no header line, inert cards, `术语表` crumb, key echoed + revealed + kept across a restart, full model list after selecting). Earlier (r28): `r28-after/` (settings page with the always-editable key field and the fetched model list), `r28-download/` (explicit 下载模型 click, progress and phase log through 校验/解压/安装 until all four bundles read 就绪), `r28-error2/` (unreachable endpoint shows a readable inline error) and `r28-pkg2/` (DMG-installed app under launchd's PATH: ffmpeg found, models ready, dev-home untouched). Earlier: `tmp/verify/r26-pkg-02/` and `tmp/verify/r26-pkg-01/` (r26: the packaged, DMG-installed app with launchd's PATH — 10-minute local-ASR extraction to four finished topics, notes rerun after a failed LLM call, settings with the trial ASR gate and auto-discovered model) and `tmp/verify/r26-empty/` (packaged app on a fresh home: empty library, first drop, running banner, finished card). Earlier: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
+Last proven runs: `tmp/verify/r37-ux-model-llm-polish/` (the r37 round, built at `9950762`: settings local-model area reduced to directory display + 检测本地模型 over the four required model paths with 就绪/缺失 per model, speaker-merge dialog portalled to `document.body` (mask parent is `document.body`, full 1280×828, both buttons in viewport), real `n/m` note progress with no percent bars, the 笔记 step gate disabled until one topic is done, per-topic 重新生成 twice on one topic leaving `trajectory.json` `history.length === 3` with no key, a mocked HTTP 401 surfacing as 失败 with the endpoint message and a `failed` trajectory entry, and `topic.md` 正文 as `- [MM:SS] **说话人**：文本`; evidence in that directory: `settings-model-check`, `model-missing` (empty model dir, all four 缺失), `topics-gate-disabled`, `topics-progress-nm`, `notes-regenerating`, `notes-llm-401-failure`, `speaker-merge-modal`, `topics-cards-final`, `notes-page-final`, plus `status.json`, `state.json` and the `topic.md`/`trajectory.json` snapshots). Earlier (r32, evidence copied to `tmp/report/r32-evidence/`): `r32-before/` (the packaged app built at `583fba0`: portrait video clipped inside the 16/10 player, subtitle header line, clickable-looking cards, `视频库 / 术语表` breadcrumb, cleared key input, one-model combobox) and `r32-after2/` (the fixed build on the same home/user-data: portrait and landscape players sized to the video, no header line, inert cards, `术语表` crumb, key echoed + revealed + kept across a restart, full model list after selecting). Earlier (r28): `r28-after/` (settings page with the always-editable key field and the fetched model list), `r28-download/` (explicit 下载模型 click, progress and phase log through 校验/解压/安装 until all four bundles read 就绪), `r28-error2/` (unreachable endpoint shows a readable inline error) and `r28-pkg2/` (DMG-installed app under launchd's PATH: ffmpeg found, models ready, dev-home untouched). Earlier: `tmp/verify/r26-pkg-02/` and `tmp/verify/r26-pkg-01/` (r26: the packaged, DMG-installed app with launchd's PATH — 10-minute local-ASR extraction to four finished topics, notes rerun after a failed LLM call, settings with the trial ASR gate and auto-discovered model) and `tmp/verify/r26-empty/` (packaged app on a fresh home: empty library, first drop, running banner, finished card). Earlier: `tmp/verify/20261022-181030/` (r27: glossary debounce, partial-row silence, delete button and persisted `[]`, forced save failure with a single toast, library card status sampling across 主题重建 reruns) and `tmp/verify/20261022-172735/` (drag-drop import of `tmp/r26-e2e/short-30s.mp4`, notes page, topic selection toggle, settings read-only, CLI extract with `--limit 30`).
 
 ## Gotchas
 
@@ -203,9 +206,9 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 ```
 
-- `down` stops only the pid this run started; confirm the command prints `stopped pid …; evidence kept at …` and the port is closed.
+- `down` stops only the pid this run started, records `stoppedAt`, prunes the renderer caches and keeps the rest of the run directory; confirm it prints the kept evidence counts and the run path, and that the port is closed. `down --purge` deletes the whole run directory (the default keeps it).
 - If `up` failed before writing `state.json`, the log tail is printed and the child is terminated by `up` itself. If a run was interrupted by the agent, use `runs` to find the pid and `down --run <id>`.
-- Scratch state lives inside the run directory (`home/`, `user-data/`, `cli-home/`). Delete the whole run directory only when you no longer need its evidence.
+- Scratch state lives inside the run directory (`home/`, `user-data/`, `cli-home/`); `down` prunes the big renderer caches automatically, so the directory that remains is evidence only.
 - Never `pkill Electron`, never delete `tmp/verify/<run>/*.png` or `*.aria.txt` as “cleanup”.
 
 ## Helpers
@@ -217,7 +220,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 | `up` | build + launch isolated Electron, wait for usable renderer |
 | `doctor` | read-only health check, exit 1 on failure |
 | `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log |
-| `down` | stop the instance this run started, keep evidence |
+| `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory) |
 | `runs` | list runs with liveness |
 
 CLI surface (run from the repo root so `.env` is read):

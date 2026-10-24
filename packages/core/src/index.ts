@@ -164,3 +164,4 @@ export type { VideoId } from "./core/types";
 export type { Utterance } from "./core/types";
 export { applyCorrections } from "./core/corrections";
 export { projectTopicArtifacts } from "./core/topic-artifacts";
+export { checkModels, type RequiredModelId, type RequiredModel, type ModelsCheck } from "./core/models-required";

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { JobSnapshot, TopicInfo } from "../../../shared/ipc";
-import { ProgressBar } from "@/rbp/blocks/monitoring-9";
-import { fmtClock, fmtElapsed } from "@/lib/format";
+import { useEffect, useState } from "react";
+import { fmtClock } from "@/lib/format";
+import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 
 type TopicListProps = {
   topics: TopicInfo[];
@@ -15,29 +15,11 @@ type TopicListProps = {
   onToggleSelected: (topicId: string, selected: boolean) => void;
   onToggleMergePick: (topicId: string) => void;
 };
-
-/** 生成中主题进度：实时任务快照（step=generate-notes 且 topicId 命中）优先，
- * 否则回退主题的 startedAt / elapsedSeconds。 */
-export function generatingProgress(
-  topic: TopicInfo,
-  job: JobSnapshot | null,
-  now: number,
-): { percent: number | null; elapsedSeconds: number } | null {
-  if (topic.status !== "generating") return null;
-  const liveJob =
-    job !== null &&
-    job.state === "running" &&
-    (job.step === "generate-notes" || job.kind === "notes") &&
-    job.topicId === topic.id
-      ? job
-      : null;
+export function generatingProgress(topic: TopicInfo, now: number): number {
   const startedIso = topic.startedAt;
-  const elapsedSeconds =
-    startedIso === null
-      ? (topic.elapsedSeconds ?? 0)
-      : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
-  const percent = liveJob !== null ? (liveJob.topicPercent ?? 0) : null;
-  return { percent, elapsedSeconds };
+  return startedIso === null
+    ? (topic.elapsedSeconds ?? 0)
+    : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
 }
 
 function useNow(active: boolean): number {
@@ -79,7 +61,7 @@ function Row({
   onToggleSelected: (topicId: string, selected: boolean) => void;
   onToggleMergePick: (topicId: string) => void;
 }) {
-  const prog = generatingProgress(topic, job, now);
+  const state = topicUiState(topic, topicGenerating(topic, job));
   return (
     <div
       data-testid={`topic-card-${topic.id}`}
@@ -150,25 +132,16 @@ function Row({
           选入合并
         </label>
       ) : null}
-      {prog !== null ? (
-        <>
-          <div style={{ marginTop: 10 }}>
-            <ProgressBar percent={prog.percent ?? 0} />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: 10.5,
-              color: "var(--vn-dim)",
-              marginTop: 4,
-            }}
-          >
-            <span>已用 {fmtElapsed(prog.elapsedSeconds)}</span>
-            {prog.percent !== null ? <span>{Math.round(prog.percent)}%</span> : null}
-          </div>
-        </>
-      ) : null}
+      <div
+        style={{
+          fontSize: 10.5,
+          color: "var(--vn-dim)",
+          marginTop: 6,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {topicStateLabel(state, generatingProgress(topic, now))}
+      </div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
         <button
           type="button"

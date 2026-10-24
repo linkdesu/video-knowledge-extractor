@@ -151,7 +151,7 @@ describe("renameSpeaker", () => {
     const { dir } = makeFixture();
     renameSpeaker(dir, "sp1", "张老师");
     const md = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
-    expect(md).toContain("**张老师**: 你好");
+    expect(md).toContain("- [00:11] **张老师**：你好");
     expect(md).not.toContain("说话人1");
   });
 });
@@ -456,7 +456,7 @@ describe("mergeSpeakers / unmergeSpeaker", () => {
     expect(sp2.mergedInto).toBe("sp1" as never);
     expect(out.transcript.utterances.map((u) => u.speakerId as string)).toEqual(["sp1", "sp1", "sp2"]);
     const md = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
-    expect(md).toContain("**张三**: 你好");
+    expect(md).toContain("- [00:11] **张三**：你好");
     expect(md).not.toContain("说话人2");
     const raw = JSON.parse(readFileSync(join(dir, "video.json"), "utf8"));
     expect(raw.transcript.utterances).toHaveLength(3);
@@ -470,8 +470,8 @@ describe("mergeSpeakers / unmergeSpeaker", () => {
     expect(out.transcript.speakers.find((s) => s.id === "sp2")!.mergedInto).toBeNull();
     expect(out.transcript.speakers.find((s) => s.id === "sp1")!.name).toBe("张三");
     const md = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
-    expect(md).toContain("**张三**: 你好");
-    expect(md).toContain("**说话人2**: 你好啊");
+    expect(md).toContain("- [00:11] **张三**：你好");
+    expect(md).toContain("- [00:11] **说话人2**：你好啊");
     expect(md).not.toContain("说话人1");
   });
 

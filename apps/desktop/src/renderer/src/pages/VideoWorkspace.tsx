@@ -1,5 +1,6 @@
 import type { JobSnapshot, VideoDetail } from "../../../shared/ipc";
 import { StepBar } from "@/rbp/blocks/app-shell-6";
+import { hasReadyNote } from "@/lib/topic-state";
 import type { PageContext, WorkspacePage } from "./types";
 import { TranscriptPage } from "./TranscriptPage";
 import { TopicsPage } from "./TopicsPage";
@@ -35,7 +36,7 @@ export function VideoWorkspace(props: {
   };
   return (
     <>
-      <StepBar page={page} onPage={props.onPage} />
+      <StepBar page={page} onPage={props.onPage} notesReady={hasReadyNote(detail.topics)} />
       {page === "transcript" ? (
         <TranscriptPage {...ctx} />
       ) : page === "topics" ? (

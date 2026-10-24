@@ -1,10 +1,18 @@
 import { basename } from "node:path";
-import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "./types";
+import type { Clip, Note, Topic, TopicId, Utterance, Video } from "./types";
 
 function hms(seconds: number): string {
   const s = Math.floor(Math.max(0, seconds));
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
+}
+
+/** 字幕页口径：不足一小时 `MM:SS`，达到一小时 `HH:MM:SS`。 */
+function clock(seconds: number): string {
+  const s = Math.floor(Math.max(0, seconds));
+  const p = (n: number) => String(n).padStart(2, "0");
+  if (s >= 3600) return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
+  return `${p(Math.floor(s / 60))}:${p(s % 60)}`;
 }
 
 /** 该主题的 `topic.md`；要点由调用方算好传入。 */
@@ -27,16 +35,7 @@ export function renderTopicMarkdown(
     if (lines[lines.length - 1] !== "") lines.push("");
     lines.push(`### [${hms(seg.start)} - ${hms(seg.end)}](${covering === undefined ? "" : basename(covering.path)})`);
     const inSeg = utterances.filter((u) => u.end > seg.start && u.start < seg.end).sort((a, b) => a.start - b.start);
-    let turn: { speakerId: SpeakerId; texts: string[] } | undefined;
-    for (const u of inSeg) {
-      if (turn !== undefined && turn.speakerId === u.speakerId) {
-        turn.texts.push(u.text);
-        continue;
-      }
-      if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
-      turn = { speakerId: u.speakerId, texts: [u.text] };
-    }
-    if (turn !== undefined) lines.push(`**${speakerNames.get(turn.speakerId) ?? turn.speakerId}**: ${turn.texts.join(" ")}`);
+    for (const u of inSeg) lines.push(`- [${clock(u.start)}] **${speakerNames.get(u.speakerId) ?? u.speakerId}**：${u.text}`);
   }
   return `${lines.join("\n")}\n`;
 }

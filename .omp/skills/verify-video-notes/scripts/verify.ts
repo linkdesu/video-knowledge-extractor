@@ -12,7 +12,7 @@
  *
  * Run with `--help` for the full command list.
  */
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
@@ -31,7 +31,11 @@ type RunState = {
   appLog: string;
   /** Set when the run drives a packaged .app instead of apps/desktop. */
   appPath?: string;
+  /** The repo commit the run was launched from; null when git could not be read. */
+  commit?: string | null;
   startedAt: string;
+  /** Set by `down` when it stops the instance. */
+  stoppedAt?: string;
   electron: string;
 };
 
@@ -69,9 +73,10 @@ const HELP = `usage: verify.ts <command>
       status                      library + active job + settings summary
       log [lines]                 tail the Electron log
 
-  down [--run ID]
-      Stop the Electron process this helper started (never kills by name).
-      Evidence under tmp/verify/<run>/ is kept.
+  down [--run ID] [--purge]
+      Stop the Electron process this helper started (never kills by name), record
+      stoppedAt in state.json, prune the renderer caches, keep the evidence.
+      --purge also deletes the whole run directory (the default keeps it).
 
   runs
       List runs and whether each process is still alive.
@@ -103,6 +108,17 @@ function stamp(): string {
   const p = (n: number, w = 2) => String(n).padStart(w, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
+function revParse(): string | null {
+  try {
+    const r = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: REPO });
+    if (r.exitCode !== 0) return null;
+    const out = r.stdout.toString().trim();
+    return out === "" ? null : out;
+  } catch {
+    return null;
+  }
+}
+
 
 function readState(runId?: string): RunState {
   let dir: string;
@@ -114,6 +130,7 @@ function readState(runId?: string): RunState {
   }
   const file = join(dir, "state.json");
   if (!existsSync(file)) fail(`no state.json in ${dir}`);
+  // Older state.json files lack commit / startedAt / stoppedAt; the optional type tolerates them.
   return JSON.parse(readFileSync(file, "utf8")) as RunState;
 }
 
@@ -427,6 +444,7 @@ async function up(args: string[]): Promise<void> {
     modelDir,
     appLog,
     ...(appPath !== undefined ? { appPath } : {}),
+    commit: revParse(),
     startedAt: new Date().toISOString(),
     electron,
   };
@@ -716,26 +734,59 @@ async function drive(args: string[]): Promise<void> {
 }
 
 async function down(args: string[]): Promise<void> {
+  const purge = hasFlag(args, "--purge");
   const state = readState(takeFlag(args, "--run"));
-  if (!alive(state.pid)) {
-    console.log(`pid ${state.pid} is already gone; evidence kept at ${state.runDir}`);
+  if (alive(state.pid)) {
+    const name = processName(state.pid);
+    // a packaged run's process is the bundle executable ("Video Notes"), not "Electron"
+    const expected = state.appPath === undefined ? "Electron" : basename(bundleExecutable(state.appPath));
+    if (!name.toLowerCase().includes(expected.toLowerCase())) {
+      fail(`refusing to kill pid ${state.pid}: process name is "${name}", not ${expected}`);
+    }
+    process.kill(state.pid, "SIGTERM");
+    const started = Date.now();
+    while (Date.now() - started < 8000 && alive(state.pid)) await sleep(100);
+    if (alive(state.pid)) {
+      process.kill(state.pid, "SIGKILL");
+      await sleep(300);
+    }
+    if (alive(state.pid)) fail(`pid ${state.pid} did not exit`);
+    console.log(`stopped pid ${state.pid}`);
+  } else {
+    console.log(`pid ${state.pid} is already gone`);
+  }
+  state.stoppedAt = new Date().toISOString();
+  writeFileSync(join(state.runDir, "state.json"), JSON.stringify(state, null, 2));
+
+  // Prune only the renderer's space-consuming runtime caches. Evidence and small
+  // operator artifacts (png, aria.txt, logs, trajectory.json, topic.md, …) are kept.
+  const prune = (rel: string) => {
+    const path = join(state.runDir, rel);
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true });
+      console.log(`pruned ${rel}`);
+    }
+  };
+  prune("home/.cache");
+  for (const rel of ["user-data/Cache", "user-data/Code Cache", "user-data/GPUCache", "user-data/DawnGraphiteCache", "user-data/DawnWebGPUCache", "user-data/ShaderCache", "user-data/GrShaderCache", "user-data/Partitions"]) {
+    prune(rel);
+  }
+  // Local Storage is pruned only when it holds no evidence.
+  const localStore = join(state.runDir, "user-data/Local Storage");
+  if (existsSync(localStore) && readdirSync(localStore).length === 0) {
+    rmSync(localStore, { recursive: true, force: true });
+    console.log(`pruned user-data/Local Storage`);
+  }
+
+  if (purge) {
+    rmSync(state.runDir, { recursive: true, force: true });
+    console.log(`purged ${state.runDir}; the evidence is gone`);
     return;
   }
-  const name = processName(state.pid);
-  // a packaged run's process is the bundle executable ("Video Notes"), not "Electron"
-  const expected = state.appPath === undefined ? "Electron" : basename(bundleExecutable(state.appPath));
-  if (!name.toLowerCase().includes(expected.toLowerCase())) {
-    fail(`refusing to kill pid ${state.pid}: process name is "${name}", not ${expected}`);
-  }
-  process.kill(state.pid, "SIGTERM");
-  const started = Date.now();
-  while (Date.now() - started < 8000 && alive(state.pid)) await sleep(100);
-  if (alive(state.pid)) {
-    process.kill(state.pid, "SIGKILL");
-    await sleep(300);
-  }
-  if (alive(state.pid)) fail(`pid ${state.pid} did not exit`);
-  console.log(`stopped pid ${state.pid}; evidence kept at ${state.runDir}`);
+  const kept = readdirSync(state.runDir);
+  const pngCount = kept.filter((n) => n.endsWith(".png")).length;
+  const ariaCount = kept.filter((n) => n.endsWith(".aria.txt")).length;
+  console.log(`kept ${pngCount} png, ${ariaCount} aria.txt, ${state.runDir}`);
 }
 
 function runs(): void {

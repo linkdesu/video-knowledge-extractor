@@ -1,156 +1,49 @@
-import { useEffect, useRef } from "react";
-import type { DownloadSnapshot, ModelLogEntry, ModelsStatus } from "../../../shared/ipc";
-import { fmtBytes } from "../lib/format";
+import type { ModelsCheck } from "../../../shared/ipc";
 import { Button } from "../rbp/blocks/settings-form-3";
-const STATE_LABEL: Record<"ready" | "unverified" | "missing" | "invalid", string> = {
-  ready: "就绪",
-  unverified: "未校验",
-  missing: "缺失",
-  invalid: "校验失败",
-};
-
-const STATE_TONE: Record<"ready" | "unverified" | "missing" | "invalid", "ok" | "warn" | "err"> = {
-  ready: "ok",
-  unverified: "warn",
-  missing: "warn",
-  invalid: "err",
-};
-
-const STATE_TEXT: Record<
-  "idle" | "downloading" | "verifying" | "installing" | "done" | "failed" | "cancelled",
-  string
-> = {
-  idle: "未开始",
-  downloading: "下载中",
-  verifying: "校验中",
-  installing: "安装中",
-  done: "完成",
-  failed: "失败",
-  cancelled: "已取消",
-};
 
 type PanelProps = {
-  status: ModelsStatus;
-  snapshot: DownloadSnapshot | null;
-  /** 本次运行是否点击过「下载模型」；由父级在 ready / failed / cancelled 时清除。 */
-  started: boolean;
-  log: ModelLogEntry[];
-};
-
-type BusyProps = {
-  onDownload: () => void;
-  onCancel: () => void;
-  onImport: () => void;
+  modelDir: string;
+  check: ModelsCheck;
+  checking: boolean;
   onVerify: () => void;
-  busy: boolean;
-  verifying: boolean;
 };
 
-export function ModelPanel({
-  status,
-  snapshot,
-  started,
-  log,
-  onDownload,
-  onCancel,
-  onImport,
-  onVerify,
-  busy,
-  verifying,
-}: PanelProps & BusyProps) {
-  const snap = snapshot ?? status.download;
-  const active =
-    snap.state === "downloading" || snap.state === "verifying" || snap.state === "installing";
-  // 进度条从点击下载一直保留到模型真正就绪（含校验/解压阶段）；失败、取消后由父级清 started 收起。
-  const showProgress = started && !status.ready;
-  const logRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = logRef.current;
-    if (el !== null) el.scrollTop = el.scrollHeight;
-  }, [log]);
+/** r37：本地模型目录展示 + 存在性检测（替代在线下载）。 */
+export function ModelPanel({ modelDir, check, checking, onVerify }: PanelProps) {
   return (
     <div data-testid="model-panel">
       <div className="vn-models">
-        {status.bundles.map((b) => (
+        <div className="vn-row vn-between">
+          <span className="vn-meta" data-testid="model-dir-path">
+            {modelDir}
+          </span>
+          <Button size="sm" data-testid="model-open-dir" onClick={() => window.vnote.reveal(modelDir)}>
+            打开模型目录
+          </Button>
+        </div>
+        {check.models.map((m) => (
           <div
-            key={b.id}
-            className="vn-model"
-            data-testid={`model-bundle-${b.id}`}
-            data-state={b.state}
+            key={m.id}
+            className="vn-row vn-between"
+            style={{ marginTop: 8 }}
+            data-testid={`model-required-${m.id}`}
           >
-            <div className="vn-model-name">{b.title}</div>
-            <div className="vn-meta">
-              <span>{fmtBytes(b.files.reduce((s, f) => s + f.expectedBytes, 0))}</span>
-              <span className={`vn-tag ${STATE_TONE[b.state]}`}>{STATE_LABEL[b.state]}</span>
+            <div>
+              <div>{m.label}</div>
+              <div className="vn-meta">{m.relativePaths.join(" / ")}</div>
+              {m.missing.length > 0 ? (
+                <div className="vn-meta" style={{ color: "#fda4af" }}>
+                  缺失：{m.missing.join("、")}
+                </div>
+              ) : null}
             </div>
+            <span className={`vn-tag ${m.ready ? "ok" : "err"}`}>{m.ready ? "就绪" : "缺失"}</span>
           </div>
         ))}
       </div>
-      <div className="vn-row" style={{ flexWrap: "wrap", marginTop: 12 }}>
-        <Button
-          type="button"
-          data-testid="model-download"
-          disabled={busy || active}
-          onClick={onDownload}
-        >
-          下载模型
-        </Button>
-        <Button
-          type="button"
-          data-testid="model-cancel"
-          disabled={!active}
-          onClick={onCancel}
-        >
-          取消
-        </Button>
-        <Button
-          type="button"
-          data-testid="model-import"
-          disabled={busy}
-          onClick={onImport}
-        >
-          导入本地模型
-        </Button>
-        <Button
-          type="button"
-          data-testid="model-verify"
-          disabled={busy || verifying}
-          onClick={onVerify}
-        >
-          {verifying ? "校验中…" : "校验模型"}
-        </Button>
-      </div>
-      {showProgress ? (
-        <div className="vn-progress" data-testid="model-download-progress" aria-hidden="true">
-          {snap.state === "verifying" || snap.state === "installing" || snap.percent === null ? (
-            <i className="indeterminate" />
-          ) : (
-            <i
-              style={{ width: `${Math.max(0, Math.min(100, Math.round(snap.percent)))}%` }}
-            />
-          )}
-        </div>
-      ) : null}
-      {snap.message !== null ? (
-        <p className="vn-hint" data-testid="model-download-message">
-          {STATE_TEXT[snap.state]}
-          {snap.percent !== null ? ` ${Math.round(snap.percent)}%` : ""}
-          {snap.totalBytes > 0 ? ` · ${fmtBytes(snap.receivedBytes)}/${fmtBytes(snap.totalBytes)}` : ""}
-          {snap.message !== "" ? ` · ${snap.message}` : ""}
-        </p>
-      ) : null}
-      <div className="vn-model-log" data-testid="model-download-log" ref={logRef}>
-        {log.length === 0 ? (
-          <span className="vn-model-log-empty">暂无日志</span>
-        ) : (
-          log.map((line, i) => (
-            <div key={`${line.at}-${i}`} className={`vn-model-log-line ${line.level}`}>
-              <span className="vn-model-log-time">{line.at.slice(11, 19)}</span>
-              <span>{line.text}</span>
-            </div>
-          ))
-        )}
-      </div>
+      <Button type="button" data-testid="model-verify" disabled={checking} onClick={onVerify}>
+        {checking ? "检测中..." : "检测本地模型"}
+      </Button>
     </div>
   );
 }

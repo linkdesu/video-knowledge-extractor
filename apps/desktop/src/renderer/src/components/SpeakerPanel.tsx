@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import type { SpeakerInfo } from "../../../shared/ipc";
 import { showToast } from "@/lib/toast";
 import { errMessage } from "@/lib/format";
@@ -199,7 +200,7 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
           onUnmerge={onUnmerge}
         />
       ))}
-      {confirming ? (
+      {confirming ? createPortal(
         <div className="vn-mask" role="dialog" aria-modal="true" aria-label="合并说话人">
           <div className="vn-modal" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
             <h3 style={{ margin: 0 }}>合并说话人</h3>
@@ -237,7 +238,8 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
