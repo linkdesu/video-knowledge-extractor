@@ -15,6 +15,8 @@ export {
   tailLog,
 } from "./core/logger";
 export { buildDiagnostics, errorLines } from "./core/diagnostics";
+export { prerequisiteProblems, formatPrerequisiteError } from "./core/preflight";
+export type { PrerequisiteInput } from "./core/preflight";
 export type { DiagnosticsInput } from "./core/diagnostics";
 export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
 export {
@@ -156,3 +158,4 @@ export { COVER_FILE, coverPath, ensureCoverFrame } from "./core/cover";
 export { parseClipFileName } from "./core/clips";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
+export { projectTopicArtifacts } from "./core/topic-artifacts";
