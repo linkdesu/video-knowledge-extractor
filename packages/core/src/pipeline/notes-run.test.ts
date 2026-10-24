@@ -184,6 +184,88 @@ describe("runNotes", () => {
     expect(existsSync(join(out, "b", "topic.mp4"))).toBe(true);
     expect(readFileSync(join(out, "index.md"), "utf8")).toContain("[切片](./a/topic.mp4)");
   });
+
+  test("force: done 主题被重新生成（topic.mp4 与 topic.md 重写，状态 done，noteCount 1）", async () => {
+    const out = join(tmpdir(), "rn-force-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
+      };
+      d.topics = [
+        topicRecord({
+          id: "topicA",
+          title: "A",
+          segments: [{ start: 0, end: 30 }],
+          dirName: "a",
+          status: "done",
+          keyPoints: ["旧要点"],
+          clips: [{ file: "01-00-00-00-00-00-30.mp4", start: 0, end: 30, segmentIndexes: [0] }],
+        }),
+      ];
+    });
+    const dirA = join(out, "a");
+    mkdirSync(dirA, { recursive: true });
+    writeFileSync(join(dirA, "topic.md"), "# A\n\n## 要点\n- 旧要点\n\n## 正文\n\n");
+    writeFileSync(join(dirA, "topic.mp4"), "oldclip");
+    const mdMtime = statSync(join(dirA, "topic.md")).mtimeMs;
+    const clipMtime = statSync(join(dirA, "topic.mp4")).mtimeMs;
+
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["新要点"] }) };
+    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client, force: true });
+    expect(r.noteCount).toBe(1);
+
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    const a = json.topics.find((t) => t.id === "topicA") as Record<string, unknown>;
+    expect(a.status).toBe("done");
+    expect(a.error).toBeNull();
+    expect(a.keyPoints).toEqual(["新要点"]);
+    const aClips = a.clips as Array<Record<string, unknown>>;
+    expect(aClips.length).toBe(1);
+    expect(aClips[0]?.file).toBe("topic.mp4");
+    // topic.md 与 topic.mp4 都被重写（mtime 前进）
+    expect(statSync(join(dirA, "topic.md")).mtimeMs).toBeGreaterThan(mdMtime);
+    expect(statSync(join(dirA, "topic.mp4")).mtimeMs).toBeGreaterThan(clipMtime);
+    expect(readFileSync(join(dirA, "topic.md"), "utf8")).toContain("新要点");
+  });
+
+  test("done 主题不带 force：跳过，noteCount 0，产物原样", async () => {
+    const out = join(tmpdir(), "rn-skip-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
+      };
+      d.topics = [
+        topicRecord({
+          id: "topicA",
+          title: "A",
+          segments: [{ start: 0, end: 30 }],
+          dirName: "a",
+          status: "done",
+          keyPoints: ["要点A"],
+          clips: [{ file: "01-00-00-00-00-00-30.mp4", start: 0, end: 30, segmentIndexes: [0] }],
+        }),
+      ];
+    });
+    const dirA = join(out, "a");
+    mkdirSync(dirA, { recursive: true });
+    writeFileSync(join(dirA, "topic.md"), "# A\n\n## 要点\n- 要点A\n\n## 正文\n\n");
+    writeFileSync(join(dirA, "topic.mp4"), "oldclip");
+    const mdMtime = statSync(join(dirA, "topic.md")).mtimeMs;
+    const clipMtime = statSync(join(dirA, "topic.mp4")).mtimeMs;
+
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["新要点"] }) };
+    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client });
+    expect(r.noteCount).toBe(0);
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    const a = json.topics.find((t) => t.id === "topicA") as Record<string, unknown>;
+    expect(a.status).toBe("done");
+    expect(a.keyPoints).toEqual(["要点A"]);
+    expect(statSync(join(dirA, "topic.md")).mtimeMs).toBe(mdMtime);
+    expect(statSync(join(dirA, "topic.mp4")).mtimeMs).toBe(clipMtime);
+    expect(readFileSync(join(dirA, "topic.md"), "utf8")).toBe("# A\n\n## 要点\n- 要点A\n\n## 正文\n\n");
+  });
 });
 
 describe("runTopics", () => {

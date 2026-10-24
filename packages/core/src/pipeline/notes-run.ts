@@ -174,6 +174,8 @@ export async function runNotes(input: {
   runToken?: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
+  /** true 时连 `done` 主题也重新生成（默认跳过 `done`）。 */
+  force?: boolean;
 }): Promise<{ noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
   const taskId = input.runToken ?? randomUUID();
   return runWithTask(taskId, async () => {
@@ -194,7 +196,7 @@ export async function runNotes(input: {
       const ids = (input.topicIds as TopicId[]).filter((id) => {
         const topic = data.topics.find((x) => x.id === id);
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-        return topic.status !== "done";
+        return input.force === true || topic.status !== "done";
       });
       if (ids.length === 0) {
         // 全部已 done：不生成、不碰任何产物，index 从完整文档重建（条目本来就在）

@@ -87,7 +87,8 @@ describe("readLibraryVideo", () => {
     const a = detail.data.topics.find((t) => t.dirName === "前段")!;
     expect(a.title).toBe("前段标题");
     expect(a.clips).toEqual([{ file: "01-00-00-07-00-00-20.mp4", start: 7, end: 20, segmentIndexes: [0], segmentOffsets: [] }]);
-    expect(a.status).toBe("done");
+    expect(a.status).toBe("needs-rerun");
+    expect(a.error).toBe("切片文件缺失");
     const b = detail.data.topics.find((t) => t.dirName === "后段")!;
     expect(b.title).toBe("后段");
     expect(b.clips).toEqual([]);
@@ -118,6 +119,8 @@ describe("readLibraryVideo", () => {
         error: null,
       },
     ];
+    mkdirSync(join(outputDir, "文档主题"), { recursive: true });
+    writeFileSync(join(outputDir, "文档主题", "topic.mp4"), "clip");
     writeVideoData(outputDir, data);
     const detail = readLibraryVideo(root, id)!;
     expect(detail.video.status).toBe("done");
@@ -211,6 +214,10 @@ describe("readLibraryVideo", () => {
         error: null,
       },
     ];
+    for (const dirName of ["t1", "t2"]) {
+      mkdirSync(join(outputDir, dirName), { recursive: true });
+      writeFileSync(join(outputDir, dirName, "topic.mp4"), "clip");
+    }
     writeVideoData(outputDir, base);
     expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("done");
   });
@@ -346,6 +353,12 @@ describe("卡片状态与运行中的关系", () => {
           },
         ]
       : [];
+    for (const t of data.topics) {
+      if (t.status === "done") {
+        mkdirSync(join(outputDir, t.dirName), { recursive: true });
+        writeFileSync(join(outputDir, t.dirName, "topic.mp4"), "clip");
+      }
+    }
     writeVideoData(outputDir, data);
     return outputDir;
   }
@@ -376,12 +389,71 @@ describe("卡片状态与运行中的关系", () => {
   });
 });
 
+describe("done 主题缺切片的读侧投影（r35）", () => {
+  function writeDoneVideo(root: string, id: string): string {
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    data.topics = [
+      {
+        id: "t1" as TopicId,
+        title: "t",
+        summary: "s",
+        segments: [{ start: 1, end: 2 }],
+        dirName: "t1",
+        status: "done",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    writeVideoData(outputDir, data);
+    return outputDir;
+  }
+
+  test("video.json 说 done 但没有 topic.mp4：卡片与主题都报 needs-rerun；补上非空切片后翻回 done", () => {
+    const { root, id } = fixture();
+    const outputDir = writeDoneVideo(root, id);
+    // 缺切片：卡片 needs-rerun（不再误报 done）
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("needs-rerun");
+    const detail = readLibraryVideo(root, id)!;
+    expect(detail.data.topics[0]!.status).toBe("needs-rerun");
+    expect(detail.data.topics[0]!.error).toBe("切片文件缺失");
+    expect(detail.video.status).toBe("needs-rerun");
+    // 落盘文档不被读侧改写：磁盘仍是 done
+    const raw = JSON.parse(readFileSync(join(outputDir, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    expect(raw.topics[0]!.status).toBe("done");
+    // 补上非空 topic.mp4：卡片与主题都翻回 done
+    mkdirSync(join(outputDir, "t1"), { recursive: true });
+    writeFileSync(join(outputDir, "t1", "topic.mp4"), "clip");
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("done");
+    expect(readLibraryVideo(root, id)!.data.topics[0]!.status).toBe("done");
+  });
+
+  test("0 字节 topic.mp4 不算存在：仍 needs-rerun", () => {
+    const { root, id } = fixture();
+    const outputDir = writeDoneVideo(root, id);
+    mkdirSync(join(outputDir, "t1"), { recursive: true });
+    writeFileSync(join(outputDir, "t1", "topic.mp4"), "");
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("needs-rerun");
+  });
+});
+
 describe("卡片状态：proposed / pending-confirm / partial", () => {
   function writeCard(root: string, id: string, topics: Array<Record<string, unknown>>): void {
     const outputDir = join(root, "视频一");
     const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
     data.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
     data.topics = topics as never;
+    for (const t of data.topics) {
+      if (t.status === "done") {
+        mkdirSync(join(outputDir, t.dirName), { recursive: true });
+        writeFileSync(join(outputDir, t.dirName, "topic.mp4"), "clip");
+      }
+    }
     writeVideoData(outputDir, data);
   }
   const topic = (id: string, status: string, selected = true): Record<string, unknown> => ({

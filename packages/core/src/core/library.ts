@@ -8,6 +8,7 @@ import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
 import { isVideoLocked } from "./lock";
 import { loadVideoData, projectRunState, readVideoData } from "./video-data";
+import { projectTopicArtifacts } from "./topic-artifacts";
 import type { VideoData } from "./video-data";
 
 /** 库卡片状态；规则见 ADR-0014 第 6 节。 */
@@ -79,7 +80,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
   try {
     const raw = readVideoData(outputDir);
     // 摘要与详情共用同一投影：列表不再直接用原始 generating/queued 算状态
-    if (raw !== undefined) data = projectRunState(raw, { locked: isVideoLocked(outputDir) });
+    if (raw !== undefined) data = projectTopicArtifacts(projectRunState(raw, { locked: isVideoLocked(outputDir) }), outputDir);
   } catch (err) {
     // 单个视频的 video.json 损坏不阻断列表：该卡按 failed、计数 0，标题/目录沿用 index.json
     if (propagateParseError) throw err;
@@ -190,7 +191,7 @@ export function readLibraryVideo(root: string, id: string): LibraryDetail | unde
   if (entry === undefined || typeof entry.outputDir !== "string") return undefined;
   if (!dirIsDirectChild(root, entry.outputDir)) return undefined;
   const outputDir = resolve(root, entry.outputDir);
-  const data = loadVideoData(outputDir, { id: entry.id as VideoId, title: entry.title, sourcePath: entry.sourcePath });
+  const data = projectTopicArtifacts(loadVideoData(outputDir, { id: entry.id as VideoId, title: entry.title, sourcePath: entry.sourcePath }), outputDir);
   let corrections: CorrectionFileEntry[] = [];
   const raw = readJsonFileShallow(resolve(outputDir, "corrections.json"));
   if (Array.isArray(raw)) {
