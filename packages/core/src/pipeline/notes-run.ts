@@ -213,6 +213,11 @@ export async function runNotes(input: {
       const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir), input.endpoint, cacheDir, client, input.onProgress);
       timings.notes = t();
       timings.total = t();
+      // 重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）
+      const docAfter = readVideoData(input.outputDir);
+      if (docAfter !== undefined && docAfter.speakerChangedAt !== null) {
+        writeVideoData(input.outputDir, { ...docAfter, speakerChangedAt: null });
+      }
       writeIndexFromDoc(input.outputDir);
       logger().info("app", "笔记生成完成", { noteCount: r.noteCount, topicCount: data.topics.length, timings });
       return { noteCount: r.noteCount, cacheHits: r.cacheHits, timings };
@@ -297,6 +302,11 @@ export async function runTopics(input: {
       const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, input.onProgress);
       timings.notes = t();
       timings.total = t();
+      // 全部主题重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）
+      const docAfter = readVideoData(input.outputDir);
+      if (docAfter !== undefined && docAfter.speakerChangedAt !== null) {
+        writeVideoData(input.outputDir, { ...docAfter, speakerChangedAt: null });
+      }
       writeIndexFromDoc(input.outputDir);
       logger().info("app", "主题重跑完成", { noteCount: r.noteCount, topicCount: topics.length, timings });
       return { topicCount: topics.length, noteCount: r.noteCount, cacheHits: r.cacheHits, timings };

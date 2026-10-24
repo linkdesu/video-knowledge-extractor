@@ -178,11 +178,14 @@ export function App() {
   }, [job]);
 
   const startNotes = useCallback(
-    (topicIds: string[]) => {
+    (topicIds: string[], options?: { force?: boolean }) => {
       if (detail === null) return;
-      window.vnote
-        .startNotes(detail.video.id, topicIds)
-        .catch((err) => showToast(`生成笔记失败：${errMessage(err)}`));
+      return window.vnote
+        .startNotes(detail.video.id, topicIds, options)
+        .catch((err) => {
+          showToast(`生成笔记失败：${errMessage(err)}`);
+          throw err;
+        });
     },
     [detail],
   );

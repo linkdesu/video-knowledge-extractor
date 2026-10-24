@@ -31,6 +31,8 @@ export type JobRequest = {
   asr: AsrConfig;
   config: { notesRoot: string; cacheRoot: string; modelDir: string };
   topicIds?: string[];
+  /** 连 `done` 主题也重新生成（notes 任务；缺省跳过 `done`）。 */
+  force?: boolean;
 };
 
 type JobRecord = {

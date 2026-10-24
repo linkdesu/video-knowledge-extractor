@@ -98,6 +98,7 @@ import {
   type ModelDownloadEvent,
   type ModelLogEntry,
   type ModelsStatus,
+  type NotesStartOptions,
   type SettingsPatch,
   type SettingsStatus,
   type TestAsrResult,
@@ -602,6 +603,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     cacheRoot: job.config.cacheRoot,
     modelDir: job.config.modelDir,
     topicIds: job.topicIds ?? [],
+    force: job.force === true,
     runToken: job.runToken,
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
@@ -812,7 +814,7 @@ async function ensurePipelineReady(): Promise<void> {
 }
 
 /** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结；ASR 未配齐直接抛错，不回退本地（ADR-0016 §6）。 */
-async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[]): Promise<JobRequest> {
+async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[], force?: boolean): Promise<JobRequest> {
   const asrConfig = asrRuntime.config;
   if (asrConfig === undefined) throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   return {
@@ -825,6 +827,7 @@ async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: strin
     asr: asrConfig,
     config: { notesRoot: settings.notesRoot, cacheRoot: settings.cacheRoot, modelDir: settings.modelDir },
     ...(topicIds !== undefined ? { topicIds } : {}),
+    ...(force === true ? { force } : {}),
   };
 }
 
@@ -870,12 +873,12 @@ function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
   });
 }
 
-function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
+function startNotes(videoId: string, topicIds: string[], options?: NotesStartOptions): Promise<{ jobId: string }> {
   return withStartLog("notes", async () => {
     await ensurePipelineReady();
     const entry = resolveVideo(videoId);
     if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds, options?.force === true)) };
   });
 }
 
@@ -1640,7 +1643,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.pickVideo, guard(() => pickVideo()));
   ipcMain.handle(IPC.pickSource, guard((_e, videoId: string) => pickSource(videoId)));
   ipcMain.handle(IPC.startExtract, guard((_e, target: ExtractTarget) => startExtract(target)));
-  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[]) => startNotes(videoId, topicIds)));
+  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[], options?: NotesStartOptions) => startNotes(videoId, topicIds, options)));
   ipcMain.handle(IPC.rebuildTopics, guard((_e, videoId: string) => rebuildTopics(videoId)));
   ipcMain.handle(IPC.cancelExtract, guard((_e, jobId: string) => queue.cancel(jobId)));
   ipcMain.handle(IPC.activeJob, guard(() => queue.active() ?? null));

@@ -266,6 +266,33 @@ describe("runNotes", () => {
     expect(statSync(join(dirA, "topic.mp4")).mtimeMs).toBe(clipMtime);
     expect(readFileSync(join(dirA, "topic.md"), "utf8")).toBe("# A\n\n## 要点\n- 要点A\n\n## 正文\n\n");
   });
+
+  test("成功生成后清 speakerChangedAt（force 重生成 done 主题）", async () => {
+    const out = join(tmpdir(), "rn-speaker-" + Date.now());
+    makeVideo(out, (d) => {
+      d.speakerChangedAt = "2026-10-01T00:00:00.000Z";
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
+      };
+      d.topics = [
+        topicRecord({
+          id: "topicA",
+          title: "A",
+          segments: [{ start: 0, end: 30 }],
+          dirName: "a",
+          status: "done",
+          keyPoints: ["旧要点"],
+          clips: [{ file: "01-00-00-00-00-00-30.mp4", start: 0, end: 30, segmentIndexes: [0] }],
+        }),
+      ];
+    });
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["新要点"] }) };
+    const r = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client, force: true });
+    expect(r.noteCount).toBe(1);
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { speakerChangedAt: string | null };
+    expect(json.speakerChangedAt).toBeNull();
+  });
 });
 
 describe("runTopics", () => {

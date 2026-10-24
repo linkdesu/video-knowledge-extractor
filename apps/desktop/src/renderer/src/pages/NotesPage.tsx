@@ -21,6 +21,7 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
     () => topics.find((t) => t.status !== "queued")?.id ?? topics[0]?.id ?? null,
   );
   const [now, setNow] = useState(() => Date.now());
+  const [rerunPending, setRerunPending] = useState(false);
 
   useEffect(() => {
     setNow(Date.now());
@@ -33,13 +34,20 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
 
   const selected = topics.find((t) => t.id === selectedId) ?? null;
   const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
+  // 本视频的 notes 任务在途（queued/running）或当前主题在排/生成中时禁用重生成按钮。
+  const jobActiveForVideo =
+    job !== null && (job.state === "queued" || job.state === "running") && job.videoId === detail.video.id;
+  const topicBusy = selected !== null && (selected.status === "queued" || selected.status === "generating");
 
   const rerunOne = async () => {
     if (selected === null) return;
+    setRerunPending(true);
     try {
-      await onStartNotes([selected.id]);
+      await onStartNotes([selected.id], { force: true });
     } catch {
-      showToast("重新生成失败");
+      // App 层已弹「生成笔记失败」toast，这里不重复弹
+    } finally {
+      setRerunPending(false);
     }
   };
 
@@ -225,8 +233,13 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
               </div>
 
               <div className="flex gap-2">
-                <button type="button" onClick={() => void rerunOne()} className={`${BTN} ${BTN_SM}`}>
-                  单独重新生成
+                <button
+                  type="button"
+                  onClick={() => void rerunOne()}
+                  disabled={rerunPending || jobActiveForVideo || topicBusy}
+                  className={`${BTN} ${BTN_SM}`}
+                >
+                  {rerunPending ? "生成中…" : "单独重新生成"}
                 </button>
               </div>
             </>

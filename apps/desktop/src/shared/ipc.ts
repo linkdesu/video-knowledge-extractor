@@ -322,6 +322,9 @@ export type JobSnapshot =
 /** `library:covers` 事件 payload：本轮后台封面补齐成功补齐的 videoId 列表。 */
 export type LibraryCovers = string[];
 
+/** 笔记生成选项：force 连 `done` 主题也重新生成（缺省跳过 `done`）。 */
+export type NotesStartOptions = { force?: boolean };
+
 export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
   getVideo(videoId: VideoId): Promise<VideoDetail>;
@@ -340,9 +343,10 @@ export type VnoteApi = {
   pickSource(videoId: VideoId): Promise<string | null>;
   /** 拖拽进来的 File 只有 renderer 侧引用，绝对路径要靠 preload 的 webUtils 取。 */
   pathForFile(file: File): string;
+
   startExtract(target: ExtractTarget): Promise<{ jobId: string }>;
   /** 只为这些主题生成笔记；必须非空，空数组会被拒绝。 */
-  startNotes(videoId: VideoId, topicIds: string[]): Promise<{ jobId: string }>;
+  startNotes(videoId: VideoId, topicIds: string[], options?: NotesStartOptions): Promise<{ jobId: string }>;
   /** 用已存字幕重新划主题并生成全部笔记。 */
   rebuildTopics(videoId: VideoId): Promise<{ jobId: string }>;
   cancelExtract(jobId: string): Promise<void>;
