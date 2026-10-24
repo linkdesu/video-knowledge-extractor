@@ -268,6 +268,46 @@ describe("runNotes", () => {
     expect(readFileSync(join(dirA, "topic.md"), "utf8")).toContain("新要点");
   });
 
+  test("force 重新生成不读磁盘缓存：每次都真实请求模型，cacheHits 为空，轨迹每条都有真实 rawText", async () => {
+    const out = join(tmpdir(), "rn-force-cache-" + Date.now());
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "A 内容" }],
+      };
+      d.topics = [topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "queued" })];
+    }, 60);
+    let n = 0;
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async () => {
+        n += 1;
+        return JSON.stringify({ keyPoints: [`要点${n}`] });
+      },
+    };
+    const first = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client });
+    expect(first.noteCount).toBe(1);
+    expect(first.cacheHits).toEqual([]);
+    expect(n).toBe(1);
+
+    // 同一主题同一输入：磁盘上已有该键的要点缓存，重新生成仍必须请求模型
+    const second = await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client, force: true });
+    expect(second.noteCount).toBe(1);
+    expect(second.cacheHits).toEqual([]);
+    expect(n).toBe(2);
+    expect(readFileSync(join(out, "a", "topic.md"), "utf8")).toContain("要点2");
+
+    const trajectory = JSON.parse(readFileSync(join(out, "a", "trajectory.json"), "utf8")) as {
+      history: Array<{ trigger: string; response: { status: string; rawText: string | null; parsedSummary: string[] | null } }>;
+    };
+    expect(trajectory.history.map((h) => h.trigger)).toEqual(["initial", "regenerate"]);
+    for (const [i, entry] of trajectory.history.entries()) {
+      expect(entry.response.status).toBe("succeeded");
+      expect(entry.response.rawText).toBe(JSON.stringify({ keyPoints: [`要点${i + 1}`] }));
+      expect(entry.response.parsedSummary).toEqual([`要点${i + 1}`]);
+    }
+  }, 30000);
+
   test("done 主题不带 force：产物齐全时队列为空，明确报错，产物原样", async () => {
     const out = join(tmpdir(), "rn-skip-" + Date.now());
     makeVideo(out, (d) => {

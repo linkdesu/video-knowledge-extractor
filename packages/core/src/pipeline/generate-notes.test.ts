@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cacheKey, cachePath, hashJson } from "../core/cache";
@@ -231,6 +231,7 @@ function noteCachePath(cacheDir: string, topic: Topic, utterances: Utterance[], 
     transcript: hashJson(utterances.map((u) => [u.start, u.end, u.speakerId, u.text])),
     prompt: hashJson(noteSystemPrompt(topic, utterances, input)),
     model: input.endpoint.model,
+    baseUrl: input.endpoint.baseUrl.trim().replace(/\/+$/, ""),
     corrections: hashJson(input.corrections),
   });
   return cachePath(cacheDir, key);
@@ -250,6 +251,94 @@ describe("generateNotes 要点缓存", () => {
     await expect(generateNotes({ ...input, client: client2 })).rejects.toThrow();
     expect(calls2.length).toBe(0);
   });
+
+  // 真实源文件：重新生成要拿到成功结果（cacheHits、轨迹、topic.md 覆写都只有在成功路径上才有）
+  function makeRealSourceFixture(prefix: string): { input: Parameters<typeof generateNotes>[0] } {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    const out = join(root, "out");
+    mkdirSync(out, { recursive: true });
+    const src = join(root, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=10", "-f", "lavfi", "-i", "sine=d=10", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+      { stdio: "pipe" },
+    );
+    const topic: Topic = { id: "t1" as never, title: "主题A", summary: "这是摘要", segments: [{ start: 1, end: 5 }] };
+    const input = {
+      video: { id: "v1" as never, title: "测试视频", sourcePath: src, durationSeconds: 10, outputDir: out },
+      transcript: { speakers: [], utterances: [{ start: 2, end: 3, speakerId: "s1" as SpeakerId, text: "内容" }] },
+      topics: [topic],
+      dirNames: new Map([[topic.id, "主题A"]]),
+      corrections,
+      endpoint,
+      cacheDir: join(out, ".cache"),
+    } as Parameters<typeof generateNotes>[0];
+    return { input };
+  }
+
+  test("trigger=regenerate 跳过磁盘缓存：再请求模型、覆写缓存、返回真实 rawText，cacheHits 为空", async () => {
+    const { input } = makeRealSourceFixture("vnote-regen-");
+    const firstCalls: number[] = [];
+    const first = await generateNotes({ ...input, client: makeClient(["要点一"], firstCalls) });
+    expect(firstCalls.length).toBe(1);
+    expect(first.cacheHits).toEqual([]);
+
+    // 同输入第二次：不带 trigger 仍走缓存，命中键被回报
+    const cachedCalls: number[] = [];
+    const cached = await generateNotes({ ...input, client: makeClient(["要点一"], cachedCalls) });
+    expect(cachedCalls.length).toBe(0);
+    expect(cached.cacheHits).toHaveLength(1);
+    expect(cached.notes[0]?.markdown).toContain("要点一");
+
+    // 重新生成：缓存里有同键也不读，真实请求模型并覆写
+    const regenCalls: number[] = [];
+    const regen = await generateNotes({ ...input, client: makeClient(["要点二"], regenCalls), trigger: "regenerate" });
+    expect(regenCalls.length).toBe(1);
+    expect(regen.cacheHits).toEqual([]);
+    expect(regen.notes[0]?.markdown).toContain("要点二");
+    expect(readFileSync(join(input.video.outputDir, "主题A", "topic.md"), "utf8")).toContain("要点二");
+    const trajectory = JSON.parse(readFileSync(join(input.video.outputDir, "主题A", "trajectory.json"), "utf8")) as {
+      history: Array<{ trigger: string; response: { status: string; rawText: string | null; parsedSummary: string[] | null } }>;
+    };
+    expect(trajectory.history.map((h) => h.trigger)).toEqual(["initial", "initial", "regenerate"]);
+    const last = trajectory.history[2];
+    expect(last?.response.status).toBe("succeeded");
+    expect(last?.response.rawText).toBe(JSON.stringify({ keyPoints: ["要点二"] }));
+    expect(last?.response.parsedSummary).toEqual(["要点二"]);
+    // 缓存被覆写成新要点，key 不变
+    const noteDir = join(input.video.outputDir, ".cache", "note");
+    const files = readdirSync(noteDir);
+    expect(files).toHaveLength(1);
+    expect(readFileSync(join(noteDir, files[0]!), "utf8").trim()).toBe('{"keyPoints":["要点二"]}');
+  }, 30000);
+
+  test("baseUrl 是缓存键输入：换端点不复用旧缓存，尾斜杠归一化后仍命中", async () => {
+    const { input } = makeRealSourceFixture("vnote-baseurl-");
+    const firstCalls: number[] = [];
+    await generateNotes({ ...input, client: makeClient(["要点一"], firstCalls) });
+    expect(firstCalls.length).toBe(1);
+
+    // 同一端点的尾斜杠写法：归一化后命中，不发请求
+    const slashCalls: number[] = [];
+    const slash = await generateNotes({
+      ...input,
+      endpoint: { ...input.endpoint, baseUrl: `${input.endpoint.baseUrl}/` },
+      client: makeClient(["要点一"], slashCalls),
+    });
+    expect(slashCalls.length).toBe(0);
+    expect(slash.cacheHits).toHaveLength(1);
+
+    // 换 baseUrl（模型名不变）：必须当作未命中，另建缓存
+    const otherCalls: number[] = [];
+    const other = await generateNotes({
+      ...input,
+      endpoint: { ...input.endpoint, baseUrl: "http://127.0.0.1:2/v1" },
+      client: makeClient(["要点二"], otherCalls),
+    });
+    expect(otherCalls.length).toBe(1);
+    expect(other.cacheHits).toEqual([]);
+    expect(readdirSync(join(input.video.outputDir, ".cache", "note"))).toHaveLength(2);
+  }, 30000);
 
   test("模型失败时向上抛出且不落缓存，重跑再次请求模型", async () => {
     const { input, topic, utterances, cacheDir } = makeGenerateNotesFixture();

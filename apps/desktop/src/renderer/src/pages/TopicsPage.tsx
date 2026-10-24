@@ -6,9 +6,9 @@ import type { PageContext } from "./types";
 import { Workspace } from "@/rbp/blocks/app-shell-6";
 import { Player, type PlayerHandle } from "@/components/Player";
 import { SubtitleList } from "@/components/SubtitleList";
-import { TopicList, generatingProgress } from "@/components/TopicList";
+import { TopicList } from "@/components/TopicList";
 import { errMessage, fmtClock } from "@/lib/format";
-import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
+import { topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 import { clipSeekTarget } from "@/lib/playback";
 import { showToast } from "@/lib/toast";
 
@@ -21,7 +21,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   const [mergeMode, setMergeMode] = useState(false);
   const [mergePicked, setMergePicked] = useState<ReadonlySet<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
-  const anyGenerating = topics.some((t) => t.status === "generating");
+  const anyGenerating = topics.some((t) => topicGenerating(t, job));
   useEffect(() => {
     if (!anyGenerating) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -308,7 +308,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  {topicStateLabel(selState, generatingProgress(selected, now))}
+                  {topicStateLabel(selState, topicElapsedSeconds(selected, job, now))}
                 </div>
               ) : null}
               <div style={{ padding: 14 }}>

@@ -331,6 +331,11 @@ textarea {
   border: 1px solid var(--vn-line);
   color: var(--vn-muted);
   background: rgba(255, 255, 255, 0.03);
+  /* r38：多行路径旁的状态胶囊绝不折行、不被挤压成竖条/椭圆 */
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+  line-height: 1.4;
 }
 .vn-tag.ok {
   color: #6ee7b7;
@@ -559,8 +564,9 @@ textarea {
 }
 .vn-model {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--vn-line);
   border-radius: 10px;
@@ -569,6 +575,26 @@ textarea {
 .vn-model-name {
   font-size: 13px;
   color: var(--vn-fg);
+}
+.vn-model-path {
+  margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--vn-dim);
+  word-break: break-all;
+}
+.vn-model-missing {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #fda4af;
+  word-break: break-all;
+}
+.vn-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .vn-elapsed {
   display: flex;

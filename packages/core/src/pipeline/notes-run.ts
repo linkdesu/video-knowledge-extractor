@@ -1,4 +1,4 @@
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { acquireVideoLock } from "../core/lock";
@@ -48,27 +48,6 @@ function keyPointsFromMarkdown(markdown: string): string[] {
     if (line === undefined) continue;
     if (line.startsWith("## ")) break;
     if (line.startsWith("- ")) out.push(line.slice(2));
-  }
-  return out;
-}
-
-/** 运行前已落盘、非空的要点缓存键;本批用到且此前存在 → 命中。 */
-function cacheKeysExisting(cacheDir: string): Set<string> {
-  const out = new Set<string>();
-  let files: string[];
-  try {
-    files = readdirSync(`${cacheDir}/note`);
-  } catch {
-    return out;
-  }
-  for (const name of files) {
-    if (!name.endsWith(".json")) continue;
-    const key = name.slice(0, -".json".length);
-    try {
-      if (statSync(`${cacheDir}/note/${name}`).size > 0) out.add(key);
-    } catch {
-      // 读取中途消失:不算已存在
-    }
   }
   return out;
 }
@@ -130,7 +109,6 @@ export async function generateAll(
   for (const [index, id] of topicIds.entries()) {
     const topic = data.topics.find((x) => x.id === id);
     if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
-    const before = cacheKeysExisting(cacheDir);
     const t0 = performance.now();
     data = setTopicProgress(outputDir, id, { status: "generating", startedAt: new Date().toISOString() });
     try {
@@ -166,7 +144,7 @@ export async function generateAll(
               })),
       });
       noteCount += 1;
-      for (const key of result.noteCacheKeys) if (before.has(key)) cacheHits.push(key);
+      cacheHits.push(...result.cacheHits);
       logger().info("llm", "主题生成完成", { topicId: id, title: topic.title, durationMs: Math.round(performance.now() - t0), status: "done" });
     } catch (err) {
       // 当前主题标 failed 并补写 elapsedSeconds（从 startedAt 结算）；排队主题由流水线级结算处理

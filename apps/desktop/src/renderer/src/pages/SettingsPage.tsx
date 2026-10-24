@@ -3,7 +3,12 @@ import type {
   AsrProvider,
   AsrSecretField,
   DirectoryKind,
+  DownloadSnapshot,
+  ModelBundleStatus,
+  ModelDownloadEvent,
+  ModelLogEntry,
   ModelsCheck,
+  ModelsStatus,
   SettingsStatus,
   VolcengineAuthMode,
   VolcengineMode,
@@ -81,6 +86,10 @@ export function SettingsPage() {
   const [clearing, setClearing] = useState(false);
   const [check, setCheck] = useState<ModelsCheck | null>(null);
   const [checking, setChecking] = useState(false);
+  const [models, setModels] = useState<ModelsStatus | null>(null);
+  const [snapshot, setSnapshot] = useState<DownloadSnapshot | null>(null);
+  const [downloadLog, setDownloadLog] = useState<ModelLogEntry[]>([]);
+  const [started, setStarted] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null);
   const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
@@ -166,21 +175,60 @@ export function SettingsPage() {
 
   useEffect(reload, [reload]);
 
-  // 进入设置页即重新检测本地模型（r37）
+  const reloadModels = useCallback(() => {
+    window.vnote
+      .models()
+      .then((m) => {
+        setModels(m);
+        setSnapshot(m.download);
+      })
+      .catch((err) => showToast(`读取模型状态失败：${errMessage(err)}`));
+  }, []);
+
+  // 进入设置页即重新检测本地模型（r37）：文件存在即就绪
   useEffect(() => {
     setChecking(true);
+    reloadModels();
     window.vnote
       .checkModels()
       .then(setCheck)
       .catch((err) => showToast(`检测失败：${errMessage(err)}`))
       .finally(() => setChecking(false));
-  }, []);
+  }, [reloadModels]);
+
+  // r38：下载进度与日志由主进程广播；文件落地后立刻重检，就绪状态不用重启应用
+  useEffect(() => {
+    const off = window.vnote.onModelDownload((event: ModelDownloadEvent) => {
+      setSnapshot(event.snapshot);
+      setDownloadLog(event.log);
+      if (event.snapshot.state === "failed" || event.snapshot.state === "cancelled") setStarted(false);
+      reloadModels();
+      window.vnote
+        .checkModels()
+        .then(setCheck)
+        .catch(() => undefined);
+    });
+    return off;
+  }, [reloadModels]);
+
+  useEffect(() => {
+    if (check?.ready === true) setStarted(false);
+  }, [check]);
 
   useEffect(() => {
     // 端点发现是后台异步的：落定后重拉一次，模型名提示才不会是「留空时自动发现」
     const off = window.vnote.onLlmChanged(reload);
     return off;
   }, [reload]);
+
+  const runModelAction = (action: () => Promise<ModelsStatus>) => {
+    action()
+      .then((m) => {
+        setModels(m);
+        setSnapshot(m.download);
+      })
+      .catch((err) => showToast(`模型操作失败：${errMessage(err)}`));
+  };
 
   const fetchLlmModels = () => {
     if (llmCard === null) return;
@@ -386,7 +434,6 @@ export function SettingsPage() {
   // r26：试用版只启用本地 ASR；隐藏提供方切换与云端面板（存盘值由 main 求值为 local）
   const cloudAsr = status.features.cloudAsr;
   const volcModeInfo = VOLC_MODE_INFO[asr.volcengine.mode];
-  const localMissing = asr.local.missing;
 
   const llmSaved: LlmSaved = { baseUrl: llm.baseUrl ?? "", model: llm.model, apiKey: llm.apiKey };
   const llmDirtyNow = llmCard !== null && llmDirty(llmSaved, llmCard.draft);
@@ -641,9 +688,6 @@ export function SettingsPage() {
               <SettingsField label="模型">
                 <span className="vn-read">{asr.local.modelId}</span>
               </SettingsField>
-              {localMissing.length > 0 ? (
-                <p className="vn-hint">缺失文件：{localMissing.join("、")}</p>
-              ) : null}
               {check === null ? (
                 <p className="vn-hint" data-testid="models-loading">
                   检测本地模型中…
@@ -652,12 +696,30 @@ export function SettingsPage() {
                 <ModelPanel
                   modelDir={status.modelDir}
                   check={check}
+                  snapshot={snapshot ?? models?.download ?? null}
+                  log={downloadLog}
+                  started={started}
                   checking={checking}
+                  onDownload={() => {
+                    setStarted(true);
+                    setDownloadLog([]);
+                    runModelAction(() => window.vnote.downloadModels());
+                  }}
+                  onDownloadBundle={(bundleId: ModelBundleStatus["id"]) => {
+                    setStarted(true);
+                    setDownloadLog([]);
+                    runModelAction(() => window.vnote.downloadModelBundle(bundleId));
+                  }}
+                  onCancel={() => runModelAction(() => window.vnote.cancelModelDownload())}
                   onVerify={() => {
                     setChecking(true);
                     window.vnote
                       .checkModels()
-                      .then(setCheck)
+                      .then((c) => {
+                        setCheck(c);
+                        // 就绪口径变了，设置页的 asr.local.ready 也要跟着刷新
+                        reload();
+                      })
                       .catch((err) => showToast(`检测失败：${errMessage(err)}`))
                       .finally(() => setChecking(false));
                   }}

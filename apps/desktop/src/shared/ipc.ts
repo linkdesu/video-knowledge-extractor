@@ -206,6 +206,11 @@ export type ModelsStatus = {
   download: DownloadSnapshot;
 };
 
+export type ModelLogEntry = { at: string; level: "info" | "warn" | "error"; text: string };
+
+/** 下载进度与日志共用一条广播：log 是截至此刻的缓冲。 */
+export type ModelDownloadEvent = { snapshot: DownloadSnapshot; log: ModelLogEntry[] };
+
 export type SettingsStatus = {
   notesRoot: string;
   cacheRoot: string;
@@ -360,6 +365,13 @@ export type VnoteApi = {
   listLlmModels(draft: LlmDraft): Promise<LlmModelListResult>;
   testAsr(): Promise<TestAsrResult>;
   models(): Promise<ModelsStatus>;
+  /** 下载全部缺失模型包；文件已存在的包跳过。 */
+  downloadModels(): Promise<ModelsStatus>;
+  /** 只下载一个模型包（设置页单个模型的「下载」）。 */
+  downloadModelBundle(bundleId: ModelBundleStatus["id"]): Promise<ModelsStatus>;
+  cancelModelDownload(): Promise<ModelsStatus>;
+  /** 下载快照与日志广播；返回取消订阅函数。 */
+  onModelDownload(listener: (event: ModelDownloadEvent) => void): () => void;
   checkModels(): Promise<ModelsCheck>;
   /** 端点发现落定（成功或失败）：重新拉一次 settings 即可拿到 discoveredModel。 */
   onLlmChanged(listener: () => void): () => void;
@@ -405,6 +417,10 @@ export const IPC = {
   testAsr: "settings:test-asr",
   checkModels: "models:check",
   models: "models:status",
+  downloadModels: "models:download",
+  downloadModelBundle: "models:download-bundle",
+  cancelModelDownload: "models:cancel",
+  modelEvent: "models:event",
   reveal: "shell:reveal",
   logsOpen: "logs:open",
   diagnosticsCopy: "diagnostics:copy",
