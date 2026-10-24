@@ -8,6 +8,8 @@ import type {
   LlmDraft,
   LlmUpdatePatch,
   LlmModelListResult,
+  ModelBundleStatus,
+  ModelDownloadEvent,
   ModelsCheck,
   ModelsStatus,
   SettingsPatch,
@@ -69,6 +71,17 @@ const api: VnoteApi = {
   testAsr: () => ipcRenderer.invoke(IPC.testAsr) as Promise<TestAsrResult>,
   checkModels: () => ipcRenderer.invoke(IPC.checkModels) as Promise<ModelsCheck>,
   models: () => ipcRenderer.invoke(IPC.models) as Promise<ModelsStatus>,
+  downloadModels: () => ipcRenderer.invoke(IPC.downloadModels) as Promise<ModelsStatus>,
+  downloadModelBundle: (bundleId: ModelBundleStatus["id"]) =>
+    ipcRenderer.invoke(IPC.downloadModelBundle, bundleId) as Promise<ModelsStatus>,
+  cancelModelDownload: () => ipcRenderer.invoke(IPC.cancelModelDownload) as Promise<ModelsStatus>,
+  onModelDownload: (listener: (event: ModelDownloadEvent) => void) => {
+    const listenerWrapper = (_event: Electron.IpcRendererEvent, event: ModelDownloadEvent): void => listener(event);
+    ipcRenderer.on(IPC.modelEvent, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.modelEvent, listenerWrapper);
+    };
+  },
   onLlmChanged: (listener: () => void) => {
     const listenerWrapper = (): void => listener();
     ipcRenderer.on(IPC.llmEvent, listenerWrapper);

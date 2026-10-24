@@ -31,7 +31,6 @@ import {
   fetchModelIds,
   loadDotenvFiles,
   migrateStorageLayout,
-  modelStatus,
   probeVideo,
   recoverInterruptedRun,
   recordVideoFailure,
@@ -75,6 +74,8 @@ import type {
   AppSettings,
   AsrSecrets,
   CorrectionFileEntry,
+  DownloadLogLine,
+  DownloadSnapshot,
   KeySource,
   LibraryDetail as CoreLibraryDetail,
   LibraryVideo as CoreLibraryVideo,
@@ -96,6 +97,9 @@ import {
   type LlmDraft,
   type LlmModelListResult,
   type LlmUpdatePatch,
+  type ModelBundleStatus,
+  type ModelDownloadEvent,
+  type ModelLogEntry,
   type ModelsStatus,
   type NotesStartOptions,
   type SettingsPatch,
@@ -105,6 +109,7 @@ import {
   type VideoDetail,
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
+import { createModelDownloader } from "./models-downloader";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
@@ -994,8 +999,56 @@ function llmStatus(): SettingsStatus["llm"] {
 }
 
 
+const modelsDownloader = createModelDownloader();
+const MODEL_LOG_LIMIT = 200;
+let downloadLog: ModelLogEntry[] = [];
+
+function appendModelLog(line: DownloadLogLine): void {
+  downloadLog.push({ at: new Date().toISOString(), level: line.level, text: line.text });
+  if (downloadLog.length > MODEL_LOG_LIMIT) downloadLog = downloadLog.slice(-MODEL_LOG_LIMIT);
+  broadcastModelEvent();
+}
+
+/** 快照与日志共用一条出口：payload 是 { snapshot, log }，log 是截至此刻的缓冲（有上限）。 */
+function broadcastModelEvent(snapshot?: DownloadSnapshot): void {
+  const event: ModelDownloadEvent = { snapshot: snapshot ?? modelsDownloader.snapshot(), log: downloadLog };
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.modelEvent, event);
+}
+
 function modelsStatusDto(): ModelsStatus {
-  return modelStatus(settings.modelDir);
+  return modelsDownloader.status(settings.modelDir);
+}
+
+/** 下载指定包（缺省全部缺失包）：一次只跑一个下载循环，已有任务时拒绝安装。 */
+async function downloadModelsNow(bundleIds?: readonly ModelBundleStatus["id"][]): Promise<ModelsStatus> {
+  if (queue.busy()) throw new Error("已有任务在运行，完成后再安装模型");
+  if (modelsDownloader.busy()) return modelsStatusDto();
+  downloadLog = [];
+  broadcastModelEvent();
+  modelsDownloader.start(settings.modelDir, {
+    ...(bundleIds === undefined ? {} : { bundleIds }),
+    onSnapshot: broadcastModelEvent,
+    onLog: appendModelLog,
+    busy: () => queue.busy(),
+  });
+  // 下载循环结束后复核（不阻塞 IPC 返回）：循环报 done 但文件仍不全时补一条带原因的 failed 快照；
+  // failed/cancelled 终态已由下载器发出，不覆盖
+  void modelsDownloader.done().then(() => {
+    if (modelsDownloader.snapshot().state !== "done") return;
+    const check = checkModels(settings.modelDir);
+    if (check.ready) return;
+    const missing = check.models.filter((m) => !m.ready).map((m) => m.label).join("、");
+    appendModelLog({ level: "error", text: `下载结束但模型未就绪${missing === "" ? "" : `（${missing}）`}` });
+    broadcastModelEvent({ state: "failed", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: `模型未就绪${missing === "" ? "" : `：${missing}`}` });
+  });
+  return modelsStatusDto();
+}
+
+function cancelModelDownloadNow(): ModelsStatus {
+  // 取消由下载器内部发 cancelled 快照；这里只补一行日志让界面日志面板有交代
+  appendModelLog({ level: "warn", text: "下载已取消" });
+  modelsDownloader.cancel();
+  return modelsStatusDto();
 }
 
 async function settingsStatus(): Promise<SettingsStatus> {
@@ -1361,9 +1414,6 @@ async function testAsr(): Promise<TestAsrResult> {
   }
 }
 
-function modelsStatusNow(): ModelsStatus {
-  return modelStatus(settings.modelDir);
-}
 // 所有 IPC handler 统一过脱敏出口：key 绝不进 renderer 的异常消息
 function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknown>): (...args: T) => Promise<unknown> {
   return async (...args: T) => {
@@ -1377,23 +1427,19 @@ function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknow
 
 let quitting = false;
 app.on("before-quit", (event) => {
-  // 退出前：取消运行中任务并等 worker 退出（ADR-0015 §4）
+  // 退出前：取消运行中任务与模型下载并等它们收尸（ADR-0015 §4）
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  if (queue.busy()) {
-    queue.cancelAll();
-    const forceQuit = setTimeout(() => {
-      for (const w of workers.values()) w.handle.kill();
-      app.quit();
-    }, 5000);
-    void queue.drain().then(() => {
-      clearTimeout(forceQuit);
-      app.quit();
-    });
-  } else {
+  if (queue.busy()) queue.cancelAll();
+  const forceQuit = setTimeout(() => {
+    for (const w of workers.values()) w.handle.kill();
     app.quit();
-  }
+  }, 5000);
+  void Promise.all([modelsDownloader.stop(), queue.drain()]).finally(() => {
+    clearTimeout(forceQuit);
+    app.quit();
+  });
 });
 app.on("window-all-closed", () => {
   app.quit();
@@ -1560,7 +1606,10 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.testLlm, guard((_e, draft: LlmDraft) => testLlm(draft)));
   ipcMain.handle(IPC.listLlmModels, guard((_e, draft: LlmDraft) => listLlmModels(draft)));
   ipcMain.handle(IPC.testAsr, guard(() => testAsr()));
-  ipcMain.handle(IPC.models, guard(() => modelsStatusNow()));
+  ipcMain.handle(IPC.models, guard(() => modelsStatusDto()));
+  ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));
+  ipcMain.handle(IPC.downloadModelBundle, guard((_e, bundleId: ModelBundleStatus["id"]) => downloadModelsNow([bundleId])));
+  ipcMain.handle(IPC.cancelModelDownload, guard(() => cancelModelDownloadNow()));
   ipcMain.handle(IPC.checkModels, guard(() => checkModels(modelDirOfCurrentSettings())));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
   ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
