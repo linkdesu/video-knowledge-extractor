@@ -58,6 +58,7 @@ import {
   verifyModels,
   videoIdFor,
   listLibrary,
+  logDirFor,
   saveSettings,
   acquireModelLock,
   VOLCENGINE_STANDARD_RESOURCE_ID,
@@ -138,9 +139,6 @@ if ((process.env.VNOTE_HOME === undefined || process.env.VNOTE_HOME === "") && (
   process.env.VNOTE_DATA_ROOT = defaultDataRoot(app.getPath("documents"));
 }
 
-// 结构化日志（r34）：主进程与 worker 共用 userData/logs；console 只在 dev 开
-const LOG_DIR = join(app.getPath("userData"), "logs");
-configureLogging({ dir: LOG_DIR, level: "info", console: !app.isPackaged });
 const APP_SCHEME = "vnote-app";
 const RENDERER_ROOT = join(__dirname, "../renderer");
 
@@ -190,6 +188,12 @@ function effectiveSettings(): AppSettings {
   return resolveSettings(applyLlmSeed(readSettingsFile(SETTINGS_PATH()), devSeed), process.env).settings;
 }
 let settings: AppSettings = resolved.settings;
+// 结构化日志（r34/r35）：日志跟随 notes 根目录，落在 <notesRoot>/.logs；console 只在 dev 开。
+// 设置变更（notesRoot 切换）时由 recomputeRuntimes 重新配置到新目录。
+function configureAppLogging(): void {
+  configureLogging({ dir: logDirFor(settings.notesRoot), level: "info", console: !app.isPackaged });
+}
+configureAppLogging();
 const locked = resolved.locked;
 let settingsFileError: string | null = settingsRead.error;
 // 存储布局迁移（r28）：旧模型目录 rename 到统一根；失败继续用旧目录，只 warn 一次不弹 UI。
@@ -403,6 +407,7 @@ function recomputeRuntimes(): void {
       error: asr.value === undefined ? (asr.missing.length > 0 ? `ASR 未配齐：${asr.missing.join("、")}` : null) : null,
     };
     startDiscovery();
+    configureAppLogging();
   } catch {
     // 重算失败（设置形状异常等）：保持旧值，界面走既有状态
   }
@@ -599,7 +604,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
     asr: job.asr,
-    logDir: LOG_DIR,
+    logDir: logDirFor(settings.notesRoot),
   });
   return state.handle;
 }
@@ -896,10 +901,11 @@ function reveal(outputDir: string): void {
   shell.showItemInFolder(dir);
 }
 
-// 打开日志文件夹（r34）：目录不存在先建，保证首启/无日志时也能打开
+// 打开日志文件夹（r34/r35）：目录不存在先建，保证首启/无日志时也能打开
 async function openLogs(): Promise<void> {
-  mkdirSync(LOG_DIR, { recursive: true });
-  const err = await shell.openPath(LOG_DIR);
+  const dir = logDirFor(settings.notesRoot);
+  mkdirSync(dir, { recursive: true });
+  const err = await shell.openPath(dir);
   if (err !== "") throw new Error(`打开日志文件夹失败：${err}`);
 }
 
@@ -914,7 +920,7 @@ function copyDiagnostics(): { chars: number } {
   const taskId = lastJobLog?.taskId ?? null;
   const label =
     lastJobLog !== null ? `${lastJobLog.kind} ${lastJobLog.videoId}（${lastJobLog.state}）` : null;
-  const text = buildDiagnostics({ logDir: LOG_DIR, environment: envLines, taskId, taskLabel: label });
+  const text = buildDiagnostics({ logDir: logDirFor(settings.notesRoot), environment: envLines, taskId, taskLabel: label });
   clipboard.writeText(text);
   return { chars: text.length };
 }
@@ -956,7 +962,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     notesRoot: settings.notesRoot,
     cacheRoot: settings.cacheRoot,
     modelDir: settings.modelDir,
-    logDir: LOG_DIR,
+    logDir: logDirFor(settings.notesRoot),
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),

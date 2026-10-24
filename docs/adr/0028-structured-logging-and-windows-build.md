@@ -9,7 +9,7 @@ Windows x64 是桌面端第一个新平台，macOS 之外没有可安装的产�
 ## 证据
 
 - `packages/core/src/core/logger.ts`：按天写 `vnote-YYYY-MM-DD.log`，保留今天加前 6 天（7 天），只清理匹配 `LOG_FILE_RE` 的文件；`readTaskLog` 跨文件按 task id 过滤。
-- `apps/desktop/src/main/index.ts`：`LOG_DIR = join(app.getPath("userData"), "logs")`，主进程与 extract worker 共用同一目录（worker 由 main 传 `logDir`）；启动日志（版本、commit、打包标志、userData）先于窗口显示。
+- `apps/desktop/src/main/index.ts`：日志目录由 `logDirFor(settings.notesRoot)` 求值为 `<notesRoot>/.logs`，主进程与 extract worker 共用同一目录（worker 由 main 传 `logDir`）；启动日志（版本、commit、打包标志、notesRoot）先于窗口显示。
 - `packages/core/src/core/environment.ts`：`collectEnvironment` 收集平台、CPU、GPU、内存与 tools/models/dirs 的路径检查，`formatEnvironment` 输出「exists / missing、大小、非 ASCII、含空格」行，启动时逐行写进 `env` 模块日志。
 - `packages/core/src/core/exec.ts`：外部进程（ffmpeg、ffprobe）启动前记整条 argv，结束记退出码与耗时；非零退出再记 stderr 最后 50 行。
 - `packages/core/src/llm/openai.ts` 与 `endpoint.ts`：LLM 日志只含 `baseUrl`、`model`、HTTP 状态码、耗时与 token 用量，prompt 与请求体不进日志；key 由 logger 登记后对所有字段自动脱敏。
@@ -19,7 +19,7 @@ Windows x64 是桌面端第一个新平台，macOS 之外没有可安装的产�
 
 ## 决定
 
-1. **日志文件放 `userData/logs`，按天一个文件，保留 7 天。** 主进程与 extract worker 写同一个目录；清理只动 `vnote-YYYY-MM-DD.log` 形态的文件，7 天前的自动删除。
+1. **日志文件放 `<notesRoot>/.logs`，按天一个文件，保留 7 天（r35 起）。** 目录跟随设置里的 notes 根目录，切换后日志写入、设置页展示、「打开日志文件夹」与「复制诊断信息」同步改用新目录。主进程与 extract worker 写同一个目录；清理只动 `vnote-YYYY-MM-DD.log` 形态的文件，7 天前的自动删除。
 2. **每条记录一行：ISO 8601 UTC 毫秒时间戳、级别、模块名、`task=<id>`、消息与 `key=value` 字段。** 模块是固定枚举（import、ffmpeg、asr、diarization、llm、fs、app、env）；未 configure 前所有日志丢弃，dev 模式额外输出到 console。
 3. **task id 就是 runToken。** runToken 在任务入队时生成（UUID），main 侧与 worker 侧的日志都挂在同一个 token 上，按 token 能取回一次完整运行的日志。
 4. **外部进程记 argv、退出码与 stderr 最后 50 行。** 启动前记整条 argv（argv 里的 URL 也走脱敏）；失败时记退出码、耗时与 stderr 尾部 50 行；抛给用户的错误消息仍只带末尾 12 行，完整信息留在日志里。
@@ -44,5 +44,5 @@ Windows x64 是桌面端第一个新平台，macOS 之外没有可安装的产�
 - 安装包未签名：Windows 可能弹 SmartScreen 拦截，用户要点「更多信息 → 仍要运行」（见 `docs/windows-install.md`）。正式对外分发前补签名链路。
 - **GPL ffmpeg 二进制随包分发**：分发的是 gyan.dev 的 GPL 构建（`ffmpeg.exe`、`ffprobe.exe`）。按 GPL 要求随包提供许可证与源码获取途径（源码指针指向上游构建页），mac 包仍走系统 ffmpeg 不受影响。
 - **Windows 首次启动需要联网**：模型约 1.1 GB 自动下载，进度在设置页可见；断网或下载失败时，模型状态停在「缺失」，用户可稍后重下或走「导入本地模型」。
-- **日志含文件路径，属于用户数据**：argv 与环境快照都会带视频与目录路径。日志只写在用户本机的 `userData/logs`，不上传、不外发；保留 7 天。提醒用户发回日志前检查路径里有没有敏感信息；key 已被脱敏，但路径不会。
+- **日志含文件路径，属于用户数据**：argv 与环境快照都会带视频与目录路径。日志只写在用户本机的 `<notesRoot>/.logs`，不上传、不外发；保留 7 天。提醒用户发回日志前检查路径里有没有敏感信息；key 已被脱敏，但路径不会。
 - **Windows CI 没有 e2e**：安装包在真实 Windows 上的行为目前靠构建、单测与本机验证；对外分发前补 Windows e2e 是明确缺口。

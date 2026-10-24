@@ -49,7 +49,7 @@ export {
   VOLCENGINE_STANDARD_MODEL_ID,
 } from "./core/config";
 export type { EnvRecord } from "./core/config";
-export { cacheDirFor } from "./core/paths";
+export { cacheDirFor, logDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
   SETTINGS_VERSION,

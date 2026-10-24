@@ -63,6 +63,11 @@ export function writeVideoIndex(index: VideoIndex, root: string = notesRoot()): 
   writeJsonAtomic(resolve(root, "index.json"), { videos: [...index.videos].sort((a, b) => a.id.localeCompare(b.id)) });
 }
 
+/** 日志目录：跟随 notes 根目录，落在 `<notesRoot>/.logs`（ADR-0028，r35）。 */
+export function logDirFor(root: string): string {
+  return resolve(root, ".logs");
+}
+
 export function openVideo(sourcePath: string, durationSeconds: number, root: string = notesRoot()): Video {
   const resolved = resolve(sourcePath);
   const id = videoIdFor(resolved);
