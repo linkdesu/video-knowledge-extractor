@@ -7,8 +7,8 @@ import { Workspace } from "@/rbp/blocks/app-shell-6";
 import { Player, type PlayerHandle } from "@/components/Player";
 import { SubtitleList } from "@/components/SubtitleList";
 import { TopicList, generatingProgress } from "@/components/TopicList";
-import { ProgressBar } from "@/rbp/blocks/monitoring-9";
-import { errMessage, fmtClock, fmtElapsed } from "@/lib/format";
+import { errMessage, fmtClock } from "@/lib/format";
+import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 import { clipSeekTarget } from "@/lib/playback";
 import { showToast } from "@/lib/toast";
 
@@ -39,7 +39,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   const pendingTopics = selectedTopics.filter((t) => t.status !== "done");
   const pendingCount = pendingTopics.length;
   const pickedCount = mergePicked.size;
-  const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
+  const selState = selected !== null ? topicUiState(selected, topicGenerating(selected, job)) : null;
 
   const resolvedSpeaker = useMemo(
     () => (id: string) => resolveSpeakerName(detail.transcript?.speakers ?? [], id),
@@ -299,22 +299,16 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                 <span>{selected.title} · 原始字幕（按段）</span>
                 <span className="vn-hint">可删除单条字幕/整段</span>
               </div>
-              {selProg !== null ? (
-                <div style={{ padding: "12px 14px 0" }}>
-                  <ProgressBar percent={selProg.percent ?? 0} />
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontSize: 10.5,
-                      color: "var(--vn-dim)",
-                      marginTop: 4,
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    <span>已用 {fmtElapsed(selProg.elapsedSeconds)}</span>
-                    <span>{Math.round(selProg.percent ?? 0)}%</span>
-                  </div>
+              {selState !== null && selected !== null && (selState.kind === "generating" || selState.kind === "queued") ? (
+                <div
+                  style={{
+                    padding: "12px 14px 0",
+                    fontSize: 10.5,
+                    color: "var(--vn-dim)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {topicStateLabel(selState, generatingProgress(selected, now))}
                 </div>
               ) : null}
               <div style={{ padding: 14 }}>

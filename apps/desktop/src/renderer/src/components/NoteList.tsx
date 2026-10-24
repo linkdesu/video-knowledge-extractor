@@ -1,8 +1,7 @@
 import type { JobSnapshot, TopicInfo } from "../../../shared/ipc";
-import { ProgressBar } from "@/rbp/blocks/monitoring-9";
-import { fmtElapsed } from "@/lib/format";
+import { topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 
-export const TOPIC_STATUS_LABEL: Record<TopicInfo["status"], string> = {
+const TOPIC_STATUS_LABEL: Record<TopicInfo["status"], string> = {
   done: "完成",
   generating: "生成中",
   queued: "排队",
@@ -20,37 +19,30 @@ const STATUS_TONE: Record<TopicInfo["status"], string> = {
   failed: "text-[#fda4af]",
 };
 
-/** 生成中主题的时间线：实时任务快照优先，否则回退主题的 startedAt / elapsedSeconds。 */
-export function generatingProgress(
-  topic: TopicInfo,
-  job: JobSnapshot | null,
-  now: number,
-): { percent: number | null; elapsedSeconds: number } | null {
-  if (topic.status !== "generating") return null;
-  const liveJob =
-    job !== null && job.state === "running" && job.topicId === topic.id ? job : null;
-  const startedIso = liveJob?.startedAt ?? topic.startedAt;
-  const elapsedSeconds =
-    startedIso === null
-      ? (topic.elapsedSeconds ?? 0)
-      : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
-  const percent = liveJob?.topicPercent ?? null;
-  return { percent, elapsedSeconds };
+/** 已用时长：主题的 startedAt 起算，缺失时回退 elapsedSeconds。 */
+function elapsedSeconds(topic: TopicInfo, now: number): number {
+  const startedIso = topic.startedAt;
+  return startedIso === null
+    ? (topic.elapsedSeconds ?? 0)
+    : Math.max(0, Math.floor((now - new Date(startedIso).getTime()) / 1000));
 }
 
 type NoteListProps = {
   topics: TopicInfo[];
   selectedId: string | null;
   onSelect: (topicId: string) => void;
+  onRegenerate: (topicId: string) => void;
   job: JobSnapshot | null;
   now: number;
 };
 
-export function NoteList({ topics, selectedId, onSelect, job, now }: NoteListProps) {
+export function NoteList({ topics, selectedId, onSelect, onRegenerate, job, now }: NoteListProps) {
   return (
     <div className="flex max-h-full flex-col gap-2 overflow-y-auto p-2">
       {topics.map((t) => {
-        const prog = generatingProgress(t, job, now);
+        const state = topicUiState(t, topicGenerating(t, job));
+        // 生成中/排队中：状态行用实时文案（磁盘 status 可能仍是上一轮的 done，不并列展示以免自相矛盾）。
+        const liveState = state.kind === "generating" || state.kind === "queued";
         return (
           <div
             key={t.id}
@@ -63,21 +55,21 @@ export function NoteList({ topics, selectedId, onSelect, job, now }: NoteListPro
           >
             <h4 className="text-[14px] font-[450]">{t.title}</h4>
             <span className={`mt-1.5 inline-block text-[12px] tabular-nums ${STATUS_TONE[t.status]}`}>
-              {TOPIC_STATUS_LABEL[t.status]}
+              {liveState ? topicStateLabel(state, elapsedSeconds(t, now)) : TOPIC_STATUS_LABEL[t.status]}
             </span>
-            {prog !== null ? (
-              <div className="mt-1.5">
-                <ProgressBar percent={prog.percent ?? 0} />
-                <div className="mt-1 flex justify-between text-[10px] tabular-nums text-neutral-900/66 dark:text-neutral-100/66">
-                  <span>已用 {fmtElapsed(prog.elapsedSeconds)}</span>
-                  {prog.percent !== null ? <span>{Math.round(prog.percent)}%</span> : null}
-                </div>
-              </div>
-            ) : null}
             {t.status === "failed" && t.error !== null ? (
               <div className="mt-1 text-[11px] text-[#fda4af]">{t.error}</div>
             ) : null}
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                data-testid={`topic-regenerate-${t.id}`}
+                onClick={() => onRegenerate(t.id)}
+                disabled={state.kind === "generating"}
+                className="h-7 cursor-pointer whitespace-nowrap rounded-[6px] border border-neutral-900/12 px-3 text-[14px] font-[450] transition-[color,background-color,border-color,box-shadow] duration-[120ms] hover:border-neutral-900/32 hover:bg-neutral-900/3 dark:border-neutral-100/14 dark:hover:border-neutral-100/32 dark:hover:bg-neutral-100/3 disabled:cursor-default disabled:opacity-50"
+              >
+                {state.kind === "generating" ? "生成中…" : "重新生成"}
+              </button>
               <button
                 type="button"
                 data-testid="note-open"

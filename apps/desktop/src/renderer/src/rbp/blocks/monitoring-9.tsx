@@ -1,12 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { JobKind, JobSnapshot, JobStep } from "../../../../shared/ipc";
-import { videoName } from "@/lib/format";
+import { fmtElapsed, videoName } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-// monitoring-9 改造：抽出共用 ProgressBar（原型渐变进度条），
-// 任务浮层 JobProgress 按 kind 显示标题。
+// monitoring-9 改造：任务浮层 JobProgress 按 kind 显示标题；
+// 任务浮层不再用进度条/百分比，用「n/m」与已用时长（r37）。
+// ProgressBar 保留导出：库页等其它调用方仍在使用。
 
 export function ProgressBar({ percent }: { percent: number }) {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
@@ -45,7 +47,42 @@ type CardContent = {
   actions: ReactNode;
 };
 
-function cardContent(job: JobSnapshot): CardContent {
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+function runningBody(job: Extract<JobSnapshot, { state: "running" }>, now: number): ReactNode {
+  const elapsed = Math.max(0, Math.floor((now - new Date(job.startedAt).getTime()) / 1000));
+  const isNotesGen = job.kind === "notes" && job.step === "generate-notes";
+  const detail = job.detail !== null ? `：${job.detail}` : "";
+  return (
+    <div className="vn-hint tabular-nums">
+      {isNotesGen ? (
+        <>
+          正在生成中（{job.done + 1}/{job.total}）
+          {detail}
+          {" · 已用 "}
+          {fmtElapsed(elapsed)}
+        </>
+      ) : (
+        <>
+          {STEP_LABELS[job.step]}
+          {detail}
+          {" · 已用 "}
+          {fmtElapsed(elapsed)}
+        </>
+      )}
+    </div>
+  );
+}
+
+function cardContent(job: JobSnapshot, now: number): CardContent {
   switch (job.state) {
     case "queued":
       return {
@@ -55,28 +92,14 @@ function cardContent(job: JobSnapshot): CardContent {
         body: <span className="vn-hint">{videoName(job.sourcePath)}</span>,
         actions: null,
       };
-    case "running": {
-      const percent = job.total > 0 ? (job.done / job.total) * 100 : 0;
+    case "running":
       return {
         stateLabel: STEP_LABELS[job.step],
         stateTone: "run",
         showSpinner: true,
-        body: (
-          <div className="flex flex-col gap-2">
-            <div className="flex min-w-0 items-baseline gap-2">
-              <span className="vn-hint tabular-nums">
-                {job.done}/{job.total}
-              </span>
-              {job.detail !== null ? (
-                <span className="vn-hint min-w-0 truncate">{job.detail}</span>
-              ) : null}
-            </div>
-            <ProgressBar percent={percent} />
-          </div>
-        ),
+        body: runningBody(job, now),
         actions: null,
       };
-    }
     case "succeeded":
       return {
         stateLabel: "完成",
@@ -124,7 +147,9 @@ export function JobProgress({
   onCancel: () => void;
   onClose: () => void;
 }) {
-  const content = cardContent(job);
+  // running 时本地时钟每秒走一格，用于「已用 MM:SS」；卸载时清理。
+  const now = useNow(job.state === "running");
+  const content = cardContent(job, now);
   return (
     <div
       data-testid="job-banner"

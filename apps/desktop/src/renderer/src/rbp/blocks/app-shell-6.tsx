@@ -40,9 +40,12 @@ const badgeBase: CSSProperties = {
 export function StepBar({
   page,
   onPage,
+  notesReady,
 }: {
   page: WorkspacePage;
   onPage: (page: WorkspacePage) => void;
+  /** 笔记步骤门控：至少一个主题 done 才可进入。 */
+  notesReady: boolean;
 }) {
   const cur = STEPS.findIndex((s) => s.page === page);
   return (
@@ -52,6 +55,7 @@ export function StepBar({
     >
       {STEPS.map((s, i) => {
         const state = i === cur ? "cur" : i < cur ? "done" : "todo";
+        const notesBlocked = s.page === "notes" && !notesReady;
         const style: CSSProperties =
           state === "cur"
             ? {
@@ -76,7 +80,10 @@ export function StepBar({
               type="button"
               style={style}
               aria-current={state === "cur" ? "page" : undefined}
-              onClick={() => onPage(s.page)}
+              disabled={notesBlocked}
+              title={notesBlocked ? "请先在「主题」步骤生成笔记" : undefined}
+              aria-label={notesBlocked ? `${s.label}（请先在「主题」步骤生成笔记）` : undefined}
+              onClick={notesBlocked ? undefined : () => onPage(s.page)}
             >
               <span style={badge}>{i + 1}</span>
               {s.label}
