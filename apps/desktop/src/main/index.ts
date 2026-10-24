@@ -118,6 +118,7 @@ import { createModelDownloader } from "./models-downloader";
 import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
+import { applyDetailCorrections } from "./detail-corrections";
 import { defaultDataRoot, killProcessTree, prependPath } from "./platform";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
@@ -720,6 +721,15 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
   const raw = d.data;
   const video = d.video;
   const mtimeIso = fileMtimeIso(join(video.outputDir, "corrections.json"));
+  // 字幕页/主题页/笔记页读的是这份投影：每次取详情都按合并词表实时替换（本视频优先），
+  // 全局或本视频术语改动后重新拉详情即可看到新文本；video.json 的原始识别文本不动。
+  let globalEntries: CorrectionFileEntry[] = [];
+  try {
+    globalEntries = readGlobalCorrections(settings.notesRoot);
+  } catch {
+    // 坏词表留给术语表页面报错，详情页按空表展示
+  }
+  const utterances = applyDetailCorrections(globalEntries, d.corrections, raw.transcript.utterances);
   return {
     video: toVideoDto(video),
     mediaUrl: video.sourcePath === undefined || video.sourcePath === "" ? null : encodeSourceUrl(video.id),
@@ -736,7 +746,7 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
               mergedInto: s.mergedInto ?? null,
               customName: s.customName ?? false,
             })),
-            utterances: raw.transcript.utterances.map((u, i) => ({
+            utterances: utterances.map((u, i) => ({
               index: i,
               start: u.start,
               end: u.end,

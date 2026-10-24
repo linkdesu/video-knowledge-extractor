@@ -161,4 +161,6 @@ export { COVER_FILE, coverPath, ensureCoverFrame } from "./core/cover";
 export { parseClipFileName } from "./core/clips";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
+export type { Utterance, Correction, CorrectionList } from "./core/types";
+export { applyCorrections, resolveCorrections } from "./core/corrections";
 export { projectTopicArtifacts } from "./core/topic-artifacts";
