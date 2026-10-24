@@ -1,4 +1,5 @@
 import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
+import { resolveCorrections } from "../core/corrections";
 import { logger } from "../core/logger";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { SegmentTopicsInput, SegmentTopicsResult } from "../core/steps";
@@ -37,6 +38,13 @@ const MERGE_SYSTEM_PROMPT =
   "给出的是各分块的候选主题，把跨块属于同一主题的候选合并成一个主题，保留多个时间段。" +
   "只使用给出的时间戳。" +
   '输出格式：{"topics":[{"title":string,"summary":string,"segments":[{"start":number,"end":number}]}]}';
+
+/** 术语表段：合并后（本视频优先于全局）的正确写法，随提示词一起进缓存键。 */
+function glossarySection(corrections: SegmentTopicsInput["corrections"]): string {
+  const entries = resolveCorrections(corrections ?? { global: [], video: [] });
+  if (entries.length === 0) return "";
+  return `术语按下表正确写法：\n${entries.map((e) => `- ${e.from} → ${e.to}`).join("\n")}\n`;
+}
 
 function renderChunkLines(input: SegmentTopicsInput, chunkIndex: number): string[] {
   const chunk = input.chunks[chunkIndex];
@@ -94,7 +102,9 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   const client = input.client ?? createLlmClient(input.endpoint);
   const maxEnd = input.transcript.utterances.reduce((m, u) => Math.max(m, u.end), 0);
   const candidates: RawTopic[] = [];
-  const chunkPromptHash = hashJson(CHUNK_SYSTEM_PROMPT);
+  const glossary = glossarySection(input.corrections);
+  const chunkPrompt = CHUNK_SYSTEM_PROMPT + glossary;
+  const chunkPromptHash = hashJson(chunkPrompt);
   const startedAt = performance.now();
 
   for (let i = 0; i < input.chunks.length; i++) {
@@ -112,7 +122,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       cacheHit = topics !== undefined;
       if (topics === undefined) {
         const text = await client.chat([
-          { role: "system", content: CHUNK_SYSTEM_PROMPT },
+          { role: "system", content: chunkPrompt },
           { role: "user", content: `该块范围 [${chunk.start}-${chunk.end}]：\n${lines.join("\n")}` },
         ], { json: true });
         topics = requireTopics(parseJsonLoose<RawResponse>(text), text, `第 ${i + 1} 块主题分析`);
@@ -128,10 +138,11 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     return { topics: [] };
   }
 
+  const mergePrompt = MERGE_SYSTEM_PROMPT + glossary;
   const mergeKey = cacheKey("topic-candidates", {
     kind: "merge",
     candidates: hashJson(candidates),
-    prompt: hashJson(MERGE_SYSTEM_PROMPT),
+    prompt: hashJson(mergePrompt),
     model: input.endpoint.model,
   });
   let merged = topicsOf(readCache<RawResponse>(input.cacheDir, mergeKey));
@@ -143,7 +154,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     }));
     const text = await client.chat(
       [
-        { role: "system", content: MERGE_SYSTEM_PROMPT },
+        { role: "system", content: mergePrompt },
         {
           role: "user",
           content: `视频共 ${input.chunks.length} 个分块。\n候选主题：\n${JSON.stringify(compact)}`,

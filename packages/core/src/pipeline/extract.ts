@@ -127,7 +127,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       data.topics = [];
       writeVideoData(video.outputDir, data);
 
-      const corrections: CorrectionList = correctionsFor(video.outputDir);
+      const corrections: CorrectionList = correctionsFor(video.outputDir, "extract");
       const transcript = {
         speakers: run.transcript.speakers,
         utterances: applyCorrections(corrections, run.transcript.utterances),
@@ -141,6 +141,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
           endpoint: input.endpoint,
           cacheDir,
           client,
+          corrections,
           ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
         }),
       );

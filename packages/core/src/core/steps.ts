@@ -59,6 +59,8 @@ export type SegmentTopicsInput = {
   endpoint: LlmEndpoint;
   /** 缓存根目录；每块候选与全局合并各存一份（ADR-0006）。 */
   cacheDir: string;
+  /** 合并后的术语表（全局 + 本视频），随提示词注入正确写法；不传视为空表。 */
+  corrections?: CorrectionList;
   /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
   client?: LlmClient;
   onProgress?: (p: Progress) => void;

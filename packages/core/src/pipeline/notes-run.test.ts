@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { LlmClient } from "../core/steps";
+import { configureLogging } from "../core/logger";
 import { runNotes, runTopics } from "./notes-run";
 
 const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
@@ -485,5 +486,63 @@ describe("中断结算（runToken 与锁内结算）", () => {
     expect(typeof withElapsed.elapsedSeconds).toBe("number");
     expect(json.runToken).toBeNull();
     expect(existsSync(join(out, ".vnote-run.lock"))).toBe(false);
+  });
+});
+
+describe("术语表合并（全局 + 单视频）", () => {
+  test("两份词表都进提示词与字幕替换，冲突项单视频优先，诊断日志记条数", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rn-glossary-"));
+    const out = join(root, "vid-1");
+    writeFileSync(
+      join(root, "corrections.json"),
+      JSON.stringify([
+        { wrong: "zephyr", right: "Zephyr" },
+        { wrong: "clash", right: "全局" },
+      ]),
+    );
+    mkdirSync(out, { recursive: true });
+    writeFileSync(
+      join(out, "corrections.json"),
+      JSON.stringify([
+        { wrong: "clash", right: "本视频" },
+        { wrong: "本地词", right: "本地正确" },
+      ]),
+    );
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "zephyr clash 本地词" }],
+      };
+      d.topics = [
+        topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "queued" }),
+      ];
+    });
+
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    const prompts: string[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages) => {
+        prompts.push(messages.map((m) => m.content).join("\n"));
+        return JSON.stringify({ keyPoints: ["要点"] });
+      },
+    };
+    await runNotes({ outputDir: out, topicIds: ["topicA"], endpoint, cacheRoot: join(out, ".cache"), client });
+
+    const prompt = prompts.join("\n");
+    // 字幕已按合并结果替换：全局 zephyr → Zephyr，冲突项 clash 用本视频的写法
+    expect(prompt).toContain("Zephyr 本视频 本地正确");
+    // 提示词里的术语表包含三份生效词条，冲突的全局词条被丢弃
+    expect(prompt).toContain("- zephyr → Zephyr");
+    expect(prompt).toContain("- clash → 本视频");
+    expect(prompt).toContain("- 本地词 → 本地正确");
+    expect(prompt).not.toContain("clash → 全局");
+
+    // 诊断日志：全局 2 条、单视频 2 条、合并生效 3 条
+    const log = lines.find((l) => l.includes("术语表合并") && l.includes("stage=\"notes\"")) ?? "";
+    expect(log).toContain("global=2");
+    expect(log).toContain("video=2");
+    expect(log).toContain("merged=3");
   });
 });
