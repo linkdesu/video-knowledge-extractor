@@ -4,7 +4,7 @@ import type { LlmUpdatePatch, SecretPatch } from "../shared/ipc";
 /**
  * `updateLlm` 的入参 → 一次凭据事务（ADR-0015 §3）：baseUrl/model 只带上行字段，
  * 密钥三态互斥——写新 key / 显式清空 / 不动（输入框留空）。
- * 清空不依赖密钥库可用，因为它只删本地已存值。
+ * 清空同样写加密 pending 事务，所以入口只在密钥存储可用时提供（renderer 侧把关）。
  */
 export function buildLlmUpdate(patch: LlmUpdatePatch): { settingsPatch: CoreSettingsPatch; secretPatch: SecretPatch } {
   const apiKey = patch.apiKey?.trim();

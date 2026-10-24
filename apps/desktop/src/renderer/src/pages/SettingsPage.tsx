@@ -283,6 +283,7 @@ export function SettingsPage() {
     setKeys((k) => ({ ...k, [id]: { ...k[id], ...patch } }));
 
   // 显式清空已存 key：留空再保存仍是「保持原 key」，这里才是唯一删除入口。
+  // 清空走的是加密凭据事务，密钥存储不可用时必然失败，因此与 ASR 行一致：此时不提供入口。
   const clearLlmKey = () => {
     if (llmCard === null || clearingLlmKey) return;
     setClearingLlmKey(true);
@@ -773,7 +774,7 @@ export function SettingsPage() {
                   placeholder="输入 API key"
                 />
               </div>
-              {llm.hasKey || (llmCard?.draft.apiKey.trim() ?? "") !== "" ? (
+              {llm.keyStorageAvailable && (llm.hasKey || (llmCard?.draft.apiKey.trim() ?? "") !== "") ? (
                 <Button
                   size="sm"
                   data-testid="settings-llm-key-clear"
