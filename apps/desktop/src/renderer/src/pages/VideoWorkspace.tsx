@@ -14,7 +14,7 @@ export function VideoWorkspace(props: {
   onPage: (page: WorkspacePage) => void;
   onBack: () => void;
   onRefresh: () => void | Promise<void>;
-  onStartNotes: (topicIds: string[]) => void | Promise<void>;
+  onStartNotes: (topicIds: string[], options?: { force?: boolean }) => void | Promise<unknown>;
   onRebuildTopics: () => void | Promise<void>;
 }) {
   const { detail, page, job } = props;
@@ -30,7 +30,7 @@ export function VideoWorkspace(props: {
     job,
     onRefresh: () => Promise.resolve(props.onRefresh()),
     onPage: props.onPage,
-    onStartNotes: (topicIds: string[]) => Promise.resolve(props.onStartNotes(topicIds)),
+    onStartNotes: (topicIds: string[], options?: { force?: boolean }) => Promise.resolve(props.onStartNotes(topicIds, options)).then(() => undefined),
     onRebuildTopics: () => Promise.resolve(props.onRebuildTopics()),
   };
   return (

@@ -37,7 +37,7 @@ export type ClipInfo = {
 
 export type SegmentInfo = { start: number; end: number };
 
-export type SpeakerInfo = { id: string; name: string; color: string };
+export type SpeakerInfo = { id: string; name: string; color: string; mergedInto: string | null; customName: boolean };
 
 export type UtteranceInfo = {
   /** 在原始转写里的下标；删除接口用它，界面只展示应用纠错后的文本。 */
@@ -87,6 +87,8 @@ export type LibraryVideo = {
   updatedAt: string | null;
   /** 封面 media url；`cover.jpg` 不存在或为空时为 null。 */
   coverUrl: string | null;
+  /** 上一次运行的失败短原因（r35）；非空时 status 恒为 failed，卡片显示原因 */
+  failure: string | null;
   status: VideoStatus;
 };
 
@@ -102,6 +104,8 @@ export type VideoDetail = {
   asrEngine: "local" | "openai" | "volcengine" | null;
   topics: TopicInfo[];
   corrections: CorrectionEntry[];
+  /** 主题生成后说话人发生过合并/撤销/改名（r35），界面据此提示可重新生成。 */
+  speakersChanged: boolean;
 };
 
 /** 密钥来源：环境变量/种子（仅 dev 模式的 ASR 字段与 LLM 种子）、系统密钥库、没有。 */
@@ -320,6 +324,9 @@ export type JobSnapshot =
 /** `library:covers` 事件 payload：本轮后台封面补齐成功补齐的 videoId 列表。 */
 export type LibraryCovers = string[];
 
+/** 笔记生成选项：force 连 `done` 主题也重新生成（缺省跳过 `done`）。 */
+export type NotesStartOptions = { force?: boolean };
+
 export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
   getVideo(videoId: VideoId): Promise<VideoDetail>;
@@ -327,6 +334,8 @@ export type VnoteApi = {
   deleteUtterance(videoId: VideoId, index: number): Promise<VideoDetail>;
   deleteTopicSegment(videoId: VideoId, topicId: string, segmentIndex: number): Promise<VideoDetail>;
   mergeTopics(videoId: VideoId, topicIds: string[]): Promise<VideoDetail>;
+  mergeSpeakers(videoId: VideoId, speakerIds: string[], targetName: string): Promise<VideoDetail>;
+  unmergeSpeaker(videoId: VideoId, speakerId: string): Promise<VideoDetail>;
   setTopicSelected(videoId: VideoId, topicId: string, selected: boolean): Promise<VideoDetail>;
   saveCorrections(videoId: VideoId, entries: CorrectionEntry[]): Promise<CorrectionEntry[]>;
   listGlossary(): Promise<CorrectionEntry[]>;
@@ -336,12 +345,15 @@ export type VnoteApi = {
   pickSource(videoId: VideoId): Promise<string | null>;
   /** 拖拽进来的 File 只有 renderer 侧引用，绝对路径要靠 preload 的 webUtils 取。 */
   pathForFile(file: File): string;
+
   startExtract(target: ExtractTarget): Promise<{ jobId: string }>;
   /** 只为这些主题生成笔记；必须非空，空数组会被拒绝。 */
-  startNotes(videoId: VideoId, topicIds: string[]): Promise<{ jobId: string }>;
+  startNotes(videoId: VideoId, topicIds: string[], options?: NotesStartOptions): Promise<{ jobId: string }>;
   /** 用已存字幕重新划主题并生成全部笔记。 */
   rebuildTopics(videoId: VideoId): Promise<{ jobId: string }>;
   cancelExtract(jobId: string): Promise<void>;
+  /** 删除一个视频：先取消它的在途任务，再删记录、输出与缓存；源文件不动。 */
+  deleteVideo(videoId: VideoId): Promise<void>;
   activeJob(): Promise<JobSnapshot | null>;
   onJob(listener: (job: JobSnapshot) => void): () => void;
   /** 封面后台补齐完成后广播；payload 是成功补齐的 videoId。 */
@@ -378,6 +390,8 @@ export const IPC = {
   deleteUtterance: "video:delete-utterance",
   deleteTopicSegment: "video:delete-segment",
   mergeTopics: "video:merge-topics",
+  mergeSpeakers: "video:merge-speakers",
+  unmergeSpeaker: "video:unmerge-speaker",
   setTopicSelected: "video:set-topic-selected",
   saveCorrections: "video:save-corrections",
   listGlossary: "glossary:list",
@@ -391,6 +405,7 @@ export const IPC = {
   activeJob: "extract:active",
   jobEvent: "extract:event",
   libraryCovers: "library:covers",
+  deleteVideo: "library:delete-video",
   settings: "settings:status",
   updateSettings: "settings:update",
   updateLlm: "settings:llm-update",

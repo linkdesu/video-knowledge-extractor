@@ -5,12 +5,14 @@ import { join } from "node:path";
 import {
   deleteTopicSegment,
   deleteUtterance,
+  mergeSpeakers,
   mergeTopics,
   renameSpeaker,
   recoverInterruptedRun,
   setTopicProgress,
   setTopicSelected,
   settleRunWhileLocked,
+  unmergeSpeaker,
 } from "./edits";
 import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { TopicRecord, VideoData } from "./video-data";
@@ -52,7 +54,7 @@ function topic(overrides: Partial<TopicRecord> = {}): TopicRecord {
   };
 }
 
-function makeFixture(): { dir: string; data: VideoData } {
+function makeFixture(speakers: { id: string; name: string; color: string }[] = [{ id: "sp1", name: "说话人1", color: "#f00" }]): { dir: string; data: VideoData } {
   const dir = mkdtemp();
   const video: Video = {
     id: "vid-0001" as never,
@@ -63,9 +65,7 @@ function makeFixture(): { dir: string; data: VideoData } {
   };
   const data = emptyVideoData(video);
   data.transcript = {
-    speakers: [
-      { id: "sp1" as SpeakerId, name: "说话人1", color: "#f00" },
-    ],
+    speakers: speakers.map((s) => ({ id: s.id as SpeakerId, name: s.name, color: s.color })),
     utterances: [
       { start: 11, end: 13, speakerId: "sp1" as SpeakerId, text: "你好" },
       { start: 131, end: 135, speakerId: "sp1" as SpeakerId, text: "再见" },
@@ -430,5 +430,90 @@ describe("recoverInterruptedRun（锁外恢复）", () => {
     const f2 = settleFixture();
     expect(recoverInterruptedRun(f2.dir, "nope", "m")).toBe(false);
     expect(readVideoData(f2.dir)!.runToken).toBe("tok-abc");
+  });
+});
+
+describe("mergeSpeakers / unmergeSpeaker", () => {
+  function mergeFixture(): { dir: string; data: VideoData } {
+    const { dir, data } = makeFixture([
+      { id: "sp1", name: "说话人1", color: "#f00" },
+      { id: "sp2", name: "说话人2", color: "#0f0" },
+    ]);
+    data.transcript.utterances.push({ start: 11.5, end: 12.5, speakerId: "sp2" as SpeakerId, text: "你好啊" });
+    writeVideoData(dir, data);
+    return { dir, data };
+  }
+
+  test("合并：原字幕 speakerId 与原始说话人记录全部保留，topic.md 用存活者名字", () => {
+    const { dir } = mergeFixture();
+    const out = mergeSpeakers(dir, ["sp1", "sp2"], " 张三 ");
+    const sp1 = out.transcript.speakers.find((s) => s.id === "sp1")!;
+    const sp2 = out.transcript.speakers.find((s) => s.id === "sp2")!;
+    expect(sp1.name).toBe("张三");
+    expect(sp1.color).toBe("#f00");
+    expect(sp2.name).toBe("说话人2");
+    expect(sp2.color).toBe("#0f0");
+    expect(sp2.mergedInto).toBe("sp1" as never);
+    expect(out.transcript.utterances.map((u) => u.speakerId as string)).toEqual(["sp1", "sp1", "sp2"]);
+    const md = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
+    expect(md).toContain("**张三**: 你好");
+    expect(md).not.toContain("说话人2");
+    const raw = JSON.parse(readFileSync(join(dir, "video.json"), "utf8"));
+    expect(raw.transcript.utterances).toHaveLength(3);
+    expect(raw.transcript.utterances[2].speakerId).toBe("sp2");
+  });
+
+  test("撤销合并：成员恢复原名，目标名保留，mergedInto 清空", () => {
+    const { dir } = mergeFixture();
+    mergeSpeakers(dir, ["sp1", "sp2"], "张三");
+    const out = unmergeSpeaker(dir, "sp1");
+    expect(out.transcript.speakers.find((s) => s.id === "sp2")!.mergedInto).toBeNull();
+    expect(out.transcript.speakers.find((s) => s.id === "sp1")!.name).toBe("张三");
+    const md = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
+    expect(md).toContain("**张三**: 你好");
+    expect(md).toContain("**说话人2**: 你好啊");
+    expect(md).not.toContain("说话人1");
+  });
+
+  test("合并只在有 done 主题时盖 speakerChangedAt", () => {
+    const { dir } = mergeFixture();
+    mergeSpeakers(dir, ["sp1", "sp2"], "张三");
+    const d1 = readVideoData(dir)!;
+    expect(d1.speakerChangedAt).not.toBeNull();
+    const noDone = makeFixture([
+      { id: "sp1", name: "说话人1", color: "#f00" },
+      { id: "sp2", name: "说话人2", color: "#0f0" },
+    ]);
+    for (const t of noDone.data.topics) t.status = "failed";
+    writeVideoData(noDone.dir, noDone.data);
+    mergeSpeakers(noDone.dir, ["sp1", "sp2"], "张三");
+    expect(readVideoData(noDone.dir)!.speakerChangedAt).toBeNull();
+  });
+
+  test("非法输入被拒绝：重名 id、未知 id、空名字、已被合并", () => {
+    const { dir } = mergeFixture();
+    expect(() => mergeSpeakers(dir, ["sp1", "sp1"], "张三")).toThrow("至少需要两个不同的说话人");
+    expect(() => mergeSpeakers(dir, ["sp1", "spX"], "张三")).toThrow("说话人 spX 不存在");
+    expect(() => mergeSpeakers(dir, ["sp1", "sp2"], "  ")).toThrow("不能为空");
+    mergeSpeakers(dir, ["sp1", "sp2"], "张三");
+    expect(() => mergeSpeakers(dir, ["sp2", "sp1"], "李四")).toThrow("已被合并");
+  });
+
+  test("没有成员的撤销被拒绝；未知 id 也被拒绝", () => {
+    const { dir } = mergeFixture();
+    expect(() => unmergeSpeaker(dir, "sp1")).toThrow("没有成员");
+    expect(() => unmergeSpeaker(dir, "spX")).toThrow("不存在");
+  });
+
+  test("改名标记 customName，不改 mergedInto", () => {
+    const { dir } = mergeFixture();
+    mergeSpeakers(dir, ["sp1", "sp2"], "张三");
+    renameSpeaker(dir, "sp1", "张老师");
+    const d = readVideoData(dir)!;
+    const sp1 = d.transcript.speakers.find((s) => s.id === "sp1")!;
+    const sp2 = d.transcript.speakers.find((s) => s.id === "sp2")!;
+    expect(sp1.name).toBe("张老师");
+    expect(sp1.customName).toBe(true);
+    expect(sp2.mergedInto).toBe("sp1" as never);
   });
 });

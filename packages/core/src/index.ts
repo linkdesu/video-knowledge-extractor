@@ -15,6 +15,9 @@ export {
   tailLog,
 } from "./core/logger";
 export { buildDiagnostics, errorLines } from "./core/diagnostics";
+export { prerequisiteProblems, formatPrerequisiteError } from "./core/preflight";
+export { describeFailure } from "./core/failure-summary";
+export type { PrerequisiteInput } from "./core/preflight";
 export type { DiagnosticsInput } from "./core/diagnostics";
 export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
 export {
@@ -49,7 +52,7 @@ export {
   VOLCENGINE_STANDARD_MODEL_ID,
 } from "./core/config";
 export type { EnvRecord } from "./core/config";
-export { cacheDirFor } from "./core/paths";
+export { cacheDirFor, logDirFor } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
   SETTINGS_VERSION,
@@ -84,7 +87,7 @@ export { resolveEndpointFromEnv, resolveLlmEndpoint, fetchModelIds } from "./llm
 export { displayUrl, isTimeoutError, llmHttpErrorMessage, llmNetworkErrorMessage } from "./llm/errors";
 export type { Progress, StepName, LlmEndpoint } from "./core/steps";
 export { videoIdFor } from "./core/paths";
-export { listLibrary, readLibraryVideo } from "./core/library";
+export { listLibrary, readLibraryVideo, deleteVideo } from "./core/library";
 export type { LibraryVideo, LibraryVideoStatus, LibraryDetail } from "./core/library";
 export { acquireVideoLock, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
 export type { VideoLock } from "./core/lock";
@@ -97,6 +100,8 @@ export {
   migrateVideoData,
   loadVideoData,
   projectRunState,
+  recordVideoFailure,
+  clearVideoFailure,
 } from "./core/video-data";
 export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
 export {
@@ -105,6 +110,8 @@ export {
   deleteUtterance,
   deleteTopicSegment,
   mergeTopics,
+  mergeSpeakers,
+  unmergeSpeaker,
   setTopicSelected,
   setTopicProgress,
   settleRunWhileLocked,
@@ -154,3 +161,4 @@ export { COVER_FILE, coverPath, ensureCoverFrame } from "./core/cover";
 export { parseClipFileName } from "./core/clips";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
+export { projectTopicArtifacts } from "./core/topic-artifacts";

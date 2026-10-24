@@ -35,8 +35,12 @@ import {
   modelStatus,
   probeVideo,
   recoverInterruptedRun,
-  readGlobalCorrections,
-  readLibraryVideo,
+  recordVideoFailure,
+  clearVideoFailure,
+  describeFailure,
+  deleteVideo as coreDeleteVideo,
+  prerequisiteProblems,
+  formatPrerequisiteError,
   readSettingsFile,
   readSettingsFileSafe,
   readVideoCorrections,
@@ -44,6 +48,8 @@ import {
   deleteUtterance,
   deleteTopicSegment,
   mergeTopics,
+  mergeSpeakers,
+  unmergeSpeaker,
   asrEnv,
   resolveAsrFor,
   applyLlmSeed,
@@ -58,6 +64,9 @@ import {
   verifyModels,
   videoIdFor,
   listLibrary,
+  readLibraryVideo,
+  readGlobalCorrections,
+  logDirFor,
   saveSettings,
   acquireModelLock,
   VOLCENGINE_STANDARD_RESOURCE_ID,
@@ -95,6 +104,7 @@ import {
   type ModelDownloadEvent,
   type ModelLogEntry,
   type ModelsStatus,
+  type NotesStartOptions,
   type SettingsPatch,
   type SettingsStatus,
   type TestAsrResult,
@@ -138,9 +148,6 @@ if ((process.env.VNOTE_HOME === undefined || process.env.VNOTE_HOME === "") && (
   process.env.VNOTE_DATA_ROOT = defaultDataRoot(app.getPath("documents"));
 }
 
-// 结构化日志（r34）：主进程与 worker 共用 userData/logs；console 只在 dev 开
-const LOG_DIR = join(app.getPath("userData"), "logs");
-configureLogging({ dir: LOG_DIR, level: "info", console: !app.isPackaged });
 const APP_SCHEME = "vnote-app";
 const RENDERER_ROOT = join(__dirname, "../renderer");
 
@@ -190,6 +197,12 @@ function effectiveSettings(): AppSettings {
   return resolveSettings(applyLlmSeed(readSettingsFile(SETTINGS_PATH()), devSeed), process.env).settings;
 }
 let settings: AppSettings = resolved.settings;
+// 结构化日志（r34/r35）：日志跟随 notes 根目录，落在 <notesRoot>/.logs；console 只在 dev 开。
+// 设置变更（notesRoot 切换）时由 recomputeRuntimes 重新配置到新目录。
+function configureAppLogging(): void {
+  configureLogging({ dir: logDirFor(settings.notesRoot), level: "info", console: !app.isPackaged });
+}
+configureAppLogging();
 const locked = resolved.locked;
 let settingsFileError: string | null = settingsRead.error;
 // 存储布局迁移（r28）：旧模型目录 rename 到统一根；失败继续用旧目录，只 warn 一次不弹 UI。
@@ -403,6 +416,7 @@ function recomputeRuntimes(): void {
       error: asr.value === undefined ? (asr.missing.length > 0 ? `ASR 未配齐：${asr.missing.join("、")}` : null) : null,
     };
     startDiscovery();
+    configureAppLogging();
   } catch {
     // 重算失败（设置形状异常等）：保持旧值，界面走既有状态
   }
@@ -450,7 +464,8 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
   // 诊断定位（r34）：taskId 用 runToken，与日志 task= 字段一致
   lastJobLog = { taskId: job.runToken, kind: job.kind, videoId: job.videoId, state: "running" };
   lastJobOutputDir = job.outputDir;
-  // 任务日志（r34）：只记 baseUrl 与 model，key 绝不进字段；registered secret 由 logger 自动脱敏
+  // 重跑启动即清掉上一轮的失败记录（r35）：新任务接管了这次运行
+  if (job.outputDir !== null) clearVideoFailure(job.outputDir);
   logger()
     .forTask(job.runToken)
     .info("app", "任务启动", {
@@ -496,6 +511,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       state.resultDelivered = true;
       if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "done";
       const r = raw.result as Parameters<typeof queue.finish>[0];
+      if (state.outputDir !== null) clearVideoFailure(state.outputDir);
       queue.finish(r);
       logger()
         .forTask(job.runToken)
@@ -513,6 +529,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       logger().forTask(job.runToken).error("app", "任务失败", { message: msg });
       // 已交付 error：流水线已在锁内结算过；main 侧再按 token 恢复（幂等）
       recoverJob(job, "本次生成未完成");
+      if (state.outputDir !== null) recordVideoFailure(state.outputDir, describeFailure(msg));
       queue.fail(sanitizeError(new Error(msg)));
     }
   });
@@ -536,6 +553,8 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "exited";
     recoverJob(job, "本次生成未完成");
     const tail = stderr.trim().split("\n").slice(-8).join("\n");
+    const reason = describeFailure(`worker 进程退出（退出码 ${code ?? "未知"}）${tail ? `\n${tail}` : ""}`);
+    if (state.outputDir !== null) recordVideoFailure(state.outputDir, reason);
     logger()
       .forTask(job.runToken)
       .error("app", "worker 异常退出", { code, stderrTail: stderrTail() });
@@ -595,11 +614,12 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     cacheRoot: job.config.cacheRoot,
     modelDir: job.config.modelDir,
     topicIds: job.topicIds ?? [],
+    force: job.force === true,
     runToken: job.runToken,
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
     asr: job.asr,
-    logDir: LOG_DIR,
+    logDir: logDirFor(settings.notesRoot),
   });
   return state.handle;
 }
@@ -639,6 +659,7 @@ function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
     clipCount: v.clipCount,
     updatedAt: v.updatedAt,
     coverUrl: coverUrlOf(v),
+    failure: v.failure,
     status: v.status,
   };
 }
@@ -708,7 +729,13 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
       raw.transcript.utterances.length === 0
         ? null
         : {
-            speakers: raw.transcript.speakers.map((s) => ({ id: s.id, name: s.name, color: speakerColor(s.id) })),
+            speakers: raw.transcript.speakers.map((s) => ({
+              id: s.id,
+              name: s.name,
+              color: speakerColor(s.id),
+              mergedInto: s.mergedInto ?? null,
+              customName: s.customName ?? false,
+            })),
             utterances: raw.transcript.utterances.map((u, i) => ({
               index: i,
               start: u.start,
@@ -744,6 +771,7 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
       source: e.source ?? null,
       updatedAt: e.updatedAt ?? mtimeIso,
     })),
+    speakersChanged: raw.speakerChangedAt !== null,
   };
 }
 
@@ -768,37 +796,52 @@ function videoRefOf(entry: CoreLibraryVideo): VideoRef {
   return { id: entry.id, title: entry.title, sourcePath: entry.sourcePath };
 }
 
+/** 删除一个视频（r35）：先取消它的全部在途任务并等进程收尸，再删记录/输出/缓存；源文件不动。 */
+async function deleteVideoNow(videoId: string): Promise<void> {
+  resolveVideo(videoId);
+  if (queue.cancelVideo(videoId)) await queue.drain();
+  if (!coreDeleteVideo(settings.notesRoot, settings.cacheRoot, videoId)) throw new Error("视频不存在");
+}
+
 function detailDto(videoId: string): VideoDetail {
   const detail = readLibraryVideo(settings.notesRoot, videoId);
   if (detail === undefined) throw new Error("视频不存在");
   return toDetailDto(detail);
 }
 
-/** 入队前的门禁（ADR-0015 §4/§7、ADR-0016 §5 硬规则 2）：pending 门禁、等端点发现、LLM 配齐、火山标准版+本地视频静态拒绝、ASR 配齐、本地模型 ready、队列为空。 */
+/**
+ * 入队前的门禁（ADR-0015 §4/§7、ADR-0016 §5 硬规则 2，r35 聚合）：
+ * pending 门禁、LLM 配齐、火山标准版+本地视频静态拒绝、ASR 配齐、本地模型 ready、队列为空。
+ * 一次列全所有缺失的前置条件，只抛一条聚合错误（`formatPrerequisiteError`），不撞到第一个就停。
+ */
 async function ensurePipelineReady(): Promise<void> {
-  if (credentialTxError !== null) throw new Error(credentialTxError);
-  await requireLlmEndpoint();
-  // 火山标准版只收公网 URL，本地视频路径永远不可用（ADR-0016 §6）
+  let llmError: string | null = null;
+  try {
+    await requireLlmEndpoint();
+  } catch (err) {
+    llmError = err instanceof Error ? err.message : String(err);
+  }
   const provider = effectiveAsrProvider();
-  if (provider === "volcengine" && settings.asr.volcengine.mode === "standard") {
-    throw new Error("火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR");
-  }
-  if (provider !== "local" && asrRuntime.config === undefined) {
-    throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
-  }
+  // 火山标准版只收公网 URL，本地视频路径永远不可用（ADR-0016 §6）
+  const asrError =
+    provider === "volcengine" && settings.asr.volcengine.mode === "standard"
+      ? "火山标准版只接受公网 URL；本地视频请改用极速版或本地 ASR"
+      : provider !== "local" && asrRuntime.config === undefined
+        ? (asrRuntime.error ?? "ASR 未配齐，请在设置页补全")
+        : null;
+  let localModel: { ready: boolean; missing: string[] } | null = null;
   if (provider === "local") {
     if (autoVerify !== undefined) await autoVerify;
     const status = modelStatus(settings.modelDir);
-    if (!status.ready) {
-      const bad = status.bundles.filter((b) => b.state !== "ready").map((b) => b.title).join("、");
-      throw new Error(`本地 ASR 模型${bad === "" ? "未就绪" : `未就绪（${bad}）`}：请在设置页下载、导入或校验模型`);
-    }
+    localModel = { ready: status.ready, missing: status.bundles.filter((b) => b.state !== "ready").map((b) => b.title) };
   }
-  if (queue.busy()) throw new Error("已有任务在运行，请等它结束再开始");
+  const problems = prerequisiteProblems({ llmError, asrError, localModel, queueBusy: queue.busy() });
+  if (credentialTxError !== null) problems.unshift(credentialTxError);
+  if (problems.length > 0) throw new Error(formatPrerequisiteError(problems));
 }
 
 /** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结；ASR 未配齐直接抛错，不回退本地（ADR-0016 §6）。 */
-async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[]): Promise<JobRequest> {
+async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: string, outputDir: string | null, topicIds?: string[], force?: boolean): Promise<JobRequest> {
   const asrConfig = asrRuntime.config;
   if (asrConfig === undefined) throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
   return {
@@ -811,6 +854,7 @@ async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: strin
     asr: asrConfig,
     config: { notesRoot: settings.notesRoot, cacheRoot: settings.cacheRoot, modelDir: settings.modelDir },
     ...(topicIds !== undefined ? { topicIds } : {}),
+    ...(force === true ? { force } : {}),
   };
 }
 
@@ -856,12 +900,12 @@ function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
   });
 }
 
-function startNotes(videoId: string, topicIds: string[]): Promise<{ jobId: string }> {
+function startNotes(videoId: string, topicIds: string[], options?: NotesStartOptions): Promise<{ jobId: string }> {
   return withStartLog("notes", async () => {
     await ensurePipelineReady();
     const entry = resolveVideo(videoId);
     if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds)) };
+    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds, options?.force === true)) };
   });
 }
 
@@ -896,10 +940,11 @@ function reveal(outputDir: string): void {
   shell.showItemInFolder(dir);
 }
 
-// 打开日志文件夹（r34）：目录不存在先建，保证首启/无日志时也能打开
+// 打开日志文件夹（r34/r35）：目录不存在先建，保证首启/无日志时也能打开
 async function openLogs(): Promise<void> {
-  mkdirSync(LOG_DIR, { recursive: true });
-  const err = await shell.openPath(LOG_DIR);
+  const dir = logDirFor(settings.notesRoot);
+  mkdirSync(dir, { recursive: true });
+  const err = await shell.openPath(dir);
   if (err !== "") throw new Error(`打开日志文件夹失败：${err}`);
 }
 
@@ -914,7 +959,7 @@ function copyDiagnostics(): { chars: number } {
   const taskId = lastJobLog?.taskId ?? null;
   const label =
     lastJobLog !== null ? `${lastJobLog.kind} ${lastJobLog.videoId}（${lastJobLog.state}）` : null;
-  const text = buildDiagnostics({ logDir: LOG_DIR, environment: envLines, taskId, taskLabel: label });
+  const text = buildDiagnostics({ logDir: logDirFor(settings.notesRoot), environment: envLines, taskId, taskLabel: label });
   clipboard.writeText(text);
   return { chars: text.length };
 }
@@ -956,7 +1001,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     notesRoot: settings.notesRoot,
     cacheRoot: settings.cacheRoot,
     modelDir: settings.modelDir,
-    logDir: LOG_DIR,
+    logDir: logDirFor(settings.notesRoot),
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),
@@ -1588,6 +1633,22 @@ void app.whenReady().then(async () => {
     }),
   );
   ipcMain.handle(
+    IPC.mergeSpeakers,
+    guard((_e, videoId: string, speakerIds: string[], targetName: string) => {
+      const entry = resolveVideo(videoId);
+      mergeSpeakers(entry.outputDir, speakerIds, targetName);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.unmergeSpeaker,
+    guard((_e, videoId: string, speakerId: string) => {
+      const entry = resolveVideo(videoId);
+      unmergeSpeaker(entry.outputDir, speakerId);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
     IPC.setTopicSelected,
     guard((_e, videoId: string, topicId: string, selected: boolean) => {
       const entry = resolveVideo(videoId);
@@ -1609,9 +1670,10 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.pickVideo, guard(() => pickVideo()));
   ipcMain.handle(IPC.pickSource, guard((_e, videoId: string) => pickSource(videoId)));
   ipcMain.handle(IPC.startExtract, guard((_e, target: ExtractTarget) => startExtract(target)));
-  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[]) => startNotes(videoId, topicIds)));
+  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[], options?: NotesStartOptions) => startNotes(videoId, topicIds, options)));
   ipcMain.handle(IPC.rebuildTopics, guard((_e, videoId: string) => rebuildTopics(videoId)));
   ipcMain.handle(IPC.cancelExtract, guard((_e, jobId: string) => queue.cancel(jobId)));
+  ipcMain.handle(IPC.deleteVideo, guard((_e, videoId: string) => deleteVideoNow(videoId)));
   ipcMain.handle(IPC.activeJob, guard(() => queue.active() ?? null));
   ipcMain.handle(IPC.settings, guard(() => settingsStatus()));
   ipcMain.handle(IPC.updateSettings, guard((_e, patch: SettingsPatch) => updateSettings(patch)));

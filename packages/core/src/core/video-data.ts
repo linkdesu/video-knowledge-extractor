@@ -51,6 +51,10 @@ export type VideoData = {
   asrEngine: AsrProvider | null;
   /** 写这批主题的那次运行的 token；结算后 null（ADR-0015 §7） */
   runToken: string | null;
+  /** 说话人合并/拆分后盖的 ISO 时间；存在 `done` 主题时提示可重新生成（r35），重新生成成功后清空 */
+  speakerChangedAt: string | null;
+  /** 上一次运行的失败（短原因，r35）；界面卡片据此显示「失败 + 原因」，重跑启动时清空 */
+  failure: { message: string; at: string } | null;
   updatedAt: string;
 };
 
@@ -184,6 +188,14 @@ function parseAsrEngine(v: unknown, where: string): AsrProvider | null {
   throw new Error(`${where} 只能是 ${ASR_ENGINE_VALUES.join(" 或 ")}`);
 }
 
+/** 失败记录：缺失或形状不对一律按 null，不让一个坏字段挡住整个文档。 */
+function parseFailure(v: unknown): { message: string; at: string } | null {
+  if (v === undefined || v === null) return null;
+  if (!isObject(v)) return null;
+  if (typeof v.message !== "string" || typeof v.at !== "string") return null;
+  return { message: v.message, at: v.at };
+}
+
 /** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
 export function readVideoData(outputDir: string): VideoData | undefined {
   let raw: string;
@@ -216,7 +228,13 @@ export function readVideoData(outputDir: string): VideoData | undefined {
   const speakers = requireArray(transcript.speakers, `${p}.transcript.speakers`);
   const speakerList = speakers.map((s) => {
     if (!isObject(s)) throw new Error(`${p}.transcript.speakers 项不是对象`);
-    return { id: readString(s.id, `${p}.transcript.speakers.id`) as SpeakerId, name: readString(s.name, `${p}.transcript.speakers.name`), color: readString(s.color, `${p}.transcript.speakers.color`) };
+    return {
+      id: readString(s.id, `${p}.transcript.speakers.id`) as SpeakerId,
+      name: readString(s.name, `${p}.transcript.speakers.name`),
+      color: readString(s.color, `${p}.transcript.speakers.color`),
+      mergedInto: s.mergedInto === undefined ? undefined : (parseNullableString(s.mergedInto, `${p}.transcript.speakers.mergedInto`) as SpeakerId | null | undefined),
+      customName: typeof s.customName === "boolean" ? s.customName : undefined,
+    };
   });
   const utt = requireArray(transcript.utterances, `${p}.transcript.utterances`);
   const utterances: Utterance[] = utt.map((u, i) => {
@@ -240,6 +258,8 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     resolution: parseResolution(parsed.resolution, `${p}.resolution`),
     asrEngine: parseAsrEngine(parsed.asrEngine, `${p}.asrEngine`),
     runToken: parsed.runToken === undefined ? null : parseNullableString(parsed.runToken, `${p}.runToken`),
+    speakerChangedAt: parsed.speakerChangedAt === undefined ? null : parseNullableString(parsed.speakerChangedAt, `${p}.speakerChangedAt`),
+    failure: parseFailure(parsed.failure),
     updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
   };
 }
@@ -258,6 +278,20 @@ export function writeVideoData(outputDir: string, data: VideoData): VideoData {
   return out;
 }
 
+/** 失败记录落盘（r35）：读文档 → 盖时间 → 写回；文档缺失或解析失败时 no-op，不抛错。 */
+export function recordVideoFailure(outputDir: string, message: string): void {
+  const data = readVideoData(outputDir);
+  if (data === undefined) return;
+  writeVideoData(outputDir, { ...data, failure: { message, at: new Date().toISOString() } });
+}
+
+/** 清掉失败记录（r35）：已有记录才写回，没有记录不动磁盘。 */
+export function clearVideoFailure(outputDir: string): void {
+  const data = readVideoData(outputDir);
+  if (data === undefined || data.failure === null) return;
+  writeVideoData(outputDir, { ...data, failure: null });
+}
+
 /** 新文档：无字幕、无主题（`updatedAt` 占位，真正落盘时由 `writeVideoData` 盖时间戳）。 */
 export function emptyVideoData(video: Video): VideoData {
   return {
@@ -272,6 +306,8 @@ export function emptyVideoData(video: Video): VideoData {
     resolution: null,
     asrEngine: null,
     runToken: null,
+    speakerChangedAt: null,
+    failure: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -372,6 +408,8 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     resolution: null,
     asrEngine: null,
     runToken: null,
+    speakerChangedAt: null,
+    failure: null,
     updatedAt: new Date().toISOString(),
   };
 }

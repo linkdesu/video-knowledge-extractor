@@ -34,6 +34,10 @@ export type Speaker = {
   name: string;
   /** 用户可改。 */
   color: string;
+  /** 被并入目标说话人的 id；顶层说话人为 null（r35 合并，可撤销）。 */
+  mergedInto?: SpeakerId | null;
+  /** 名字是用户改过/合并改过，而不是自动编号（r35）。 */
+  customName?: boolean;
 };
 
 /** 字幕行：转写与笔记都以它为单位。 */

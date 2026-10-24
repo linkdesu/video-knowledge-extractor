@@ -7,6 +7,6 @@ export type PageContext = {
   job: JobSnapshot | null;
   onRefresh: () => Promise<void>;
   onPage: (page: WorkspacePage) => void;
-  onStartNotes: (topicIds: string[]) => Promise<void>;
+  onStartNotes: (topicIds: string[], options?: { force?: boolean }) => Promise<void>;
   onRebuildTopics: () => Promise<void>;
 };

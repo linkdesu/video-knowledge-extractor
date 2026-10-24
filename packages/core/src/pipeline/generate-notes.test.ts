@@ -350,3 +350,37 @@ describe("generateNotes 单文件主题切片（r33）", () => {
     expect(readFileSync(join(topicDir, "topic.md"), "utf8")).toContain("](topic.mp4)");
   });
 });
+
+describe("generateNotes 无时间段主题", () => {
+  test("零段主题拒绝生成：抛「没有可切片的时间段」，不写 topic.md", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vnote-emptyseg-"));
+    const out = join(root, "out");
+    mkdirSync(out, { recursive: true });
+    const src = join(root, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=10", "-f", "lavfi", "-i", "sine=d=10", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+      { stdio: "pipe" },
+    );
+    const topic: Topic = {
+      id: "t1" as never,
+      title: "主题A",
+      summary: "这是摘要",
+      segments: [],
+    };
+    const input = {
+      video: { id: "v1" as never, title: "测试视频", sourcePath: src, durationSeconds: 10, outputDir: out },
+      transcript: { speakers: [], utterances: [] },
+      topics: [topic],
+      dirNames: new Map([[topic.id, "主题A"]]),
+      corrections,
+      endpoint,
+      cacheDir: join(out, ".cache"),
+      client: makeClient(["要点一"], []),
+    } as Parameters<typeof generateNotes>[0];
+    await expect(generateNotes(input)).rejects.toThrow("主题 主题A 没有可切片的时间段");
+    // 没有写出 topic.md，主题不能在没有 topic.mp4 时到达 done
+    expect(existsSync(join(out, "主题A", "topic.md"))).toBe(false);
+    expect(existsSync(join(out, "主题A", "topic.mp4"))).toBe(false);
+  });
+});

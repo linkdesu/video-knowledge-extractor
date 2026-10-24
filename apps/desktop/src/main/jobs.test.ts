@@ -179,3 +179,36 @@ describe("JobQueue 串行", () => {
     expect(running.topicPercent).toBe(40);
   });
 });
+
+describe("JobQueue.cancelVideo", () => {
+  test("只取消指定视频的任务：排队直接落 cancelled，运行中等 exit 落，别的视频不动", () => {
+    const h1 = fakeHandle();
+    const h2 = fakeHandle();
+    const h3 = fakeHandle();
+    const { queue, snapshots } = makeQueue([h1.handle, h2.handle, h3.handle]);
+    const idA1 = queue.enqueue({ kind: "extract", videoId: "va", sourcePath: "/a.mp4", outputDir: null, config, ...job });
+    const idB = queue.enqueue({ kind: "notes", videoId: "vb", sourcePath: "", outputDir: "/b", config, topicIds: ["t"], ...job });
+    const idA2 = queue.enqueue({ kind: "topics", videoId: "va", sourcePath: "", outputDir: "/a", config, ...job });
+
+    expect(queue.busy()).toBe(true);
+    expect(queue.cancelVideo("va")).toBe(true);
+    expect(statesOf(snapshots).get(idA1)).toBe("running"); // 运行中取消等 exit
+    expect(statesOf(snapshots).get(idA2)).toBe("cancelled"); // 排队直接落
+    expect(h1.cancelCalled()).toBe(true);
+    expect(h3.cancelCalled()).toBe(false);
+    expect(queue.cancelVideo("va")).toBe(false); // 都取消过之后没有新任务
+
+    queue.cancelled(idA1); // 模拟 worker exit
+    expect(statesOf(snapshots).get(idA1)).toBe("cancelled");
+    expect(statesOf(snapshots).get(idB)).toBe("running"); // 别的视频接着跑
+  });
+
+  test("没有该视频任务时返回 false 且不改状态", () => {
+    const h1 = fakeHandle();
+    const { queue, snapshots } = makeQueue([h1.handle]);
+    queue.enqueue({ kind: "extract", videoId: "va", sourcePath: "/a.mp4", outputDir: null, config, ...job });
+    expect(queue.cancelVideo("vx")).toBe(false);
+    expect(h1.cancelCalled()).toBe(false);
+    expect(snapshots.at(-1)?.state).toBe("running");
+  });
+});

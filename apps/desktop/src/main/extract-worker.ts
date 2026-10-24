@@ -11,6 +11,7 @@ type StartMessage = {
   cacheRoot: string;
   modelDir: string;
   topicIds: string[];
+  force?: boolean;
   runToken: string;
   endpoint: { baseUrl: string; apiKey: string; model?: string };
   asr: AsrConfig;
@@ -137,6 +138,7 @@ export function parseStart(raw: unknown): ParsedStartResult {
       modelDir: raw.modelDir,
       topicIds,
       runToken: raw.runToken,
+      ...("force" in raw && typeof raw.force === "boolean" ? { force: raw.force } : {}),
       endpoint: { baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, ...(model === undefined ? {} : { model }) },
       asr: asrResult.config,
       ...("logDir" in raw && typeof raw.logDir === "string" && raw.logDir !== "" ? { logDir: raw.logDir } : {}),
@@ -274,6 +276,7 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
           topicIds: start.topicIds,
           endpoint: { baseUrl, apiKey, model },
           cacheRoot: start.cacheRoot,
+          ...(start.force === true ? { force: true } : {}),
           runToken: start.runToken,
           onProgress: progress,
         });

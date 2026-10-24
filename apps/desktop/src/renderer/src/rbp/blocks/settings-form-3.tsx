@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { ChevronDown, Eye, EyeOff } from "lucide-react";
+import { comboboxEmptyHint, filterComboboxOptions } from "../../lib/combobox";
 
 // settings-form-3 改造：上游演示页改为设置页 primitives（ADR-0022）；重跑 rbp:vendor 会用上游原文覆盖本文件。
 
@@ -286,11 +287,8 @@ export function Combobox({
   const listRef = useRef<HTMLUListElement>(null);
   const blurTimer = useRef(0);
 
-  const q = (query ?? "").trim().toLowerCase();
-  const visible =
-    query === null || q === ""
-      ? options
-      : options.filter((o) => o.label.toLowerCase().includes(q));
+  const visible = filterComboboxOptions(options, query);
+  const emptyHint = comboboxEmptyHint(options, query);
 
   const openList = () => {
     window.clearTimeout(blurTimer.current);
@@ -484,6 +482,11 @@ export function Combobox({
               {o.value === value ? <span className="vn-select-check" aria-hidden="true">✓</span> : null}
             </li>
           ))}
+          {visible.length === 0 && emptyHint !== null ? (
+            <li role="presentation" data-testid={testId !== undefined ? `${testId}-empty` : undefined} className="vn-select-empty">
+              {emptyHint}
+            </li>
+          ) : null}
         </ul>
       ) : null}
     </div>

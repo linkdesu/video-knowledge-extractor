@@ -311,7 +311,16 @@ textarea {
   font-size: 12px;
   border-radius: 9px;
 }
-
+.vn-btn.danger {
+  border: 0;
+  background: #dc2626;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(220, 38, 38, 0.25);
+}
+.vn-btn.danger:hover {
+  background: #b91c1c;
+}
 .vn-tag {
   display: inline-flex;
   align-items: center;
@@ -619,8 +628,8 @@ textarea {
   border-radius: 12px;
   padding: 10px 14px;
   font-size: 12px;
+  white-space: pre-line;
   color: var(--vn-fg);
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
   animation: vn-slidein 0.25s ease;
 }
 @keyframes vn-slidein {
@@ -789,13 +798,19 @@ textarea {
   left: 0;
   right: 0;
   top: calc(100% + 6px);
-  z-index: 40;
+  z-index: 60;
   max-height: 264px;
   overflow-y: auto;
   background: #111420;
   border: 1px solid var(--vn-line2);
   border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.vn-select-empty {
+  padding: 10px 12px;
+  min-height: 24px;
+  font-size: 13px;
+  color: var(--vn-dim);
 }
 .vn-select-list.up {
   top: auto;

@@ -13,7 +13,7 @@ export function renderTopicMarkdown(
   utterances: Utterance[],
   keyPoints: string[],
   clips: Clip[],
-  speakerNames: Map<SpeakerId, string>,
+  speakerNames: Map<string, string>,
 ): string {
   const lines: string[] = [`# ${topic.title}`, ""];
   if (topic.summary.length > 0) lines.push(topic.summary, "");

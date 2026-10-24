@@ -1,13 +1,14 @@
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { notesRoot } from "./config";
 import { parseClipFileName } from "./clips";
-import { readVideoIndex } from "./paths";
+import { readVideoIndex, writeVideoIndex } from "./paths";
 import { isSafeDirName } from "./outputs";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
 import { isVideoLocked } from "./lock";
 import { loadVideoData, projectRunState, readVideoData } from "./video-data";
+import { projectTopicArtifacts } from "./topic-artifacts";
 import type { VideoData } from "./video-data";
 
 /** 库卡片状态；规则见 ADR-0014 第 6 节。 */
@@ -28,6 +29,8 @@ export type LibraryVideo = {
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
+  /** 上一次运行的失败短原因（r35）；非空时卡片状态恒为 failed */
+  failure: string | null;
   status: LibraryVideoStatus;
 };
 
@@ -72,6 +75,23 @@ function dirIsDirectChild(root: string, dirName: string): boolean {
   const rel = relative(root, resolve(root, dirName));
   return rel !== "" && !rel.startsWith("..") && !rel.includes("/");
 }
+/** 删除一个视频：删输出目录与其缓存目录、摘除 index 条目；用户的源文件不碰。未知 id 返回 false；越界 outputDir 抛错不删。 */
+export function deleteVideo(root: string, cacheRoot: string, id: string): boolean {
+  const index = readVideoIndex(root);
+  const entry = index.videos.find((v) => v.id === id);
+  if (entry === undefined || typeof entry.outputDir !== "string") return false;
+  if (!dirIsDirectChild(root, entry.outputDir)) {
+    throw new Error(`index.json 条目 ${id} 的 outputDir 越出 notes 根目录：${entry.outputDir}`);
+  }
+  rmSync(resolve(root, entry.outputDir), { recursive: true, force: true });
+  const cacheDir = resolve(cacheRoot, id);
+  if (dirIsDirectChild(cacheRoot, id) && lstatSync(cacheDir, { throwIfNoEntry: false }) !== undefined) {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+  const rest = index.videos.filter((v) => v.id !== id);
+  if (rest.length !== index.videos.length) writeVideoIndex({ videos: rest }, root);
+  return true;
+}
 
 function videoSummary(root: string, entry: Entry, propagateParseError: boolean): LibraryVideo {
   const outputDir = resolve(root, entry.outputDir);
@@ -79,7 +99,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
   try {
     const raw = readVideoData(outputDir);
     // 摘要与详情共用同一投影：列表不再直接用原始 generating/queued 算状态
-    if (raw !== undefined) data = projectRunState(raw, { locked: isVideoLocked(outputDir) });
+    if (raw !== undefined) data = projectTopicArtifacts(projectRunState(raw, { locked: isVideoLocked(outputDir) }), outputDir);
   } catch (err) {
     // 单个视频的 video.json 损坏不阻断列表：该卡按 failed、计数 0，标题/目录沿用 index.json
     if (propagateParseError) throw err;
@@ -95,6 +115,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       topicCount: 0,
       clipCount: 0,
       updatedAt: null,
+      failure: null,
       status: "failed",
     };
   }
@@ -111,6 +132,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       topicCount: data.topics.length,
       clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
       updatedAt: data.updatedAt,
+      failure: data.failure?.message ?? null,
       status: deriveStatus(data),
     };
   }
@@ -147,13 +169,15 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),
+    failure: null,
     // 旧目录有笔记但没有 video.json：结构化字幕缺失，界面要能提示重跑
     status: topicCount > 0 ? "needs-rerun" : "in-progress",
   };
 }
 
 /**
- * 库卡片状态（r33 优先级）：
+ * 库卡片状态（r33 优先级，r35 加第 0 条）：
+ * 0. 有失败记录（`failure` 非空）→ `failed`（最高优先级，上轮跑挂了）；
  * 1. 任一主题 `failed`/`needs-rerun` → `needs-rerun`；
  * 2. 无字幕 → `in-progress`（含导入后转写还没落盘的那段；`proposed` 主题此时还没出现）；
  * 3. `selected` 主题非空且全部为 `proposed` → `pending-confirm`（导入完，等用户确认）；
@@ -163,6 +187,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
  * 空 `topics` 不能当「全部完成」：`[].every` 恒真，转写完、分段没落盘的那一段会误报 done。
  */
 function deriveStatus(data: VideoData): LibraryVideoStatus {
+  if (data.failure !== null) return "failed";
   if (data.topics.some((t) => t.status === "failed" || t.status === "needs-rerun")) return "needs-rerun";
   if (data.transcript.utterances.length === 0) return "in-progress";
   const checked = data.topics.filter((t) => t.selected);
@@ -190,7 +215,7 @@ export function readLibraryVideo(root: string, id: string): LibraryDetail | unde
   if (entry === undefined || typeof entry.outputDir !== "string") return undefined;
   if (!dirIsDirectChild(root, entry.outputDir)) return undefined;
   const outputDir = resolve(root, entry.outputDir);
-  const data = loadVideoData(outputDir, { id: entry.id as VideoId, title: entry.title, sourcePath: entry.sourcePath });
+  const data = projectTopicArtifacts(loadVideoData(outputDir, { id: entry.id as VideoId, title: entry.title, sourcePath: entry.sourcePath }), outputDir);
   let corrections: CorrectionFileEntry[] = [];
   const raw = readJsonFileShallow(resolve(outputDir, "corrections.json"));
   if (Array.isArray(raw)) {

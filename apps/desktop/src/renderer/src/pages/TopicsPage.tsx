@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { SpeakerInfo } from "../../../shared/ipc";
+import { resolveSpeakerName } from "@/lib/speaker-resolve";
 import type { PageContext } from "./types";
 import { Workspace } from "@/rbp/blocks/app-shell-6";
 import { Player, type PlayerHandle } from "@/components/Player";
@@ -41,11 +41,10 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
   const pickedCount = mergePicked.size;
   const selProg = selected !== null ? generatingProgress(selected, job, now) : null;
 
-  const speakerById = useMemo(() => {
-    const m: Record<string, SpeakerInfo> = {};
-    for (const s of detail.transcript?.speakers ?? []) m[s.id] = s;
-    return (id: string) => m[id] ?? { id, name: id, color: "#9aa3b8" };
-  }, [detail.transcript?.speakers]);
+  const resolvedSpeaker = useMemo(
+    () => (id: string) => resolveSpeakerName(detail.transcript?.speakers ?? [], id),
+    [detail.transcript?.speakers],
+  );
 
   // 播放源（r33）：新文档单条 topic.mp4 切片带段偏移时用切片，否则 source + 时间段。
   const clip =
@@ -173,7 +172,25 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
 
 
   return (
-    <Workspace
+    <>
+      {detail.speakersChanged ? (
+        <div className="vn-row" style={{ marginBottom: 10 }}>
+          <div
+            className="vn-card"
+            style={{
+              background: "rgba(251,191,36,0.08)",
+              border: "1px solid rgba(251,191,36,0.25)",
+              padding: "8px 14px",
+              fontSize: 13,
+              color: "var(--vn-fg)",
+            }}
+            data-testid="speakers-changed-banner"
+          >
+            说话人已变更，可重新生成
+          </div>
+        </div>
+      ) : null}
+      <Workspace
       title="主题"
       subtitle={`已选 ${selectedCount} / ${topics.length} 个 · 主题可包含多个不连续时间段`}
       actions={
@@ -306,7 +323,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                     (u) => u.start >= seg.start && u.start < seg.end,
                   );
                   const rows = cues.map((u) => {
-                    const sp = speakerById(u.speakerId);
+                    const sp = resolvedSpeaker(u.speakerId);
                     return {
                       index: u.index,
                       start: u.start,
@@ -386,5 +403,6 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
         />
       }
     />
+    </>
   );
 }
