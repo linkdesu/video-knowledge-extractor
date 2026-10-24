@@ -10,7 +10,7 @@ The 主题 page is where a user confirms the automatically detected topics (r33:
 - `player-resize` drags the player's bottom-right handle to change the player height; the value persists in `localStorage` across restarts.
 - `topics-delete-segment` removes one time segment from the selected topic.
 - `topics-delete-cue` removes one subtitle line inside the selected segment.
-- `topics-view` selects a card and shows its original subtitles next to the player.
+- `topics-view` selects a card and shows its subtitles next to the player. The cues are the corrected text: the detail projection applies the merged glossary (global `<notesRoot>/corrections.json` + per-video `<outputDir>/corrections.json`, per-video wins) on every read, so a newly added term shows after the detail is reloaded (r36). The stored `video.json` transcript stays raw.
 
 ## How to get to it (user POV)
 
@@ -32,6 +32,7 @@ Preconditions:
 - **Merge.** Record the current count first: `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.length)"` (call it `N`). Run `$V click '[data-testid=topics-merge-start]'`, then `$V click-text '选入合并：<title A>'` and `$V click-text '选入合并：<title B>'`, then `$V click '[data-testid=topics-merge-confirm]'`. Wait for `$V wait "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.length === N - 1)" --timeout 15000` and for the toast 已合并 2 个主题. Then `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.filter(t => t.title.includes(' / ')).map(t => t.status))"` — the merged topic's status is **`needs-rerun`, not `queued`** (the structure changed; products must be regenerated), and it loses its generated clips until notes are regenerated.
 - **Delete a segment.** Select a card with `$V click '[data-testid=topic-view-<topicId>]'`, then `$V click '[data-testid=topic-delete-seg-0]'`; `getVideo(id).topics.find(...).segments.length` decreases. There is no confirmation dialog.
 - **Delete a cue.** Run `$V click '[data-testid=subtitle-delete-<index>]'` on a visible subtitle row; `detail.transcript.utterances.length` decreases and the toast reads 已删除该条字幕.
+- **Glossary-corrected cues (r36).** Add `foo → Foo` to the 术语表 page (or to the per-video panel) and reload the detail (`window.vnote.getVideo(id)`): the matching cues' `text` contains `Foo`, while `video.json` still holds `foo`. A per-video entry with the same `wrong` overrides the global one.
 
 ### Recipe: Confirm and generate（checked-only generation, mtime-stable rerun）
 
