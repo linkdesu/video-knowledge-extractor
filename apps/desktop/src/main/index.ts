@@ -1055,6 +1055,8 @@ async function settingsStatus(): Promise<SettingsStatus> {
   if (discovery !== undefined) await discovery;
   const ff = ffmpegProbe();
   const models = modelsStatusDto();
+  // 就绪口径只有 checkModels（文件存在）；modelStatus 只提供字节数，别让它再定义一遍 ready
+  const local = checkModels(settings.modelDir);
   return {
     notesRoot: settings.notesRoot,
     cacheRoot: settings.cacheRoot,
@@ -1063,7 +1065,7 @@ async function settingsStatus(): Promise<SettingsStatus> {
     cacheBytes: cacheUsage(settings.cacheRoot).bytes,
     llm: llmStatus(),
     asr: asrStatusDto(),
-    models: { ready: models.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes },
+    models: { ready: local.ready, totalBytes: models.totalBytes, presentBytes: models.presentBytes },
     settingsFileError: credentialTxError !== null ? credentialTxError : (settingsFileError ?? secretStore?.error() ?? null),
     features: { cloudAsr: CLOUD_ASR_ENABLED },
     ffmpeg: ff.ok,
