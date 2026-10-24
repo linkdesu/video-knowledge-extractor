@@ -26,4 +26,13 @@ describe("详情的术语表替换（全局 + 单视频）", () => {
     const corrected = applyDetailCorrections([], [], [utt("原样文本")]);
     expect(corrected.map((u) => u.text)).toEqual(["原样文本"]);
   });
+
+  test("坏词条（空 wrong/right）被丢弃：手改文件里的空 wrong 不会把字幕拆成单字符", () => {
+    const corrupted: CorrectionFileEntry[] = [
+      { wrong: "", right: "X" },
+      { wrong: "zephyr", right: "" },
+    ];
+    const corrected = applyDetailCorrections(corrupted, corrupted, [utt("zephyr 原样")]);
+    expect(corrected[0]?.text).toBe("zephyr 原样");
+  });
 });

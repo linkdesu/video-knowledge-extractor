@@ -546,3 +546,62 @@ describe("术语表合并（全局 + 单视频）", () => {
     expect(log).toContain("merged=3");
   });
 });
+
+describe("runTopics 术语表接线", () => {
+  test("划主题提示词与字幕用合并词表，单视频优先，日志记 topics 条数", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-glossary-"));
+    const out = join(root, "vid-1");
+    writeFileSync(
+      join(root, "corrections.json"),
+      JSON.stringify([
+        { wrong: "zephyr", right: "Zephyr" },
+        { wrong: "clash", right: "全局" },
+      ]),
+    );
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "corrections.json"), JSON.stringify([{ wrong: "clash", right: "本视频" }]));
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "zephyr clash" }],
+      };
+      d.chunks = [{ index: 0, start: 0, end: 30 }];
+      d.topics = [];
+    });
+
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    const systems: string[] = [];
+    const users: string[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages) => {
+        const system = messages.find((m) => m.role === "system")?.content ?? "";
+        const user = messages.find((m) => m.role === "user")?.content ?? "";
+        systems.push(system);
+        users.push(user);
+        if (user.startsWith("该块范围")) {
+          return JSON.stringify({ topics: [{ title: "A", summary: "s", segments: [{ start: 0, end: 30 }] }] });
+        }
+        if (user.startsWith("视频共")) {
+          return JSON.stringify({ topics: [{ title: "A", summary: "s", segments: [{ start: 0, end: 30 }] }] });
+        }
+        return JSON.stringify({ keyPoints: ["要点"] });
+      },
+    };
+    await runTopics({ outputDir: out, endpoint, cacheRoot: join(out, ".cache"), client });
+
+    // 分块提示词带合并术语表，冲突项用本视频写法
+    expect(systems[0]).toContain("- zephyr → Zephyr");
+    expect(systems[0]).toContain("- clash → 本视频");
+    expect(systems[0]).not.toContain("clash → 全局");
+    // 字幕已替换，分块与合并提示词都用替换后的文本
+    expect(users[0]).toContain("Zephyr 本视频");
+    expect(users[0]).not.toContain("zephyr clash");
+
+    const log = lines.find((l) => l.includes("术语表合并") && l.includes("stage=\"topics\"")) ?? "";
+    expect(log).toContain("global=2");
+    expect(log).toContain("video=1");
+    expect(log).toContain("merged=2");
+  });
+});

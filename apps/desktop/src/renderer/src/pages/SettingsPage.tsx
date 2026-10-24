@@ -291,7 +291,11 @@ export function SettingsPage() {
     window.vnote
       .updateLlm({ clearApiKey: true })
       .then((next) => {
-        showToast("API key 已清空");
+        showToast(
+          next.llm.keySource === "env"
+            ? "已清除保存的 API key；仍在使用环境变量中的 key"
+            : "API key 已清空",
+        );
         // 只在草稿仍等于点击时的快照时清空输入框；等待期间用户又输入过就不动。
         setLlmCard((cur) =>
           cur !== null && cur.draft.apiKey === draftAtStart

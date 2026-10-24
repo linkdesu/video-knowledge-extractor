@@ -10,11 +10,8 @@ export function applyDetailCorrections(
   videoEntries: CorrectionFileEntry[],
   utterances: Utterance[],
 ): Utterance[] {
-  return applyCorrections(
-    {
-      global: globalEntries.map((e) => ({ from: e.wrong, to: e.right })),
-      video: videoEntries.map((e) => ({ from: e.wrong, to: e.right })),
-    },
-    utterances,
-  );
+  // 详情读取对坏文件只做浅过滤：空 wrong 会让 split("") 把每个字符拆开，必须按保存口径丢掉。
+  const live = (entries: CorrectionFileEntry[]) =>
+    entries.filter((e) => e.wrong !== "" && e.right !== "").map((e) => ({ from: e.wrong, to: e.right }));
+  return applyCorrections({ global: live(globalEntries), video: live(videoEntries) }, utterances);
 }
