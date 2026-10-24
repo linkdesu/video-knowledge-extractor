@@ -47,6 +47,7 @@ export function LibraryPage({
   onImportPath,
   onRebuild,
   onRerun,
+  onDelete,
 }: {
   videos: LibraryVideo[];
   job: JobSnapshot | null;
@@ -58,12 +59,15 @@ export function LibraryPage({
   onImportPath: (path: string) => void;
   onRebuild: (videoId: string) => void;
   onRerun: (video: LibraryVideo) => void;
+  onDelete: (video: LibraryVideo) => Promise<void>;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [rerunOpen, setRerunOpen] = useState(false);
   const [rerunScope, setRerunScope] = useState<RerunScope>("topics");
+  const [deleting, setDeleting] = useState<LibraryVideo | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   useEffect(() => {
     if (expandedId === null) {
       setDetail(null);
@@ -116,6 +120,17 @@ export function LibraryPage({
     }
   };
 
+  const confirmDelete = () => {
+    const target = deleting;
+    if (target === null) return;
+    setDeleteBusy(true);
+    void onDelete(target)
+      .then(() => {
+        setDeleting(null);
+        setExpandedId((cur) => (cur === target.id ? null : cur)); // 被删的卡若展开过，清掉展开态
+      })
+      .finally(() => setDeleteBusy(false));
+  };
   return (
     <>
       <div style={{ marginBottom: 18 }}>
@@ -209,7 +224,16 @@ export function LibraryPage({
                     <span data-testid="video-status" className={cls}>
                       {label}
                     </span>
-                    {v.status === "pending-confirm" ? (
+                    {v.status === "failed" ? (
+                      <button
+                        type="button"
+                        data-testid="card-retry"
+                        className="vn-btn sm"
+                        onClick={() => onRerun(v)}
+                      >
+                        重试
+                      </button>
+                    ) : v.status === "pending-confirm" ? (
                       <button
                         type="button"
                         data-testid="card-confirm-topics"
@@ -237,6 +261,24 @@ export function LibraryPage({
                         继续编辑
                       </button>
                     )}
+                  </div>
+                  {v.status === "failed" && v.failure !== null ? (
+                    <p className="vn-hint" data-testid="video-failure" style={{ marginTop: 6 }}>
+                      {v.failure}
+                    </p>
+                  ) : null}
+                  <div className="vn-row" style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      data-testid="video-delete"
+                      className="vn-btn sm"
+                      onClick={(e) => {
+                        e.stopPropagation(); // 点删除不展开/打开视频
+                        setDeleting(v);
+                      }}
+                    >
+                      删除
+                    </button>
                   </div>
                   {running ? <ProgressBar percent={percent} /> : null}
                   {expanded ? (
@@ -332,6 +374,47 @@ export function LibraryPage({
                 onClick={confirmRerun}
               >
                 开始重跑
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleting !== null ? (
+        <div
+          className="vn-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label="确认删除视频"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deleteBusy) setDeleting(null);
+          }}
+        >
+          <div className="vn-modal">
+            <h3>确认删除</h3>
+            <p>
+              确认删除《{deleting.title}》？将同时删除该视频的字幕、主题、笔记及切片文件，原视频文件不受影响。
+            </p>
+            <div
+              className="vn-row"
+              style={{ justifyContent: "flex-end", marginTop: 18 }}
+            >
+              <button
+                type="button"
+                className="vn-btn"
+                disabled={deleteBusy}
+                onClick={() => setDeleting(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                data-testid="delete-confirm"
+                className="vn-btn danger"
+                disabled={deleteBusy}
+                onClick={confirmDelete}
+              >
+                {deleteBusy ? "删除中…" : "确认删除"}
               </button>
             </div>
           </div>

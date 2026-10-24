@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteVideo, listLibrary, readLibraryVideo } from "./library";
-import { emptyVideoData, writeVideoData } from "./video-data";
+import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { SpeakerId, TopicId, VideoId } from "./types";
 
 function fixture(): { root: string; id: string } {
@@ -555,5 +555,61 @@ describe("deleteVideo", () => {
     expect(() => deleteVideo(root, cacheRoot, "vid-evil")).toThrow(/越出/);
     expect(existsSync(join(outside, "keep.txt"))).toBe(true);
     expect(JSON.parse(readFileSync(join(root, "index.json"), "utf8")).videos).toHaveLength(1);
+  });
+});
+
+describe("失败记录（r35）", () => {
+  function doneCard(root: string, id: string): string {
+    const outputDir = join(root, "视频一");
+    for (const name of ["前段", "后段"]) rmSync(join(outputDir, name), { recursive: true, force: true });
+    const base = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    base.transcript.utterances = [{ start: 1, end: 2, speakerId: "sp1" as SpeakerId, text: "你好" }];
+    base.topics = [
+      {
+        id: "t1" as TopicId,
+        title: "勾选",
+        summary: "s",
+        segments: [{ start: 1, end: 2 }],
+        dirName: "t1",
+        status: "done",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    mkdirSync(join(outputDir, "t1"), { recursive: true });
+    writeFileSync(join(outputDir, "t1", "topic.mp4"), "mp4");
+    writeVideoData(outputDir, base);
+    return outputDir;
+  }
+
+  test("失败记录 → 卡片 failed + 短原因；清掉后恢复原状态", () => {
+    const { root, id } = fixture();
+    const outputDir = doneCard(root, id);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("done");
+    const written = writeVideoData(outputDir, { ...readVideoData(outputDir)!, failure: { message: "API key 无效", at: "2026-10-20T08:00:00.000Z" } });
+    let v = listLibrary(root).find((x) => x.id === id)!;
+    expect(v.status).toBe("failed");
+    expect(v.failure).toBe("API key 无效");
+    writeVideoData(outputDir, { ...written, failure: null });
+    v = listLibrary(root).find((x) => x.id === id)!;
+    expect(v.status).toBe("done");
+    expect(v.failure).toBeNull();
+  });
+
+  test("失败记录优先于主题级 needs-rerun", () => {
+    const { root, id } = fixture();
+    const outputDir = doneCard(root, id);
+    const base = readVideoData(outputDir)!;
+    base.topics = base.topics.map((t) => (t.selected ? { ...t, status: "needs-rerun" as never, error: "boom" } : t));
+    writeVideoData(outputDir, base);
+    expect(listLibrary(root).find((v) => v.id === id)!.status).toBe("needs-rerun");
+    writeVideoData(outputDir, { ...readVideoData(outputDir)!, failure: { message: "处理进程意外退出", at: "2026-10-20T09:00:00.000Z" } });
+    const v = listLibrary(root).find((x) => x.id === id)!;
+    expect(v.status).toBe("failed");
+    expect(v.failure).toBe("处理进程意外退出");
   });
 });

@@ -43,6 +43,7 @@ const api: VnoteApi = {
   startNotes: (videoId, topicIds, options) => ipcRenderer.invoke(IPC.startNotes, videoId, topicIds, options) as Promise<{ jobId: string }>,
   rebuildTopics: (videoId) => ipcRenderer.invoke(IPC.rebuildTopics, videoId) as Promise<{ jobId: string }>,
   cancelExtract: (jobId) => ipcRenderer.invoke(IPC.cancelExtract, jobId) as Promise<void>,
+  deleteVideo: (videoId) => ipcRenderer.invoke(IPC.deleteVideo, videoId) as Promise<void>,
   activeJob: () => ipcRenderer.invoke(IPC.activeJob) as Promise<JobSnapshot | null>,
   onJob: (listener: (job: JobSnapshot) => void) => {
     const listenerWrapper = (_event: Electron.IpcRendererEvent, job: JobSnapshot): void => listener(job);

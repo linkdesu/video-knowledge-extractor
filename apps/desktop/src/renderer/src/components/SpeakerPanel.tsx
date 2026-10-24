@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { SpeakerInfo } from "../../../shared/ipc";
 import { showToast } from "@/lib/toast";
 import { errMessage } from "@/lib/format";
@@ -32,6 +32,11 @@ function Row({
   onUnmerge: SpeakerPanelProps["onUnmerge"];
 }) {
   const [draft, setDraft] = useState(speaker.name);
+  const focused = useRef(false);
+  // 合并/改名刷新后同步显示名；输入中不打断。
+  useEffect(() => {
+    if (!focused.current) setDraft(speaker.name);
+  }, [speaker.name]);
 
   const commit = () => {
     const name = draft.trim();
@@ -79,7 +84,11 @@ function Row({
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
+          onFocus={() => (focused.current = true)}
+          onBlur={() => {
+            focused.current = false;
+            commit();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();
           }}
@@ -108,18 +117,23 @@ function Row({
 // 说话人面板：顶层说话人列表（每行一个勾选框），≥2 个选中时启用「合并说话人」；
 // 合并后成员行保留原名/原色，存活者行出现「撤销合并」。
 export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: SpeakerPanelProps) {
-  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [pickedOrder, setPickedOrder] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [targetName, setTargetName] = useState("");
   const [busy, setBusy] = useState(false);
 
   const top = speakers.filter((s) => s.mergedInto === null);
   const membersOf = (id: string) => speakers.some((s) => s.mergedInto === id);
+  // 勾选顺序即合并目标顺序：先勾的排前。
+  const picked = new Set(pickedOrder);
+  const ordered = pickedOrder.flatMap((id) => {
+    const s = top.find((t) => t.id === id);
+    return s ? [s] : [];
+  });
   const canMerge = picked.size >= 2;
 
   const openConfirm = () => {
-    // 默认目标名：第一个自定义过的选中者，否则按勾选顺序第一个。
-    const ordered = top.filter((s) => picked.has(s.id));
+    // 默认目标名：按勾选顺序第一个自定义过的选中者，否则按勾选顺序第一个。
     const def =
       ordered.find((s) => s.customName)?.name ?? ordered[0]?.name ?? "";
     setTargetName(def);
@@ -129,12 +143,12 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
   const doMerge = async () => {
     const name = targetName.trim();
     if (name === "") return;
-    const ids = top.filter((s) => picked.has(s.id)).map((s) => s.id);
+    const ids = ordered.map((s) => s.id);
     setBusy(true);
     const ok = await onMerge(ids, name);
     setBusy(false);
     if (ok) {
-      setPicked(new Set());
+      setPickedOrder([]);
       setConfirming(false);
       showToast(`已合并为 ${name}`);
     }
@@ -174,11 +188,11 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
           onRename={onRename}
           checked={picked.has(s.id)}
           onChecked={(v) =>
-            setPicked((prev) => {
-              const next = new Set(prev);
-              if (v) next.add(s.id);
-              else next.delete(s.id);
-              return next;
+            setPickedOrder((prev) => {
+              if (v) {
+                return prev.includes(s.id) ? prev : [...prev, s.id];
+              }
+              return prev.filter((id) => id !== s.id);
             })
           }
           hasMembers={membersOf(s.id)}

@@ -42,6 +42,8 @@ type JobRecord = {
   progress: JobProgress | undefined;
   startedAt: string | undefined;
   settled: boolean;
+  /** 运行中已调过 handle.cancel()；等 exit 落终态，避免重复取消被误报 */
+  cancelRequested: boolean;
 };
 
 function runningSnapshot(jobId: string, record: JobRecord): JobSnapshot {
@@ -81,7 +83,7 @@ export class JobQueue {
   /** 入队并返回 jobId；立即发 queued 快照，槽位空就自动启动下一个。 */
   enqueue(job: JobRequest): string {
     const jobId = `${randomUUID()}:${this.nextJobId++}`;
-    const record: JobRecord = { state: "queued", request: job, handle: undefined, progress: undefined, startedAt: undefined, settled: false };
+    const record: JobRecord = { state: "queued", request: job, handle: undefined, progress: undefined, startedAt: undefined, settled: false, cancelRequested: false };
     this.queue.push({ jobId, record });
     this.emit({ state: "queued", jobId, kind: job.kind, videoId: job.videoId, sourcePath: job.sourcePath });
     this.start();
@@ -164,6 +166,8 @@ export class JobQueue {
     const r = this.running;
     if (r === undefined || r.jobId !== jobId) return;
     if (r.record.settled || r.record.state !== "running") return;
+    if (r.record.cancelRequested) return;
+    r.record.cancelRequested = true;
     r.record.handle?.cancel();
   }
 
@@ -181,6 +185,24 @@ export class JobQueue {
     if (this.running !== undefined) this.cancel(this.running.jobId);
   }
 
+  /**
+   * 取消某个视频的全部在途任务（queued 直接落 cancelled，running 调 handle.cancel 等 exit）。
+   * 返回 true 表示有任务被取消；调用方随后 `await drain()` 等 running 收尸。
+   */
+  cancelVideo(videoId: string): boolean {
+    let any = false;
+    for (const item of [...this.queue]) {
+      if (item.record.request.videoId === videoId && !item.record.settled) {
+        this.cancel(item.jobId);
+        any = true;
+      }
+    }
+    if (this.running !== undefined && this.running.record.request.videoId === videoId && !this.running.record.settled && this.running.record.state === "running" && !this.running.record.cancelRequested) {
+      this.cancel(this.running.jobId);
+      any = true;
+    }
+    return any;
+  }
   /** 有运行中任务时返回它的快照；否则仅在最近快照仍在途（queued）时返回，终态不复活。 */
   active(): JobSnapshot | undefined {
     if (this.running !== undefined) return runningSnapshot(this.running.jobId, this.running.record);

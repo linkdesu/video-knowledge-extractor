@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { CACHE_DIRNAME } from "./config";
 import {
   VIDEO_DATA_VERSION,
+  clearVideoFailure,
   emptyVideoData,
   loadVideoData,
   migrateVideoData,
   projectRunState,
   readVideoData,
+  recordVideoFailure,
   writeVideoData,
   type VideoData,
 } from "./video-data";
@@ -500,5 +502,58 @@ describe("说话人合并字段（r35）", () => {
       }),
     );
     expect(() => readVideoData(dir)).toThrow(/mergedInto/);
+  });
+});
+
+describe("失败记录（r35）", () => {
+  test("failure 写后读回一致；旧文档缺失与坏形状读回 null", () => {
+    const dir = mkdtemp();
+    const data = emptyVideoData(makeVideo(dir));
+    data.failure = { message: "API key 无效", at: "2026-10-20T08:00:00.000Z" };
+    writeVideoData(dir, data);
+    expect(readVideoData(dir)!.failure).toEqual({ message: "API key 无效", at: "2026-10-20T08:00:00.000Z" });
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [], utterances: [] },
+        chunks: [],
+        topics: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(readVideoData(dir)!.failure).toBeNull();
+    const base = readFileSync(join(dir, "video.json"), "utf8");
+    for (const bad of [{ message: 7 }, { at: 7 }, "不是对象", 42 ]) {
+      const doc = JSON.parse(base);
+      doc.failure = bad;
+      writeFileSync(join(dir, "video.json"), JSON.stringify(doc));
+      expect(readVideoData(dir)!.failure).toBeNull();
+    }
+  });
+
+  test("recordVideoFailure 落盘带 ISO 时间；文档缺失时 no-op 不抛错", () => {
+    const dir = mkdtemp();
+    writeVideoData(dir, emptyVideoData(makeVideo(dir)));
+    recordVideoFailure(dir, "LLM 未配置");
+    const d = readVideoData(dir)!;
+    expect(d.failure).not.toBeNull();
+    expect(d.failure!.message).toBe("LLM 未配置");
+    expect(Number.isNaN(Date.parse(d.failure!.at))).toBe(false);
+    recordVideoFailure(join(dir, "不存在的目录"), "不该落盘");
+  });
+
+  test("clearVideoFailure 只清非 null 记录：无记录时不动磁盘", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    writeVideoData(dir, emptyVideoData(video));
+    const before = readFileSync(join(dir, "video.json"), "utf8");
+    clearVideoFailure(dir);
+    expect(readFileSync(join(dir, "video.json"), "utf8")).toBe(before);
+    recordVideoFailure(dir, "本地 ASR 模型未就绪");
+    clearVideoFailure(dir);
+    expect(readVideoData(dir)!.failure).toBeNull();
+    clearVideoFailure(dir);
   });
 });

@@ -87,6 +87,8 @@ export type LibraryVideo = {
   updatedAt: string | null;
   /** 封面 media url；`cover.jpg` 不存在或为空时为 null。 */
   coverUrl: string | null;
+  /** 上一次运行的失败短原因（r35）；非空时 status 恒为 failed，卡片显示原因 */
+  failure: string | null;
   status: VideoStatus;
 };
 
@@ -350,6 +352,8 @@ export type VnoteApi = {
   /** 用已存字幕重新划主题并生成全部笔记。 */
   rebuildTopics(videoId: VideoId): Promise<{ jobId: string }>;
   cancelExtract(jobId: string): Promise<void>;
+  /** 删除一个视频：先取消它的在途任务，再删记录、输出与缓存；源文件不动。 */
+  deleteVideo(videoId: VideoId): Promise<void>;
   activeJob(): Promise<JobSnapshot | null>;
   onJob(listener: (job: JobSnapshot) => void): () => void;
   /** 封面后台补齐完成后广播；payload 是成功补齐的 videoId。 */
@@ -401,6 +405,7 @@ export const IPC = {
   activeJob: "extract:active",
   jobEvent: "extract:event",
   libraryCovers: "library:covers",
+  deleteVideo: "library:delete-video",
   settings: "settings:status",
   updateSettings: "settings:update",
   updateLlm: "settings:llm-update",

@@ -177,6 +177,19 @@ export function App() {
       .catch((err) => showToast(`取消失败：${errMessage(err)}`));
   }, [job]);
 
+  const removeVideo = useCallback(
+    (video: LibraryVideo) =>
+      window.vnote
+        .deleteVideo(video.id)
+        .then(() => {
+          void refreshLibrary();
+        })
+        .catch((err) => {
+          showToast(`删除失败：${errMessage(err)}`);
+          throw err;
+        }),
+    [refreshLibrary],
+  );
   const startNotes = useCallback(
     (topicIds: string[], options?: { force?: boolean }) => {
       if (detail === null) return;
@@ -263,6 +276,7 @@ export function App() {
             onImportPath={(path) => void importPath(path)}
             onRebuild={(id) => void rebuild(id)}
             onRerun={(v) => void rerun(v)}
+            onDelete={removeVideo}
           />
         ) : route.name === "glossary" ? (
           <GlossaryPage />

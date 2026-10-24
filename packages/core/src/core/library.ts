@@ -29,6 +29,8 @@ export type LibraryVideo = {
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
+  /** 上一次运行的失败短原因（r35）；非空时卡片状态恒为 failed */
+  failure: string | null;
   status: LibraryVideoStatus;
 };
 
@@ -113,6 +115,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       topicCount: 0,
       clipCount: 0,
       updatedAt: null,
+      failure: null,
       status: "failed",
     };
   }
@@ -129,6 +132,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       topicCount: data.topics.length,
       clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
       updatedAt: data.updatedAt,
+      failure: data.failure?.message ?? null,
       status: deriveStatus(data),
     };
   }
@@ -165,13 +169,15 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),
+    failure: null,
     // 旧目录有笔记但没有 video.json：结构化字幕缺失，界面要能提示重跑
     status: topicCount > 0 ? "needs-rerun" : "in-progress",
   };
 }
 
 /**
- * 库卡片状态（r33 优先级）：
+ * 库卡片状态（r33 优先级，r35 加第 0 条）：
+ * 0. 有失败记录（`failure` 非空）→ `failed`（最高优先级，上轮跑挂了）；
  * 1. 任一主题 `failed`/`needs-rerun` → `needs-rerun`；
  * 2. 无字幕 → `in-progress`（含导入后转写还没落盘的那段；`proposed` 主题此时还没出现）；
  * 3. `selected` 主题非空且全部为 `proposed` → `pending-confirm`（导入完，等用户确认）；
@@ -181,6 +187,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
  * 空 `topics` 不能当「全部完成」：`[].every` 恒真，转写完、分段没落盘的那一段会误报 done。
  */
 function deriveStatus(data: VideoData): LibraryVideoStatus {
+  if (data.failure !== null) return "failed";
   if (data.topics.some((t) => t.status === "failed" || t.status === "needs-rerun")) return "needs-rerun";
   if (data.transcript.utterances.length === 0) return "in-progress";
   const checked = data.topics.filter((t) => t.selected);

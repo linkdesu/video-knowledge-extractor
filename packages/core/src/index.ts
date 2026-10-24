@@ -16,6 +16,7 @@ export {
 } from "./core/logger";
 export { buildDiagnostics, errorLines } from "./core/diagnostics";
 export { prerequisiteProblems, formatPrerequisiteError } from "./core/preflight";
+export { describeFailure } from "./core/failure-summary";
 export type { PrerequisiteInput } from "./core/preflight";
 export type { DiagnosticsInput } from "./core/diagnostics";
 export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
@@ -99,6 +100,8 @@ export {
   migrateVideoData,
   loadVideoData,
   projectRunState,
+  recordVideoFailure,
+  clearVideoFailure,
 } from "./core/video-data";
 export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
 export {
