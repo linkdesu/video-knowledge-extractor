@@ -127,7 +127,7 @@ export async function generateAll(
   let noteCount = 0;
   const notes: Note[] = [];
   const cacheHits: string[] = [];
-  for (const id of topicIds) {
+  for (const [index, id] of topicIds.entries()) {
     const topic = data.topics.find((x) => x.id === id);
     if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
     const before = cacheKeysExisting(cacheDir);
@@ -144,6 +144,7 @@ export async function generateAll(
         cacheDir,
         client,
         trigger,
+        batch: { index, total: topicIds.length },
         onProgress,
       });
       const note = result.notes[0];

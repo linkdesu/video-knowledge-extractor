@@ -78,6 +78,42 @@ describe("runNotes", () => {
     await expect(runNotes({ outputDir: out, topicIds: [], endpoint, cacheRoot: join(out, ".cache") })).rejects.toThrow("请先勾选要生成的主题");
   });
 
+  test("整批进度按 n/m 报：两个主题各生成一次，total 是本批主题数而不是 1", async () => {
+    const out = join(tmpdir(), "rn-batch-progress");
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [
+          { start: 0, end: 30, speakerId: "s1", text: "A 内容" },
+          { start: 60, end: 90, speakerId: "s1", text: "B 内容" },
+        ],
+      };
+      d.topics = [
+        topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "queued" }),
+        topicRecord({ id: "topicB", title: "B", segments: [{ start: 60, end: 90 }], dirName: "b", status: "queued" }),
+      ];
+    });
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点"] }) };
+    const seen: Array<{ done: number; total: number; detail?: string }> = [];
+    await runNotes({
+      outputDir: out,
+      topicIds: ["topicA", "topicB"],
+      endpoint,
+      cacheRoot: join(out, ".cache"),
+      client,
+      onProgress: (p) => {
+        // topicPercent 0 是每个主题开始生成的那一次；切片子进度不再是 n/m 口径
+        if (p.step === "generate-notes" && p.topicPercent === 0) {
+          seen.push({ done: p.done, total: p.total, ...(p.detail !== undefined ? { detail: p.detail } : {}) });
+        }
+      },
+    });
+    expect(seen.map((p) => [p.detail, p.done, p.total])).toEqual([
+      ["A", 0, 2],
+      ["B", 1, 2],
+    ]);
+  });
+
   test("done 主题被跳过（mtime 不变），其余生成 topic.mp4（带 segmentOffsets），index.md 保留全部主题", async () => {
     const out = join(tmpdir(), "rn-main");
     makeVideo(out, (d) => {

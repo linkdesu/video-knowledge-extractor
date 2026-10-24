@@ -92,6 +92,11 @@ export type GenerateNotesInput = {
   onTopicProgress?: (p: { topicId: TopicId; percent: number; phase: "start" | "clips-done" }) => void;
   /** 本次运行的触发原因（缺省按首次生成），写进主题目录的 trajectory.json。 */
   trigger?: TrajectoryTrigger;
+  /**
+   * 本批任务里的位置（r37）：`generateAll` 逐主题调用本函数，进度要按整批报 n/m，
+   * 不能退化成每次 1/1。缺省时按本文件处理的主题数计。
+   */
+  batch?: { index: number; total: number };
 };
 
 export type GenerateNotesResult = {

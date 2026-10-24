@@ -86,10 +86,14 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
   const notes: Note[] = [];
   const topicDirs: string[] = [];
   const usedCacheKeys = new Set<string>();
+  // 整批位置由调用方给出（逐主题调用本函数时不能退化成 1/1）；缺省按本次选中的主题数
+  const batchIndex = input.batch?.index;
+  const batchTotal = input.batch?.total ?? selected.length;
   for (let i = 0; i < selected.length; i++) {
     const topic = selected[i];
     if (topic === undefined) continue;
-    input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: 0 });
+    const done = batchIndex ?? i;
+    input.onProgress?.({ step: "generate-notes", done, total: batchTotal, detail: topic.title, topicId: topic.id, topicPercent: 0 });
     const dir = input.dirNames.get(topic.id);
     if (dir === undefined) continue;
     const topicDir = ensureDir(resolve(input.video.outputDir, dir));
@@ -119,7 +123,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
           const part = join(workDir, `${j}.mp4`);
           await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part });
           parts.push(part);
-          input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
+          input.onProgress?.({ step: "generate-notes", done, total: batchTotal, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
         }
         const clipPath = join(topicDir, "topic.mp4");
         await concatClips({ parts, outPath: clipPath });
@@ -169,7 +173,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
       throw err;
     }
   }
-  input.onProgress?.({ step: "generate-notes", done: selected.length, total: selected.length });
+  input.onProgress?.({ step: "generate-notes", done: (batchIndex ?? 0) + selected.length, total: batchTotal });
   // index.md 不再在这里写：调用方从完整文档重建（别的主题的条目要保留，ADR-0014）
   return { notes, topicDirs, noteCacheKeys: [...usedCacheKeys] };
 }
