@@ -11,6 +11,8 @@ The 主题 page is where a user confirms the automatically detected topics (r33:
 - `topics-delete-segment` removes one time segment from the selected topic.
 - `topics-delete-cue` removes one subtitle line inside the selected segment.
 - `topics-view` selects a card and shows its subtitles next to the player. The cues are the corrected text: the detail projection applies the merged glossary (global `<notesRoot>/corrections.json` + per-video `<outputDir>/corrections.json`, per-video wins) on every read, so a newly added term shows after the detail is reloaded (r36). The stored `video.json` transcript stays raw.
+- `topics-progress` shows real state text, not a percent bar (r37): a generating topic reads 正在生成中… · 已用 MM:SS, a queued one 排队等待中…, a finished one 已完成, a failed one 生成失败：<原因> (no `topicPercent`, no bar). The notes job float reads 正在生成中（n/m）：<主题名> · 已用 MM:SS.
+- `topics-notes-gate` is the 笔记 step gate: the `3 笔记` step tab is disabled with the tooltip 请先在「主题」步骤生成笔记 until at least one topic is `done`.
 
 ## How to get to it (user POV)
 
@@ -33,6 +35,8 @@ Preconditions:
 - **Delete a segment.** Select a card with `$V click '[data-testid=topic-view-<topicId>]'`, then `$V click '[data-testid=topic-delete-seg-0]'`; `getVideo(id).topics.find(...).segments.length` decreases. There is no confirmation dialog.
 - **Delete a cue.** Run `$V click '[data-testid=subtitle-delete-<index>]'` on a visible subtitle row; `detail.transcript.utterances.length` decreases and the toast reads 已删除该条字幕.
 - **Glossary-corrected cues (r36).** Add `foo → Foo` to the 术语表 page (or to the per-video panel) and reload the detail (`window.vnote.getVideo(id)`): the matching cues' `text` contains `Foo`, while `video.json` still holds `foo`. A per-video entry with the same `wrong` overrides the global one.
+- **Progress state text (r37).** While a notes job runs, a generating topic's status text reads 正在生成中… · 已用 MM:SS (the MM:SS grows with the job), a queued topic reads 排队等待中…, a finished one 已完成, a failed one 生成失败：<原因>. There is no percent bar and no `topicPercent` UI. The notes job float reads 正在生成中（n/m）：<主题名> · 已用 MM:SS, where `n` is the running topic's `done + 1` index and `m` the total in flight. Run `$V wait "window.vnote.activeJob().then(j => j !== null)"` during the job, then read the float with `$V eval "document.querySelector('[data-testid=job-state]')?.innerText"` and expect a line matching 正在生成中（n/m）：<主题名> · 已用 MM:SS.
+- **Notes step gate (r37).** Before any topic is `done`, the `3 笔记` step tab is disabled with the tooltip 请先在「主题」步骤生成笔记 and an `aria-label` of 笔记（请先在「主题」步骤生成笔记）: `$V eval "(() => { const t = [...document.querySelectorAll('button')].find(e => e.disabled && e.title === '请先在「主题」步骤生成笔记'); return t ? { label: t.getAttribute('aria-label'), text: t.textContent } : null; })()"` must read `{ label: "笔记（请先在「主题」步骤生成笔记）", text: "3笔记" }`. After the first topic is `done`, the same read must be `null` and `click-text '笔记'` must reach the 笔记 page (the tab is enabled, no tooltip).
 
 ### Recipe: Confirm and generate（checked-only generation, mtime-stable rerun）
 

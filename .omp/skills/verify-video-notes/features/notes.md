@@ -4,12 +4,12 @@ The 笔记 page shows the generated note for one topic at a time: title, key poi
 
 ## Sub-features
 
-- `notes-list` lists topics with their note status (完成 / 部分完成 / 生成中 / 排队 / 需重跑 / 失败) and a 查看笔记 button per row.
+- `notes-list` lists topics with their note status — 生成中 reads 正在生成中… · 已用 MM:SS, 排队 reads 排队等待中…, 完成 reads 已完成, 需重跑 reads 待重新生成, 失败 reads 生成失败：<原因> (r37: real `n/m` progress, no percent bars) — and a 查看笔记 button per row.
 - `notes-open` selects a topic and renders its note, ranges, the single `clip-player`, and subtitle lines.
 - `notes-clip` shows **one `<video>` per topic** (`clip-player`) playing the concatenated `topic.mp4`, or a 待重新生成 placeholder when the topic has no clip. There is no per-segment clip video anymore (r33).
 - `notes-seg-seek` clicks a segment-label chip (`clip-seg-<i>`) and seeks the `clip-player` to `segmentOffsets[i]`, starting playback.
 - `notes-seek` clicks a subtitle line and seeks the `clip-player` to that line's offset in `topic.mp4` (toast `已定位到 <time>`); `paused` is `false` afterwards.
-- `notes-regenerate` regenerates the currently selected topic only.
+- `notes-regenerate` is the per-topic 重新生成 button on every right-side topic card (`topic-regenerate-<topicId>`): it is disabled and labelled 生成中… while that topic generates, usable on any status, and allows unlimited repeats. The old left-column 单独重新生成 button is gone. Each run appends one entry to the topic's `trajectory.json` (「Trajectory」).
 - `notes-reveal` opens the output directory in Finder (side effect outside the app; avoid in automation).
 
 ## How to get to it (user POV)
@@ -29,7 +29,7 @@ Preconditions:
 - **Read the note set.** Run `$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => d.topics.map(t => ({ id: t.id, title: t.title, status: t.status, clips: t.clips.length, keyPoints: t.keyPoints.length })))"`. A note is `done` only when its `topic.md` and clips exist.
 - **Switch notes.** Run `$V click '[data-testid=note-open]' --index 1` (the second row; indexes follow `getVideo(id).topics` order). The left pane heading changes to that topic's title.
 - **Seek from a subtitle.** Read the expected offset first (see 「Subtitle real click → seek」): `T = offsets[gi] + (u.start - seg.start)`. Run `$V click '[data-testid=clip-sub]' --index 0` (a real click; the line is highlighted, toast `已定位到 <time>`). Then `$V wait "Math.abs(document.querySelector('[data-testid=clip-player]').currentTime - $T) < 0.1"` and `$V eval "document.querySelector('[data-testid=clip-player]').paused === false"` — the clip plays from the offset (the r33 fix: the subtitle rows seek and start playback).
-- **Regenerate one topic.** Run `$V click-text '单独重新生成'`, then `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 180000`. With cache intact this finishes quickly; the note row shows 生成中 while it runs.
+- **Regenerate one topic.** Run `$V click '[data-testid=topic-regenerate-<topicId>]'` (the per-topic card button; the left-column 单独重新生成 button no longer exists), then `$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 180000`. The button is disabled and labelled 生成中… for the duration of that topic's generation; it is usable on any status and may be clicked again, without a cap. With cache intact this finishes quickly; while it runs the topic's `trajectory.json` grows by one history entry.
 - **Output directory.** Run `$V eval "window.vnote.listLibrary().then(v => v[0].outputDir)"` and inspect `<outputDir>/index.md` and each topic directory (`topic.md` plus a **single `topic.mp4`** — the per-segment numbered `*.mp4` only exist in old pre-r33 data). Do not click 打开输出目录: it opens Finder.
 
 ### Recipe: One video element per topic（clip-player）
@@ -104,8 +104,32 @@ $V shot notes-seam
 
 The literal assertion: `|ffprobe(topic.mp4 duration) − Σ union intervals| < 0.5 s`. The union computation is the `planTopicClip` rule (2 s pre-roll, `next.start < prev.end + 0.5` merges, no gap fill). For a single-segment topic this reduces to `|D − (seg.end − max(0, seg.start − 2))| < 0.5`.
 
-## Gotchas
+### Recipe: Trajectory（per-run `trajectory.json` history, no API key inside）
 
+Every regeneration run appends one entry to the topic's `trajectory.json`; the history grows by one per run with no cap.
+
+```bash
+# record the history length before a regeneration (0 for a topic that was never regenerated in this run)
+N0=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['history']))" "$OUTDIR/<topicDir>/trajectory.json")
+# regenerate the topic through the per-topic card button
+$V click '[data-testid=topic-regenerate-<topicId>]'
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 180000
+N1=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['history']))" "$OUTDIR/<topicDir>/trajectory.json")
+test "$N1" = "$((N0 + 1))"
+# expected: exit 0 — exactly one history entry per run, no cap on repeats
+# the file is the per-topic record: topicId, topicTitle, updatedAt, latest, history[]
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert set(d) == {'topicId','topicTitle','updatedAt','latest','history'}" "$OUTDIR/<topicDir>/trajectory.json"
+# expected: exit 0 — the four fields plus history, no more
+# the key never leaks: the saved LLM key must appear nowhere in the file
+rg -c "$KEY" "$OUTDIR/<topicDir>/trajectory.json"
+# expected: 0 (no API key inside)
+$V shot notes-trajectory
+```
+
+The literal assertions: `len(history)` grows by exactly one per regeneration run (repeat the click to prove there is no cap), the top level is `{ topicId, topicTitle, updatedAt, latest, history[] }`, and the LLM key appears nowhere in the file.
+
+## Gotchas
+- The per-topic 重新生成 (`topic-regenerate-<topicId>`) sits on every right-side topic card and is the only single-topic regenerate entry (r37): the left-column 单独重新生成 button is gone. It is disabled and labelled 生成中… only while that topic generates, and may be clicked on any status, unlimited times; each run appends one `trajectory.json` history entry with no cap.
 - The clip is now the single `topic.mp4` per topic (r33): one `TopicClip` record whose `segmentOffsets` (length = segment count) gives each segment's start offset in the concatenated file. The per-segment numbered `*.mp4` (`01-….mp4`) only exist in pre-r33 data; for those, the renderer falls back to source playback and the clip caption is positional. Match proof on `clip.file === "topic.mp4"` for r33 data.
 - Clips are cut with **2 s pre-roll** (r33, was 3 s), so a segment's covered interval starts at `max(0, seg.start − 2)`; overlapping or < 0.5 s-apart intervals merge into one union, no gap fill. `clip.segmentIndexes` says which segments a union covers; `clip.segmentOffsets[i]` is the i-th segment's offset inside `topic.mp4`. Do not assume one clip per segment.
 - `[data-testid=note-open]` appears once per topic row. Without `--index` the helper clicks the first one.
