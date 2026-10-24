@@ -836,8 +836,9 @@ async function ensurePipelineReady(): Promise<void> {
         : null;
   let localModel: { ready: boolean; missing: string[] } | null = null;
   if (provider === "local") {
-    const status = modelStatus(settings.modelDir);
-    localModel = { ready: status.ready, missing: status.bundles.filter((b) => b.state !== "ready").map((b) => b.title) };
+    // r37：校验模型入口已删除，就绪口径与设置页「检测本地模型」同一事实源（文件存在性）
+    const check = checkModels(settings.modelDir);
+    localModel = { ready: check.ready, missing: check.models.filter((m) => !m.ready).map((m) => m.label) };
   }
   const problems = prerequisiteProblems({ llmError, asrError, localModel, queueBusy: queue.busy() });
   if (credentialTxError !== null) problems.unshift(credentialTxError);
@@ -1035,7 +1036,7 @@ function credentialFieldSource(envValue: string | undefined, stored: string | un
   return "none";
 }
 function asrStatusDto(): SettingsStatus["asr"] {
-  const local = modelStatus(settings.modelDir);
+  const local = checkModels(settings.modelDir);
   const env = asrEnv(process.env);
   const secrets = asrSecrets();
   const openaiResolution = resolveAsrFor(settings, "openai", secrets, process.env);
@@ -1044,7 +1045,7 @@ function asrStatusDto(): SettingsStatus["asr"] {
   return {
     provider: effectiveAsrProvider(),
     providerLocked: locked.asrProvider,
-    local: { modelId: ASR_MODEL_ID, ready: local.ready, missing: local.bundles.filter((b) => b.state !== "ready").map((b) => b.title) },
+    local: { modelId: ASR_MODEL_ID, ready: local.ready, missing: local.models.filter((m) => !m.ready).map((m) => m.label) },
     openai: {
       baseUrl: settings.asr.openai.baseUrl === "" ? "" : displayUrl(settings.asr.openai.baseUrl),
       model: settings.asr.openai.model,
@@ -1261,11 +1262,11 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
 async function testAsr(): Promise<TestAsrResult> {
   if (credentialTxError !== null) return { ok: false, modelsFound: null, message: credentialTxError };
   if (effectiveAsrProvider() === "local") {
-    const status = modelStatus(settings.modelDir);
-    const ready = status.bundles.filter((b) => b.state === "ready").length;
-    return ready === status.bundles.length
+    const check = checkModels(settings.modelDir);
+    const ready = check.models.filter((m) => m.ready).length;
+    return check.ready
       ? { ok: true, modelsFound: ready, message: "本地模型已全部就绪" }
-      : { ok: false, modelsFound: ready, message: `本地模型缺 ${status.bundles.length - ready}/${status.bundles.length} 包，请在设置页下载或导入` };
+      : { ok: false, modelsFound: ready, message: `本地模型缺 ${check.models.length - ready}/${check.models.length} 组，请把模型放进 ${settings.modelDir}` };
   }
   const asr = resolveAsrFor(settings, effectiveAsrProvider(), asrSecrets(), process.env);
   if (asr.value === undefined) return { ok: false, modelsFound: null, message: `ASR 未配齐（${asr.missing.join("、")}）` };
