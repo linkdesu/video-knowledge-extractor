@@ -2,9 +2,10 @@ import { join, resolve, isAbsolute } from "node:path";
 import { acquireVideoLock, isVideoLockHeldByForeign, isVideoLocked, type VideoLock } from "./lock";
 import { ensureDir, writeFileAtomic } from "./paths";
 import { renderIndexMarkdown, renderTopicMarkdown } from "./render";
+import { speakerNameMap } from "./speaker-map";
 import { readVideoData, writeVideoData } from "./video-data";
 import type { TopicRecord, VideoData } from "./video-data";
-import type { Segment, Video } from "./types";
+import type { Segment, Speaker, Video } from "./types";
 
 const MERGE_GAP_SECONDS = 0.5;
 
@@ -39,7 +40,7 @@ function assertHasTranscript(data: VideoData): void {
  */
 function rerender(outputDir: string, data: VideoData, affected: ReadonlySet<string>): void {
   if (data.transcript.utterances.length > 0) {
-    const speakerNames = new Map(data.transcript.speakers.map((s) => [s.id, s.name]));
+    const speakerNames = speakerNameMap(data.transcript.speakers);
     for (const t of data.topics) {
       if (affected.size > 0 && !affected.has(t.id)) continue;
       const segments = t.segments;
@@ -89,12 +90,60 @@ function apply(
   return writeVideoData(outputDir, data);
 }
 
-/** 说话人改名：改名并重渲染全部 `topic.md`（正文里的说话人名来自这里）。 */
+/** 说话人结构变化（合并/拆分）后盖 `speakerChangedAt`：只有存在 `done` 主题才盖时间，界面据此提示可重新生成。 */
+function markSpeakerChanged(data: VideoData): void {
+  if (data.topics.some((t) => t.status === "done")) data.speakerChangedAt = new Date().toISOString();
+}
+
+/** 说话人改名：改名并标记 `customName`，重渲染全部 `topic.md`（正文里的说话人名来自这里）。 */
 export function renameSpeaker(outputDir: string, speakerId: string, name: string): VideoData {
   return apply(outputDir, (data, affected) => {
     const speaker = data.transcript.speakers.find((s) => s.id === speakerId);
     if (speaker === undefined) throw new Error(`说话人 ${speakerId} 不存在`);
     speaker.name = name;
+    speaker.customName = true;
+    for (const t of data.topics) affected.add(t.id);
+  });
+}
+
+/** 合并说话人：≥2 个不同的顶层说话人，按输入顺序第一个为目标；目标改名并标 `customName`（名字有变才改），
+ * 其余选中者 `mergedInto` 指向目标、保留原名/原色；字幕 `speakerId` 与说话人记录原样不动。 */
+export function mergeSpeakers(outputDir: string, speakerIds: string[], targetName: string): VideoData {
+  const name = targetName.trim();
+  if (name === "") throw new Error("合并后的说话人名不能为空");
+  if (new Set(speakerIds).size < 2) throw new Error("合并至少需要两个不同的说话人");
+  return apply(outputDir, (data, affected) => {
+    const byId = new Map<string, Speaker>(data.transcript.speakers.map((s) => [s.id, s]));
+    for (const id of speakerIds) {
+      const s = byId.get(id);
+      if (s === undefined) throw new Error(`说话人 ${id} 不存在`);
+      if (s.mergedInto !== null && s.mergedInto !== undefined) throw new Error(`说话人 ${id} 已被合并`);
+    }
+    const target = byId.get(speakerIds[0]!)!;
+    if (target.name !== name) {
+      target.name = name;
+      target.customName = true;
+    }
+    for (const id of speakerIds) {
+      if (id === target.id) continue;
+      byId.get(id)!.mergedInto = target.id;
+    }
+    markSpeakerChanged(data);
+    for (const t of data.topics) affected.add(t.id);
+  });
+}
+
+/** 撤销合并：清空所有指向 `speakerId` 的 `mergedInto`，保留各自名字/颜色；没有成员则拒绝。 */
+export function unmergeSpeaker(outputDir: string, speakerId: string): VideoData {
+  return apply(outputDir, (data, affected) => {
+    const target = data.transcript.speakers.find((s) => s.id === speakerId);
+    if (target === undefined) throw new Error(`说话人 ${speakerId} 不存在`);
+    const members = data.transcript.speakers.filter(
+      (s) => s.mergedInto !== null && s.mergedInto !== undefined && s.mergedInto === speakerId,
+    );
+    if (members.length === 0) throw new Error(`说话人 ${speakerId} 没有成员，无法撤销合并`);
+    for (const m of members) m.mergedInto = null;
+    markSpeakerChanged(data);
     for (const t of data.topics) affected.add(t.id);
   });
 }

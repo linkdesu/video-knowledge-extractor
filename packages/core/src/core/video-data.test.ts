@@ -453,3 +453,52 @@ describe("projectRunState", () => {
     expect(projectRunState(d, { locked: false })).toBe(d);
   });
 });
+
+describe("说话人合并字段（r35）", () => {
+  test("mergedInto/customName 写后读回一致", () => {
+    const dir = mkdtemp();
+    const data = emptyVideoData(makeVideo(dir));
+    data.transcript.speakers = [
+      { id: "sp1" as SpeakerId, name: "张三", color: "#f00", customName: true },
+      { id: "sp2" as SpeakerId, name: "说话人2", color: "#0f0", mergedInto: "sp1" as SpeakerId },
+    ];
+    writeVideoData(dir, data);
+    const d = readVideoData(dir)!;
+    const sp1 = d.transcript.speakers.find((s) => s.id === "sp1")!;
+    const sp2 = d.transcript.speakers.find((s) => s.id === "sp2")!;
+    expect(sp1.customName).toBe(true);
+    expect(sp1.mergedInto).toBeUndefined();
+    expect(sp2.mergedInto).toBe("sp1" as never);
+    expect(sp2.customName).toBeUndefined();
+  });
+
+  test("旧文档缺字段读回为空（不报错）；非法形状被拒绝", () => {
+    const dir = mkdtemp();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [{ id: "sp1", name: "n", color: "#f00" }], utterances: [] },
+        chunks: [],
+        topics: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    const d = readVideoData(dir)!;
+    expect(d.speakerChangedAt).toBeNull();
+    expect(d.transcript.speakers[0]!.mergedInto).toBeUndefined();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [{ id: "sp1", name: "n", color: "#f00", mergedInto: 7 }], utterances: [] },
+        chunks: [],
+        topics: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(() => readVideoData(dir)).toThrow(/mergedInto/);
+  });
+});

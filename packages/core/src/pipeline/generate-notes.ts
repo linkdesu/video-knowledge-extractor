@@ -11,6 +11,7 @@ import type { GenerateNotesInput, GenerateNotesResult, LlmClient } from "../core
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
 import { createLlmClient, tryParseJson } from "../llm/openai";
 import { renderIndexMarkdown, renderTopicMarkdown } from "../core/render";
+import { speakerNameMap } from "../core/speaker-map";
 
 export { renderIndexMarkdown, renderTopicMarkdown };
 
@@ -79,7 +80,7 @@ async function keyPointsFor(
 export async function generateNotes(input: GenerateNotesInput): Promise<GenerateNotesResult> {
   const client = input.client ?? createLlmClient(input.endpoint);
   const selected = selectedTopics(input);
-  const speakerNames = new Map(input.transcript.speakers.map((s) => [s.id, s.name]));
+  const speakerNames = speakerNameMap(input.transcript.speakers);
   const notes: Note[] = [];
   const topicDirs: string[] = [];
   const usedCacheKeys = new Set<string>();
@@ -95,36 +96,36 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     const clips: Clip[] = [];
     // 单文件主题切片（r33）：每个 union 切到系统临时目录，concat 成 topic.mp4（流拷贝）
     const { unions, segmentOffsets } = planTopicClip(topic.segments);
+    // 没有可切片的时间段：拒绝生成，主题不能在没有 topic.mp4 时达到 done
+    if (unions.length === 0) throw new Error(`主题 ${topic.title} 没有可切片的时间段`);
     const clipT0 = performance.now();
-    if (unions.length > 0) {
-      const workDir = mkdtempSync(join(tmpdir(), "vnote-clip-"));
-      const parts: string[] = [];
-      try {
-        for (let j = 0; j < unions.length; j++) {
-          const u = unions[j];
-          if (u === undefined) continue;
-          const part = join(workDir, `${j}.mp4`);
-          await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part });
-          parts.push(part);
-          input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
-        }
-        const clipPath = join(topicDir, "topic.mp4");
-        await concatClips({ parts, outPath: clipPath });
-        // 拼接成功后删掉该主题目录里的旧编号切片（旧数据；topic.mp4 本身不在 SLICE_RE 内）
-        for (const entry of readdirSync(topicDir)) {
-          if (entry !== "topic.mp4" && SLICE_RE.test(entry)) unlinkSync(join(topicDir, entry));
-        }
-        const first = unions[0];
-        const last = unions[unions.length - 1];
-        if (first !== undefined && last !== undefined) {
-          const segmentIndexes = topic.segments.map((_, n) => n);
-          clips.push({ topicId: topic.id, segment: { start: first.start, end: last.end }, path: clipPath, segmentIndexes, segmentOffsets });
-        }
-      } finally {
-        rmSync(workDir, { recursive: true, force: true });
+    const workDir = mkdtempSync(join(tmpdir(), "vnote-clip-"));
+    const parts: string[] = [];
+    try {
+      for (let j = 0; j < unions.length; j++) {
+        const u = unions[j];
+        if (u === undefined) continue;
+        const part = join(workDir, `${j}.mp4`);
+        await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part });
+        parts.push(part);
+        input.onProgress?.({ step: "generate-notes", done: i, total: selected.length, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
       }
-      logger().info("llm", "切片完成", { clipCount: parts.length, durationMs: Math.round(performance.now() - clipT0) });
+      const clipPath = join(topicDir, "topic.mp4");
+      await concatClips({ parts, outPath: clipPath });
+      // 拼接成功后删掉该主题目录里的旧编号切片（旧数据；topic.mp4 本身不在 SLICE_RE 内）
+      for (const entry of readdirSync(topicDir)) {
+        if (entry !== "topic.mp4" && SLICE_RE.test(entry)) unlinkSync(join(topicDir, entry));
+      }
+      const first = unions[0];
+      const last = unions[unions.length - 1];
+      if (first !== undefined && last !== undefined) {
+        const segmentIndexes = topic.segments.map((_, n) => n);
+        clips.push({ topicId: topic.id, segment: { start: first.start, end: last.end }, path: clipPath, segmentIndexes, segmentOffsets });
+      }
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
     }
+    logger().info("llm", "切片完成", { clipCount: parts.length, durationMs: Math.round(performance.now() - clipT0) });
     const markdown = renderTopicMarkdown(topic, utterances, keyPoints, clips, speakerNames);
     writeFileAtomic(join(topicDir, "topic.md"), markdown);
     logger().info("llm", "笔记生成完成", { topicId: topic.id, markdownBytes: Buffer.byteLength(markdown, "utf8") });

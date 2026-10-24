@@ -37,7 +37,7 @@ export type ClipInfo = {
 
 export type SegmentInfo = { start: number; end: number };
 
-export type SpeakerInfo = { id: string; name: string; color: string };
+export type SpeakerInfo = { id: string; name: string; color: string; mergedInto: string | null; customName: boolean };
 
 export type UtteranceInfo = {
   /** 在原始转写里的下标；删除接口用它，界面只展示应用纠错后的文本。 */
@@ -102,6 +102,8 @@ export type VideoDetail = {
   asrEngine: "local" | "openai" | "volcengine" | null;
   topics: TopicInfo[];
   corrections: CorrectionEntry[];
+  /** 主题生成后说话人发生过合并/撤销/改名（r35），界面据此提示可重新生成。 */
+  speakersChanged: boolean;
 };
 
 /** 密钥来源：环境变量/种子（仅 dev 模式的 ASR 字段与 LLM 种子）、系统密钥库、没有。 */
@@ -327,6 +329,8 @@ export type VnoteApi = {
   deleteUtterance(videoId: VideoId, index: number): Promise<VideoDetail>;
   deleteTopicSegment(videoId: VideoId, topicId: string, segmentIndex: number): Promise<VideoDetail>;
   mergeTopics(videoId: VideoId, topicIds: string[]): Promise<VideoDetail>;
+  mergeSpeakers(videoId: VideoId, speakerIds: string[], targetName: string): Promise<VideoDetail>;
+  unmergeSpeaker(videoId: VideoId, speakerId: string): Promise<VideoDetail>;
   setTopicSelected(videoId: VideoId, topicId: string, selected: boolean): Promise<VideoDetail>;
   saveCorrections(videoId: VideoId, entries: CorrectionEntry[]): Promise<CorrectionEntry[]>;
   listGlossary(): Promise<CorrectionEntry[]>;
@@ -378,6 +382,8 @@ export const IPC = {
   deleteUtterance: "video:delete-utterance",
   deleteTopicSegment: "video:delete-segment",
   mergeTopics: "video:merge-topics",
+  mergeSpeakers: "video:merge-speakers",
+  unmergeSpeaker: "video:unmerge-speaker",
   setTopicSelected: "video:set-topic-selected",
   saveCorrections: "video:save-corrections",
   listGlossary: "glossary:list",

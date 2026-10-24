@@ -30,6 +30,8 @@ const api: VnoteApi = {
   deleteUtterance: (videoId, index) => ipcRenderer.invoke(IPC.deleteUtterance, videoId, index) as Promise<VnoteApi["deleteUtterance"] extends (a: string, b: number) => Promise<infer R> ? R : never>,
   deleteTopicSegment: (videoId, topicId, segmentIndex) => ipcRenderer.invoke(IPC.deleteTopicSegment, videoId, topicId, segmentIndex) as Promise<VnoteApi["deleteTopicSegment"] extends (a: string, b: string, c: number) => Promise<infer R> ? R : never>,
   mergeTopics: (videoId, topicIds) => ipcRenderer.invoke(IPC.mergeTopics, videoId, topicIds) as Promise<VnoteApi["mergeTopics"] extends (a: string, b: string[]) => Promise<infer R> ? R : never>,
+  mergeSpeakers: (videoId, speakerIds, targetName) => ipcRenderer.invoke(IPC.mergeSpeakers, videoId, speakerIds, targetName) as Promise<VnoteApi["mergeSpeakers"] extends (a: string, b: string[], c: string) => Promise<infer R> ? R : never>,
+  unmergeSpeaker: (videoId, speakerId) => ipcRenderer.invoke(IPC.unmergeSpeaker, videoId, speakerId) as Promise<VnoteApi["unmergeSpeaker"] extends (a: string, b: string) => Promise<infer R> ? R : never>,
   setTopicSelected: (videoId, topicId, selected) => ipcRenderer.invoke(IPC.setTopicSelected, videoId, topicId, selected) as Promise<VnoteApi["setTopicSelected"] extends (a: string, b: string, c: boolean) => Promise<infer R> ? R : never>,
   saveCorrections: (videoId, entries) => ipcRenderer.invoke(IPC.saveCorrections, videoId, entries) as Promise<VnoteApi["saveCorrections"] extends (a: string, b: CorrectionEntry[]) => Promise<infer R> ? R : never>,
   listGlossary: () => ipcRenderer.invoke(IPC.listGlossary) as Promise<VnoteApi["listGlossary"] extends () => Promise<infer R> ? R : never>,

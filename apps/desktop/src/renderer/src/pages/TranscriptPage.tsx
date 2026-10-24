@@ -10,6 +10,7 @@ import { SpeakerPanel } from "@/components/SpeakerPanel";
 import { VideoGlossaryPanel } from "@/components/VideoGlossaryPanel";
 import { errMessage } from "@/lib/format";
 import { showToast } from "@/lib/toast";
+import { resolveSpeakerName } from "@/lib/speaker-resolve";
 
 // 字幕页：播放器 + 随播放滚动的字幕列表 + 说话人面板 + 本视频专属术语表。
 export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
@@ -23,11 +24,10 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
   const transcript = detail.transcript;
   const speakers = transcript?.speakers ?? [];
   const utterances = transcript?.utterances ?? [];
-  const speakerById = useMemo(() => {
-    const m: Record<string, (typeof speakers)[number]> = {};
-    for (const s of speakers) m[s.id] = s;
-    return (id: string) => m[id] ?? { id, name: id, color: "#9aa3b8" };
-  }, [speakers]);
+  const resolved = useMemo(
+    () => (id: string) => resolveSpeakerName(speakers, id),
+    [speakers],
+  );
   // 当前播放命中的字幕行：最后一句 start <= 当前时间（且未到下一句开始）。
   const activeIndex = useMemo(() => {
     let last = -1;
@@ -59,10 +59,39 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
     [detail.video.id, onRefresh],
   );
 
+  const merge = useCallback(
+    async (speakerIds: string[], targetName: string) => {
+      try {
+        await window.vnote.mergeSpeakers(detail.video.id, speakerIds, targetName);
+        await onRefresh();
+        return true;
+      } catch (err) {
+        showToast(`合并失败：${errMessage(err)}`);
+        return false;
+      }
+    },
+    [detail.video.id, onRefresh],
+  );
+
+  const unmerge = useCallback(
+    async (speakerId: string) => {
+      try {
+        await window.vnote.unmergeSpeaker(detail.video.id, speakerId);
+        await onRefresh();
+        showToast("已撤销合并");
+        return true;
+      } catch (err) {
+        showToast(`撤销合并失败：${errMessage(err)}`);
+        return false;
+      }
+    },
+    [detail.video.id, onRefresh],
+  );
+
   const rows = useMemo(
     () =>
       utterances.map((u) => {
-        const sp = speakerById(u.speakerId);
+        const sp = resolved(u.speakerId);
         return {
           index: u.index,
           start: u.start,
@@ -71,7 +100,7 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
           speakerColor: sp.color,
         };
       }),
-    [utterances, speakerById],
+    [utterances, resolved],
   );
 
   return (
@@ -122,7 +151,7 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
       }
       aside={
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <SpeakerPanel speakers={speakers} onRename={rename} />
+          <SpeakerPanel speakers={speakers} onRename={rename} onMerge={merge} onUnmerge={unmerge} />
           <VideoGlossaryPanel videoId={detail.video.id} entries={detail.corrections} onSaved={onRefresh} />
         </div>
       }

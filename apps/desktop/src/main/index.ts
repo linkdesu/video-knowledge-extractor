@@ -44,6 +44,8 @@ import {
   deleteUtterance,
   deleteTopicSegment,
   mergeTopics,
+  mergeSpeakers,
+  unmergeSpeaker,
   asrEnv,
   resolveAsrFor,
   applyLlmSeed,
@@ -713,7 +715,13 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
       raw.transcript.utterances.length === 0
         ? null
         : {
-            speakers: raw.transcript.speakers.map((s) => ({ id: s.id, name: s.name, color: speakerColor(s.id) })),
+            speakers: raw.transcript.speakers.map((s) => ({
+              id: s.id,
+              name: s.name,
+              color: speakerColor(s.id),
+              mergedInto: s.mergedInto ?? null,
+              customName: s.customName ?? false,
+            })),
             utterances: raw.transcript.utterances.map((u, i) => ({
               index: i,
               start: u.start,
@@ -749,6 +757,7 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
       source: e.source ?? null,
       updatedAt: e.updatedAt ?? mtimeIso,
     })),
+    speakersChanged: raw.speakerChangedAt !== null,
   };
 }
 
@@ -1590,6 +1599,22 @@ void app.whenReady().then(async () => {
     guard((_e, videoId: string, topicIds: string[]) => {
       const entry = resolveVideo(videoId);
       mergeTopics(entry.outputDir, topicIds);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.mergeSpeakers,
+    guard((_e, videoId: string, speakerIds: string[], targetName: string) => {
+      const entry = resolveVideo(videoId);
+      mergeSpeakers(entry.outputDir, speakerIds, targetName);
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
+    IPC.unmergeSpeaker,
+    guard((_e, videoId: string, speakerId: string) => {
+      const entry = resolveVideo(videoId);
+      unmergeSpeaker(entry.outputDir, speakerId);
       return detailDto(videoId);
     }),
   );

@@ -5,6 +5,7 @@ import { ProgressBar } from "@/rbp/blocks/monitoring-9";
 import { fmtClock, fmtElapsed } from "@/lib/format";
 import { clipSeekTarget } from "@/lib/playback";
 import { showToast } from "@/lib/toast";
+import { resolveSpeakerName } from "@/lib/speaker-resolve";
 
 const BTN =
   "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap select-none transition-[color,background-color,border-color,box-shadow,outline-color,scale,filter] duration-[120ms] ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.98] motion-reduce:active:scale-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--rb-accent,oklch(20.5%_0_0))] dark:focus-visible:outline-[var(--rb-accent,oklch(100%_0_0))] border border-neutral-900/12 bg-white text-neutral-900 shadow-[0_1px_2px_-1px_rgb(0_0_0/0.12)] hover:not-disabled:border-neutral-900/32 hover:not-disabled:bg-linear-to-b hover:not-disabled:from-neutral-900/3 hover:not-disabled:to-neutral-900/3 active:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)] disabled:border-neutral-900/8 disabled:text-neutral-900/40 disabled:shadow-none dark:border-neutral-100/14 dark:bg-neutral-900 dark:text-neutral-100 dark:shadow-[0_1px_2px_-1px_rgb(0_0_0/0.36)] dark:hover:not-disabled:border-neutral-100/32 dark:hover:not-disabled:from-neutral-100/3 dark:hover:not-disabled:to-neutral-100/3 dark:active:shadow-[inset_0_1px_2px_rgb(0_0_0/0.4)] dark:disabled:border-neutral-100/8 dark:disabled:text-neutral-100/40";
@@ -69,6 +70,14 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
           </button>
         </div>
       </div>
+      {detail.speakersChanged ? (
+        <div
+          className="rounded-[10px] border border-amber-500/30 bg-amber-500/10 px-3.5 py-2 text-[13px] text-amber-300/90"
+          data-testid="speakers-changed-banner"
+        >
+          说话人已变更，可重新生成
+        </div>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3.5 lg:grid-cols-[1fr_300px]">
         <div className="flex min-w-0 flex-col gap-3.5 overflow-y-auto">
@@ -158,12 +167,12 @@ export function NotesPage({ detail, job, onPage, onStartNotes }: PageContext) {
                           (u) => u.start >= seg.start && u.start < seg.end,
                         );
                         const rows = subs.map((u) => {
-                          const sp = detail.transcript?.speakers.find((s) => s.id === u.speakerId);
+                          const sp = resolveSpeakerName(detail.transcript?.speakers ?? [], u.speakerId);
                           return {
                             start: u.start,
                             text: u.text,
-                            speakerName: sp?.name ?? "说话人",
-                            speakerColor: sp?.color ?? "#94a3b8",
+                            speakerName: sp.name,
+                            speakerColor: sp.color,
                           };
                         });
                         return (

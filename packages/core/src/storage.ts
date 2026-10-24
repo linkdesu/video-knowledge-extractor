@@ -57,6 +57,8 @@ export {
   deleteUtterance,
   deleteTopicSegment,
   mergeTopics,
+  mergeSpeakers,
+  unmergeSpeaker,
   setTopicSelected,
   setTopicProgress,
   settleRunWhileLocked,

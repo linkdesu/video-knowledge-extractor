@@ -51,6 +51,8 @@ export type VideoData = {
   asrEngine: AsrProvider | null;
   /** 写这批主题的那次运行的 token；结算后 null（ADR-0015 §7） */
   runToken: string | null;
+  /** 说话人合并/拆分后盖的 ISO 时间；存在 `done` 主题时提示可重新生成（r35），重新生成成功后清空 */
+  speakerChangedAt: string | null;
   updatedAt: string;
 };
 
@@ -216,7 +218,13 @@ export function readVideoData(outputDir: string): VideoData | undefined {
   const speakers = requireArray(transcript.speakers, `${p}.transcript.speakers`);
   const speakerList = speakers.map((s) => {
     if (!isObject(s)) throw new Error(`${p}.transcript.speakers 项不是对象`);
-    return { id: readString(s.id, `${p}.transcript.speakers.id`) as SpeakerId, name: readString(s.name, `${p}.transcript.speakers.name`), color: readString(s.color, `${p}.transcript.speakers.color`) };
+    return {
+      id: readString(s.id, `${p}.transcript.speakers.id`) as SpeakerId,
+      name: readString(s.name, `${p}.transcript.speakers.name`),
+      color: readString(s.color, `${p}.transcript.speakers.color`),
+      mergedInto: s.mergedInto === undefined ? undefined : (parseNullableString(s.mergedInto, `${p}.transcript.speakers.mergedInto`) as SpeakerId | null | undefined),
+      customName: typeof s.customName === "boolean" ? s.customName : undefined,
+    };
   });
   const utt = requireArray(transcript.utterances, `${p}.transcript.utterances`);
   const utterances: Utterance[] = utt.map((u, i) => {
@@ -240,6 +248,7 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     resolution: parseResolution(parsed.resolution, `${p}.resolution`),
     asrEngine: parseAsrEngine(parsed.asrEngine, `${p}.asrEngine`),
     runToken: parsed.runToken === undefined ? null : parseNullableString(parsed.runToken, `${p}.runToken`),
+    speakerChangedAt: parsed.speakerChangedAt === undefined ? null : parseNullableString(parsed.speakerChangedAt, `${p}.speakerChangedAt`),
     updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
   };
 }
@@ -272,6 +281,7 @@ export function emptyVideoData(video: Video): VideoData {
     resolution: null,
     asrEngine: null,
     runToken: null,
+    speakerChangedAt: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -372,6 +382,7 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     resolution: null,
     asrEngine: null,
     runToken: null,
+    speakerChangedAt: null,
     updatedAt: new Date().toISOString(),
   };
 }
