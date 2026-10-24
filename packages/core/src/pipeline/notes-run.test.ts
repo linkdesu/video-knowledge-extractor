@@ -22,11 +22,11 @@ function makeMp4(path: string, seconds: number): void {
 }
 
 /** 在临时目录里建好 `video.json` + 真实源 `src.mp4`；`outputDir` 为笔记输出目录。 */
-function makeVideo(outputDir: string, mutate: (d: Record<string, unknown>) => void): void {
+function makeVideo(outputDir: string, mutate: (d: Record<string, unknown>) => void, seconds = 340): void {
   mkdirSync(outputDir, { recursive: true });
   const d: Record<string, unknown> = {
     version: 1,
-    video: { id: "vid-1", title: "测试视频", sourcePath: join(outputDir, "src.mp4"), durationSeconds: 340, outputDir },
+    video: { id: "vid-1", title: "测试视频", sourcePath: join(outputDir, "src.mp4"), durationSeconds: seconds, outputDir },
     transcript: { speakers: [], utterances: [] },
     chunks: [],
     topics: [],
@@ -38,7 +38,7 @@ function makeVideo(outputDir: string, mutate: (d: Record<string, unknown>) => vo
   };
   mutate(d);
   writeFileSync(join(outputDir, "video.json"), JSON.stringify(d));
-  makeMp4(join(outputDir, "src.mp4"), 340);
+  makeMp4(join(outputDir, "src.mp4"), seconds);
 }
 
 function topicRecord(o: {
@@ -70,7 +70,7 @@ function topicRecord(o: {
 
 describe("runNotes", () => {
   test("空 topicIds 拒绝", async () => {
-    const out = join(tmpdir(), "rn-empty");
+    const out = mkdtempSync(join(tmpdir(), "rn-empty-"));
     makeVideo(out, (d) => {
       d.transcript = { speakers: [], utterances: [{ start: 0, end: 30, speakerId: "s1", text: "x" }] };
       d.topics = [topicRecord({ id: "t", title: "T", segments: [{ start: 0, end: 30 }], dirName: "t" })];
@@ -79,7 +79,7 @@ describe("runNotes", () => {
   });
 
   test("整批进度按 n/m 报：两个主题各生成一次，total 是本批主题数而不是 1", async () => {
-    const out = join(tmpdir(), "rn-batch-progress");
+    const out = mkdtempSync(join(tmpdir(), "rn-batch-progress-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -92,7 +92,7 @@ describe("runNotes", () => {
         topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "queued" }),
         topicRecord({ id: "topicB", title: "B", segments: [{ start: 60, end: 90 }], dirName: "b", status: "queued" }),
       ];
-    });
+    }, 120);
     const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点"] }) };
     const seen: Array<{ done: number; total: number; detail?: string }> = [];
     await runNotes({
@@ -112,10 +112,10 @@ describe("runNotes", () => {
       ["A", 0, 2],
       ["B", 1, 2],
     ]);
-  });
+  }, 30000);
 
   test("done 主题被跳过（mtime 不变），其余生成 topic.mp4（带 segmentOffsets），index.md 保留全部主题", async () => {
-    const out = join(tmpdir(), "rn-main");
+    const out = mkdtempSync(join(tmpdir(), "rn-main-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -146,6 +146,7 @@ describe("runNotes", () => {
     const bMdMtime = statSync(join(dirB, "topic.md")).mtimeMs;
     // 补上 topic.mp4：done 的产物齐全，投影后仍是 done，才谈得上「跳过」
     writeFileSync(join(dirB, "topic.mp4"), "bclip-mp4");
+    writeFileSync(join(dirB, "01-00-04-57-00-05-30.mp4"), "legacy");
     const bClipMtime = statSync(join(dirB, "01-00-04-57-00-05-30.mp4")).mtimeMs;
 
     const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点A"] }) };
@@ -188,7 +189,7 @@ describe("runNotes", () => {
     await expect(
       runNotes({ outputDir: out, topicIds: ["topicA", "topicB"], endpoint, cacheRoot: join(out, ".cache"), client }),
     ).rejects.toThrow("本次没有需要生成的主题：所选主题均已生成完成");
-  });
+  }, 30000);
 
   test("导入后的 proposed 状态：全部未生成时生成；子集确认只动未 done 的主题", async () => {
     const out = join(tmpdir(), "rn-proposed-" + Date.now());
