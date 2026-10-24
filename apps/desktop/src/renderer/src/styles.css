@@ -789,13 +789,19 @@ textarea {
   left: 0;
   right: 0;
   top: calc(100% + 6px);
-  z-index: 40;
+  z-index: 60;
   max-height: 264px;
   overflow-y: auto;
   background: #111420;
   border: 1px solid var(--vn-line2);
   border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.vn-select-empty {
+  padding: 10px 12px;
+  min-height: 24px;
+  font-size: 13px;
+  color: var(--vn-dim);
 }
 .vn-select-list.up {
   top: auto;
