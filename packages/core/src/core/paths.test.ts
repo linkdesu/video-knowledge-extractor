@@ -4,7 +4,8 @@ import { logDirFor } from "./paths";
 
 describe("logDirFor", () => {
   test("日志目录在 notes 根目录下的 .logs", () => {
-    expect(logDirFor("/data/notes")).toBe(resolve("/data/notes", ".logs"));
-    expect(logDirFor("/data/notes")).toBe(join("/data/notes", ".logs"));
+    const root = resolve("notes-root");
+    expect(logDirFor(root)).toBe(join(root, ".logs"));
+    expect(logDirFor(root).endsWith(join(".logs"))).toBe(true);
   });
 });
