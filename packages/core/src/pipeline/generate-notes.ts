@@ -50,6 +50,7 @@ export function noteSystemPrompt(topic: Topic, utterances: Utterance[], input: G
 }
 
 type KeyPoints = { keyPoints: string[] };
+
 /** 取要点：缓存命中时 `rawText` 为 null（没调用模型）；模型输出不是合法要点 JSON 时报错（失败不落缓存）。 */
 async function keyPointsFor(
   input: GenerateNotesInput,
@@ -57,26 +58,29 @@ async function keyPointsFor(
   topic: Topic,
   utterances: Utterance[],
   usedCacheKeys: Set<string>,
-): Promise<{ points: string[]; rawText: string | null }> {
+): Promise<{ points: string[]; rawText: string | null; keyHash: string; cached: boolean }> {
   const system = noteSystemPrompt(topic, utterances, input);
   const key = cacheKey("note", {
     topic: hashJson(topic),
     transcript: hashJson(utterances.map((u) => [u.start, u.end, u.speakerId, u.text])),
     prompt: hashJson(system),
     model: input.endpoint.model,
+    // 端点也是输入：切 baseUrl（模型名不变）不能复用旧端点的答案；去尾斜杠避免同一端点两种写法
+    baseUrl: input.endpoint.baseUrl.trim().replace(/\/+$/, ""),
     corrections: hashJson(input.corrections),
   });
   // 无论命中与否，这个键都是本次「用过」的，清理时不能删
   usedCacheKeys.add(key.hash);
-  const hit = readCache<KeyPoints>(input.cacheDir, key);
+  // 用户点「重新生成」要的就是新答案：跳过磁盘缓存，真实请求模型后覆写同一键
+  const hit = input.trigger === "regenerate" ? undefined : readCache<KeyPoints>(input.cacheDir, key);
   logger().debug("llm", hit !== undefined ? "要点缓存命中" : "要点缓存未命中", { topicId: topic.id, cacheHit: hit !== undefined });
-  if (hit !== undefined) return { points: hit.keyPoints, rawText: null };
+  if (hit !== undefined) return { points: hit.keyPoints, rawText: null, keyHash: key.hash, cached: true };
   const raw = await client.chat([{ role: "system", content: system }], { json: true });
   const parsed = tryParseJson<{ keyPoints?: unknown }>(raw);
   if (parsed === undefined || !Array.isArray(parsed.keyPoints)) throw new Error("LLM 返回格式错误：无法解析要点 JSON");
   const points = parsed.keyPoints.filter((p): p is string => typeof p === "string" && p.length > 0);
   writeCache(input.cacheDir, key, { keyPoints: points } satisfies KeyPoints);
-  return { points, rawText: raw };
+  return { points, rawText: raw, keyHash: key.hash, cached: false };
 }
 
 export async function generateNotes(input: GenerateNotesInput): Promise<GenerateNotesResult> {
@@ -86,6 +90,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
   const notes: Note[] = [];
   const topicDirs: string[] = [];
   const usedCacheKeys = new Set<string>();
+  const cacheHits: string[] = [];
   // 整批位置由调用方给出（逐主题调用本函数时不能退化成 1/1）；缺省按本次选中的主题数
   const batchIndex = input.batch?.index;
   const batchTotal = input.batch?.total ?? selected.length;
@@ -107,7 +112,8 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
     try {
-      const { points, rawText } = await keyPointsFor(input, client, topic, utterances, usedCacheKeys);
+      const { points, rawText, keyHash, cached } = await keyPointsFor(input, client, topic, utterances, usedCacheKeys);
+      if (cached) cacheHits.push(keyHash);
       const clips: Clip[] = [];
       // 单文件主题切片（r33）：每个 union 切到系统临时目录，concat 成 topic.mp4（流拷贝）
       const { unions, segmentOffsets } = planTopicClip(topic.segments);
@@ -175,5 +181,5 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
   }
   input.onProgress?.({ step: "generate-notes", done: (batchIndex ?? 0) + selected.length, total: batchTotal });
   // index.md 不再在这里写：调用方从完整文档重建（别的主题的条目要保留，ADR-0014）
-  return { notes, topicDirs, noteCacheKeys: [...usedCacheKeys] };
+  return { notes, topicDirs, noteCacheKeys: [...usedCacheKeys], cacheHits };
 }

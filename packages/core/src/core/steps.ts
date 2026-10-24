@@ -103,8 +103,10 @@ export type GenerateNotesResult = {
   notes: Note[];
   /** 本次实际写出的主题目录名（相对视频输出目录），顺序与写入一致。 */
   topicDirs: string[];
-  /** 本次要点缓存命中的 cacheKey.hash 集合，命中与未命中都算「用过」。 */
+  /** 本次「用过」的要点缓存键（命中与未命中都算），清理缓存时保留。 */
   noteCacheKeys: string[];
+  /** 真正命中 `readCache` 的要点缓存键；`trigger === "regenerate"` 时恒为空。 */
+  cacheHits: string[];
 };
 
 export type GenerateNotes = (input: GenerateNotesInput) => Promise<GenerateNotesResult>;
