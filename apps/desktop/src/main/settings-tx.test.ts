@@ -97,6 +97,21 @@ describe("commitCredentialUpdate", () => {
     expect(w.secretStore.get("llm")).toBe("existing");
   });
 
+  test("clearApiKey：已存 key 从密钥库删除、pending 清理、settings 不动", () => {
+    const w = makeWorld();
+    w.secretStore.set("llm", "existing");
+    const before = JSON.parse(readFileSync(w.settingsFile, "utf8")) as { llm?: unknown };
+    commitCredentialUpdate({
+      ...w,
+      settingsPatch: {},
+      secret: { id: "llm", patch: { clearApiKey: true } },
+    });
+    expect(w.secretStore.get("llm")).toBeUndefined();
+    expect(() => readFileSync(pendingPath(w), "utf8")).toThrow();
+    const after = JSON.parse(readFileSync(w.settingsFile, "utf8")) as { llm?: unknown };
+    expect(after.llm).toEqual(before.llm);
+  });
+
   test("apiKey 与 clearApiKey 同传直接拒绝，不写任何文件", () => {
     const w = makeWorld();
     expect(() =>

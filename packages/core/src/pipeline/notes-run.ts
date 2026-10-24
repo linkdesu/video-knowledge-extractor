@@ -1,12 +1,12 @@
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, slugify } from "../core/paths";
 import { loadVideoData, readVideoData, writeVideoData } from "../core/video-data";
 import type { TopicClip, TopicRecord, VideoData, VideoRef } from "../core/video-data";
-import { readVideoCorrections } from "../core/corrections-io";
-import { applyCorrections } from "../core/corrections";
+import { loadCorrections } from "../core/corrections-io";
+import { applyCorrections, resolveCorrections } from "../core/corrections";
 import { setTopicProgress, settleRunWhileLocked } from "../core/edits";
 import { renderIndexMarkdown } from "../core/render";
 import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/types";
@@ -20,11 +20,20 @@ function emptyRef(): VideoRef {
   return { id: "" as VideoId, title: "" };
 }
 
-export function correctionsFor(outputDir: string): CorrectionList {
-  return {
-    global: [],
-    video: readVideoCorrections(outputDir).map((e) => ({ from: e.wrong, to: e.right })),
-  };
+/**
+ * 全局词表（`<notesRoot>/corrections.json`）+ 本视频词表（`<outputDir>/corrections.json`）。
+ * 合并后本视频词条优先；条数写诊断日志，便于排查「词表加了却没生效」。
+ */
+export function correctionsFor(outputDir: string, stage: string): CorrectionList {
+  const list = loadCorrections(dirname(outputDir), outputDir);
+  logger().info("app", "术语表合并", {
+    stage,
+    outputDir,
+    global: list.global.length,
+    video: list.video.length,
+    merged: resolveCorrections(list).length,
+  });
+  return list;
 }
 
 /** `topic.md` 的「## 要点」段回读要点列表(要点由 generateNotes 的模型输出写进正文)。 */
@@ -210,7 +219,7 @@ export async function runNotes(input: {
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return topic.dirName;
       };
-      const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir), input.endpoint, cacheDir, client, input.onProgress);
+      const r = await generateAll(data, ids, dirNameOf, correctionsFor(input.outputDir, "notes"), input.endpoint, cacheDir, client, input.onProgress);
       timings.notes = t();
       timings.total = t();
       // 重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）
@@ -257,13 +266,14 @@ export async function runTopics(input: {
     const t = () => Math.round((performance.now() - startedAt) / 10) / 100;
     logger().info("app", "主题重跑开始", { kind: "topics", outputDir: input.outputDir, topicIds: data.topics.length });
     try {
-      const corrections = correctionsFor(input.outputDir);
+      const corrections = correctionsFor(input.outputDir, "topics");
       const { topics } = await segmentTopics({
         transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
         chunks: data.chunks,
         endpoint: input.endpoint,
         cacheDir,
         client,
+        corrections,
         ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
       });
       timings["segment-topics"] = t();

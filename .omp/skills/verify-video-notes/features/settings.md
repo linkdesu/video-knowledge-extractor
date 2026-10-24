@@ -10,7 +10,7 @@ Settings shows what the app will actually use: local ASR model bundles and their
 - `settings-model-download` downloads missing files (network).
 - `settings-model-import` imports models from a directory/archive via a native picker (not automatable).
 - `settings-llm` is a single-card form: 接口地址 (text input `settings-llm-base-url`), API key (password input `settings-llm-key-input` with reveal toggle `settings-llm-key-reveal`), 模型名 (combobox input `settings-llm-model` role=combobox plus listbox `settings-llm-model-listbox` role=listbox and option rows `settings-llm-model-option-<i>` role=option with `data-value` the model id), 拉取模型 (`settings-llm-fetch-models`, disabled only while a fetch is in flight or while the draft baseUrl is empty), 测试连接 (`settings-test-llm`) and the single 保存 button (`settings-llm-save`). 拉取模型 and 测试连接 use the draft values in front of you and require no prior save. All edits are local drafts; the one save submits baseUrl + model to `settings.json` and the key to the system keychain in one credential transaction, and the button is disabled when the draft equals the saved values, or when a non-empty key is typed while `keyStorageAvailable` is false. A failed save renders inline at `settings-llm-save-error`, never only as a toast. Key hints: `settings-llm-key-no-storage` (系统密钥存储不可用，无法保存新的 key; shown instead of the other key hints while `keyStorageAvailable` is false, input read-only), `settings-llm-key-saved` (已保存 key；这里留空继续使用，输入则覆盖), `settings-llm-key-env` (尚未保存 key，当前使用 dev 模式 .env 种子；保存的 key 优先), `settings-llm-key-none` (尚未保存 key). `settings-llm-discovered` (only while no model is pinned) reads 留空时自动发现, then 已自动发现 <model>.
-- `settings-llm-key` is an editable password input (`type=password`) with a reveal toggle `settings-llm-key-reveal` (aria-label 显示密钥 / 隐藏密钥, flips the input to `type=text`); it is cleared after a successful save that included a key, and stays filled (with the form still dirty) when the user typed a new key during the save. There is no separate key save or clear button — the key rides the single form 保存. The four ASR key fields share the full shape (input + save + reveal + clear) with prefixes `settings-asr-key` / `settings-asr-volc-api-key` / `settings-asr-volc-app-key` / `settings-asr-volc-access-key`.
+- `settings-llm-key` is an editable password input (`type=password`, test ids `settings-llm-key-input` / `settings-llm-key-reveal`) prefilled with the saved key (r32, masked; the eye shows plaintext). The single form 保存 keeps the saved key when the input is empty, and replaces it when the input holds a different key. Since r36 the row also has an explicit 清空 button (`settings-llm-key-clear`), shown while `llm.keyStorageAvailable` and either `llm.hasKey` or the input has text (the clear is an encrypted credential transaction, so it is hidden when the store is unavailable, matching the ASR rows): it deletes the stored key in the same credential-transaction path, empties the input and flips the hint to `settings-llm-key-none`, with no 保存 click. The four ASR key fields share the full shape (input + save + reveal + clear) with prefixes `settings-asr-key` / `settings-asr-volc-api-key` / `settings-asr-volc-app-key` / `settings-asr-volc-access-key`.
 - `settings-llm-fetch-models` calls `<base>/models` with the draft's base url and key (falling back to the stored or dev-seeded key when the key input is empty) and renders every returned id as an option in `settings-llm-model-listbox`; a failure renders inline at `settings-llm-models-error`, and a 401 reads `模型发现失败：API key 无效或已停用` with the response body never echoed.
 - `model-download-log` is a scrollable phase log (下载 / 校验 / 解压 / 安装 / 完成) under the progress bar; the bar stays visible from the click until every bundle reads 就绪.
 - `settings-test-llm` calls the configured endpoint (network).
@@ -165,7 +165,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run $R1-restart
 # expected: exit 0 — the first check is that the process from state.json is alive and is the executable recorded in state.json (a packaged app's process name is not Electron)
 ```
 
-### Recipe: key field（password input + reveal，无独立 key 保存按钮）
+### Recipe: key field（password input + reveal + 显式清空）
 
 Preconditions: `window.vnote.settings()` reports `llm.keyStorageAvailable === true` (otherwise the input is read-only, `settings-llm-key-no-storage` shows 系统密钥存储不可用，无法保存新的 key, and the saved-key path is unavailable). There is no env lock (r30): a run with a stored key shows `settings-llm-key-saved` and the input already holds that key (r32), a fresh run shows `settings-llm-key-none`, a dev run with a `.env` seed shows `settings-llm-key-env` and the input holds the seed key.
 
@@ -175,9 +175,9 @@ $V wait "document.querySelector('[data-testid=settings-page]') !== null"
 # starts masked
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "password"
-# no separate key save/clear buttons (removed in r30; the key rides the form 保存)
+# no separate key save button; the clear button appears only once a key is stored or typed
 $V eval "document.querySelector('[data-testid=settings-llm-key-save]') === null && document.querySelector('[data-testid=settings-llm-key-clear]') === null"
-# expected: true
+# expected: true (fresh run: no stored key, empty input)
 # reveal toggles to text…
 $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
@@ -200,11 +200,45 @@ $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type ===
 $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-saved]').innerText"
 # expected: 已保存 key，掩码显示；点眼睛看明文，直接编辑即可替换
+$V eval "document.querySelector('[data-testid=settings-llm-key-clear]') !== null"
+# expected: true — a stored key exposes the explicit 清空 button (r36)
 $V status
 # expected: exit 0 — the app never crashed across the sequence
 ```
 
-The four ASR key fields are the full shape: prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, each with `-input`, `-save`, `-reveal`, `-saved`, `-clear`, `-no-storage` (the volc trio only when their provider panel is rendered). Only the LLM key row has no `-save`/`-clear` buttons.
+The four ASR key fields are the full shape: prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, each with `-input`, `-save`, `-reveal`, `-saved`, `-clear`, `-no-storage` (the volc trio only when their provider panel is rendered). The LLM key row has no `-save` button (the form 保存 saves it) but has the `-clear` button.
+
+### Recipe: LLM key 显式清空（r36）
+
+Precondition: a stored LLM key (`settings().llm.keySource === "stored"`). The empty-input save rule is the control: it must keep the key, and only 清空 may delete it.
+
+```bash
+$V click-text '设置'
+$V wait "document.querySelector('[data-testid=settings-page]') !== null"
+# 1) empty the input and save: the stored key must survive
+$V fill '[data-testid=settings-llm-model]' '<the saved model or a new one>'
+$V fill '[data-testid=settings-llm-key-input]' ''
+$V click '[data-testid=settings-llm-save]'
+$V wait "window.vnote.settings().then(s => s.llm.keySource === 'stored')"
+# expected: condition met — the empty key input means 「保持原 key」, never a clear
+$V eval "document.querySelector('[data-testid=settings-llm-key-saved]') !== null"
+# expected: true
+# 2) explicit clear
+$V click '[data-testid=settings-llm-key-clear]'
+$V wait "window.vnote.settings().then(s => !s.llm.hasKey && s.llm.apiKey === null)"
+# expected: condition met — hasKey false, the keychain value is gone
+$V eval "document.querySelector('[data-testid=settings-llm-key-input]').value === '' && document.querySelector('[data-testid=settings-llm-key-none]') !== null"
+# expected: true — input emptied, hint reads 尚未保存 key
+# the clear button is now gone (no stored key, empty input)
+$V eval "document.querySelector('[data-testid=settings-llm-key-clear]') === null"
+# expected: true
+$V shot settings-llm-key-cleared
+$V snapshot settings-llm-key-cleared
+$V status
+# expected: exit 0
+```
+
+Restart the run (「restart persistence」) and read `settings().llm.hasKey` again: it must stay `false`, proving the keychain value was deleted, not just hidden. Clearing with a env-only key (`keySource: "env"`) cannot remove the environment value; the stored key is cleared and the `settings-llm-key-env` hint remains.
 
 ### Recipe: 401 错误文案（readable，正文不回显）
 
@@ -272,7 +306,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r30-install/V
 Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
 ## Gotchas
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
-- **The old key save/clear buttons are gone (r30).** `settings-llm-key-save` / `-clear` no longer exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without keychain access).
+- **The separate key save button is gone (r30); the explicit clear button is back (r36).** `settings-llm-key-save` does not exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without keychain access). `settings-llm-key-clear` exists only while the key store is available and a key is stored or the input has text; an empty input plus 保存 still means 「保持原 key」 and never deletes it.
 
 - The app never downloads models by itself (r28); a fresh process starts no download. The 下载模型 button is the only way to download and it hits the network. Never click it on a metered connection; a download journey must be explicitly started and waited out until every bundle reads 就绪.
 - Storage root (r28): notes are the root itself; `.cache` and `models` are subdirectories of it, so the three rows read `<root>`, `<root>/.cache`, `<root>/models` unless env overrides them. An unpacked dev process launched inside the repo uses `<repo>/tmp/dev-home` instead.

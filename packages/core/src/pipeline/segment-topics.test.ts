@@ -196,3 +196,38 @@ describe("segmentTopics", () => {
     expect(received.filter(isMergeReq).length).toBe(1);
   });
 });
+
+describe("segmentTopics 术语表注入", () => {
+  test("合并词表进入分块与合并提示词，冲突项单视频优先，词表变化使缓存失效", async () => {
+    startServer();
+    const cacheDir = tempCacheDir();
+    received = [];
+    await segmentTopics({
+      ...makeInput(cacheDir),
+      corrections: {
+        global: [
+          { from: "old", to: "Old" },
+          { from: "plain", to: "Plain" },
+        ],
+        video: [{ from: "old", to: "Video" }],
+      },
+    });
+    const systems = received.map(
+      (r) => (r.body["messages"] as ChatMessage[]).find((m) => m.role === "system")?.content ?? "",
+    );
+    expect(systems.length).toBe(3);
+    for (const system of systems) {
+      expect(system).toContain("- old → Video");
+      expect(system).toContain("- plain → Plain");
+      expect(system).not.toContain("Old");
+    }
+
+    // 词表变了：提示词哈希变化，旧缓存不能复用
+    received = [];
+    await segmentTopics({
+      ...makeInput(cacheDir),
+      corrections: { global: [{ from: "plain", to: "Changed" }], video: [] },
+    });
+    expect(received.length).toBe(3);
+  });
+});
