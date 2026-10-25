@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { modelFileSpecs } from "../asr/sherpa";
 
 export type RequiredModelId = "asr" | "diarization" | "speaker-embedding" | "punctuation";
@@ -26,9 +26,11 @@ export function checkModels(modelDir: string): ModelsCheck {
   const models: RequiredModel[] = GROUPS.map((group) => {
     const relativePaths = group.roles
       .map((role) => {
-        const path = specs.find((s) => s.role === role)?.path ?? "";
-        const prefix = `${modelDir}/`;
-        return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+        const path = specs.find((s) => s.role === role)?.path;
+        if (path === undefined) return "";
+        // 用 relative 而不是拼 `${modelDir}/`：Windows 的分隔符是反斜杠（r40）
+        const rel = relative(modelDir, path);
+        return rel.startsWith("..") ? "" : rel;
       })
       .filter((p) => p !== "");
     const missing = relativePaths.filter((p) => !existsSync(join(modelDir, p)));

@@ -65,18 +65,21 @@ describe("checkPath", () => {
     const check = checkPath("file", file);
     expect(check.exists).toBe(true);
     expect(check.bytes).toBe(5);
+    expect(check.kind).toBe("file");
   });
 
-  test("存在的目录：exists true 但 bytes 为 null", () => {
+  test("存在的目录：exists true、bytes 为 null、kind 为 dir", () => {
     const check = checkPath("dir", tempDir);
     expect(check.exists).toBe(true);
     expect(check.bytes).toBeNull();
+    expect(check.kind).toBe("dir");
   });
 
   test("不存在的文件：exists false 且 bytes 为 null", () => {
     const check = checkPath("missing", join(tempDir, "no-such-file"));
     expect(check.exists).toBe(false);
     expect(check.bytes).toBeNull();
+    expect(check.kind).toBeNull();
   });
 });
 
@@ -136,12 +139,12 @@ describe("formatEnvironment", () => {
       "cacheRoot",
       "modelDir",
     ]);
-    // 缺失项带 missing 标记；目录项 bytes 为 ?
+    // 缺失项带 missing 标记；存在的目录显示 dir 而不是 ?（r40）
     expect(lines[2]).toContain("missing");
-    expect(lines[8]).toContain("?");
+    expect(lines[9]).toContain("dir");
     // 含空格路径带 含空格 标记
     const spaced: (typeof snapshot.dirs) = [
-      { role: "spaced", path: "/tmp/My Models", exists: false, bytes: null, nonAscii: false, hasSpace: true },
+      { role: "spaced", path: "/tmp/My Models", exists: false, bytes: null, kind: null, nonAscii: false, hasSpace: true },
     ];
     const spacedLine = formatEnvironment({ ...snapshot, dirs: spaced }).find((line) => line.startsWith("spaced:"));
     expect(spacedLine).toContain("含空格");

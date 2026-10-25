@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
+import type { AsrEngine } from "../asr/engine";
+import type { SpeakerId } from "../core/types";
 import { runExtract } from "./extract";
 
 const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
@@ -210,6 +212,45 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  test("timings 保留 ASR 引擎的分项真实值，不被一个总耗时覆写", async () => {
+    const dir = mkdtemp();
+    const videoPath = join(dir, "in.mp4");
+    makeMp4(videoPath);
+    const asrTimings = { readWave: 1.25, silence: 2.5, diarization: 3.75, asr: 4.5, total: 5.25 };
+    const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "stub-model",
+      run: async () => ({
+        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+        chunks: [{ index: 1, start: 0, end: 2 }],
+        timings: { ...asrTimings },
+        cacheHits: [],
+        engine: "local",
+        modelId: "stub-model",
+      }),
+    };
+    const r = await runExtract({
+      videoPath,
+      notesRoot: join(dir, "notes"),
+      endpoint,
+      cacheRoot: join(dir, ".cache"),
+      client: fakeClient(),
+      asrEngine: engine,
+      runToken: "tok-timings",
+    });
+    for (const [key, value] of Object.entries(asrTimings)) {
+      if (key === "total") continue; // extract 最后用自己的整条导入耗时覆盖 total
+      expect(r.timings[key]).toBe(value);
+    }
+    expect(r.timings.total).not.toBe(asrTimings.total);
+    // extract 追加的段仍在；total 是整条导入的耗时（覆盖 ASR 引擎的 total）
+    expect(typeof r.timings.audio).toBe("number");
+    expect(typeof r.timings.transcribe).toBe("number");
+    expect(r.timings["segment-topics"]).toBeGreaterThanOrEqual(0);
+    expect(r.timings.total).toBeGreaterThanOrEqual(0);
   });
 
   test("重导入：清掉工具自有的旧主题目录并删旧 index.md", async () => {
