@@ -209,7 +209,19 @@ let settings: AppSettings = resolved.settings;
 // 结构化日志（r34/r35/r39）：日志跟随 notes 根目录，落在可见的 <notesRoot>/logs；console 只在 dev 开。
 // 设置变更（notesRoot 切换）时由 recomputeRuntimes 重新配置到新目录。
 let appendJobLog: ((runToken: string, line: string) => void) | undefined;
+// 同一次启动里 configureAppLogging 会被模块顶层与 recomputeRuntimes 各调一次：签名不变就不重配、不重复打「日志初始化」
+let lastLogConfigSignature: string | null = null;
 function configureAppLogging(): void {
+  const signature = JSON.stringify([
+    logDirFor(settings.notesRoot),
+    settings.notesRoot,
+    settings.modelDir,
+    settings.cacheRoot,
+    app.getVersion(),
+    __APP_COMMIT__,
+  ]);
+  if (signature === lastLogConfigSignature) return;
+  lastLogConfigSignature = signature;
   // r38 遗留 .logs 目录一次性 rename 到 logs；fire-and-forget，任何失败只 warn 不打断启动
   try {
     void Promise.resolve(migrateLegacyLogDir(settings.notesRoot)).catch((err: unknown) => {
@@ -510,6 +522,10 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       state.outputDir = p.outputDir;
       state.runToken = p.runToken;
       logger().forTask(p.runToken).info("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
+      // 目录与初始 video.json 已落盘：让视频库立刻列出新卡片（r40）
+      if (p.outputDir !== "") {
+        for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.libraryChanged, p.videoId);
+      }
       proc.postMessage({ type: "prepared-ack" });
       return;
     }
@@ -702,12 +718,22 @@ function backfillCovers(dtos: LibraryVideo[]): void {
     const succeeded: string[] = [];
     for (const v of targets) {
       coverBackfillInflight.delete(v.id);
+      // 用户可能在资源管理器里改名/移动了源文件：不探不抽，只记一条可读的跳过日志
+      if (!existsSync(v.sourcePath)) {
+        logger().warn("app", "跳过封面补齐：源视频文件不存在", { videoId: v.id, sourcePath: v.sourcePath });
+        continue;
+      }
       try {
         const durationSeconds = v.durationSeconds ?? (await probeVideo(v.sourcePath)).duration;
         const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath: v.sourcePath, durationSeconds });
         if (ok) succeeded.push(v.id);
-      } catch {
-        // 失败静默：个别封面补齐失败不影响其余视频
+      } catch (err) {
+        // 失败不阻断：个别封面补齐失败不影响其余视频，但要能在日志里还原是哪个视频、为什么
+        logger().warn("app", "封面后台补齐失败", {
+          videoId: v.id,
+          sourcePath: v.sourcePath,
+          error: sanitizeError(err instanceof Error ? err : new Error(String(err))),
+        });
       }
     }
     if (succeeded.length > 0) {
@@ -830,9 +856,14 @@ function videoRefOf(entry: CoreLibraryVideo): VideoRef {
 
 /** 删除一个视频（r35）：先取消它的全部在途任务并等进程收尸，再删记录/输出/缓存；源文件不动。 */
 async function deleteVideoNow(videoId: string): Promise<void> {
-  resolveVideo(videoId);
-  if (queue.cancelVideo(videoId)) await queue.drain();
+  const entry = resolveVideo(videoId);
+  logger().info("app", "删除视频", { videoId, outputDir: entry.outputDir });
+  if (queue.cancelVideo(videoId)) {
+    logger().info("app", "删除视频：取消在途任务", { videoId });
+    await queue.drain();
+  }
   if (!coreDeleteVideo(settings.notesRoot, settings.cacheRoot, videoId)) throw new Error("视频不存在");
+  logger().info("app", "删除视频完成", { videoId });
 }
 
 function detailDto(videoId: string): VideoDetail {
@@ -972,13 +1003,18 @@ async function pickVideo(): Promise<string | null> {
     properties: ["openFile"],
     filters: [{ name: "视频", extensions: ["mp4", "mov", "m4v", "webm"] }],
   });
-  return res.canceled ? null : (res.filePaths[0] ?? null);
+  const path = res.canceled ? null : (res.filePaths[0] ?? null);
+  logger().info("app", "选择视频文件", { path });
+  return path;
 }
 
 async function pickSource(videoId: string): Promise<string | null> {
   const path = await pickVideo();
   if (path === null) return null;
-  if (videoIdFor(path) !== videoId) throw new Error("选的文件不是这个视频的源文件");
+  if (videoIdFor(path) !== videoId) {
+    logger().warn("app", "选择的源文件与视频不符", { videoId, path });
+    throw new Error("选的文件不是这个视频的源文件");
+  }
   return path;
 }
 
@@ -1245,7 +1281,9 @@ async function pickDirectory(kind: DirectoryKind): Promise<string | null> {
 }
 
 function clearCacheNow(): { freedBytes: number } {
-  return { freedBytes: clearCache(settings.cacheRoot, listLibrary(settings.notesRoot).map((v) => v.outputDir)) };
+  const freedBytes = clearCache(settings.cacheRoot, listLibrary(settings.notesRoot).map((v) => v.outputDir));
+  logger().info("app", "缓存清理完成", { freedBytes });
+  return { freedBytes };
 }
 
 
@@ -1512,13 +1550,21 @@ async function testAsr(): Promise<TestAsrResult> {
   }
 }
 
-// 所有 IPC handler 统一过脱敏出口：key 绝不进 renderer 的异常消息
-function guard<T extends unknown[]>(fn: (...args: T) => unknown | Promise<unknown>): (...args: T) => Promise<unknown> {
+// 所有 IPC handler 统一过脱敏出口：key 绝不进 renderer 的异常消息；任何 handler 抛错都先落一条
+// ERROR（channel + code + stack），用户报错时日志里能直接定位是哪个 IPC、哪个 errno（r40）。
+function guard<T extends unknown[]>(channel: string, fn: (...args: T) => unknown | Promise<unknown>): (...args: T) => Promise<unknown> {
   return async (...args: T) => {
     try {
       return await fn(...args);
     } catch (err) {
-      throw new Error(sanitizeError(err));
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("ipc", "IPC 调用失败", {
+        channel,
+        code: (err as NodeJS.ErrnoException | undefined)?.code ?? null,
+        message: sanitizeError(e),
+        stack: e.stack,
+      });
+      throw new Error(sanitizeError(e));
     }
   };
 }
@@ -1606,7 +1652,7 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle(
     IPC.listLibrary,
-    guard(async () => {
+    guard(IPC.listLibrary, async () => {
       const dtos = listLibrary(settings.notesRoot, { busyVideoId: queue.active()?.videoId ?? null }).map(toVideoDto);
       backfillCovers(dtos);
       return dtos;
@@ -1614,7 +1660,7 @@ void app.whenReady().then(async () => {
   );
   ipcMain.handle(
     IPC.getVideo,
-    guard((_e, videoId: string) => {
+    guard(IPC.getVideo, (_e, videoId: string) => {
       const detail = readLibraryVideo(settings.notesRoot, videoId);
       if (detail === undefined) throw new Error("视频不存在");
       return toDetailDto(detail);
@@ -1622,55 +1668,61 @@ void app.whenReady().then(async () => {
   );
   ipcMain.handle(
     IPC.renameSpeaker,
-    guard((_e, videoId: string, speakerId: string, name: string) => {
+    guard(IPC.renameSpeaker, (_e, videoId: string, speakerId: string, name: string) => {
       const entry = resolveVideo(videoId);
       renameSpeaker(entry.outputDir, speakerId, name);
+      logger().info("app", "说话人改名", { videoId, speakerId, name });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.deleteUtterance,
-    guard((_e, videoId: string, index: number) => {
+    guard(IPC.deleteUtterance, (_e, videoId: string, index: number) => {
       const entry = resolveVideo(videoId);
       deleteUtterance(entry.outputDir, index);
+      logger().info("app", "删除字幕行", { videoId, index });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.deleteTopicSegment,
-    guard((_e, videoId: string, topicId: string, segmentIndex: number) => {
+    guard(IPC.deleteTopicSegment, (_e, videoId: string, topicId: string, segmentIndex: number) => {
       const entry = resolveVideo(videoId);
       deleteTopicSegment(entry.outputDir, topicId, segmentIndex);
+      logger().info("app", "删除主题区间", { videoId, topicId, segmentIndex });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.mergeTopics,
-    guard((_e, videoId: string, topicIds: string[]) => {
+    guard(IPC.mergeTopics, (_e, videoId: string, topicIds: string[]) => {
       const entry = resolveVideo(videoId);
       mergeTopics(entry.outputDir, topicIds);
+      logger().info("app", "合并主题", { videoId, topicIds });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.mergeSpeakers,
-    guard((_e, videoId: string, speakerIds: string[], targetName: string) => {
+    guard(IPC.mergeSpeakers, (_e, videoId: string, speakerIds: string[], targetName: string) => {
       const entry = resolveVideo(videoId);
       mergeSpeakers(entry.outputDir, speakerIds, targetName);
+      logger().info("app", "合并说话人", { videoId, speakerIds, targetName });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.unmergeSpeaker,
-    guard((_e, videoId: string, speakerId: string) => {
+    guard(IPC.unmergeSpeaker, (_e, videoId: string, speakerId: string) => {
       const entry = resolveVideo(videoId);
       unmergeSpeaker(entry.outputDir, speakerId);
+      logger().info("app", "撤销说话人合并", { videoId, speakerId });
       return detailDto(videoId);
     }),
   );
   ipcMain.handle(
     IPC.setTopicSelected,
-    guard((_e, videoId: string, topicId: string, selected: boolean) => {
+    guard(IPC.setTopicSelected, (_e, videoId: string, topicId: string, selected: boolean) => {
       const entry = resolveVideo(videoId);
       setTopicSelected(entry.outputDir, topicId, selected);
       return detailDto(videoId);
@@ -1678,40 +1730,54 @@ void app.whenReady().then(async () => {
   );
   ipcMain.handle(
     IPC.saveCorrections,
-    guard((_e, videoId: string, entries: CorrectionEntry[]) => {
+    guard(IPC.saveCorrections, (_e, videoId: string, entries: CorrectionEntry[]) => {
       const entry = resolveVideo(videoId);
       const saved = saveVideoCorrections(entry.outputDir, entries.map(toCorrectionFile));
+      logger().info("app", "保存字幕术语", { videoId, entries: saved.length });
       const mtimeIso = fileMtimeIso(join(entry.outputDir, "corrections.json"));
       return saved.map((e) => ({ wrong: e.wrong, right: e.right, source: e.source ?? null, updatedAt: e.updatedAt ?? mtimeIso }));
     }),
   );
-  ipcMain.handle(IPC.listGlossary, guard(() => toGlossaryDto(readGlobalCorrections(settings.notesRoot))));
-  ipcMain.handle(IPC.saveGlossary, guard((_e, entries: CorrectionEntry[]) => toGlossaryDto(saveGlobalCorrections(settings.notesRoot, entries.map(toCorrectionFile)))));
-  ipcMain.handle(IPC.pickVideo, guard(() => pickVideo()));
-  ipcMain.handle(IPC.pickSource, guard((_e, videoId: string) => pickSource(videoId)));
-  ipcMain.handle(IPC.startExtract, guard((_e, target: ExtractTarget) => startExtract(target)));
-  ipcMain.handle(IPC.startNotes, guard((_e, videoId: string, topicIds: string[], options?: NotesStartOptions) => startNotes(videoId, topicIds, options)));
-  ipcMain.handle(IPC.rebuildTopics, guard((_e, videoId: string) => rebuildTopics(videoId)));
-  ipcMain.handle(IPC.cancelExtract, guard((_e, jobId: string) => queue.cancel(jobId)));
-  ipcMain.handle(IPC.deleteVideo, guard((_e, videoId: string) => deleteVideoNow(videoId)));
-  ipcMain.handle(IPC.activeJob, guard(() => queue.active() ?? null));
-  ipcMain.handle(IPC.settings, guard(() => settingsStatus()));
-  ipcMain.handle(IPC.updateSettings, guard((_e, patch: SettingsPatch) => updateSettings(patch)));
-  ipcMain.handle(IPC.updateLlm, guard((_e, patch: LlmUpdatePatch) => updateLlm(patch)));
-  ipcMain.handle(IPC.updateAsr, guard((_e, patch: AsrUpdatePatch) => updateAsr(patch)));
-  ipcMain.handle(IPC.pickDirectory, guard((_e, kind: DirectoryKind) => pickDirectory(kind)));
-  ipcMain.handle(IPC.clearCache, guard(() => clearCacheNow()));
-  ipcMain.handle(IPC.testLlm, guard((_e, draft: LlmDraft) => testLlm(draft)));
-  ipcMain.handle(IPC.listLlmModels, guard((_e, draft: LlmDraft) => listLlmModels(draft)));
-  ipcMain.handle(IPC.testAsr, guard(() => testAsr()));
-  ipcMain.handle(IPC.models, guard(() => modelsStatusDto()));
-  ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));
-  ipcMain.handle(IPC.downloadModelBundle, guard((_e, bundleId: ModelBundleStatus["id"]) => downloadModelsNow([bundleId])));
-  ipcMain.handle(IPC.cancelModelDownload, guard(() => cancelModelDownloadNow()));
-  ipcMain.handle(IPC.checkModels, guard(() => runModelCheckWithLog()));
-  ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
-  ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
-  ipcMain.handle(IPC.diagnosticsCopy, guard(() => copyDiagnostics()));
+  ipcMain.handle(IPC.listGlossary, guard(IPC.listGlossary, () => toGlossaryDto(readGlobalCorrections(settings.notesRoot))));
+  ipcMain.handle(
+    IPC.saveGlossary,
+    guard(IPC.saveGlossary, (_e, entries: CorrectionEntry[]) => {
+      const saved = saveGlobalCorrections(settings.notesRoot, entries.map(toCorrectionFile));
+      logger().info("app", "保存全局术语表", { entries: saved.length });
+      return toGlossaryDto(saved);
+    }),
+  );
+  ipcMain.handle(IPC.pickVideo, guard(IPC.pickVideo, () => pickVideo()));
+  ipcMain.handle(IPC.pickSource, guard(IPC.pickSource, (_e, videoId: string) => pickSource(videoId)));
+  ipcMain.handle(IPC.startExtract, guard(IPC.startExtract, (_e, target: ExtractTarget) => startExtract(target)));
+  ipcMain.handle(
+    IPC.startNotes,
+    guard(IPC.startNotes, (_e, videoId: string, topicIds: string[], options?: NotesStartOptions) => startNotes(videoId, topicIds, options)),
+  );
+  ipcMain.handle(IPC.rebuildTopics, guard(IPC.rebuildTopics, (_e, videoId: string) => rebuildTopics(videoId)));
+  ipcMain.handle(IPC.cancelExtract, guard(IPC.cancelExtract, (_e, jobId: string) => queue.cancel(jobId)));
+  ipcMain.handle(IPC.deleteVideo, guard(IPC.deleteVideo, (_e, videoId: string) => deleteVideoNow(videoId)));
+  ipcMain.handle(IPC.activeJob, guard(IPC.activeJob, () => queue.active() ?? null));
+  ipcMain.handle(IPC.settings, guard(IPC.settings, () => settingsStatus()));
+  ipcMain.handle(IPC.updateSettings, guard(IPC.updateSettings, (_e, patch: SettingsPatch) => updateSettings(patch)));
+  ipcMain.handle(IPC.updateLlm, guard(IPC.updateLlm, (_e, patch: LlmUpdatePatch) => updateLlm(patch)));
+  ipcMain.handle(IPC.updateAsr, guard(IPC.updateAsr, (_e, patch: AsrUpdatePatch) => updateAsr(patch)));
+  ipcMain.handle(IPC.pickDirectory, guard(IPC.pickDirectory, (_e, kind: DirectoryKind) => pickDirectory(kind)));
+  ipcMain.handle(IPC.clearCache, guard(IPC.clearCache, () => clearCacheNow()));
+  ipcMain.handle(IPC.testLlm, guard(IPC.testLlm, (_e, draft: LlmDraft) => testLlm(draft)));
+  ipcMain.handle(IPC.listLlmModels, guard(IPC.listLlmModels, (_e, draft: LlmDraft) => listLlmModels(draft)));
+  ipcMain.handle(IPC.testAsr, guard(IPC.testAsr, () => testAsr()));
+  ipcMain.handle(IPC.models, guard(IPC.models, () => modelsStatusDto()));
+  ipcMain.handle(IPC.downloadModels, guard(IPC.downloadModels, () => downloadModelsNow()));
+  ipcMain.handle(
+    IPC.downloadModelBundle,
+    guard(IPC.downloadModelBundle, (_e, bundleId: ModelBundleStatus["id"]) => downloadModelsNow([bundleId])),
+  );
+  ipcMain.handle(IPC.cancelModelDownload, guard(IPC.cancelModelDownload, () => cancelModelDownloadNow()));
+  ipcMain.handle(IPC.checkModels, guard(IPC.checkModels, () => runModelCheckWithLog()));
+  ipcMain.handle(IPC.reveal, guard(IPC.reveal, (_e, outputDir: string) => reveal(outputDir)));
+  ipcMain.handle(IPC.logsOpen, guard(IPC.logsOpen, () => openLogs()));
+  ipcMain.handle(IPC.diagnosticsCopy, guard(IPC.diagnosticsCopy, () => copyDiagnostics()));
 
   const win = new BrowserWindow({
     width: 1280,

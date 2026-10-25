@@ -60,6 +60,13 @@ const api: VnoteApi = {
       ipcRenderer.removeListener(IPC.libraryCovers, listenerWrapper);
     };
   },
+  onLibraryChanged: (listener: () => void) => {
+    const listenerWrapper = (): void => listener();
+    ipcRenderer.on(IPC.libraryChanged, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.libraryChanged, listenerWrapper);
+    };
+  },
   settings: () => ipcRenderer.invoke(IPC.settings) as Promise<SettingsStatus>,
   updateSettings: (patch: SettingsPatch) => ipcRenderer.invoke(IPC.updateSettings, patch) as Promise<SettingsStatus>,
   pickDirectory: (kind: DirectoryKind) => ipcRenderer.invoke(IPC.pickDirectory, kind) as Promise<string | null>,

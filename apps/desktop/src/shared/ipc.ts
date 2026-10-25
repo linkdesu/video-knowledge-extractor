@@ -358,6 +358,8 @@ export type VnoteApi = {
   onJob(listener: (job: JobSnapshot) => void): () => void;
   /** 封面后台补齐完成后广播；payload 是成功补齐的 videoId。 */
   onLibraryCovers(listener: (videoIds: LibraryCovers) => void): () => void;
+  /** 新视频目录已 prepared（首帧卡片可列）：刷新视频库列表，r40。 */
+  onLibraryChanged(listener: () => void): () => void;
   settings(): Promise<SettingsStatus>;
   updateSettings(patch: SettingsPatch): Promise<SettingsStatus>;
   updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus>;
@@ -408,6 +410,7 @@ export const IPC = {
   activeJob: "extract:active",
   jobEvent: "extract:event",
   libraryCovers: "library:covers",
+  libraryChanged: "library:changed",
   deleteVideo: "library:delete-video",
   settings: "settings:status",
   updateSettings: "settings:update",
