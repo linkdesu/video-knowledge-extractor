@@ -3,7 +3,13 @@ name: windows-build
 on:
   workflow_dispatch:
   push:
-    branches: [feat/r34-windows-logging]
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
 
 jobs:
   windows-build:
