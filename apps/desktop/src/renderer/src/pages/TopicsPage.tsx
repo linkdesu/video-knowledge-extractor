@@ -10,7 +10,7 @@ import { TopicList } from "@/components/TopicList";
 import { errMessage, fmtClock } from "@/lib/format";
 import { topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } from "@/lib/topic-state";
 import { clipSeekTarget } from "@/lib/playback";
-import { showToast } from "@/lib/toast";
+import { showErrorToast, showToast } from "@/lib/toast";
 
 // 播放器高度唯一持久化键（r33 契约：localStorage 只用这一个键）。
 const HEIGHT_STORAGE_KEY = "vn.topics.playerHeight";
@@ -142,7 +142,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
         await onRefresh();
         showToast("已删除该片段");
       })
-      .catch((err) => showToast(errMessage(err)));
+      .catch((err) => showErrorToast(errMessage(err)));
   };
 
   const deleteCue = (index: number) => {

@@ -20,6 +20,7 @@ function notesJob(topicId: string, overrides: Partial<JobSnapshot> = {}): JobSna
     startedAt: "2026-10-20T10:00:00.000Z",
     topicId,
     topicPercent: null,
+    logs: [],
     ...overrides,
   };
 }

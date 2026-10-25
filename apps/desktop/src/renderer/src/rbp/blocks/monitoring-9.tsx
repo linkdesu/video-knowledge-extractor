@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { JobKind, JobSnapshot, JobStep } from "../../../../shared/ipc";
 import { fmtElapsed, videoName } from "@/lib/format";
@@ -150,10 +150,19 @@ export function JobProgress({
   // running 时本地时钟每秒走一格，用于「已用 MM:SS」；卸载时清理。
   const now = useNow(job.state === "running");
   const content = cardContent(job, now);
+  // tail -f 跟随：初始贴底；用户上滚即停，滚回底部（24px 内）在下次追加时恢复。
+  const logRef = useRef<HTMLDivElement | null>(null);
+  const followRef = useRef(true);
+  useEffect(() => {
+    const el = logRef.current;
+    if (el !== null && followRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [job.logs.length]);
   return (
     <div
       data-testid="job-banner"
-      className="vn-card fixed bottom-4 right-4 z-40 w-[360px] max-w-[calc(100vw-2rem)] p-4"
+      className="vn-card fixed bottom-4 right-4 z-40 w-[440px] max-w-[calc(100vw-2rem)] p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-[16px] font-[450] tracking-[-0.015em]">
@@ -176,6 +185,25 @@ export function JobProgress({
         </span>
       </div>
       {content.body !== null ? <div className="mt-2">{content.body}</div> : null}
+      {job.logs.length > 0 ? (
+        <div
+          data-testid="job-log-tail"
+          className="vn-model-log"
+          ref={logRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            followRef.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+          }}
+          style={{ minHeight: 84, maxHeight: 140 }}
+        >
+          {job.logs.map((line, i) => (
+            <div key={i} className="vn-model-log-line" data-testid="job-log-line">
+              {line}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-3 flex justify-end gap-2">
         {job.state === "queued" || job.state === "running" ? (
           <button

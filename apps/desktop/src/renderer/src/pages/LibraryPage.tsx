@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   JobSnapshot,
+  JobStep,
   LibraryVideo,
   VideoDetail,
   VideoStatus,
@@ -20,6 +21,13 @@ const STATUS_TAG: Record<VideoStatus, { label: string; cls: string }> = {
   failed: { label: "失败", cls: "vn-tag err" },
 };
 
+const STEP_LABEL: Record<JobStep, string> = {
+  prepare: "准备",
+  transcribe: "转写",
+  "segment-topics": "主题分析",
+  "generate-notes": "生成笔记",
+  cleanup: "清理",
+};
 function importLabel(iso: string | null): string {
   if (iso === null) return "—";
   const d = new Date(iso);
@@ -179,11 +187,15 @@ export function LibraryPage({
                 ? (running.done / running.total) * 100
                 : 0;
             const label =
-              running !== null
-                ? running.state === "running" && running.step === "transcribe"
-                  ? `转写中 ${Math.round(percent)}%`
-                  : `处理中 ${Math.round(percent)}%`
-                : STATUS_TAG[v.status].label;
+              running === null
+                ? STATUS_TAG[v.status].label
+                : running.state === "queued"
+                  ? "排队中"
+                  : percent > 0
+                    ? running.step === "transcribe"
+                      ? `转写中 ${Math.round(percent)}%`
+                      : `处理中 ${Math.round(percent)}%`
+                    : `${STEP_LABEL[running.step]}中`;
             const cls = running !== null ? "vn-tag warn" : STATUS_TAG[v.status].cls;
             const expanded = expandedId === v.id;
             return (
@@ -220,10 +232,23 @@ export function LibraryPage({
                     ) : null}
                     {v.topicCount > 0 ? <span>{v.topicCount} 个主题</span> : null}
                   </div>
-                  <div className="vn-row vn-between vn-vactions" data-testid="video-card-foot">
+                  <div
+                    className="vn-row vn-between vn-vactions"
+                    data-testid="video-card-foot"
+                    style={{ marginTop: "auto" }}
+                  >
                     <span data-testid="video-status" className={cls}>
                       {label}
                     </span>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        flexWrap: "nowrap",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
                     {v.status === "failed" ? (
                       <button
                         type="button"
@@ -261,26 +286,27 @@ export function LibraryPage({
                         继续编辑
                       </button>
                     )}
+                      <button
+                        type="button"
+                        data-testid="video-delete"
+                        className="vn-btn sm"
+                        onClick={(e) => {
+                          e.stopPropagation(); // 点删除不展开/打开视频
+                          setDeleting(v);
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
                   </div>
                   {v.status === "failed" && v.failure !== null ? (
                     <p className="vn-hint" data-testid="video-failure" style={{ marginTop: 6 }}>
                       {v.failure}
                     </p>
                   ) : null}
-                  <div className="vn-row" style={{ marginTop: 8 }}>
-                    <button
-                      type="button"
-                      data-testid="video-delete"
-                      className="vn-btn sm"
-                      onClick={(e) => {
-                        e.stopPropagation(); // 点删除不展开/打开视频
-                        setDeleting(v);
-                      }}
-                    >
-                      删除
-                    </button>
-                  </div>
-                  {running ? <ProgressBar percent={percent} /> : null}
+                  {running !== null && running.state === "running" && percent > 0 ? (
+                    <ProgressBar percent={percent} />
+                  ) : null}
                   {expanded ? (
                     <div
                       style={{

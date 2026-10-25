@@ -1,16 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   configureLogging,
   createLogger,
+  formatLogLine,
+  KEEP_FILES,
   logger,
   logFileName,
   pruneOldLogs,
   readTaskLog,
   redactSecrets,
+  rollLogFileName,
   runWithTask,
+  tailLog,
+  type LogEntry,
 } from "./logger";
 
 const T0 = new Date("2026-10-24T05:31:02.123Z");
@@ -183,5 +188,111 @@ describe("进程级 logger", () => {
     const l = configureLogging({ sink: () => {} });
     expect(l.level).toBe("info");
     expect(l.file()).toBeNull();
+  });
+});
+
+describe("滚动与保留", () => {
+  test("maxBytes 超限时滚动出 vnote-YYYY-MM-DD.1.log，每个文件不超阈值", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-roll-"));
+    try {
+      const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
+      for (let i = 0; i < 10; i++) l.info("app", `消息${i}`);
+      const base = logFileName(T0);
+      const files = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
+      expect(files).toContain(rollLogFileName(T0, 1));
+      expect(files).toContain(base);
+      for (const name of files) expect(statSync(join(dir, name)).size).toBeLessThanOrEqual(200);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("滚动超过 KEEP_FILES 个后只保留最新 7 个", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-keep-"));
+    try {
+      // 同一天反复滚动制造远超 7 个文件，写入时即自动清理
+      const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
+      for (let i = 0; i < 60; i++) l.info("app", `消息${i}`);
+      const remaining = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
+      expect(remaining).toHaveLength(KEEP_FILES);
+      // 活跃文件是该天最新，必须保留
+      expect(remaining).toContain(logFileName(T0));
+      // 保留的是按日期+roll 号最新的 7 个：该天最小编号归档已被删
+      const archived = remaining
+        .filter((n) => n !== logFileName(T0))
+        .map((n) => Number(/\.(\d+)\.log$/.exec(n)![1]));
+      expect(archived.length).toBe(KEEP_FILES - 1);
+      expect(Math.min(...archived)).toBeGreaterThan(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("跨滚动文件的读取顺序", () => {
+  test("tailLog 与 readTaskLog 按日期+roll 升序，.10 排在 .9 之后", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-order-"));
+    try {
+      const day = "2026-10-24";
+      // 手工构造含两位 roll 号的文件集
+      const names: Array<[string, string]> = [
+        [`vnote-${day}.1.log`, "a-1\n"],
+        [`vnote-${day}.9.log`, "a-9\n"],
+        [`vnote-${day}.10.log`, "a-10\n"],
+        [`vnote-${day}.log`, "a-active\n"],
+        [`vnote-2026-10-23.log`, "old-day\n"],
+      ];
+      for (const [name, content] of names) writeFileSync(join(dir, name), content);
+      const tail = tailLog(dir);
+      expect(tail).toEqual(["old-day", "a-1", "a-9", "a-10", "a-active"]);
+      // 给每条行补上 task= 字段再验一次 readTaskLog
+      for (const [name] of names) {
+        writeFileSync(join(dir, name), `${readFileSync(join(dir, name), "utf8").trimEnd()} task=t1\n`);
+      }
+      const task = readTaskLog(dir, "t1");
+      expect(task).toEqual([
+        "old-day task=t1",
+        "a-1 task=t1",
+        "a-9 task=t1",
+        "a-10 task=t1",
+        "a-active task=t1",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tap 回调", () => {
+  test("收到脱敏后的 entry，taskId 来自 forTask 与 runWithTask", async () => {
+    const entries: LogEntry[] = [];
+    const l = createLogger({ now: () => T0, tap: (e) => entries.push(e) });
+    l.addSecret("{{SECRET_k7x2m4pq}}");
+    l.forTask("task-a").info("app", "消息含{{SECRET_k7x2m4pq}}", { url: "https://x.com/?api_key={{SECRET_k7x2m4pq}}" });
+    await runWithTask("task-b", () => {
+      l.warn("app", "期间警告");
+      return Promise.resolve();
+    });
+    l.debug("app", "低于级别不应出现");
+    expect(entries).toHaveLength(2);
+    const first = entries[0];
+    const second = entries[1];
+    if (first === undefined || second === undefined) throw new Error("tap 应收到两条日志");
+    expect(first.taskId).toBe("task-a");
+    expect(first.message).toBe("消息含[redacted]");
+    expect(first.fields.url).toBe("https://x.com/?api_key=[redacted]");
+    expect(first.level).toBe("info");
+    expect(first.date.getTime()).toBe(T0.getTime());
+    expect(second.taskId).toBe("task-b");
+    expect(second.level).toBe("warn");
+  });
+});
+
+describe("formatLogLine", () => {
+  test("error 行输出 [HH:MM:SS] 错误 message（本地时间）", () => {
+    const d = new Date(2026, 9, 24, 14, 3, 7);
+    expect(formatLogLine({ date: d, level: "error", module: "app", message: "出错了", fields: {}, taskId: null })).toBe("[14:03:07] 错误 出错了");
+    expect(formatLogLine({ date: d, level: "warn", module: "app", message: "有警告", fields: {}, taskId: null })).toBe("[14:03:07] 警告 有警告");
+    expect(formatLogLine({ date: d, level: "info", module: "app", message: "普通信息", fields: {}, taskId: null })).toBe("[14:03:07] 普通信息");
   });
 });

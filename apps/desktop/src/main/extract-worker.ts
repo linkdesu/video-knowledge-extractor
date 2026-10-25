@@ -1,5 +1,5 @@
-import { configureLogging, killActiveChildren, logger, runExtract, runNotes, runTopics, runWithTask } from "@video-notes/core";
-import type { AsrConfig, Progress } from "@video-notes/core";
+import { configureLogging, formatLogLine, killActiveChildren, logger, runExtract, runNotes, runTopics, runWithTask } from "@video-notes/core";
+import type { AsrConfig, LogEntry, Progress } from "@video-notes/core";
 
 type StartMessage = {
   type: "start";
@@ -95,6 +95,13 @@ function isPreparedAck(msg: unknown): boolean {
 function isCancelMessage(msg: unknown): boolean {
   if (typeof msg !== "object" || msg === null || !("type" in msg)) return false;
   return msg.type === "cancel";
+}
+
+/** 上行日志消息形状；worker 侧只导出供 main 校验，worker 自己收不到它。 */
+export function isLogMessage(msg: unknown): msg is { type: "log"; line: string } {
+  if (typeof msg !== "object" || msg === null || !("type" in msg)) return false;
+  const m = msg as { type: unknown; line?: unknown };
+  return m.type === "log" && typeof m.line === "string";
 }
 
 export type ParsedStartResult =
@@ -206,7 +213,7 @@ function awaitPreparedAck(port: ParentPort): Promise<void> {
 async function run(start: StartMessage, parent: ParentPort): Promise<void> {
   // r34：main 传了 logDir 才配置 worker 自己的日志；key 登记后所有字段自动脱敏
   if (start.logDir !== undefined) {
-    const log = configureLogging({ dir: start.logDir, level: "info", console: false });
+    const log = configureLogging({ dir: start.logDir, level: "info", console: false, tap: (entry: LogEntry) => parent.postMessage({ type: "log", line: formatLogLine(entry) }) });
     if (start.endpoint.apiKey !== "") log.addSecret(start.endpoint.apiKey);
     const asr = start.asr;
     if (asr.provider === "openai") {

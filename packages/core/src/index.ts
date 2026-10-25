@@ -9,7 +9,10 @@ export {
   runWithTask,
   logFileName,
   LOG_FILE_RE,
+  MAX_LOG_FILE_BYTES,
+  KEEP_FILES,
   redactSecrets,
+  formatLogLine,
   pruneOldLogs,
   readTaskLog,
   tailLog,
@@ -19,7 +22,7 @@ export { prerequisiteProblems, formatPrerequisiteError } from "./core/preflight"
 export { describeFailure } from "./core/failure-summary";
 export type { PrerequisiteInput } from "./core/preflight";
 export type { DiagnosticsInput } from "./core/diagnostics";
-export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions } from "./core/logger";
+export type { LogLevel, LogModule, LogFields, Logger, LoggerOptions, LogEntry } from "./core/logger";
 export {
   findExecutable,
   checkPath,
@@ -52,7 +55,7 @@ export {
   VOLCENGINE_STANDARD_MODEL_ID,
 } from "./core/config";
 export type { EnvRecord } from "./core/config";
-export { cacheDirFor, logDirFor } from "./core/paths";
+export { cacheDirFor, logDirFor, migrateLegacyLogDir } from "./core/paths";
 export {
   SETTINGS_FILE_NAME,
   SETTINGS_VERSION,

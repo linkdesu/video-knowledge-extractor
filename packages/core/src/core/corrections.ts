@@ -11,6 +11,14 @@ export function resolveCorrections(list: CorrectionList): Correction[] {
   ];
 }
 
+/** 命中统计：至少被一条词条改写的字幕句数，供「词表加了却没生效」排查。 */
+export function countCorrectionsHits(list: CorrectionList, utterances: Utterance[]): number {
+  const applied = applyCorrections(list, utterances);
+  let changed = 0;
+  for (let i = 0; i < applied.length; i++) if (applied[i]?.text !== utterances[i]?.text) changed += 1;
+  return changed;
+}
+
 export function applyCorrections(list: CorrectionList, utterances: Utterance[]): Utterance[] {
   const entries = resolveCorrections(list);
   return utterances.map((u) => {

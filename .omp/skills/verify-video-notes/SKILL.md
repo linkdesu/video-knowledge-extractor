@@ -27,6 +27,8 @@ ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, req
 # Files put into the model directory while the app runs are usable after one 检测本地模型 click (r38).
 ```
 
+**Test video rule.** Every journey uses only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); never a video from another directory.
+
 The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root. The desktop app does not persist env config: the packaged app never reads `.env` at all; a dev (unpacked) app takes `VNOTE_LLM_*` from its **process environment** (or `.env`) as a seed for fields with no saved value, and a saved value always wins. Exporting `VNOTE_LLM_BASE_URL` / `VNOTE_LLM_MODEL` / `VNOTE_LLM_API_KEY` in front of `verify.ts up` is therefore the way to hand a real endpoint to a dev run without ever typing the key into a shell-visible `fill` argument.
 
 Start an isolated instance:
@@ -51,6 +53,7 @@ Isolation limits:
 - Extraction with only `IDEALSOFT_API_URL`/`KEY` and no pinned model now works: the main process awaits model discovery before it builds a job (r26). A pin via `VNOTE_LLM_MODEL` or 设置 still wins and skips discovery.
 - A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
 - Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
+- Logs sit in the visible `<notesRoot>/logs` directory (r39). One active `vnote-YYYY-MM-DD.log` per day: a write that would push it past 8 MB rolls it to `vnote-YYYY-MM-DD.<n>.log`, and the directory always keeps at most 7 files, the oldest deleted at roll time.
 
 ### Packaged app
 

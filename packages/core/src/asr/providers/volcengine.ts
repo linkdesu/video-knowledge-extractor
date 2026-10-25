@@ -269,6 +269,7 @@ export function createVolcengineFlashProvider(
   const request = async (chunk: RemoteChunkAudio, fetchImpl: typeof fetch): Promise<RemoteTranscribeResult> => {
     const log = logger();
     const startedAt = Date.now();
+    let status = 0;
     try {
       if (chunk.bytes.byteLength > VOLC_MAX_UPLOAD_BYTES) {
         throw new RemoteAsrError(
@@ -303,9 +304,10 @@ export function createVolcengineFlashProvider(
       // 顺序 1-2 与 550 由 requestWithRetry 判定；这里发两次请求内的重试交给共享管线，
       // 因此 flash 只做单次请求，把可重试性交给管线（与 ADR-0016 §6 的管线重试一致）。
       const out = await postOnce();
-      // 每个请求一行 info：HTTP 状态（网络错误记 0）、耗时、音频字节数；base64 请求体永不入日志
-      log.info("asr", "远程 ASR 请求", { provider: "volcengine-flash", status: out.ok ? out.status : 0, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength });
       if (!out.ok) throw new RemoteAsrError(out.message, out.retriable);
+      // 每个请求一行 info：HTTP 状态（网络错误记 0）、耗时、音频字节数；base64 请求体永不入日志
+      status = out.ok ? out.status : 0;
+      log.info("asr", "远程 ASR 请求", { provider: "volcengine-flash", status: out.ok ? out.status : 0, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength });
       if (out.status < 200 || out.status >= 300) {
         const f = httpFailure(out.status, out.bodyText, auth);
         throw new RemoteAsrError(f.message, f.retriable);
@@ -324,9 +326,10 @@ export function createVolcengineFlashProvider(
       const bodyData = validateBody(parseJson(classified.bodyText, auth), false);
       return { segments: toSegments(bodyData, chunk.duration), rawText: bodyData.text };
     } catch (err) {
-      // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附完整 stack
+      // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附状态码、响应体片段与完整 stack
       const message = redactAll(err instanceof Error ? err.message : String(err), auth);
-      log.error("asr", "远程 ASR 请求失败", { provider: "volcengine-flash", durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength, error: message, stack: err instanceof Error ? err.stack : undefined });
+      const excerpt = message.includes("：") ? message.slice(message.lastIndexOf("：") + 1).slice(0, 300) : "";
+      log.error("asr", "远程 ASR 失败", { provider: "volcengine-flash", status, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength, error: message, bodyExcerpt: excerpt === "" ? undefined : excerpt, stack: err instanceof Error ? err.stack : undefined });
       throw err;
     }
   };
@@ -431,9 +434,11 @@ export function createVolcengineStandardProvider(
           return { segments: toSegments(bodyData, duration), duration };
         }
       } catch (err) {
-        // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附完整 stack
+        // 错误文案已脱敏（§7.1），日志再脱敏一次兜底，附状态码、响应体片段与完整 stack
         const message = redactAll(err instanceof Error ? err.message : String(err), auth);
-        log.error("asr", "远程 ASR 请求失败", { provider: "volcengine-standard", error: message, stack: err instanceof Error ? err.stack : undefined });
+        const m = /\bHTTP (\d{3})\b/.exec(message);
+        const excerpt = message.includes("：") ? message.slice(message.lastIndexOf("：") + 1).slice(0, 300) : "";
+        log.error("asr", "远程 ASR 失败", { provider: "volcengine-standard", status: m?.[1] === undefined ? 0 : Number(m[1]), error: message, bodyExcerpt: excerpt === "" ? undefined : excerpt, stack: err instanceof Error ? err.stack : undefined });
         throw err;
       }
     },

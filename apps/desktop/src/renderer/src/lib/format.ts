@@ -31,5 +31,25 @@ export function videoName(sourcePath: string): string {
 }
 
 export function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const original = err instanceof Error ? err.message : String(err);
+  let s = original;
+  // Electron IPC 会把远端错误包成 Error invoking remote method 'x': Error: 正文
+  // 多层嵌套时前缀会连续出现，逐层剥掉
+  let wrapped = true;
+  while (wrapped) {
+    wrapped = false;
+    const m1 = s.match(/^Error invoking remote method '[^']*':\s*/i);
+    if (m1 !== null) {
+      s = s.slice(m1[0].length);
+      wrapped = true;
+      continue;
+    }
+    const m2 = s.match(/^Error:\s*/);
+    if (m2 !== null) {
+      s = s.slice(m2[0].length);
+      wrapped = true;
+    }
+  }
+  // 整条只有前缀时保留原文：回退 String(err) 会多出一层 "Error: "
+  return s.length > 0 ? s : original;
 }

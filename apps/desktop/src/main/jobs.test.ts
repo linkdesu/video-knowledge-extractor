@@ -212,3 +212,90 @@ describe("JobQueue.cancelVideo", () => {
     expect(snapshots.at(-1)?.state).toBe("running");
   });
 });
+
+describe("JobQueue.appendLog", () => {
+  test("settle 前的日志行出现在 running 快照与终态快照里", () => {
+    const { queue, snapshots } = makeQueue([fakeHandle().handle]);
+    const id = queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, ...job });
+
+    queue.appendLog("tok-1", "[10:00:00] 第一行");
+    queue.appendLog("tok-1", "[10:00:01] 第二行");
+    const running = snapshots.filter((s) => s.state === "running" && s.jobId === id).at(-1);
+    expect(running?.state).toBe("running");
+    if (running?.state === "running") expect(running.logs).toEqual(["[10:00:00] 第一行", "[10:00:01] 第二行"]);
+
+    queue.finish(doneResult);
+    const terminal = snapshots.filter((s) => s.jobId === id).at(-1);
+    expect(terminal?.state).toBe("succeeded");
+    if (terminal?.state === "succeeded") expect(terminal.logs).toEqual(["[10:00:00] 第一行", "[10:00:01] 第二行"]);
+  });
+
+  test(`超过 ${200} 行只保留最新 200 条，最新的在最后`, () => {
+    const { queue, snapshots } = makeQueue([fakeHandle().handle]);
+    queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, ...job });
+    for (let i = 0; i < 250; i++) queue.appendLog("tok-1", `line-${i}`);
+
+    const running = snapshots.filter((s) => s.state === "running").at(-1);
+    expect(running?.state).toBe("running");
+    if (running?.state === "running") {
+      expect(running.logs.length).toBe(200);
+      expect(running.logs[0]).toBe("line-50");
+      expect(running.logs.at(-1)).toBe("line-249");
+    }
+    queue.finish(doneResult);
+    const terminal = snapshots.filter((s) => s.state === "succeeded").at(-1);
+    if (terminal?.state === "succeeded") {
+      expect(terminal.logs.length).toBe(200);
+      expect(terminal.logs.at(-1)).toBe("line-249");
+    }
+  });
+
+  test("未知 runToken 的日志不改变任何快照", () => {
+    const { queue, snapshots } = makeQueue([fakeHandle().handle]);
+    const id = queue.enqueue({ kind: "notes", videoId: "v1", sourcePath: "", outputDir: "/out/1", config, ...job });
+    const before = snapshots.length;
+
+    queue.appendLog("tok-other", "[10:00:00] 别人的日志");
+
+    expect(snapshots.length).toBe(before);
+    queue.finish(doneResult);
+    const terminal = snapshots.filter((s) => s.jobId === id).at(-1);
+    expect(terminal?.state).toBe("succeeded");
+    if (terminal?.state === "succeeded") expect(terminal.logs).toEqual([]);
+  });
+
+  test("日志行不会串到别的任务：排队任务与已结算任务都不收别人的 token", () => {
+    const { queue, snapshots } = makeQueue([fakeHandle().handle, fakeHandle().handle]);
+    const id1 = queue.enqueue({ ...job, kind: "extract", videoId: "v1", sourcePath: "/s/1.mp4", outputDir: null, config, runToken: "tok-a" });
+    const id2 = queue.enqueue({ ...job, kind: "notes", videoId: "v2", sourcePath: "", outputDir: "/out/2", config, topicIds: ["t1"], runToken: "tok-b" });
+
+    // 在途任务收到自己的行，tok-b 的行不进 id1
+    queue.appendLog("tok-a", "[10:00:00] 任务A的行");
+    queue.appendLog("tok-b", "[10:00:01] 任务B的行");
+    const running = snapshots.filter((s) => s.jobId === id1).at(-1);
+    expect(running?.state).toBe("running");
+    if (running?.state === "running") expect(running.logs).toEqual(["[10:00:00] 任务A的行"]);
+    const queued = snapshots.filter((s) => s.jobId === id2 && s.state === "queued").at(-1);
+    expect(queued?.state).toBe("queued");
+    if (queued?.state === "queued") expect(queued.logs).toEqual(["[10:00:01] 任务B的行"]);
+
+    // id1 结算后 id2 自动启动；tok-a 的迟到行被丢弃
+    queue.finish(doneResult);
+    const before = snapshots.length;
+    queue.appendLog("tok-a", "[10:00:02] 迟到行");
+    expect(snapshots.length).toBe(before);
+
+    // id2 运行中收自己的行；结算后不再收
+    queue.appendLog("tok-b", "[10:00:03] 任务B的第二行");
+    const second = snapshots.filter((s) => s.jobId === id2).at(-1);
+    expect(second?.state).toBe("running");
+    if (second?.state === "running") expect(second.logs).toEqual(["[10:00:01] 任务B的行", "[10:00:03] 任务B的第二行"]);
+    queue.cancelled(id2);
+    const settled = snapshots.length;
+    queue.appendLog("tok-b", "[10:00:04] 结算后行");
+    expect(snapshots.length).toBe(settled);
+    const terminal = snapshots.filter((s) => s.jobId === id2).at(-1);
+    expect(terminal?.state).toBe("cancelled");
+    if (terminal?.state === "cancelled") expect(terminal.logs).toEqual(["[10:00:01] 任务B的行", "[10:00:03] 任务B的第二行"]);
+  });
+});

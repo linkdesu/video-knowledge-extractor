@@ -658,6 +658,15 @@ textarea {
   color: var(--vn-fg);
   animation: vn-slidein 0.25s ease;
 }
+.vn-toast > div {
+  pointer-events: auto;
+}
+.vn-toast > div[data-kind="error"] {
+  border-color: rgba(248, 113, 113, 0.55);
+}
+.vn-toast > div[data-kind="error"] .vn-btn {
+  border-color: rgba(248, 113, 113, 0.45);
+}
 @keyframes vn-slidein {
   from {
     transform: translateY(8px);

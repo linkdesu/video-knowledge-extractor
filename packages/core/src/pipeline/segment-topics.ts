@@ -112,6 +112,10 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     if (chunk === undefined) continue;
     const lines = renderChunkLines(input, i);
     let cacheHit = false;
+    let addedTopics = 0;
+    const chunkStart = performance.now();
+    const preCandidateCount = candidates.length;
+    logger().info("llm", `主题分析分块 (${i + 1}/${input.chunks.length}) 开始`, { chunkIndex: i + 1, chunkCount: input.chunks.length });
     if (lines.length > 0) {
       const key = cacheKey("topic-candidates", {
         chunk: hashJson(lines),
@@ -130,7 +134,8 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       }
       candidates.push(...topics);
     }
-    logger().debug("llm", "块候选主题", { chunkIndex: i + 1, chunkCount: input.chunks.length, cacheHit });
+    addedTopics = candidates.length - preCandidateCount;
+    logger().info("llm", `主题分析分块 (${i + 1}/${input.chunks.length}) 完成`, { topicCount: addedTopics, cacheHit, model: client.model, durationMs: Math.round(performance.now() - chunkStart) });
     input.onProgress?.({ step: "segment-topics", done: i + 1, total: input.chunks.length });
   }
   if (candidates.length === 0) {
@@ -145,7 +150,9 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     prompt: hashJson(mergePrompt),
     model: input.endpoint.model,
   });
+  const mergeStart = performance.now();
   let merged = topicsOf(readCache<RawResponse>(input.cacheDir, mergeKey));
+  const mergeCacheHit = merged !== undefined;
   if (merged === undefined) {
     const compact = candidates.map((t) => ({
       title: typeof t.title === "string" ? t.title : "",
@@ -165,7 +172,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     merged = requireTopics(parseJsonLoose<RawResponse>(text), text, "主题合并");
     writeCache(input.cacheDir, mergeKey, { topics: merged });
   }
-
+  logger().info("llm", "主题合并", { cacheHit: mergeCacheHit, inputTopicCount: candidates.length, topicCount: merged.length, durationMs: Math.round(performance.now() - mergeStart) });
   const topics = sanitizeTopics(merged, maxEnd);
   if (topics.length === 0) {
     throw new Error(`主题合并失败：${candidates.length} 个候选主题里没有一个带有效时间段`);

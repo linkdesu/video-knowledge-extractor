@@ -169,7 +169,7 @@ export async function cutClip(input: { videoPath: string; segment: Segment; outP
       { label: "切主题切片" },
     );
     renameSync(partPath, outPath);
-    logger().debug("fs", "切片完成", { file: outPath });
+    logger().info("fs", "切片完成", { file: outPath });
   } finally {
     try {
       unlinkSync(partPath);

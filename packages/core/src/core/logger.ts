@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readdirSync, unlinkSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -27,16 +27,37 @@ export type LoggerOptions = {
   console?: boolean;
   now?: () => Date;
   sink?: (line: string) => void;
+  // 单文件字节上限，超了滚动归档（单测可注入小阈值）
+  maxBytes?: number;
+  tap?: (entry: LogEntry) => void;
 };
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
-// 保留今天 + 前 6 个日志文件
-const KEEP_FILES = 7;
+// 单文件上限 8MB，超了滚动归档；最多保留 7 个文件
+export const MAX_LOG_FILE_BYTES = 8 * 1024 * 1024;
+export const KEEP_FILES = 7;
 const PRUNE_KEEP_DAYS = 7;
 const DAY_MS = 86400000;
 
-// 每日 vnote-YYYY-MM-DD.log；清理只动匹配的文件
-export const LOG_FILE_RE = /^vnote-\d{4}-\d{2}-\d{2}\.log$/;
+// 每日 vnote-YYYY-MM-DD.log，超限时滚动为 vnote-YYYY-MM-DD.<n>.log；清理只动匹配的文件
+export const LOG_FILE_RE = /^vnote-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.log$/;
+
+export type LogEntry = {
+  date: Date;
+  level: LogLevel;
+  module: LogModule;
+  message: string;
+  fields: LogFields;
+  taskId: string | null;
+};
+
+// 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记
+export function formatLogLine(entry: LogEntry): string {
+  const d = entry.date;
+  const ts = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  const mark = entry.level === "error" ? "错误 " : entry.level === "warn" ? "警告 " : "";
+  return `[${ts}] ${mark}${entry.message}`;
+}
 
 // 未 configure 前丢弃所有日志；processTask 仅由 runWithTask 临时设置
 let installed: Logger | null = null;
@@ -44,6 +65,11 @@ let processTask: string | null = null;
 
 export function logFileName(date: Date): string {
   return `vnote-${date.toISOString().slice(0, 10)}.log`;
+}
+
+/** 同一天的第 n 个归档：`vnote-YYYY-MM-DD.<n>.log`（活跃文件本身不带序号，是该天最新）。 */
+export function rollLogFileName(date: Date, n: number): string {
+  return `vnote-${date.toISOString().slice(0, 10)}.${n}.log`;
 }
 
 function escapeRegExp(s: string): string {
@@ -99,6 +125,20 @@ function listLogFiles(dir: string): string[] {
   }
 }
 
+// 排序键：日期在前，roll 号数值在后（.10 排在 .9 后）；无后缀是该天最新，.1 为最旧归档
+function compareLogNames(a: string, b: string): number {
+  const ra = /\.(\d+)\.log$/.exec(a);
+  const rb = /\.(\d+)\.log$/.exec(b);
+  const da = a.slice(6, 16);
+  const db = b.slice(6, 16);
+  if (da !== db) return da < db ? -1 : 1;
+  const na = ra ? Number(ra[1]) : null;
+  const nb = rb ? Number(rb[1]) : null;
+  if (na === null) return nb === null ? 0 : 1;
+  if (nb === null) return -1;
+  return na - nb;
+}
+
 function pruneIfPossible(dir: string | null): void {
   if (!dir) return;
   try {
@@ -112,11 +152,55 @@ export function createLogger(opts?: LoggerOptions): Logger {
   const level: LogLevel = opts?.level ?? "info";
   const dir = opts?.dir ?? null;
   const now = opts?.now ?? (() => new Date());
+  const maxBytes = opts?.maxBytes ?? MAX_LOG_FILE_BYTES;
   if (dir) mkdirSync(dir, { recursive: true });
   pruneIfPossible(dir);
   const secrets = new Set<string>();
   let dateKey = now().toDateString();
 
+  // 写前 stat 活跃文件（main 与 worker 同目录并发写，不能靠进程内大小缓存）
+  const writeLogLine = (date: Date, line: string) => {
+    if (!dir) return;
+    const active = join(dir, logFileName(date));
+    const bytes = Buffer.byteLength(line + "\n");
+    try {
+      let size = 0;
+      let activeExists = true;
+      try {
+        size = statSync(active).size;
+      } catch {
+        activeExists = false;
+      }
+      let rolled = false;
+      if (activeExists && size + bytes > maxBytes) {
+        let n = 1;
+        // 取该日期下最小的未占用正整数作归档名
+        for (;;) {
+          let taken = true;
+          try {
+            taken = statSync(join(dir, rollLogFileName(date, n))).isFile();
+          } catch {
+            taken = false;
+          }
+          if (!taken) break;
+          n++;
+        }
+        renameSync(active, join(dir, rollLogFileName(date, n)));
+        rolled = true;
+      }
+      appendFileSync(active, line + "\n");
+      // 滚动后立刻清理：先 append 再删，活跃文件是该天最新，只删最旧的，总数压到 KEEP_FILES
+      if (rolled) {
+        try {
+          pruneOldLogs(dir);
+        } catch {
+          // 目录不可读时跳过清理
+        }
+      }
+    } catch {
+      // 并发写入冲突时跳过该条
+    }
+  };
   const make = (moduleTask: string | null): Logger => {
     const log = (lvl: LogLevel, module: LogModule, message: string, fields?: LogFields) => {
       if (LEVEL_RANK[lvl] < LEVEL_RANK[level]) return;
@@ -130,14 +214,11 @@ export function createLogger(opts?: LoggerOptions): Logger {
         if (v === undefined) continue;
         redacted[k] = redactValue(v, secrets);
       }
-      const line = renderLine(date, lvl, module, redactSecrets(message, secrets), redacted, moduleTask ?? processTask);
-      if (dir) {
-        try {
-          appendFileSync(join(dir, logFileName(date)), line + "\n");
-        } catch {
-          // 并发写入冲突时跳过该条
-        }
-      }
+      const safeMessage = redactSecrets(message, secrets);
+      const taskId = moduleTask ?? processTask;
+      const line = renderLine(date, lvl, module, safeMessage, redacted, taskId);
+      writeLogLine(date, line);
+      if (opts?.tap) opts.tap({ date, level: lvl, module, message: safeMessage, fields: redacted, taskId });
       if (opts?.sink) opts.sink(line);
       if (opts?.console) console.log(line);
     };
@@ -242,15 +323,15 @@ export function pruneOldLogs(dir: string, keepDays = PRUNE_KEEP_DAYS, now: Date 
     if (fileDate < cutoff) remove(name);
   }
   // 再只保留最新的 KEEP_FILES 个
-  const remaining = listLogFiles(dir).sort();
+  const remaining = listLogFiles(dir).sort(compareLogNames);
   for (const name of remaining.slice(0, Math.max(0, remaining.length - KEEP_FILES))) remove(name);
   return removed;
 }
 
-/** 全部日志文件的尾部（按日期升序，取最后 maxLines 行）；无日志返回空数组。 */
+/** 全部日志文件的尾部（按日期+roll 号升序，取最后 maxLines 行）；无日志返回空数组。 */
 export function tailLog(dir: string, maxLines = 200): string[] {
   const all: string[] = [];
-  for (const name of listLogFiles(dir).sort()) {
+  for (const name of listLogFiles(dir).sort(compareLogNames)) {
     try {
       const content = readFileSync(join(dir, name), "utf8");
       for (const line of content.split("\n")) if (line !== "") all.push(line);
@@ -266,7 +347,7 @@ export function readTaskLog(dir: string, taskId: string, maxLines?: number): str
   const re = new RegExp(`(?:^|\\s)task=${escapeRegExp(taskId)}(?=\\s|$)`);
   const lines: string[] = [];
   // 跨文件按日期升序，文件内旧行在前
-  for (const name of listLogFiles(dir).sort()) {
+  for (const name of listLogFiles(dir).sort(compareLogNames)) {
     let content = "";
     try {
       content = readFileSync(join(dir, name), "utf8");

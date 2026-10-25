@@ -23,7 +23,7 @@ import {
   type LlmFormDraft,
   type LlmSaved,
 } from "../lib/llm-draft";
-import { showToast } from "../lib/toast";
+import { showErrorToast, showToast } from "../lib/toast";
 import { VOLC_MODE_INFO } from "../../../shared/volc";
 import {
   Button,
@@ -365,9 +365,13 @@ export function SettingsPage() {
         baseUrl: llmCard.draft.baseUrl.trim(),
         apiKey: llmCard.draft.apiKey.trim(),
       })
-      .then((r) =>
-        showToast(r.ok ? `连接正常${r.model !== null ? ` · ${r.model}` : ""}` : r.message),
-      )
+      .then((r) => {
+        if (r.ok) {
+          showToast(`连接正常${r.model !== null ? ` · ${r.model}` : ""}`);
+        } else {
+          showErrorToast(r.message);
+        }
+      })
       .catch((err) => showToast(`测试失败：${errMessage(err)}`))
       .finally(() => setTestingLlm(false));
   };
@@ -376,13 +380,13 @@ export function SettingsPage() {
     setTestingAsr(true);
     window.vnote
       .testAsr()
-      .then((r) =>
-        showToast(
-          r.ok
-            ? `连接正常${r.modelsFound !== null ? ` · 发现 ${r.modelsFound} 个模型` : ""}`
-            : r.message,
-        ),
-      )
+      .then((r) => {
+        if (r.ok) {
+          showToast(`连接正常${r.modelsFound !== null ? ` · 发现 ${r.modelsFound} 个模型` : ""}`);
+        } else {
+          showErrorToast(r.message);
+        }
+      })
       .catch((err) => showToast(`测试失败：${errMessage(err)}`))
       .finally(() => setTestingAsr(false));
   };

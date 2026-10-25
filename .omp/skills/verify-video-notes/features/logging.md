@@ -1,14 +1,17 @@
 # Logging and diagnostics
 
-The app writes one structured log per day under the notes root (`<notesRoot>/.logs`), and 设置 exposes a 日志与诊断 card: a read-only 日志目录 row, a 打开日志文件夹 button, and a 复制诊断信息 button that puts a paste-ready summary (environment snapshot, the last job's log, every ERROR line) on the system clipboard. The three failure journeys below prove that the copied text carries the decisive fact of the failure (the gate error, the HTTP status and endpoint, the ffprobe stderr) while a saved key appears nowhere in it.
+The app writes one structured log file per day under the visible notes-root log directory (`<notesRoot>/logs`), and 设置 exposes a 日志与诊断 card: a read-only 日志目录 row, a 打开日志文件夹 button, and a 复制诊断信息 button that puts a paste-ready summary (environment snapshot, the last job's log, every ERROR line) on the system clipboard. The three failure journeys below prove that the copied text carries the decisive fact of the failure (the gate error, the HTTP status and endpoint, the ffprobe stderr) while a saved key appears nowhere in it.
 
 ## Sub-features
 
-- `settings-logs` is the 日志与诊断 card on the 设置 page. The 日志目录 row (`settings-logs-dir`) reads the run's `<run>/home/.logs`; 打开日志文件夹 (`settings-logs-open`) opens that directory in Finder (it is created first if missing, so a fresh start with no logs still opens); 复制诊断信息 (`settings-diagnostics-copy`) writes the summary to the system clipboard and, after a successful copy, `settings-diagnostics-status` reads `已复制 N 字符`.
-- Log files are `<run>/home/.logs/vnote-YYYY-MM-DD.log`, one line per record (a `stack:` continuation line belongs to the record that produced it). Retention is 7 days: today plus the six previous files, pruned to at most 7 matching files.
+- `settings-logs` is the 日志与诊断 card on the 设置 page. The 日志目录 row (`settings-logs-dir`) reads the run's `<run>/home/logs`; 打开日志文件夹 (`settings-logs-open`) opens that directory in Finder (it is created first if missing, so a fresh start with no logs still opens); 复制诊断信息 (`settings-diagnostics-copy`) writes the summary to the system clipboard and, after a successful copy, `settings-diagnostics-status` reads `已复制 N 字符`.
+- Log files are `<run>/home/logs/vnote-YYYY-MM-DD.log`, one line per record (a `stack:` continuation line belongs to the record that produced it). One active file per day: a write that would push it past 8 MB (`MAX_LOG_FILE_BYTES`) rolls it to `vnote-YYYY-MM-DD.<n>.log` first, and the directory always keeps at most 7 files (`KEEP_FILES`), the oldest deleted immediately at roll time. Readers (`tailLog`, `readTaskLog`) order the files by date then roll number, so a read across rolled files stays in order.
 - Every pipeline run logs `术语表合并` (`INFO app`) with `stage=` (extract / topics / notes), `global=`, `video=` and `merged=` counts: the capture proof that the global list was loaded and how many entries took effect (r36).
 - Every job's records carry `task=<runToken>`, where the task id is exactly the job's `runToken`; 复制诊断信息 locates the last job's log by that token. A 门禁 failure throws before the job is enqueued, so it has no task id and the copy falls back to the recent log tail (the 最近任务 section then reads `（无任务，以下为最近日志）`).
 - The copied text has four sections: `## 环境` (the `formatEnvironment` lines, including `非 ASCII` / `含空格` path markers and `missing` states), `## 错误摘要` (every ERROR line plus its stack, or `（无）`), `## 最近任务` (the task-filtered lines, or the tail fallback), `## 日志目录`. Registered secrets (the saved LLM key) are scrubbed from every field before the text reaches the clipboard.
+- On startup the app writes one `INFO app 日志初始化` line with `level`, `dir`, `version`, `commit`, `notesRoot`, `modelDir`, `cacheRoot`; the default level is `info`.
+- r39 promoted the key pipeline steps to `info` so the default level shows them: `任务入队`, `任务启动`, `门禁通过`, `设置已更新`, `手动模型检测`, `模型下载开始` / `模型下载完成` / `模型下载取消` / `模型下载失败`, `主题分析分块 (i/N) 开始` / `完成`, `主题合并`, `要点提取完成`, `切片完成`.
+- The job banner streams the live step log: `data-testid="job-log-tail"` is a fixed-height (min 84 px, max 140 px) monospace viewport with one `data-testid="job-log-line"` per line, oldest first, capped at 200 lines (`MAX_JOB_LOG_LINES`, the oldest dropped first); it auto-follows the bottom while the user is within 24 px of it (scrolling up pauses the follow, scrolling back resumes it). The banner is 440 px wide, and the tail stays visible in terminal states (完成 / 失败 / 已取消) until 关闭 (`job-close`) is clicked. Lines read like `[14:03:07] 导入开始`; error lines carry an `错误 ` marker.
 
 ## How to get to it (user POV)
 
@@ -19,10 +22,10 @@ The app writes one structured log per day under the notes root (`<notesRoot>/.lo
 
 Preconditions:
 
-- A running instance; the on-disk check is `ls tmp/verify/<run>/home/.logs/` (a `vnote-<date>.log` per day, never more than 7 files).
+- A running instance; the on-disk check is `ls tmp/verify/<run>/home/logs/` (a `vnote-<date>.log` per day, never more than 7 files).
 - 复制诊断信息 writes to the system clipboard, which `drive` cannot read: every assertion below goes through `pbpaste`.
 - Failure journeys 1 and 3 need no LLM at all; journey 2 uses a local mock; journey 4 is a real extraction (real endpoint, real token spend). Say so in the report.
-- Read the on-disk log with `tail tmp/verify/<run>/home/.logs/vnote-$(date +%F).log`; the task id in its `task=` fields is the job `runToken`.
+- Read the on-disk log with `tail tmp/verify/<run>/home/logs/vnote-$(date +%F).log`; the task id in its `task=` fields is the job `runToken`.
 
 ### Recipe: missing models (gate error, no task id)
 
@@ -91,6 +94,6 @@ Pass: the `## 环境` section marks the notesRoot line `非 ASCII` and `含空�
 ## Gotchas
 
 - **Clipboard reads need `pbpaste`.** 复制诊断信息 puts the text on the system clipboard and `drive` has no clipboard action; the only way to assert the copy is `pbpaste` (or `pbpaste | rg -c <token>`).
-- **Logs live under the notes root, not user-data.** The directory is `<notesRoot>/.logs` (`logDirFor`); a verify run sets `VNOTE_HOME=tmp/verify/<run>/home`, so logs land in `tmp/verify/<run>/home/.logs`. A dev run launched inside the repo writes under `tmp/dev-home/data/.logs`. The run dir's `app.log` is the process stdout, a different file from the structured `vnote-*.log` files.
+- **Logs live under the notes root, not user-data.** The directory is `<notesRoot>/logs` (`logDirFor`); a verify run sets `VNOTE_HOME=tmp/verify/<run>/home`, so logs land in `tmp/verify/<run>/home/logs`. A dev run launched inside the repo writes under `tmp/dev-home/data/logs`. A legacy `<notesRoot>/.logs` directory is migrated into `logs/` at startup when present (its files move in when the name is free, and the emptied directory is removed). The run dir's `app.log` is the process stdout, a different file from the structured `vnote-*.log` files.
 - **A gate failure has no task id.** `ensurePipelineReady` throws before the job is enqueued, so `copyDiagnostics` falls back to the recent log tail (最近任务 reads `（无任务，以下为最近日志）`); the gate's ERROR line reaches 错误摘要 through that fallback, not through a task filter.
 - **The model dir is shared read-only.** Never mutate `~/.cache/video-notes/models` (or the shared dir) to simulate missing models; point `--model-dir` at a fresh empty directory you created (`tmp/verify/empty-models`).

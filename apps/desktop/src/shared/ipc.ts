@@ -287,7 +287,7 @@ export type ExtractTarget =
   | { kind: "existing"; videoId: VideoId; sourcePath?: string };
 
 export type JobSnapshot =
-  | { state: "queued"; jobId: string; kind: JobKind; videoId: VideoId; sourcePath: string }
+  | { state: "queued"; jobId: string; kind: JobKind; videoId: VideoId; sourcePath: string; /** 最近的在最后，最多 MAX_JOB_LOG_LINES 条 */ logs: string[] }
   | {
       state: "running";
       jobId: string;
@@ -302,6 +302,8 @@ export type JobSnapshot =
       topicId: string | null;
       /** 该主题已完成的切片比例（0–100）；LLM 阶段为 0，切片阶段才前进。 */
       topicPercent: number | null;
+      /** 最近的在最后，最多 MAX_JOB_LOG_LINES 条 */
+      logs: string[];
     }
   | {
       state: "succeeded";
@@ -313,9 +315,11 @@ export type JobSnapshot =
       cacheHits: string[];
       timings: Record<string, number>;
       outputDir: string | null;
+      /** 最近的在最后，最多 MAX_JOB_LOG_LINES 条 */
+      logs: string[];
     }
-  | { state: "failed"; jobId: string; kind: JobKind; videoId: VideoId; message: string }
-  | { state: "cancelled"; jobId: string; kind: JobKind; videoId: VideoId };
+  | { state: "failed"; jobId: string; kind: JobKind; videoId: VideoId; message: string; /** 最近的在最后，最多 MAX_JOB_LOG_LINES 条 */ logs: string[] }
+  | { state: "cancelled"; jobId: string; kind: JobKind; videoId: VideoId; /** 最近的在最后，最多 MAX_JOB_LOG_LINES 条 */ logs: string[] };
 
 /** `library:covers` 事件 payload：本轮后台封面补齐成功补齐的 videoId 列表。 */
 export type LibraryCovers = string[];

@@ -12,7 +12,7 @@ The 术语表 page edits the global correction list used before topic analysis: 
 - `glossary-merge-scope` (r36): the pipeline loads `<notesRoot>/corrections.json` and `<outputDir>/corrections.json` together; on the same `wrong` the per-video entry wins, otherwise both apply.
 - `glossary-live-subtitles` (r36): the video detail returned to the renderer applies the merged list to every utterance, so the 字幕 page, the 主题 page's subtitle column and the 笔记 page's clip subtitles show the replaced text as soon as the detail is reloaded. `video.json` keeps the raw recognised text.
 - `glossary-prompt-injection` (r36): the merged list is inserted into the topic chunk/merge system prompts and the note key-point prompt; changing either list changes the prompt hash and therefore misses the topic/note cache.
-- `glossary-log` (r36): every pipeline run logs `术语表合并` with `global=<N> video=<M> merged=<K>` under `<notesRoot>/.logs`.
+- `glossary-log` (r36): every pipeline run logs `术语表合并` with `global=<N> video=<M> merged=<K>` under `<notesRoot>/logs`.
 
 ## How to get to it (user POV)
 
@@ -106,7 +106,7 @@ rg -o -- '- [^"]+ → [^"\]+' tmp/verify/mock-llm-requests.ndjson | sort -u
 # expected: - clash → 本视频写法 / - 金星词 → 金星号 / - zephyr → Zephyr   (never "clash → 全局写法")
 rg 'Zephyr 本视频写法' tmp/verify/mock-llm-requests.ndjson
 # expected: the note prompt's subtitle block contains the corrected text
-rg '术语表合并' <home>/.logs/*.log
+rg '术语表合并' <home>/logs/*.log
 # expected: stage="topics" global=2 video=2 merged=3 (and stage="notes" for a notes run)
 python3 -c "import json;d=json.load(open('<outputDir>/video.json'));print([u['text'] for u in d['transcript']['utterances']])"
 # expected: the RAW text ["zephyr clash 保留词", ...] — the replacement is projection-only

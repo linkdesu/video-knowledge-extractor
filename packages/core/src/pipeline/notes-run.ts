@@ -6,7 +6,7 @@ import { cacheDirFor, slugify } from "../core/paths";
 import { loadVideoData, readVideoData, writeVideoData } from "../core/video-data";
 import type { TopicClip, TopicRecord, VideoData, VideoRef } from "../core/video-data";
 import { loadCorrections } from "../core/corrections-io";
-import { applyCorrections, resolveCorrections } from "../core/corrections";
+import { applyCorrections, countCorrectionsHits, resolveCorrections } from "../core/corrections";
 import { setTopicProgress, settleRunWhileLocked } from "../core/edits";
 import { renderIndexMarkdown } from "../core/render";
 import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/types";
@@ -110,6 +110,7 @@ export async function generateAll(
     const topic = data.topics.find((x) => x.id === id);
     if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
     const t0 = performance.now();
+    logger().info("llm", `主题生成开始 (${index + 1}/${topicIds.length})`, { topicId: id, title: topic.title, trigger, baseUrl: endpoint.baseUrl, model: endpoint.model });
     data = setTopicProgress(outputDir, id, { status: "generating", startedAt: new Date().toISOString() });
     try {
       const result = await generateNotes({
@@ -253,8 +254,10 @@ export async function runTopics(input: {
     logger().info("app", "主题重跑开始", { kind: "topics", outputDir: input.outputDir, topicIds: data.topics.length });
     try {
       const corrections = correctionsFor(input.outputDir, "topics");
+      const correctedTopics = applyCorrections(corrections, data.transcript.utterances);
+      logger().info("app", "字幕纠错应用", { stage: "topics", utterances: correctedTopics.length, changed: countCorrectionsHits(corrections, data.transcript.utterances) });
       const { topics } = await segmentTopics({
-        transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
+        transcript: { ...data.transcript, utterances: correctedTopics },
         chunks: data.chunks,
         endpoint: input.endpoint,
         cacheDir,
