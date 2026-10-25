@@ -40,11 +40,16 @@ type JobRecord = {
   request: JobRequest;
   handle: JobHandle | undefined;
   progress: JobProgress | undefined;
+  /** 任务日志行（display-ready，oldest first）；超过 MAX_JOB_LOG_LINES 从前端裁剪。 */
+  logs: string[];
   startedAt: string | undefined;
   settled: boolean;
   /** 运行中已调过 handle.cancel()；等 exit 落终态，避免重复取消被误报 */
   cancelRequested: boolean;
 };
+
+/** 每个任务快照里保留的日志行上限：超了从最旧端裁剪。 */
+export const MAX_JOB_LOG_LINES = 200;
 
 function runningSnapshot(jobId: string, record: JobRecord): JobSnapshot {
   const p = record.progress ?? { step: "prepare", done: 0, total: 0, detail: null, topicId: null, topicPercent: null };
@@ -60,6 +65,7 @@ function runningSnapshot(jobId: string, record: JobRecord): JobSnapshot {
     startedAt: record.startedAt ?? new Date().toISOString(),
     topicId: p.topicId,
     topicPercent: p.topicPercent,
+    logs: [...record.logs],
   };
 }
 
@@ -83,9 +89,9 @@ export class JobQueue {
   /** 入队并返回 jobId；立即发 queued 快照，槽位空就自动启动下一个。 */
   enqueue(job: JobRequest): string {
     const jobId = `${randomUUID()}:${this.nextJobId++}`;
-    const record: JobRecord = { state: "queued", request: job, handle: undefined, progress: undefined, startedAt: undefined, settled: false, cancelRequested: false };
+    const record: JobRecord = { state: "queued", request: job, handle: undefined, progress: undefined, logs: [], startedAt: undefined, settled: false, cancelRequested: false };
     this.queue.push({ jobId, record });
-    this.emit({ state: "queued", jobId, kind: job.kind, videoId: job.videoId, sourcePath: job.sourcePath });
+    this.emit({ state: "queued", jobId, kind: job.kind, videoId: job.videoId, sourcePath: job.sourcePath, logs: [] });
     this.start();
     return jobId;
   }
@@ -112,7 +118,24 @@ export class JobQueue {
     r.handle = this.launch(next.jobId, r.request);
     this.emit(runningSnapshot(next.jobId, r));
   }
+  /** 追加一行日志到 runToken 对应的在途任务（running 或 queued）；settled 的丢弃；快照带最新行，上限 MAX_JOB_LOG_LINES。 */
+  appendLog(runToken: string, line: string): void {
+    const r = this.running;
+    if (r !== undefined && !r.record.settled && r.record.request.runToken === runToken) {
+      this.pushLog(r.record, line);
+      this.emit(runningSnapshot(r.jobId, r.record));
+      return;
+    }
+    const item = this.queue.find((i) => !i.record.settled && i.record.request.runToken === runToken);
+    if (item === undefined) return;
+    this.pushLog(item.record, line);
+    this.emit({ state: "queued", jobId: item.jobId, kind: item.record.request.kind, videoId: item.record.request.videoId, sourcePath: item.record.request.sourcePath, logs: [...item.record.logs] });
+  }
 
+  private pushLog(record: JobRecord, line: string): void {
+    record.logs.push(line);
+    if (record.logs.length > MAX_JOB_LOG_LINES) record.logs.splice(0, record.logs.length - MAX_JOB_LOG_LINES);
+  }
   progress(p: JobProgress): void {
     const r = this.running;
     if (r === undefined || r.record.state !== "running" || r.record.settled) return;
@@ -140,13 +163,14 @@ export class JobQueue {
       cacheHits: result.cacheHits,
       timings: result.timings,
       outputDir: result.outputDir,
+      logs: [...r.record.logs],
     });
   }
 
   fail(message: string): void {
     const r = this.running;
     if (r === undefined || r.record.state !== "running" || r.record.settled) return;
-    this.settle(r, { state: "failed", jobId: r.jobId, kind: r.record.request.kind, videoId: r.record.request.videoId, message });
+    this.settle(r, { state: "failed", jobId: r.jobId, kind: r.record.request.kind, videoId: r.record.request.videoId, message, logs: [...r.record.logs] });
   }
 
   /**
@@ -159,7 +183,7 @@ export class JobQueue {
       if (item.record.settled) return;
       item.record.settled = true;
       this.queue = this.queue.filter((i) => i.jobId !== jobId);
-      this.emit({ state: "cancelled", jobId, kind: item.record.request.kind, videoId: item.record.request.videoId });
+      this.emit({ state: "cancelled", jobId, kind: item.record.request.kind, videoId: item.record.request.videoId, logs: [...item.record.logs] });
       this.start();
       return;
     }
@@ -176,7 +200,7 @@ export class JobQueue {
     const r = this.running;
     if (r === undefined || r.jobId !== jobId) return;
     if (r.record.settled || r.record.state !== "running") return;
-    this.settle(r, { state: "cancelled", jobId: r.jobId, kind: r.record.request.kind, videoId: r.record.request.videoId });
+    this.settle(r, { state: "cancelled", jobId: r.jobId, kind: r.record.request.kind, videoId: r.record.request.videoId, logs: [...r.record.logs] });
   }
 
   /** 应用退出用：排队任务直接 cancelled，运行中任务转取消（终态等 exit 落）。 */

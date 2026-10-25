@@ -23,9 +23,10 @@ import {
   coverPath,
   collectEnvironment,
   buildDiagnostics,
-  formatEnvironment,
-  logEnvironment,
   configureLogging,
+  formatEnvironment,
+  formatLogLine,
+  logEnvironment,
   logger,
   ensureCoverFrame,
   fetchModelIds,
@@ -65,6 +66,7 @@ import {
   readLibraryVideo,
   readGlobalCorrections,
   logDirFor,
+  migrateLegacyLogDir,
   saveSettings,
   VOLCENGINE_STANDARD_RESOURCE_ID,
   VOLCENGINE_STANDARD_SUBMIT_URL,
@@ -81,6 +83,8 @@ import type {
   LibraryVideo as CoreLibraryVideo,
   LlmEndpoint,
   SettingsPatch as CoreSettingsPatch,
+  LogEntry,
+  ModelsCheck,
   VideoRef,
   VolcengineAuth,
 } from "@video-notes/core";
@@ -118,6 +122,7 @@ import { llmDraftCredentials } from "./llm-draft-creds";
 import { applyDetailCorrections } from "./detail-corrections";
 import { buildLlmUpdate } from "./llm-update";
 import { defaultDataRoot, killProcessTree, prependPath } from "./platform";
+import { isLogMessage } from "./extract-worker";
 
 // dev 数据目录（r28）：未打包且能从 cwd 找到仓库根时，设置/笔记/缓存/模型都落在
 // 仓库 tmp/dev-home 下，便于人工检查；打包后的 app 走正常路径（resolveDevHome 返回 null）。
@@ -201,10 +206,20 @@ function modelDirOfCurrentSettings(): string {
   return settings.modelDir;
 }
 let settings: AppSettings = resolved.settings;
-// 结构化日志（r34/r35）：日志跟随 notes 根目录，落在 <notesRoot>/.logs；console 只在 dev 开。
+// 结构化日志（r34/r35/r39）：日志跟随 notes 根目录，落在可见的 <notesRoot>/logs；console 只在 dev 开。
 // 设置变更（notesRoot 切换）时由 recomputeRuntimes 重新配置到新目录。
+let appendJobLog: ((runToken: string, line: string) => void) | undefined;
 function configureAppLogging(): void {
-  configureLogging({ dir: logDirFor(settings.notesRoot), level: "info", console: !app.isPackaged });
+  // r38 遗留 .logs 目录一次性 rename 到 logs；fire-and-forget，任何失败只 warn 不打断启动
+  try {
+    void Promise.resolve(migrateLegacyLogDir(settings.notesRoot)).catch((err: unknown) => {
+      logger().warn("app", "日志目录迁移失败", { message: sanitizeError(err instanceof Error ? err : new Error(String(err))) });
+    });
+  } catch (err: unknown) {
+    logger().warn("app", "日志目录迁移失败", { message: sanitizeError(err instanceof Error ? err : new Error(String(err))) });
+  }
+  configureLogging({ dir: logDirFor(settings.notesRoot), level: "info", console: !app.isPackaged, tap: (entry: LogEntry) => { if (entry.taskId !== null) appendJobLog?.(entry.taskId, formatLogLine(entry)); } });
+  logger().info("app", "日志初始化", { level: "info", dir: logDirFor(settings.notesRoot), version: app.getVersion(), commit: __APP_COMMIT__, notesRoot: settings.notesRoot, modelDir: settings.modelDir, cacheRoot: settings.cacheRoot });
 }
 configureAppLogging();
 const locked = resolved.locked;
@@ -470,6 +485,8 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
   logger()
     .forTask(job.runToken)
     .info("app", "任务启动", {
+      jobId,
+      pid: proc.pid ?? null,
       kind: job.kind,
       videoId: job.videoId,
       sourcePath: job.sourcePath,
@@ -492,12 +509,16 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       if (p.outputDir !== "") lastJobOutputDir = p.outputDir;
       state.outputDir = p.outputDir;
       state.runToken = p.runToken;
-      logger().forTask(p.runToken).debug("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
+      logger().forTask(p.runToken).info("app", "prepared", { outputDir: p.outputDir, runToken: p.runToken });
       proc.postMessage({ type: "prepared-ack" });
       return;
     }
     // cancelRequested 之后丢弃 progress/done/error，终态只由 exit 事件定
     if (state.cancelRequested) return;
+    if (isLogMessage(raw)) {
+      queue.appendLog(state.runToken ?? job.runToken, raw.line);
+      return;
+    }
     if (raw.type === "progress" && "step" in raw) {
       const p = raw as { type: string; step: string; done: number; total: number; detail?: string; topicId?: string; topicPercent?: number };
       queue.progress({
@@ -513,7 +534,6 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
       if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "done";
       const r = raw.result as Parameters<typeof queue.finish>[0];
       if (state.outputDir !== null) clearVideoFailure(state.outputDir);
-      queue.finish(r);
       logger()
         .forTask(job.runToken)
         .info("app", "任务完成", {
@@ -522,6 +542,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
           timings: r.timings,
           cacheHits: r.cacheHits,
         });
+      queue.finish(r);
     } else if (raw.type === "error" && "message" in raw) {
       state.resultDelivered = true;
       if (lastJobLog !== null && lastJobLog.taskId === job.runToken) lastJobLog.state = "error";
@@ -633,6 +654,7 @@ const queue = new JobQueue({
     }
   },
 });
+appendJobLog = (runToken, line) => queue.appendLog(runToken, line);
 
 function coverUrlOf(v: CoreLibraryVideo): string | null {
   let size = 0;
@@ -848,6 +870,8 @@ async function ensurePipelineReady(): Promise<void> {
   const problems = prerequisiteProblems({ llmError, asrError, localModel, queueBusy: queue.busy() });
   if (credentialTxError !== null) problems.unshift(credentialTxError);
   if (problems.length > 0) throw new Error(formatPrerequisiteError(problems));
+  // 门禁全过才记 success：provider 与 model 是排查「跑错配置」的第一线索
+  logger().info("app", "门禁通过", { provider, model: llmRuntime.endpoint?.model ?? "" });
 }
 
 /** 组一个完整任务：runToken 入队时生成，endpoint/asr 按当前运行时冻结；ASR 未配齐直接抛错，不回退本地（ADR-0016 §6）。 */
@@ -906,7 +930,10 @@ function startExtract(target: ExtractTarget): Promise<{ jobId: string }> {
       if (sourcePath === "") throw new Error("该视频没有源文件记录，请先选择源文件");
       outputDir = entry.outputDir;
     }
-    return { jobId: queue.enqueue(await buildJobRequest("extract", videoId, sourcePath, outputDir)) };
+    const job = await buildJobRequest("extract", videoId, sourcePath, outputDir);
+    const jobId = queue.enqueue(job);
+    logger().forTask(job.runToken).info("app", "任务入队", { jobId, kind: job.kind, videoId: job.videoId, runToken: job.runToken, outputDir: job.outputDir });
+    return { jobId };
   });
 }
 
@@ -915,7 +942,10 @@ function startNotes(videoId: string, topicIds: string[], options?: NotesStartOpt
     await ensurePipelineReady();
     const entry = resolveVideo(videoId);
     if (topicIds.length === 0) throw new Error("请先勾选要生成的主题");
-    return { jobId: queue.enqueue(await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds, options?.force === true)) };
+    const job = await buildJobRequest("notes", videoId, entry.sourcePath ?? "", entry.outputDir, topicIds, options?.force === true);
+    const jobId = queue.enqueue(job);
+    logger().forTask(job.runToken).info("app", "任务入队", { jobId, kind: job.kind, videoId: job.videoId, runToken: job.runToken, outputDir: job.outputDir });
+    return { jobId };
   });
 }
 
@@ -923,8 +953,18 @@ function rebuildTopics(videoId: string): Promise<{ jobId: string }> {
   return withStartLog("topics", async () => {
     await ensurePipelineReady();
     const entry = resolveVideo(videoId);
-    return { jobId: queue.enqueue(await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir)) };
+    const job = await buildJobRequest("topics", videoId, entry.sourcePath ?? "", entry.outputDir);
+    const jobId = queue.enqueue(job);
+    logger().forTask(job.runToken).info("app", "任务入队", { jobId, kind: job.kind, videoId: job.videoId, runToken: job.runToken, outputDir: job.outputDir });
+    return { jobId };
   });
+}
+
+/** 手动「检测本地模型」：逐个子模型 id 记 ready / missing，启动检测不重复记这条。 */
+function runModelCheckWithLog(): ModelsCheck {
+  const check = checkModels(modelDirOfCurrentSettings());
+  logger().info("app", "手动模型检测", { ready: check.ready, models: check.models.map((m) => ({ id: m.id, state: m.ready ? "ready" : "missing" })) });
+  return check;
 }
 
 async function pickVideo(): Promise<string | null> {
@@ -1019,15 +1059,44 @@ function modelsStatusDto(): ModelsStatus {
   return modelsDownloader.status(settings.modelDir);
 }
 
+/** 下载生命周期日志：onSnapshot 里按状态迁移记一次，逐块进度不记（完成/失败才有）。 */
+let downloadBundleStarted: string | null = null;
+/** 逐包 failed 快照带 bundleId（core 发），下载器终态 failed 的 bundleId 是 null：终态行记 bundleId 要取前者的值。 */
+let downloadFailedBundle: string | null = null;
+function onDownloadSnapshot(s: DownloadSnapshot): void {
+  if ((s.state === "downloading" || s.state === "verifying") && s.bundleId !== null && s.bundleId !== downloadBundleStarted) {
+    downloadBundleStarted = s.bundleId;
+    logger().info("app", "模型包下载开始", { bundleId: s.bundleId, totalBytes: s.totalBytes });
+  }
+  if (s.state === "verifying" && s.bundleId !== null) {
+    logger().info("app", "模型包下载完成", { bundleId: s.bundleId, receivedBytes: s.receivedBytes, totalBytes: s.totalBytes });
+  }
+  if (s.state === "done") {
+    logger().info("app", "模型下载完成");
+  } else if (s.state === "failed") {
+    // core 的逐包 failed 带 bundleId；下载器终态 failed 的 bundleId 是 null，终态行取前者的值
+    if (s.bundleId !== null) downloadFailedBundle = s.bundleId;
+    if (s.bundleId === null) {
+      logger().error("app", "模型下载失败", { bundleId: downloadFailedBundle, status: s.state, message: s.message === null ? "未知原因" : sanitizeError(new Error(s.message)) });
+    }
+  } else if (s.state === "cancelled") {
+    logger().info("app", "模型下载取消");
+  }
+  broadcastModelEvent(s);
+}
+
 /** 下载指定包（缺省全部缺失包）：一次只跑一个下载循环，已有任务时拒绝安装。 */
 async function downloadModelsNow(bundleIds?: readonly ModelBundleStatus["id"][]): Promise<ModelsStatus> {
   if (queue.busy()) throw new Error("已有任务在运行，完成后再安装模型");
   if (modelsDownloader.busy()) return modelsStatusDto();
   downloadLog = [];
+  downloadBundleStarted = null;
+  downloadFailedBundle = null;
   broadcastModelEvent();
+  logger().info("app", "模型下载开始", { bundles: bundleIds ?? "all" });
   modelsDownloader.start(settings.modelDir, {
     ...(bundleIds === undefined ? {} : { bundleIds }),
-    onSnapshot: broadcastModelEvent,
+    onSnapshot: onDownloadSnapshot,
     onLog: appendModelLog,
     busy: () => queue.busy(),
   });
@@ -1039,7 +1108,7 @@ async function downloadModelsNow(bundleIds?: readonly ModelBundleStatus["id"][])
     if (check.ready) return;
     const missing = check.models.filter((m) => !m.ready).map((m) => m.label).join("、");
     appendModelLog({ level: "error", text: `下载结束但模型未就绪${missing === "" ? "" : `（${missing}）`}` });
-    broadcastModelEvent({ state: "failed", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: `模型未就绪${missing === "" ? "" : `：${missing}`}` });
+    onDownloadSnapshot({ state: "failed", bundleId: null, receivedBytes: 0, totalBytes: 0, percent: null, message: `模型未就绪${missing === "" ? "" : `：${missing}`}` });
   });
   return modelsStatusDto();
 }
@@ -1139,6 +1208,13 @@ function asrStatusDto(): SettingsStatus["asr"] {
 import { buildSettingsPatch } from "./settings-patch";
 export { buildSettingsPatch };
 
+/** 设置已更新日志字段：只记字段名；密钥字段只记存/清动作（永远不带值），路径字段带新路径。 */
+function settingsUpdateFields(names: readonly string[], paths: Record<string, string | undefined>, secret: Record<string, string>): Record<string, unknown> {
+  const fields: Record<string, unknown> = { fields: names };
+  for (const [name, value] of Object.entries(paths)) if (value !== undefined) fields[name] = value;
+  for (const [name, value] of Object.entries(secret)) fields[name] = value;
+  return fields;
+}
 async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
   return withSettingsWrite(async () => {
     const clean = buildSettingsPatch(patch);
@@ -1147,6 +1223,12 @@ async function updateSettings(patch: SettingsPatch): Promise<SettingsStatus> {
     }
     saveSettings(SETTINGS_PATH(), clean);
     settings = effectiveSettings();
+    const names: string[] = [];
+    if (patch.notesRoot !== undefined) names.push("notesRoot");
+    if (patch.cacheRoot !== undefined) names.push("cacheRoot");
+    if (patch.modelDir !== undefined) names.push("modelDir");
+    if (patch.asr !== undefined) names.push("asr");
+    logger().info("app", "设置已更新", settingsUpdateFields(names, { notesRoot: patch.notesRoot, cacheRoot: patch.cacheRoot, modelDir: patch.modelDir }, {}));
     recomputeRuntimes();
     return settingsStatus();
   });
@@ -1212,6 +1294,11 @@ async function updateLlm(patch: LlmUpdatePatch): Promise<SettingsStatus> {
       secret: { id: "llm", patch: plan.secretPatch },
     });
     settings = effectiveSettings();
+    const names: string[] = [];
+    if (patch.baseUrl !== undefined) names.push("llm.baseUrl");
+    if (patch.model !== undefined) names.push("llm.model");
+    const trimmedLlmKey = patch.apiKey?.trim();
+    logger().info("app", "设置已更新", settingsUpdateFields(names, {}, { llmApi: patch.clearApiKey === true ? "clear" : trimmedLlmKey !== undefined && trimmedLlmKey !== "" ? "stored" : "unchanged" }));
     clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
@@ -1240,6 +1327,7 @@ const ASR_SECRET_FIELD_LABEL: Record<AsrSecretField, string> = {
 async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
   if (credentialTxError !== null) throw new Error(credentialTxError);
   return withSettingsWrite(() => {
+    let asrKeyAction = "unchanged";
     const asrOut: NonNullable<CoreSettingsPatch["asr"]> = {};
     if (patch.provider !== undefined) {
       if (patch.provider !== "local" && patch.provider !== "openai" && patch.provider !== "volcengine") {
@@ -1298,6 +1386,8 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
         if (patch.secret.value === "") secretPatch = { clearApiKey: true };
       }
     }
+    if (secretPatch.clearApiKey === true) asrKeyAction = "clear";
+    else if (secretPatch.apiKey !== undefined && secretPatch.apiKey !== "") asrKeyAction = "stored";
     commitCredentialUpdate({
       userData: app.getPath("userData"),
       settingsFile: SETTINGS_PATH(),
@@ -1307,6 +1397,12 @@ async function updateAsr(patch: AsrUpdatePatch): Promise<SettingsStatus> {
       secret: { id: secretId ?? "asr", patch: secretPatch },
     });
     settings = effectiveSettings();
+    const names: string[] = [];
+    if (patch.provider !== undefined) names.push("asr.provider");
+    if (patch.openai !== undefined) names.push("asr.openai");
+    if (patch.volcengine !== undefined) names.push("asr.volcengine");
+    if (patch.secret !== undefined) names.push(`asr.${patch.secret.field}`);
+    logger().info("app", "设置已更新", settingsUpdateFields(names, {}, { asrKey: asrKeyAction }));
     clearTxAfterCommit();
     recomputeRuntimes();
     return settingsStatus();
@@ -1612,7 +1708,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.downloadModels, guard(() => downloadModelsNow()));
   ipcMain.handle(IPC.downloadModelBundle, guard((_e, bundleId: ModelBundleStatus["id"]) => downloadModelsNow([bundleId])));
   ipcMain.handle(IPC.cancelModelDownload, guard(() => cancelModelDownloadNow()));
-  ipcMain.handle(IPC.checkModels, guard(() => checkModels(modelDirOfCurrentSettings())));
+  ipcMain.handle(IPC.checkModels, guard(() => runModelCheckWithLog()));
   ipcMain.handle(IPC.reveal, guard((_e, outputDir: string) => reveal(outputDir)));
   ipcMain.handle(IPC.logsOpen, guard(() => openLogs()));
   ipcMain.handle(IPC.diagnosticsCopy, guard(() => copyDiagnostics()));
