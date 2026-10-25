@@ -124,7 +124,13 @@ describe("formatEnvironment", () => {
   test("覆盖全部工具、模型、目录角色，且带标志", () => {
     const modelDir = join(tempDir, "models");
     mkdirSync(modelDir, { recursive: true });
-    const snapshot = collectEnvironment({ env: { ...fakeEnv, PATH: "" }, modelDir });
+    const existingDir = join(tempDir, "existing-dir");
+    mkdirSync(existingDir, { recursive: true });
+    const snapshot = collectEnvironment({
+      env: { ...fakeEnv, PATH: "" },
+      modelDir,
+      extraDirs: [{ role: "existingDir", path: existingDir }],
+    });
     const lines = formatEnvironment(snapshot);
     const roles = lines.map((line) => line.slice(0, line.indexOf(":")));
     expect(roles).toEqual([
@@ -138,10 +144,11 @@ describe("formatEnvironment", () => {
       "notesRoot",
       "cacheRoot",
       "modelDir",
+      "existingDir",
     ]);
     // 缺失项带 missing 标记；存在的目录显示 dir 而不是 ?（r40）
     expect(lines[2]).toContain("missing");
-    expect(lines[9]).toContain("dir");
+    expect(lines.find((line) => line.startsWith("existingDir:"))).toContain("(exists, dir)");
     // 含空格路径带 含空格 标记
     const spaced: (typeof snapshot.dirs) = [
       { role: "spaced", path: "/tmp/My Models", exists: false, bytes: null, kind: null, nonAscii: false, hasSpace: true },

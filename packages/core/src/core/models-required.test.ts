@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { checkModels, type RequiredModel, type RequiredModelId } from "./models-required";
 
 const ASR_MODEL = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
-const ASR_TOKENS = "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt";
+const ASR_TOKENS = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "tokens.txt");
 const DIARIZATION = join("sherpa-onnx-pyannote-segmentation-3-0", "model.onnx");
 const SPEAKER = "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
 const PUNCTUATION = join("sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12", "model.onnx");
