@@ -2,7 +2,7 @@ import { rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { probeVideo, extractAudio } from "../core/audio";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
-import { applyCorrections } from "../core/corrections";
+import { applyCorrections, countCorrectionsHits } from "../core/corrections";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { sweepStaleTopicDirs } from "../core/outputs";
@@ -133,10 +133,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       writeVideoData(video.outputDir, data);
 
       const corrections: CorrectionList = correctionsFor(video.outputDir, "extract");
-      const transcript = {
-        speakers: run.transcript.speakers,
-        utterances: applyCorrections(corrections, run.transcript.utterances),
-      };
+      const corrected = applyCorrections(corrections, run.transcript.utterances);
+      logger().info("app", "字幕纠错应用", { stage: "extract", utterances: corrected.length, changed: countCorrectionsHits(corrections, run.transcript.utterances) });
+      const transcript = { speakers: run.transcript.speakers, utterances: corrected };
 
       const topicsStarted = performance.now();
       const { topics } = await logger().step("llm", "划主题", () =>
