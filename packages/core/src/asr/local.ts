@@ -147,7 +147,8 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
           maxUtterance: ASR_MAX_UTTERANCE_SECONDS,
           padding: ASR_PADDING_SECONDS,
         });
-        logger().info("asr", `分块 ASR 开始 (${chunk.index + 1}/${chunks.length})`, { chunkIndex: chunk.index + 1, chunkCount: chunks.length });
+        // planChunks 的 index 已经是 1-based，日志与完成行、错误行共用同一序号
+        logger().info("asr", `分块 ASR 开始 (${chunk.index}/${chunks.length})`, { chunkIndex: chunk.index, chunkCount: chunks.length });
         const cached = readCache<{ texts: string[] }>(input.cacheDir, key);
         if (cached !== undefined) {
           chunkCacheHit = true;

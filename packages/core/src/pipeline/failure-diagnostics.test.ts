@@ -25,7 +25,7 @@ const FAKE_KEY = "sk-test-r34diag";
 const TASK = "task-fail-1";
 // 401 用例记录 mock 的 baseUrl，供聚合断言复用
 let llmBaseUrl = "";
-const FIRST_MISSING = `sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx`;
+const FIRST_MISSING = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
 // configureLogging 没有 undefined 复位：每个测试把单例指向自己的新临时目录即可，
 const dir = mkdtempSync(join(tmpdir(), "vnote-faildiag-"));
 const lines: string[] = [];
@@ -37,7 +37,7 @@ const lg = configureLogging({ dir, level: "info", now, sink: (l) => lines.push(l
 lg.addSecret(FAKE_KEY);
 
 function firstModelPath(modelDir: string): string {
-  return `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx`;
+  return join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
 }
 
 describe("三种失败都能从诊断文本里看出来", () => {

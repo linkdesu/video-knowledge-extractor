@@ -5,7 +5,16 @@ import { cacheRoot, modelDir, notesRoot } from "./config";
 import type { Logger } from "./logger";
 import { modelFileSpecs } from "../asr/sherpa";
 
-export type PathCheck = { role: string; path: string; exists: boolean; bytes: number | null; nonAscii: boolean; hasSpace: boolean };
+export type PathCheck = {
+  role: string;
+  path: string;
+  exists: boolean;
+  bytes: number | null;
+  /** exists 时的类型：目录没有字节大小，显示成 dir 而不是 ?（r40）。 */
+  kind: "file" | "dir" | "other" | null;
+  nonAscii: boolean;
+  hasSpace: boolean;
+};
 export type EnvironmentSnapshot = {
   at: string; appVersion: string | null; commit: string | null;
   platform: string; release: string; arch: string; cpuModel: string | null; cpuCount: number; totalMemBytes: number; gpu: string | null;
@@ -33,20 +42,28 @@ export function findExecutable(name: string, opts?: { env?: NodeJS.ProcessEnv; p
   return null;
 }
 
-// 目录没有有意义的大小，bytes 记 null
+// 目录没有有意义的大小，bytes 记 null、kind 记 dir
 export function checkPath(role: string, path: string): PathCheck {
   const check: PathCheck = {
     role,
     path,
     exists: false,
     bytes: null,
+    kind: null,
     nonAscii: /[^\u0000-\u007f]/.test(path),
     hasSpace: path.includes(" "),
   };
   try {
     const stat = statSync(path);
     check.exists = true;
-    if (stat.isFile()) check.bytes = stat.size;
+    if (stat.isFile()) {
+      check.bytes = stat.size;
+      check.kind = "file";
+    } else if (stat.isDirectory()) {
+      check.kind = "dir";
+    } else {
+      check.kind = "other";
+    }
   } catch {
     // ENOENT 等：保持 exists false
   }
@@ -93,7 +110,7 @@ export function collectEnvironment(opts?: {
 export function formatEnvironment(snapshot: EnvironmentSnapshot): string[] {
   return [...snapshot.tools, ...snapshot.models, ...snapshot.dirs].map((check) => {
     const parts = [check.exists ? "exists" : "missing"];
-    parts.push(check.bytes === null ? "?" : `${check.bytes} bytes`);
+    parts.push(check.kind === "dir" ? "dir" : check.bytes === null ? "?" : `${check.bytes} bytes`);
     if (check.nonAscii) parts.push("非 ASCII");
     if (check.hasSpace) parts.push("含空格");
     return `${check.role}: ${check.path} (${parts.join(", ")})`;

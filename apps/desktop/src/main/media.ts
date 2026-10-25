@@ -1,4 +1,4 @@
-import { createReadStream, realpathSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { Readable } from "node:stream";
 import { isAbsolute, resolve, sep } from "node:path";
 
@@ -214,6 +214,7 @@ export const MEDIA_CONTENT_TYPE = "video/mp4";
 export function mediaResponse(
   decision: MediaDecision,
   streamOf: (path: string, range?: RangeSpec) => Readable,
+  signal?: AbortSignal,
 ): Response {
   if (decision.kind === "error") {
     return new Response(decision.message, {
@@ -240,6 +241,11 @@ export function mediaResponse(
     headers["Content-Length"] = String(decision.size);
   }
   const body = streamOf(decision.absolutePath, range);
+  // 播放器换片/关窗时取消请求：立即 destroy 底层文件流，Windows 上不再拖住句柄导致后续删除 EPERM
+  if (signal !== undefined) {
+    if (signal.aborted) body.destroy();
+    else signal.addEventListener("abort", () => body.destroy(), { once: true });
+  }
   return new Response(Readable.toWeb(body) as unknown as ReadableStream, { status, headers });
 }
 
@@ -259,14 +265,18 @@ export function createMediaHandler(opts: {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       }
-      let size: number;
+      let body: Buffer;
       try {
-        size = statSync(loc.absolutePath).size;
+        // 封面几十 KB：一次性读入内存，文件句柄零驻留（Windows 上流式读会拖住 cover.jpg 导致删目录 EPERM）
+        body = readFileSync(loc.absolutePath);
       } catch {
-        size = 0;
+        return new Response("封面不存在", {
+          status: 404,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
       }
-      return new Response(Readable.toWeb(createReadStream(loc.absolutePath)) as unknown as ReadableStream, {
-        headers: { "Content-Type": loc.contentType, "Content-Length": String(size) },
+      return new Response(new Uint8Array(body), {
+        headers: { "Content-Type": loc.contentType, "Content-Length": String(body.length) },
       });
     }
     const rangeHeader = request.headers.get("range");
@@ -282,11 +292,14 @@ export function createMediaHandler(opts: {
         }
       },
     });
-    return mediaResponse(decision, (path, range) =>
-      createReadStream(path, {
-        start: range === undefined ? undefined : range.start,
-        end: range === undefined ? undefined : range.end,
-      }),
+    return mediaResponse(
+      decision,
+      (path, range) =>
+        createReadStream(path, {
+          start: range === undefined ? undefined : range.start,
+          end: range === undefined ? undefined : range.end,
+        }),
+      request.signal,
     );
   };
 }

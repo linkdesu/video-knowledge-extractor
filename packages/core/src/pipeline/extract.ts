@@ -12,7 +12,7 @@ import { ensureCoverFrame } from "../core/cover";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
 import type { CorrectionList, Note, Topic, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
-import { createAsrEngine, type AsrConfig } from "../asr/engine";
+import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { logger, runWithTask } from "../core/logger";
 import { correctionsFor } from "./notes-run";
 import { segmentTopics } from "./segment-topics";
@@ -30,6 +30,8 @@ export type ExtractInput = {
   client?: LlmClient;
   /** ASR 引擎配置；缺省用本地引擎（modelDir）。火山标准版只收公网 URL，本地视频在预检即拒绝（ADR-0016 §6）。 */
   asr?: AsrConfig;
+  /** 测试注入的 ASR 引擎（跳过按 asr 配置创建）；真实调用方不传。 */
+  asrEngine?: AsrEngine;
   /** 本次运行的 token；缺省 core 生成 randomUUID。 */
   runToken?: string;
   /** 新视频拿得到目录后的接收屏障：async，等 main 的 ACK 才继续。 */
@@ -87,7 +89,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     // token 与日志 task id 同一个值（入口已解析）；取锁后、写任何主题前先落盘
     const runToken = taskId;
     const asr = input.asr ?? { provider: "local", modelDir };
-    const engine = createAsrEngine(asr);
+    const engine = input.asrEngine ?? createAsrEngine(asr);
     try {
       let data = readVideoData(video.outputDir);
       if (data === undefined) data = { ...emptyVideoData(video), runToken };
@@ -118,7 +120,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
           ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
         }),
       );
-      for (const [k, v] of Object.entries(run.timings)) timings[k] = t();
+      for (const [k, v] of Object.entries(run.timings)) timings[k] = v;
       timings.transcribe = t();
 
       // 落 video.json：原始转写（纠错在生成/渲染时应用）+ chunks + asrModel/resolution/asrEngine（token 已在取锁后落盘）

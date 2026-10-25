@@ -65,18 +65,21 @@ describe("checkPath", () => {
     const check = checkPath("file", file);
     expect(check.exists).toBe(true);
     expect(check.bytes).toBe(5);
+    expect(check.kind).toBe("file");
   });
 
-  test("存在的目录：exists true 但 bytes 为 null", () => {
+  test("存在的目录：exists true、bytes 为 null、kind 为 dir", () => {
     const check = checkPath("dir", tempDir);
     expect(check.exists).toBe(true);
     expect(check.bytes).toBeNull();
+    expect(check.kind).toBe("dir");
   });
 
   test("不存在的文件：exists false 且 bytes 为 null", () => {
     const check = checkPath("missing", join(tempDir, "no-such-file"));
     expect(check.exists).toBe(false);
     expect(check.bytes).toBeNull();
+    expect(check.kind).toBeNull();
   });
 });
 
@@ -121,7 +124,13 @@ describe("formatEnvironment", () => {
   test("覆盖全部工具、模型、目录角色，且带标志", () => {
     const modelDir = join(tempDir, "models");
     mkdirSync(modelDir, { recursive: true });
-    const snapshot = collectEnvironment({ env: { ...fakeEnv, PATH: "" }, modelDir });
+    const existingDir = join(tempDir, "existing-dir");
+    mkdirSync(existingDir, { recursive: true });
+    const snapshot = collectEnvironment({
+      env: { ...fakeEnv, PATH: "" },
+      modelDir,
+      extraDirs: [{ role: "existingDir", path: existingDir }],
+    });
     const lines = formatEnvironment(snapshot);
     const roles = lines.map((line) => line.slice(0, line.indexOf(":")));
     expect(roles).toEqual([
@@ -135,13 +144,14 @@ describe("formatEnvironment", () => {
       "notesRoot",
       "cacheRoot",
       "modelDir",
+      "existingDir",
     ]);
-    // 缺失项带 missing 标记；目录项 bytes 为 ?
+    // 缺失项带 missing 标记；存在的目录显示 dir 而不是 ?（r40）
     expect(lines[2]).toContain("missing");
-    expect(lines[8]).toContain("?");
+    expect(lines.find((line) => line.startsWith("existingDir:"))).toContain("(exists, dir)");
     // 含空格路径带 含空格 标记
     const spaced: (typeof snapshot.dirs) = [
-      { role: "spaced", path: "/tmp/My Models", exists: false, bytes: null, nonAscii: false, hasSpace: true },
+      { role: "spaced", path: "/tmp/My Models", exists: false, bytes: null, kind: null, nonAscii: false, hasSpace: true },
     ];
     const spacedLine = formatEnvironment({ ...snapshot, dirs: spaced }).find((line) => line.startsWith("spaced:"));
     expect(spacedLine).toContain("含空格");

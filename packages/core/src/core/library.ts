@@ -1,9 +1,10 @@
-import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { notesRoot } from "./config";
 import { parseClipFileName } from "./clips";
 import { readVideoIndex, writeVideoIndex } from "./paths";
 import { isSafeDirName } from "./outputs";
+import { logger } from "./logger";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
 import { isVideoLocked } from "./lock";
@@ -70,6 +71,113 @@ function listTopicClips(topicDir: string): { start: number; end: number }[] {
   return clips;
 }
 
+/** Windows 删除失败的可重试错误码：句柄释放延迟（EPERM/EBUSY）、只读位（EACCES）、目录暂非空（ENOTEMPTY）。 */
+const RETRYABLE_DELETE_CODES: Record<string, true> = { EPERM: true, EACCES: true, EBUSY: true, ENOTEMPTY: true };
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isRetryableDelete(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && RETRYABLE_DELETE_CODES[code] === true;
+}
+
+/** 递归解除只读位：Windows 上隐藏/只读文件会让 rmSync 直接报 EPERM。 */
+function clearReadonly(target: string): void {
+  let st;
+  try {
+    st = lstatSync(target);
+  } catch {
+    return;
+  }
+  try {
+    chmodSync(target, 0o666);
+  } catch {
+    // 权限不足时继续尝试子项
+  }
+  if (!st.isDirectory()) return;
+  let names: string[];
+  try {
+    names = readdirSync(target);
+  } catch {
+    return;
+  }
+  for (const name of names) clearReadonly(resolve(target, name));
+}
+
+/**
+ * 跨平台稳健删除目录（r40）：先带重试的 `rmSync`（Windows 句柄释放有几十毫秒延迟）；
+ * 仍失败则解除只读位后重试；再失败逐文件删除，把仍被占用的具体文件写进日志并抛给调用方。
+ */
+export function removeDirRobust(target: string): void {
+  if (lstatSync(target, { throwIfNoEntry: false }) === undefined) return;
+  let lastError: unknown;
+  for (let round = 0; round < 2; round++) {
+    if (round === 1) clearReadonly(target);
+    try {
+      rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableDelete(err)) throw err;
+    }
+  }
+  // 逐文件删，定位被占用的那个文件：文件可能刚被编辑器/播放器打开
+  const files: string[] = [];
+  const dirs: string[] = [];
+  const walk = (p: string): void => {
+    dirs.push(p);
+    let names: string[];
+    try {
+      names = readdirSync(p);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const child = resolve(p, name);
+      let st;
+      try {
+        st = lstatSync(child);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(child);
+      else files.push(child);
+    }
+  };
+  walk(target);
+  for (const file of files) {
+    try {
+      rmSync(file, { force: true, maxRetries: 3, retryDelay: 100 });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code ?? null;
+      const message = err instanceof Error ? err.message : String(err);
+      logger().error("fs", "删除目录失败", {
+        path: target,
+        blockedFile: file,
+        code,
+        message,
+        stack: err instanceof Error ? err.stack : null,
+      });
+      throw new Error(`删除失败：文件被占用 ${file}（${code ?? message}）`);
+    }
+  }
+  for (const dir of dirs.reverse()) {
+    try {
+      rmSync(dir, { force: true });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) {
+    const code = (lastError as NodeJS.ErrnoException | undefined)?.code ?? null;
+    const message = lastError instanceof Error ? lastError.message : String(lastError ?? "目录仍有残留");
+    logger().error("fs", "删除目录失败", { path: target, code, message, stack: lastError instanceof Error ? lastError.stack : null });
+    throw new Error(`删除失败：目录仍有残留 ${target}（${code ?? message}）`);
+  }
+}
+
 function dirIsDirectChild(root: string, dirName: string): boolean {
   if (!isSafeDirName(dirName)) return false;
   const rel = relative(root, resolve(root, dirName));
@@ -83,13 +191,28 @@ export function deleteVideo(root: string, cacheRoot: string, id: string): boolea
   if (!dirIsDirectChild(root, entry.outputDir)) {
     throw new Error(`index.json 条目 ${id} 的 outputDir 越出 notes 根目录：${entry.outputDir}`);
   }
-  rmSync(resolve(root, entry.outputDir), { recursive: true, force: true });
+  const outputDir = resolve(root, entry.outputDir);
   const cacheDir = resolve(cacheRoot, id);
-  if (dirIsDirectChild(cacheRoot, id) && lstatSync(cacheDir, { throwIfNoEntry: false }) !== undefined) {
-    rmSync(cacheDir, { recursive: true, force: true });
+  const hasCacheDir = dirIsDirectChild(cacheRoot, id) && lstatSync(cacheDir, { throwIfNoEntry: false }) !== undefined;
+  logger().info("fs", "删除视频开始", { videoId: id, outputDir, cacheDir: hasCacheDir ? cacheDir : null });
+  try {
+    removeDirRobust(outputDir);
+    if (hasCacheDir) removeDirRobust(cacheDir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code ?? null;
+    logger().error("fs", "删除视频失败", {
+      videoId: id,
+      outputDir,
+      code,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : null,
+    });
+    throw err;
   }
+  // index 条目最后摘：目录删除半途失败时条目仍在，用户可以直接重试删除
   const rest = index.videos.filter((v) => v.id !== id);
   if (rest.length !== index.videos.length) writeVideoIndex({ videos: rest }, root);
+  logger().info("fs", "删除视频完成", { videoId: id, outputDir });
   return true;
 }
 

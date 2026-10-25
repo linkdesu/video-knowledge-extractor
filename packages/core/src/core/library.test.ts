@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deleteVideo, listLibrary, readLibraryVideo } from "./library";
+import { configureLogging, logFileName } from "./logger";
 import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { SpeakerId, TopicId, VideoId } from "./types";
 
@@ -530,6 +531,23 @@ describe("deleteVideo", () => {
     expect(existsSync(join(cacheRoot, ids[1]))).toBe(true);
     expect(existsSync(source)).toBe(true);
     expect(readFileSync(source, "utf8")).toBe("source-bytes");
+  });
+
+  test("只读文件与嵌套目录也能删掉，且写入删除开始/完成日志", () => {
+    const { root, cacheRoot, ids } = deleteFixture();
+    const outputDir = join(root, "视频一");
+    const nested = join(outputDir, "深", "更");
+    mkdirSync(nested, { recursive: true });
+    const readonlyFile = join(nested, "只读.txt");
+    writeFileSync(readonlyFile, "ro");
+    chmodSync(readonlyFile, 0o444);
+    const logDir = mkdtemp();
+    configureLogging({ dir: logDir });
+    expect(deleteVideo(root, cacheRoot, ids[0])).toBe(true);
+    expect(existsSync(outputDir)).toBe(false);
+    const log = readFileSync(join(logDir, logFileName(new Date())), "utf8");
+    expect(log).toContain("删除视频开始");
+    expect(log).toContain("删除视频完成");
   });
 
   test("未知 id 返回 false 且什么都不改", () => {

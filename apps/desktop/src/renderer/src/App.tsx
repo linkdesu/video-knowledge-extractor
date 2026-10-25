@@ -65,6 +65,13 @@ export function App() {
     });
   }, [refreshLibrary]);
 
+  // 新视频目录 prepared 后广播：拖入视频即刷新库，卡片不用等任务结束或切页（r40）。
+  useEffect(() => {
+    return window.vnote.onLibraryChanged(() => {
+      void refreshLibrary();
+    });
+  }, [refreshLibrary]);
+
   // 启动时接管已经在跑的任务，之后全部由 onJob 事件驱动。
   useEffect(() => {
     let off: (() => void) | undefined;

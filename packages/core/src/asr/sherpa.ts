@@ -1,5 +1,6 @@
 /// <reference path="../types/sherpa-onnx-node.d.ts" />
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import * as sherpaModule from "sherpa-onnx-node";
 
 type SherpaApi = typeof sherpaModule;
@@ -51,11 +52,11 @@ export type SherpaPaths = {
 // 模型文件清单是单一事实源：环境快照（core/environment）从这里取，不重复维护
 export function modelFileSpecs(modelDir: string): { role: "asr-model" | "asr-tokens" | "diarization" | "speaker-embedding" | "punctuation"; path: string }[] {
   return [
-    { role: "asr-model", path: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/model.int8.onnx` },
-    { role: "asr-tokens", path: `${modelDir}/sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25/tokens.txt` },
-    { role: "diarization", path: `${modelDir}/sherpa-onnx-pyannote-segmentation-3-0/model.onnx` },
-    { role: "speaker-embedding", path: `${modelDir}/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx` },
-    { role: "punctuation", path: `${modelDir}/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx` },
+    { role: "asr-model", path: join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx") },
+    { role: "asr-tokens", path: join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "tokens.txt") },
+    { role: "diarization", path: join(modelDir, "sherpa-onnx-pyannote-segmentation-3-0", "model.onnx") },
+    { role: "speaker-embedding", path: join(modelDir, "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx") },
+    { role: "punctuation", path: join(modelDir, "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12", "model.onnx") },
   ];
 }
 
