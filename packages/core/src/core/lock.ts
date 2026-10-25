@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { CACHE_DIRNAME } from "./config";
@@ -36,6 +36,14 @@ function unlinkWithRetry(path: string, attempts = 5, delayMs = 50): void {
     } catch (err) {
       const code = errnoCode(err);
       if (i + 1 >= attempts || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw err;
+      // Windows 只读/隐藏位会阻止删除：先清位再重试（EBUSY 是句柄占用，清位无意义）
+      if (code !== "EBUSY") {
+        try {
+          chmodSync(path, 0o666);
+        } catch {
+          // 文件已消失或权限不足：交给下一次 rmSync 结果
+        }
+      }
       sleepSync(delayMs);
     }
   }

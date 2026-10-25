@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CACHE_DIRNAME } from "./config";
@@ -75,6 +75,16 @@ describe("acquireVideoLock", () => {
     const second = acquireVideoLock(dir);
     expect(readLockJson(newLockPath(dir)).pid).toBe(process.pid);
     second.release();
+    expect(existsSync(newLockPath(dir))).toBe(false);
+  });
+
+  test("只读残留锁文件可接管并在释放后删除", () => {
+    const dir = fixtureDir();
+    writeFileSync(newLockPath(dir), `${JSON.stringify({ pid: DEAD_PID, startedAt: Date.now(), token: "dead" })}\n`);
+    chmodSync(newLockPath(dir), 0o444);
+    const lock = acquireVideoLock(dir);
+    expect(readLockJson(newLockPath(dir)).pid).toBe(process.pid);
+    lock.release();
     expect(existsSync(newLockPath(dir))).toBe(false);
   });
 
