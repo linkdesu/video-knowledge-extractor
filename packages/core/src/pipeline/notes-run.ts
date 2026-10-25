@@ -110,6 +110,7 @@ export async function generateAll(
     const topic = data.topics.find((x) => x.id === id);
     if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
     const t0 = performance.now();
+    logger().info("llm", `主题生成开始 (${index + 1}/${topicIds.length})`, { topicId: id, title: topic.title, trigger, baseUrl: endpoint.baseUrl, model: endpoint.model });
     data = setTopicProgress(outputDir, id, { status: "generating", startedAt: new Date().toISOString() });
     try {
       const result = await generateNotes({

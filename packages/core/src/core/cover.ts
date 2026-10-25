@@ -50,7 +50,7 @@ export async function ensureCoverFrame(input: {
       { label: "封面抽帧" },
     );
     renameSync(part, out);
-    logger().debug("fs", "封面帧已写入", { file: out });
+    logger().info("fs", "封面帧已写入", { file: out });
     return true;
   } catch (err) {
     try {

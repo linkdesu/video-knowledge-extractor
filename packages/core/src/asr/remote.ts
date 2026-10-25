@@ -194,7 +194,6 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
         done += 1;
         input.onProgress?.({ step: "transcribe", done, total: chunks.length, detail: `远程块 ${done}/${chunks.length}` });
       };
-
       const speaker: Speaker = {
         id: "speaker-1" as SpeakerId,
         name: "说话人1",
@@ -202,6 +201,7 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
       };
       const utterances: Utterance[] = [];
 
+      logger().info("asr", "切片准备完成", { sliceCount: chunks.length, totalBytes: samples.byteLength });
       const r0 = performance.now();
       for (const chunk of chunks) {
         const from = Math.max(0, Math.round(chunk.start * sampleRate));
@@ -225,7 +225,7 @@ export function createRemoteEngine(provider: RemoteProvider, opts?: RemoteEngine
         const chunkDuration = chunk.end - chunk.start;
         const wavOut = `${input.cacheDir}/remote-chunk-${chunk.index}.wav`;
         await sliceWav(input.wavPath, chunk.start, chunk.end, wavOut);
-        logger().debug("asr", "切片完成", { wavPath: wavOut });
+        logger().info("asr", "切片完成", { wavPath: wavOut });
         let audioBytes: Uint8Array;
         let fileName: string;
         let format: RemoteChunkAudio["format"];

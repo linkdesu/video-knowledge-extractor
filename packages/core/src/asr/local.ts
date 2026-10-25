@@ -72,7 +72,10 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       });
       const cachedSegments = readCache<DiarizationSegment[]>(input.cacheDir, diarKey);
       const cacheHit = cachedSegments !== undefined;
-      if (cacheHit) cacheHits.push("diarization");
+      if (cacheHit) {
+        cacheHits.push("diarization");
+        logger().info("asr", "转写缓存命中", { kind: "diarization" });
+      }
       let segments: DiarizationSegment[];
       if (cachedSegments === undefined) {
         try {
@@ -95,7 +98,6 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       const { speakers, utterances } = assignSpeakers(spans);
       timings.diarization = t(performance.now() - d0);
 
-      const a0 = performance.now();
       let done = 0;
       const reportProgress = () => {
         done += 1;
@@ -128,6 +130,7 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
         else byChunk.set(ci, [u]);
       }
 
+      const a0 = performance.now();
       for (const chunk of chunks) {
         const us = byChunk.get(chunk.index);
         if (us === undefined) continue;
@@ -144,6 +147,7 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
           maxUtterance: ASR_MAX_UTTERANCE_SECONDS,
           padding: ASR_PADDING_SECONDS,
         });
+        logger().info("asr", `分块 ASR 开始 (${chunk.index + 1}/${chunks.length})`, { chunkIndex: chunk.index + 1, chunkCount: chunks.length });
         const cached = readCache<{ texts: string[] }>(input.cacheDir, key);
         if (cached !== undefined) {
           chunkCacheHit = true;
@@ -181,6 +185,7 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       logger().info("asr", "本地 ASR 完成", {
         utterances: transcript.utterances.length,
         speakers: speakers.length,
+        cacheHit: cacheHits.length > 0,
         timings,
       });
       return { transcript, chunks, timings, cacheHits, engine: "local", modelId: ASR_MODEL_ID };

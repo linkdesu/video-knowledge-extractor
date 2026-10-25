@@ -71,16 +71,24 @@ async function keyPointsFor(
   });
   // 无论命中与否，这个键都是本次「用过」的，清理时不能删
   usedCacheKeys.add(key.hash);
+  const kpStart = performance.now();
   // 用户点「重新生成」要的就是新答案：跳过磁盘缓存，真实请求模型后覆写同一键
   const hit = input.trigger === "regenerate" ? undefined : readCache<KeyPoints>(input.cacheDir, key);
-  logger().debug("llm", hit !== undefined ? "要点缓存命中" : "要点缓存未命中", { topicId: topic.id, cacheHit: hit !== undefined });
-  if (hit !== undefined) return { points: hit.keyPoints, rawText: null, keyHash: key.hash, cached: true };
-  const raw = await client.chat([{ role: "system", content: system }], { json: true });
-  const parsed = tryParseJson<{ keyPoints?: unknown }>(raw);
-  if (parsed === undefined || !Array.isArray(parsed.keyPoints)) throw new Error("LLM 返回格式错误：无法解析要点 JSON");
-  const points = parsed.keyPoints.filter((p): p is string => typeof p === "string" && p.length > 0);
-  writeCache(input.cacheDir, key, { keyPoints: points } satisfies KeyPoints);
-  return { points, rawText: raw, keyHash: key.hash, cached: false };
+  logger().info("llm", hit !== undefined ? "要点缓存命中" : "要点缓存未命中", { topicId: topic.id, cacheHit: hit !== undefined });
+  let points: string[];
+  let rawText: string | null = null;
+  if (hit !== undefined) {
+    points = hit.keyPoints;
+  } else {
+    const raw = await client.chat([{ role: "system", content: system }], { json: true });
+    const parsed = tryParseJson<{ keyPoints?: unknown }>(raw);
+    if (parsed === undefined || !Array.isArray(parsed.keyPoints)) throw new Error("LLM 返回格式错误：无法解析要点 JSON");
+    points = parsed.keyPoints.filter((p): p is string => typeof p === "string" && p.length > 0);
+    writeCache(input.cacheDir, key, { keyPoints: points } satisfies KeyPoints);
+    rawText = raw;
+  }
+  logger().info("llm", "要点提取完成", { topicId: topic.id, pointCount: points.length, cacheHit: hit !== undefined, durationMs: Math.round(performance.now() - kpStart) });
+  return { points, rawText, keyHash: key.hash, cached: hit !== undefined };
 }
 
 export async function generateNotes(input: GenerateNotesInput): Promise<GenerateNotesResult> {
@@ -147,6 +155,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
         rmSync(workDir, { recursive: true, force: true });
       }
       logger().info("llm", "切片完成", { clipCount: parts.length, durationMs: Math.round(performance.now() - clipT0) });
+      logger().info("ffmpeg", "主题视频切片完成", { topicId: topic.id, clipCount: parts.length, durationMs: Math.round(performance.now() - clipT0) });
       const markdown = renderTopicMarkdown(topic, utterances, points, clips, speakerNames);
       writeFileAtomic(join(topicDir, "topic.md"), markdown);
       logger().info("llm", "笔记生成完成", { topicId: topic.id, markdownBytes: Buffer.byteLength(markdown, "utf8") });
@@ -160,6 +169,7 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
         response: { status: "succeeded", rawText, parsedSummary: points, error: null },
         clip: { clipFile: "topic.mp4", segments: topic.segments, status: "ready" },
       });
+      logger().info("fs", "落盘完成", { topicMd: join(topicDir, "topic.md"), trajectory: join(topicDir, "trajectory.json") });
       // 以 topic.md 真正落盘为「本主题已写出」的标记，崩溃时没写成功的目录不在此列
       topicDirs.push(dir);
       notes.push({ topicId: topic.id, markdown, clips });
@@ -176,6 +186,8 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
         response: { status: "failed", rawText: null, parsedSummary: null, error: err instanceof Error ? err.message : String(err) },
         clip: { clipFile: null, segments: topic.segments, status: "failed" },
       });
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger().error("llm", "主题生成失败", { topicId: topic.id, title: topic.title, error: e.message, stack: e.stack });
       throw err;
     }
   }

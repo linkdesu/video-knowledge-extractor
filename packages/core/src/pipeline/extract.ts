@@ -76,7 +76,10 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     const before = client.usage?.() ?? emptyUsage();
 
     logger().info("import", "导入开始", { videoPath: input.videoPath, limitSeconds: input.limitSeconds, notesRoot });
+    const probeStart = performance.now();
     const probe = await logger().step("ffmpeg", "ffprobe", () => probeVideo(input.videoPath));
+    const sourceBytes = statSync(input.videoPath).size;
+    logger().info("ffmpeg", "媒体探测完成", { durationSeconds: probe.duration, width: probe.width, height: probe.height, sourceBytes, durationMs: Math.round(performance.now() - probeStart) });
     const video = openVideo(input.videoPath, probe.duration, notesRoot);
     const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
     // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑
@@ -102,7 +105,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
         await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
       }
       const wavPath = `${cacheDir}/audio.wav`;
+      const audioStart = performance.now();
       await logger().step("ffmpeg", "抽取音频", () => extractAudio(video.sourcePath, wavPath, input.limitSeconds));
+      logger().info("ffmpeg", "抽取音频完成", { durationMs: Math.round(performance.now() - audioStart), wavBytes: statSync(wavPath).size });
       timings.audio = t();
 
       const run = await logger().step("asr", "转写", () =>
@@ -121,7 +126,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       data.asrModel = run.modelId;
       data.asrEngine = run.engine;
       data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
-      data.sourceBytes = statSync(input.videoPath).size;
+      data.sourceBytes = sourceBytes;
       data.chunks = run.chunks;
       data.transcript = run.transcript;
       data.topics = [];

@@ -29,6 +29,7 @@ export function createOpenAiProvider({ baseUrl, model, apiKey }: { baseUrl: stri
     async transcribe(chunk: RemoteChunkAudio, fetchImpl: typeof fetch): Promise<RemoteTranscribeResult> {
       const log = logger();
       const startedAt = Date.now();
+      let status = 0;
       try {
         const form = new FormData();
         form.append("file", new Blob([Buffer.from(chunk.bytes)], { type: "audio/mpeg" }), chunk.fileName);
@@ -47,6 +48,7 @@ export function createOpenAiProvider({ baseUrl, model, apiKey }: { baseUrl: stri
         const bodyText = await res.text();
         // 每个请求一行 info：HTTP 状态、耗时、音频字节数；不记录音频载荷
         log.info("asr", "远程 ASR 请求", { provider: "openai", status: res.status, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength });
+        status = res.status;
         if (res.ok) {
           let parsed: OpenAiRaw;
           try {
@@ -66,9 +68,10 @@ export function createOpenAiProvider({ baseUrl, model, apiKey }: { baseUrl: stri
           res.status === 429 || res.status >= 500,
         );
       } catch (err) {
-        // 非 2xx 状态也会走这里：error 行带脱敏后的错误文案与完整 stack
+        // 非 2xx 状态也会走这里：error 行带脱敏后的错误文案、状态码、响应体片段与完整 stack
         const message = redact(err instanceof Error ? err.message : String(err), apiKey);
-        log.error("asr", "远程 ASR 请求失败", { provider: "openai", durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength, error: message, stack: err instanceof Error ? err.stack : undefined });
+        const excerpt = message.includes("：") ? message.slice(message.lastIndexOf("：") + 1).slice(0, 300) : "";
+        log.error("asr", "远程 ASR 失败", { provider: "openai", status, durationMs: Date.now() - startedAt, bytes: chunk.bytes.byteLength, error: message, bodyExcerpt: excerpt === "" ? undefined : excerpt, stack: err instanceof Error ? err.stack : undefined });
         throw err;
       }
     },
