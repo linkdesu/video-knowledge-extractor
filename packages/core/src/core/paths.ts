@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, resolve } from "node:path";
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Topic, TopicId, Video, VideoId, VideoIndex, VideoIndexEntry } from "./types";
 import { sha256 } from "./cache";
 import { CACHE_DIRNAME, notesRoot } from "./config";
@@ -63,9 +63,36 @@ export function writeVideoIndex(index: VideoIndex, root: string = notesRoot()): 
   writeJsonAtomic(resolve(root, "index.json"), { videos: [...index.videos].sort((a, b) => a.id.localeCompare(b.id)) });
 }
 
-/** 日志目录：跟随 notes 根目录，落在 `<notesRoot>/.logs`（ADR-0028，r35）。 */
+/** 日志目录：跟随 notes 根目录，落在 `<notesRoot>/logs`（ADR-0028，r35）。 */
 export function logDirFor(root: string): string {
-  return resolve(root, ".logs");
+  return resolve(root, "logs");
+}
+
+// 启动时把旧隐藏目录 .logs 里的日志搬到 logs/；目标已存在同名文件则跳过，搬完删空目录
+export function migrateLegacyLogDir(root: string): void {
+  try {
+    const legacy = resolve(root, ".logs");
+    const target = resolve(root, "logs");
+    if (!statSync(legacy).isDirectory()) return;
+    mkdirSync(target, { recursive: true });
+    for (const name of readdirSync(legacy)) {
+      try {
+        let targetHasIt = true;
+        try {
+          targetHasIt = statSync(join(target, name)).isFile();
+        } catch {
+          targetHasIt = false;
+        }
+        if (targetHasIt) continue;
+        renameSync(join(legacy, name), join(target, name));
+      } catch {
+        // 单个文件失败不阻塞启动
+      }
+    }
+    if (readdirSync(legacy).length === 0) rmdirSync(legacy);
+  } catch {
+    // 旧目录不存在或不可读：直接跳过
+  }
 }
 
 export function openVideo(sourcePath: string, durationSeconds: number, root: string = notesRoot()): Video {
