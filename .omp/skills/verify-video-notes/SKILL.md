@@ -12,7 +12,7 @@ Two user surfaces, one repo:
 
 The harness is the repo-local helper `.omp/skills/verify-video-notes/scripts/verify.ts`. It builds the desktop app, starts an isolated instance, and drives real mouse, keyboard and drag input over CDP. Every proof artifact lands in `tmp/verify/<run>/` and survives teardown.
 
-macOS Apple Silicon is the only supported platform (README: 首发 macOS Apple Silicon).
+Two targets are supported (r41): macOS Apple Silicon, the default (no `--target`), and the Windows 11 real machine (`--target win-gamepc`; ssh host `gamepc`, machine `Link-PC-MKII`, user `xieal`). The Windows path needs no RustDesk and no remote GUI session: screenshots and UI driving are pure CDP over a local SSH tunnel.
 
 ## Launch
 
@@ -27,7 +27,7 @@ ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, req
 # Files put into the model directory while the app runs are usable after one 检测本地模型 click (r38).
 ```
 
-**Test video rule.** Every journey uses only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); never a video from another directory.
+**Test video rule (per platform, absolute).** Mac runs use only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); Windows runs use only videos under `C:\Users\xieal\Documents\video-notes\` (for example `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, `C:\Users\xieal\Documents\video-notes\测试视频 1.mp4`). Never a video from another directory.
 
 The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root. The desktop app does not persist env config: the packaged app never reads `.env` at all; a dev (unpacked) app takes `VNOTE_LLM_*` from its **process environment** (or `.env`) as a seed for fields with no saved value, and a saved value always wins. Exporting `VNOTE_LLM_BASE_URL` / `VNOTE_LLM_MODEL` / `VNOTE_LLM_API_KEY` in front of `verify.ts up` is therefore the way to hand a real endpoint to a dev run without ever typing the key into a shell-visible `fill` argument.
 
@@ -81,6 +81,28 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 
 `state.json` records the run: `commit` (the `git rev-parse HEAD` at launch time, `null` when git failed), `startedAt` (the launch ISO timestamp), and, after `down`, `stoppedAt`. `doctor` may compare `commit` against the current `git rev-parse HEAD` as a warning only (a mismatch means the sources moved since launch; it never fails the check).
 
+### Windows real machine
+
+Preconditions, once per machine (r41):
+
+- `ssh` from the mac reaches host `gamepc` (machine `Link-PC-MKII`, user `xieal`, Windows 11); `ssh gamepc "pwsh -NoProfile -Command exit"` succeeds.
+- On the box: `D:\code\video-notes` with `app\`, `installer\` and `verify\` (remote run dirs land in `verify\<runId>\`); local ASR models at `C:\Users\xieal\Documents\video-notes\models`; test videos at `C:\Users\xieal\Documents\video-notes\` (the test-video rule above).
+- A fresh box installs the app with `up --target win-gamepc --installer <path>`: a Mac path is uploaded with `scp` into `D:\code\video-notes\installer\` first, a `D:\...` path is used in place (assumed already on the box), and either form runs the NSIS installer silently into `D:\code\video-notes\app` (`/S`, `/D=` last and unquoted; `bun run package:win` produces `Video Notes-<version>-setup.exe`). `--app <win exe path>` launches an existing executable and is mutually exclusive with `--installer`; with neither flag, `up` drives the already-installed `D:\code\video-notes\app\Video Notes.exe`.
+
+```bash
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "D:\code\video-notes\installer\r40-Video-Notes-0.1.0-setup.exe"
+```
+
+What `up` does on the box (r41):
+
+1. Runs the installer (when given) or resolves the installed exe (default `D:\code\video-notes\app\Video Notes.exe`).
+2. Starts the app in interactive Session 1 through a one-shot scheduled task `VNoteVerify_<runId>`; `state.json.pid` holds the remote Windows pid.
+3. Carries `NO_PROXY=*` with empty `HTTP_PROXY` / `HTTPS_PROXY` into the process environment, because Surge on that box intercepts `127.0.0.1` and answers 503; the mac side neutralises its own proxy env for the same reason.
+4. Opens the local SSH tunnel `ssh -N -L <port>:127.0.0.1:<port> gamepc` and records the tunnel pid. No RustDesk, no remote GUI session: screenshots and UI driving are CDP (`Page.captureScreenshot`, `Accessibility.getFullAXTree`, `Input.*`, `Runtime.evaluate`) through that tunnel.
+5. Writes `tmp/verify/<run>/state.json`, which also records `target`, `sshHost`, `remoteRunDir`, `remoteHome`, `remoteUserData`, `remoteModelDir`, `remoteAppLog`, `remoteApp`, `sshTunnelPid`, `scheduledTask`; `pid` holds the remote Windows pid.
+
+Windows evidence lives in `tmp/verify/<run>/win/` (the contents, and the `stoppedAt` copy of `state.json`, are covered in Evidence).
+
 ### Simulating a restart
 
 `up` refuses an existing run id (`run already exists`), so a restart verification is a **new run id plus the old state directories**:
@@ -111,7 +133,7 @@ Read-only checks, exit code 1 on failure:
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`.
 - `state.json`'s `commit` differs from the current `git rev-parse HEAD` (warning only: the sources moved since launch; never fails the check).
 
-Doctor also prints readiness warnings that decide which journeys can run: ffmpeg, local ASR models, LLM endpoint. Those are warnings for UI-only journeys and blockers for extraction journeys.
+On `--target win-gamepc` (r41) the mac-only checks are replaced: the remote process is checked over ssh with `Get-Process -Id`, the remote listener with `Get-NetTCPConnection -LocalPort <port> -State Listen`, and the CDP page comes through the tunnel instead of the local port; the `lsof` port-owner check and the `apps/desktop/out/` build-freshness check are skipped (the mac build is irrelevant to the installed Windows app). The shared checks — notes root equals the remote home (compared case- and separator-insensitively) and app version against `apps/desktop/package.json` — run the same way.
 
 ## Drive
 
@@ -135,6 +157,10 @@ $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 $V shot glossary-proof                     # -> <run>/glossary-proof.png
 $V snapshot glossary-proof                 # -> <run>/glossary-proof.aria.txt (accessibility tree)
 $V log 60                                  # tail <run>/app.log
+# On a win-gamepc run (r41) the same names land under <run>/win/ (`shot` -> <run>/win/<name>.png, `snapshot` -> <run>/win/<name>.aria.txt), `log` tails the remote `app.log` plus `<remoteHome>\logs\*.log`, and `drop` takes a Windows path instead:
+$V drop 'C:\Users\xieal\Documents\video-notes\short-30s.mp4'   # validated to exist remotely; the untouched Windows path is passed to the drag event
+$V clipboard                               # OS clipboard: `pbpaste` on mac, the app's renderer (`navigator.clipboard.readText()`) on win
+$V clipboard --save tmp/verify/<run>/win/clipboard.txt   # default: <run>/clipboard.txt on mac, <run>/win/clipboard.txt on win
 ```
 
 Mechanics that matter:
@@ -143,7 +169,7 @@ Mechanics that matter:
 - `fill` focuses, selects the existing text, then sends key events. Use it instead of `eval`-setting `input.value`: React's value tracker ignores direct assignments.
 - `wait` evaluates with `awaitPromise`, which awaits the expression only when the expression *is* a promise. `window.vnote.activeJob() === null` compares a promise to null and is therefore always false — every wait written that way burns its full timeout. Write `window.vnote.activeJob().then(j => j === null)` or `window.vnote.listLibrary().then(...)`. Wait on state, never on a fixed sleep.
 - `type` sends key events for ASCII and `Input.insertText` for non-ASCII. The global glossary debounces saves (~400 ms) and submits only rows with both columns filled, so half-typed rows produce neither requests nor error toasts.
-- `drop` uses `Input.dispatchDragEvent` with a real filesystem path. This is the only automatable import path: clicking the dropzone opens a native file dialog that blocks the renderer.
+- `drop` uses `Input.dispatchDragEvent` with a real filesystem path. This is the only automatable import path: clicking the dropzone opens a native file dialog that blocks the renderer. On a win-gamepc run (r41) the path must be a Windows path the remote app can read; a POSIX path is refused, and the untouched Windows path is what the drag event carries.
 - `drag <selector> <dx> <dy> [--index N] [--steps N]` is a real pointer drag (r33): it scrolls the element into view, moves to its center, presses the left button, interpolates `--steps` (default 8) `Input.dispatchMouseEvent` moves to center+(dx,dy) with `buttons: 1`, and releases at the end point. Use it for the `player-resize` resize handle — the `player` element's `getBoundingClientRect().height` changes and the value persists in `localStorage['vn.topics.playerHeight']` across a restart.
 - **A native `<select>`'s popup is a separate window on macOS** (its own NSMenu layer). `click` and `press` never reach it, and faking a user selection by dispatching `change`/`input` events through `eval` is prohibited — a selection counts only when a DOM element was clicked and the resulting real value was asserted. This repo's model picker is the DOM shape: a `role=combobox` input (`settings-llm-model`) plus a `role=listbox` (`settings-llm-model-listbox`) whose `role=option` rows `settings-llm-model-option-<i>` carry `data-value`. The listbox is a DOM `ul`, so `click` reaches it, but **selecting a model must click `settings-llm-model-option-<i>` and the result counts only when the input value and the saved settings change**; typing into the combobox input only filters the options, it never commits a model.
 
@@ -177,6 +203,8 @@ Every proof goes under the run directory printed by `up` (`tmp/verify/<run>/`). 
 - `app.log`, `build.log`, `cli.log` — process logs, command output, exit codes.
 - Side effects read from disk, not just the UI: `<home>/corrections.json`, `<home>/index.json`, `<outputDir>/index.md`, `<outputDir>/<topic>/topic.md`, `<outputDir>/<topic>/*.mp4`.
 
+On a win-gamepc run (r41) artifacts land in `tmp/verify/<run>/win/` instead: `<name>.png`, `<name>.aria.txt`, and after `down` the pulled `app.log`, `<remoteHome>\logs\*` and artifact files (`video.json`, `topic.md`, `trajectory.json`, `status.json`). A copy of `state.json` lives in `win/` and carries the same `stoppedAt` as the run-level `state.json`.
+
 Proof standards:
 
 - Exercise the user entry point named in the feature file (dropzone, nav item, card button, step tab, command line). Do not prove a path through a different convenient entry point.
@@ -201,7 +229,7 @@ Last proven runs: `tmp/verify/r38-regenerate-cache-and-real-e2e/` (the r38 round
 - While the model listbox is open (r38 observation) its popup covers the controls below it, so a `drive` click on `settings-test-llm` or `settings-llm-save` can land on the list instead and silently do nothing. Send `press Escape` (or click the input again) before clicking a button that sits under the list; a "clicked" line with no toast is this, not a network failure.
 - **Subtitle rows are only clickable when `onSeek` is passed (r33 root cause).** `SubtitleList` attaches click/seek semantics only when the `onSeek` prop is a function; otherwise the rows render display-only. The r32 主题 page never passed `onSeek` to its subtitle list, so 主题-page subtitle clicks did nothing — that was the r32 "subtitle not clickable" bug. The fix (r33) wires `onSeek` on both the 主题 and 笔记 pages (seeking the selected topic's clip via `segmentOffsets`). When verifying subtitle clicks, assert `video.currentTime` and `video.paused === false` after a real `click` — a `drive`-click on a row with no `onSeek` changes nothing and must not be reported as a pass.
 - **Slices are now one `topic.mp4` per topic (r33).** Each generated topic writes a single concatenated `topic.mp4` (segments cut with 2 s pre-roll, overlaps merged, joined with `-c copy`) plus one `TopicClip` record carrying `segmentOffsets`. The numbered per-segment files (`01-….mp4`, `SLICE_RE`-shaped) only exist in pre-r33 data; on those, the renderer falls back to source playback / multi-clip. Do not assert numbered clip names for r33 runs, and do not treat a `topic.mp4`-only topic directory as incomplete — it is the finished shape.
-- **Diagnostics are read back with `pbpaste` and the key must never be in them.** `settings-diagnostics-copy` writes the summary to the system clipboard (the only read-back path is `pbpaste`), and the text must contain the decisive fact of the failure while the saved LLM key appears nowhere: a pass requires both the fact present and `pbpaste | rg -c <key>` returning `0` (logger scrubs registered secrets before `clipboard.writeText`; ADR-0028).
+- **Diagnostics are copied to the system clipboard and read back with `drive clipboard --save <path>`; the key must never be in them.** `settings-diagnostics-copy` writes the summary to the clipboard, and the read-back is `$V clipboard --save <path>` — `pbpaste` on a mac run, the running app's renderer on a win-gamepc run (`navigator.clipboard.readText()`; **not** `Get-Clipboard` over ssh, which reads Session 0 and sees an empty clipboard because Windows clipboards are per session — measured in r41, the app reported 已复制 5992 字符 while the ssh read returned nothing) — so every assertion runs on the saved file. A pass requires both: the text contains the decisive fact of the failure, and `rg -c <key> <path>` returns `0` (logger scrubs registered secrets before `clipboard.writeText`; ADR-0028). Since r41 `## 错误摘要` also merges the requested task's ERROR records with the same-day global ERROR records from the log tail, so an `ERROR ipc` line cannot be lost while a task is active.
 
 ## Cleanup
 
@@ -210,7 +238,8 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 ```
 
-- `down` stops only the pid this run started, records `stoppedAt`, prunes the renderer caches and keeps the rest of the run directory; confirm it prints the kept evidence counts and the run path, and that the port is closed. `down --purge` deletes the whole run directory (the default keeps it).
+- `down` stops only the pid this run started, records `stoppedAt`, prunes the renderer caches and keeps the rest of the run directory; confirm it prints the kept evidence counts and the evidence path, and that the port is closed. `down --purge` deletes the whole run directory and, when `tmp/verify/latest` pointed at it, that pointer too — a dangling pointer makes the next bare `drive` or `doctor` read a missing `state.json`.
+- On a win-gamepc run (r41) `down` stops the SSH tunnel, runs `taskkill /PID <pid> /T /F` over ssh, deletes the `VNoteVerify_<runId>` scheduled task, prunes the remote renderer caches, then pulls `app.log`, `<remoteHome>\logs\*` and the artifact files (`video.json`, `topic.md`, `trajectory.json`, `status.json`) into `tmp/verify/<run>/win/` before recording `stoppedAt` in both `state.json` files (the run directory and the `win/` copy); the kept-evidence line counts the `win/` directory. `--purge` also removes the remote run directory `D:\code\video-notes\verify\<runId>\` after the pull, then deletes the local run directory, so the box and the worktree both end clean.
 - If `up` failed before writing `state.json`, the log tail is printed and the child is terminated by `up` itself. If a run was interrupted by the agent, use `runs` to find the pid and `down --run <id>`.
 - Scratch state lives inside the run directory (`home/`, `user-data/`, `cli-home/`); `down` prunes the big renderer caches automatically, so the directory that remains is evidence only.
 - Never `pkill Electron`, never delete `tmp/verify/<run>/*.png` or `*.aria.txt` as “cleanup”.
@@ -221,10 +250,10 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 
 | Command | Purpose |
 |---|---|
-| `up` | build + launch isolated Electron, wait for usable renderer |
-| `doctor` | read-only health check, exit 1 on failure |
-| `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log |
-| `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory) |
+| `up` | build + launch isolated Electron, wait for usable renderer (`--target <mac\|win-gamepc>`, default `mac`; win extras `--installer` / `--app` (mutually exclusive) / `--ssh-host`, default `gamepc`) |
+| `doctor` | read-only health check, exit 1 on failure (`--target` falls back to `state.target`) |
+| `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log / clipboard (`--save <path>`; `--target` falls back to `state.target`) |
+| `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory; `--target` falls back to `state.target`) |
 | `runs` | list runs with liveness |
 
 CLI surface (run from the repo root so `.env` is read):
