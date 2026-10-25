@@ -8,7 +8,8 @@ The library is the landing screen. A user imports a video by dropping it on the 
 - `import-dialog` clicks the dropzone to open the native file picker (not automatable, see Gotchas).
 - `library-list` shows one card per video with title, import time, size, resolution, topic count and status tag.
 - `library-status` distinguishes 待确认主题 / 部分完成 / 处理中 / 需重跑 / 失败 / 已完成.
-- `library-refresh` (r33-fix) re-reads `listLibrary()` whenever the route returns to 视频库 and whenever the window regains focus, so a status change made inside the workspace (checking an ungenerated topic, merging topics) shows on the card without a restart.
+- `library-refresh` (r33-fix) re-reads `listLibrary()` whenever the route returns to 视频库 and whenever the window regains focus, so a status change made inside the workspace (checking an ungenerated topic, merging topics) shows on the card without a restart. Since r40 the main process also broadcasts `library:changed` when an extract worker reports `prepared` (the new output dir + initial `video.json` exist), so a dropped video appears as a card while the job is still running instead of only at the terminal event.
+- `video-delete` (r40): deleting removes the output dir and the cache dir before dropping the `index.json` entry; both directories are removed with a Windows-safe routine (retry `EPERM`/`EACCES`/`EBUSY`/`ENOTEMPTY`, clear readonly bits, then per-file removal) and a still-open file raises `删除失败：文件被占用 <path>（<code>）`. The run writes `INFO fs 删除视频开始` / `删除视频完成` and, on failure, `INFO app 删除视频` + `ERROR fs 删除视频失败` + `ERROR ipc IPC 调用失败 channel=library:delete-video`, so a failure toast always has a log trail. The user's source file is never touched.
 - `library-open` opens the workspace: 查看笔记切片 for a finished video, 确认主题 for a `pending-confirm` video, 继续编辑 otherwise.
 - `library-confirm` clicks 确认主题 on a pending-confirm card, opening the 主题 page where the confirm job generates the selected topics.
 - `cover-img` shows the generated mid-video cover frame (`cover.jpg`, `video-cover`) on the card thumbnail.
@@ -100,6 +101,36 @@ ffmpeg -y -ss 0 -i <sourcePath> -frames:v 1 -q:v 2 tmp/verify/<run>/first-frame.
 ```
 
 `first-frame.jpg` is the reference only — the cover assertion is the `video-cover` read plus `cover.jpg` on disk; the screenshots go in the report as the "not the first frame" evidence.
+
+### Recipe: 导入即见卡片 + 无运行锁残留（r40）
+
+The new card must appear while the extract job is still running (the `prepared` broadcast), and neither the import nor a following notes job may leave `.vnote-run.lock` behind.
+
+```bash
+$V drop /Users/link/Documents/video-notes/<视频>.mp4
+# card appears before the job ends (prepared broadcast, no page switch)
+$V wait "document.querySelector('[data-testid=video-card]') !== null" --timeout 60000
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
+$V eval "window.vnote.listLibrary().then(v => v[0].outputDir)"
+# run a notes job on the same video (topics.md confirm recipe), then:
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
+OUTDIR="$($V eval "window.vnote.listLibrary().then(v => v[0].outputDir)")"
+find "$OUTDIR" -maxdepth 1 -name '.vnote-run.lock*'
+# expected: no output (neither the lock nor a .stale.* leftover)
+```
+
+On Windows the same two jobs are the regression: before r40 the second job failed with `EPERM ... .vnote-run.lock`; the log now has `INFO fs 清理陈旧运行锁` when an old lock is taken over.
+
+### Recipe: 删除失败可追溯（r40）
+
+```bash
+$V click '[data-testid=video-delete]'
+$V wait "document.querySelector('[data-testid=video-card]') === null" --timeout 30000
+LOG=<run>/home/logs/vnote-$(date +%F).log
+rg '删除视频开始|删除视频完成' "$LOG"     # expected: both lines for the deleted videoId
+# a failure (file held open) must leave:
+rg '删除视频失败|IPC 调用失败.*library:delete-video' "$LOG"
+```
 
 ### Recipe: Card-footer baseline（1-line vs 2-line title, ±1px）
 
