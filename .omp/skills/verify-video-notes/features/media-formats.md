@@ -49,12 +49,18 @@ $V drop /Users/link/Documents/video-notes/r42-fixtures/r42-audio-30s.m4a
 $V wait "document.querySelector('[data-testid=video-card]') !== null" --timeout 60000
 $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 # card state: pending-confirm, the 纯音频 badge is present, there is NO cover img
+# listLibrary() returns by id ASCENDING, not import order: in a library with several videos match
+# on id / status / sourcePath, never on a fixed `v[0]`
 $V wait "window.vnote.listLibrary().then(v => v[0].status === 'pending-confirm' && v[0].topicCount > 0 && v[0].clipCount === 0)" --timeout 60000
 $V eval "({ badge: document.querySelector('[data-testid=video-audio-only]')?.innerText ?? null, cover: document.querySelector('[data-testid=video-cover]') !== null })"
 # expected: { badge: "纯音频", cover: false }
 $V shot r42-audio-card
 # confirm the topics (library.md 「Pending-confirm import」 step 3)
+# card-confirm-topics only NAVIGATES to the topic page: nothing is generated until topics-generate
+# is clicked, so waiting for activeJob() === null straight after the card click passes vacuously
 $V click '[data-testid=card-confirm-topics]'
+$V wait "document.querySelector('[data-testid=topics-generate]') !== null" --timeout 60000
+$V click '[data-testid=topics-generate]'
 $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 # topic dir: exactly one topic.mp4 with exactly one audio stream and no video stream
 OUTDIR="$($V eval "window.vnote.listLibrary().then(v => v[0].outputDir)")"
@@ -82,6 +88,8 @@ Do not assert the *source* `.ts` plays in the app's `<video>`: measured in the r
 
 ## Gotchas
 
+- The `job-banner` overlays the bottom action row of the cards while a job is finishing: `elementFromPoint` at the button centre hits `DIV[job-banner]`, so `click '[data-testid=card-confirm-topics]'` lands on the banner and nothing happens. Close it first with `click '[data-testid=job-close]'` (or assert the button is the hit target) before clicking any card action on the same screen.
+- `listLibrary()` is ordered by id ascending, not by import order. Never index a multi-video library with `v[0]`; select by `id`, `status` or `sourcePath`.
 - Cover extraction is skipped for audio-only sources by design: a missing `video-cover` is correct there, not a failure. The card shows the styled empty thumbnail plus the duration. A `video-cover` appearing on an audio-only card, or an ERROR cover retry line in the log, is the regression.
 - An audio-only `topic.mp4` is an mp4 with exactly one AAC audio stream and no video stream (ffprobe: 1 `audio`, 0 `video`); the `clip-player` is a `<video>` with `videoWidth === 0` that still plays audio. See notes.md 「Audio-only clip」.
 - `Stream map '' matches no streams` (raw ffmpeg) must never surface in a toast or the log. A user-visible failure that means this reads `该文件没有可用的音视频轨道`. Assert both: `rg 'Stream map'` over `app.log` is empty, and the toast text (if the failure path is exercised at all) reads the Chinese mapping.

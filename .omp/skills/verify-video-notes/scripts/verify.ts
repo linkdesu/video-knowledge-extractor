@@ -765,7 +765,9 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     const payload = Buffer.from(`${script}\r\n`, "utf8").toString("base64");
     sshRun(
       sshHost,
-      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Convert]::FromBase64String('${payload}'), (New-Object Text.UTF8Encoding $true))`),
+      // FromBase64String returns byte[]: handing it to WriteAllText binds the (string, string, Encoding)
+      // overload and PowerShell joins the bytes into "36 101 …", so decode to a string first
+      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')), (New-Object Text.UTF8Encoding $true))`),
     );
 
     // ssh lands in Session 0, which has no desktop: an interactive task starts the app in Session 1
