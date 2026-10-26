@@ -54,6 +54,38 @@ $V shot notes-single-player
 
 The literal assertion: `document.querySelectorAll('[data-testid=clip-player]').length === 1` for the selected topic, and `clips` is a single `topic.mp4` record. Legacy numbered `*.mp4` files only appear in pre-r33 data (the renderer then falls back to source playback; the player is still the one `clip-player`).
 
+### Recipe: Audio-only clip（pure audio source, r42）
+
+A pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`; journey and fixtures in [media-formats.md](./media-formats.md)) produces the same one `topic.mp4` per topic, but the file is an mp4 with exactly one AAC audio stream and no video stream: the `<video>` plays it as audio. `segmentOffsets` and the subtitle/segment seek behaviour are unchanged from the video-source recipes above.
+
+```bash
+# after the pure-audio confirm (media-formats.md), on the 笔记 page
+$V click-text '笔记'
+$V wait "document.querySelector('[data-testid=clip-player]') !== null"
+$V eval "document.querySelector('[data-testid=clip-player]').videoWidth"
+# expected: 0 (no video stream; the player still plays audio)
+# play + seek still work: click a subtitle row, expect seek + play
+$V click '[data-testid=clip-sub]' --index 0
+$V wait "document.querySelector('[data-testid=clip-player]').paused === false" --timeout 5000
+# the file on disk: exactly one audio stream, no video stream
+OUTDIR="$($V eval "window.vnote.listLibrary().then(v => v[0].outputDir)")"
+ffprobe -v error -select_streams a -show_entries stream=codec_type -of default=noprint_wrappers=1 "$OUTDIR/<topicDir>/topic.mp4" | grep -c audio
+# expected: 1
+ffprobe -v error -select_streams v -show_entries stream=codec_type -of default=noprint_wrappers=1 "$OUTDIR/<topicDir>/topic.mp4" | grep -c video
+# expected: 0
+# the clip record is unchanged in shape: one topic.mp4 with segmentOffsets.length === segment count
+$V eval "window.vnote.listLibrary().then(v => window.vnote.getVideo(v[0].id)).then(d => { const t = d.topics.find(x => x.status === 'done'); return { file: t.clips[0].file, offsets: t.clips[0].segmentOffsets.length, segs: t.segments.length }; })"
+# expected: { file: "topic.mp4", offsets: <N>, segs: <N> } with offsets === segs
+test -f "$OUTDIR/<topicDir>/topic.md"
+# expected: exit 0
+# the raw ffmpeg error never surfaces; the mapping does
+rg 'Stream map' <run>/app.log
+# expected: no output (a failure that means it reads 该文件没有可用的音视频轨道, never the raw message)
+$V shot notes-audio-only
+```
+
+The literal assertions: `clip-player.videoWidth === 0` with `paused === false` after a subtitle click, ffprobe reports exactly 1 `audio` and 0 `video` streams in `topic.mp4`, `clips[0].file === "topic.mp4"` with `segmentOffsets.length === segments.length`, and `Stream map` appears nowhere in the log.
+
 ### Recipe: Subtitle real click → seek + play（clip-sub, currentTime ≈ offset, paused === false）
 
 A real click on a subtitle line seeks `clip-player` to `T = segmentOffsets[gi] + (rowStart − seg[gi].start)` and starts playback (`seekClip`: `currentTime = T` + `play()`). Cover the item-6 set on the 笔记 page: the first row of the topic, a middle row of its first segment, and a row inside the second segment of a multi-segment topic (a topic whose `clips[0].segmentOffsets.length > 1`).

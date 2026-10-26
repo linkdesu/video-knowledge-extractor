@@ -100,6 +100,10 @@ $V shot topics-seg-seek
 
 The assertion is literal: `Math.abs(video.currentTime - segmentOffsets[i]) < 0.05`. `drive click` dispatches a real mouse event at the label center, so the seek goes through the same `seekAndPlay` handler as a user.
 
+### Recipe: Audio-only source（r42, same confirm and seek paths）
+
+A pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`; the import journey and fixture recipe are in [media-formats.md](./media-formats.md)) reaches this page the same way: 确认主题 opens 主题, `topics-generate` runs on the selected topics. The confirm job writes the same shape: one `topic.md` and one `topic.mp4` per confirmed topic. For an audio-only source `topic.mp4` is an mp4 with exactly one AAC audio stream and no video stream (the 主题 player plays it as audio, `videoWidth === 0`); the segment-label and subtitle seek recipes above apply unchanged, `segmentOffsets` included. The clip-player contract (ffprobe 1 audio / 0 video, `topic.md` present) is the full assertion in [notes.md](./notes.md) 「Audio-only clip」.
+
 ### Recipe: Subtitle real click → player seek + play（subtitle-list, item-6 three rows）
 
 The 主题 page's per-segment subtitle rows are clickable **only because `onSeek` is now passed** (`seekCue`); before r33 the 主题 page never passed it, so `role="button"` was absent and a row click did nothing. A real click on row `u` (segment `gi`) seeks the 主题 player to `T = segmentOffsets[gi] + (u.start − seg[gi].start)` in the concatenated `topic.mp4` (or to `u.start` on the source when no clip/offsets exist) and starts playback. Cover the item-6 set: the first row of segment 0, the last row of segment 0, and a row inside the second segment (segment index 1) of a multi-segment topic.

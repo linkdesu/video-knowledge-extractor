@@ -6,7 +6,7 @@ This directory is the maintained source for proving user-facing behavior of vide
 
 - Two targets (r41): macOS Apple Silicon, the default (`up` with no `--target`), and the Windows 11 real machine (`up --target win-gamepc`; ssh host `gamepc`, machine `Link-PC-MKII`, user `xieal`).
 - Dependencies installed, `ffmpeg`/`ffprobe` on `PATH`.
-- Start a run: `bun .omp/skills/verify-video-notes/scripts/verify.ts up`. On Windows (r41): `bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "D:\code\video-notes\installer\r40-Video-Notes-0.1.0-setup.exe"` — a `D:\...` installer is used in place, a Mac path is `scp`-ed into `D:\code\video-notes\installer\` first, and either form installs silently into `D:\code\video-notes\app` (`/S`, `/D=` last and unquoted); with no `--app` / `--installer`, the already-installed `D:\code\video-notes\app\Video Notes.exe` is driven.
+- Start a run: `bun .omp/skills/verify-video-notes/scripts/verify.ts up`. On Windows (r41): `bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "D:\code\video-notes\installer\r40-Video-Notes-0.1.0-setup.exe"` — a `D:\...` installer is used in place, a Mac path is `scp`-ed into `D:\code\video-notes\installer\` first, and either form installs silently into the install directory (default `D:\code\video-notes\app`; `--install-dir <WINPATH>` overrides it) with the executable resolving as `<install-dir>\Video Notes.exe`; with no `--app` / `--installer`, the already-installed `D:\code\video-notes\app\Video Notes.exe` is driven (the r42 gate: a Chinese-plus-space install directory and a pure-audio journey, in [windows-build.md](./windows-build.md)).
 - **Test video rule is per platform and absolute.** Mac runs use only `/Users/link/Documents/video-notes/`; Windows runs use only `C:\Users\xieal\Documents\video-notes\` (for example `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, `C:\Users\xieal\Documents\video-notes\测试视频 1.mp4`). Never a video from another directory.
 - The run gets an empty notes root (`VNOTE_HOME`) and an isolated `userData`; the real `~/Documents/video-notes` is never touched.
 - `doctor` passes and reports ffmpeg, models and the LLM endpoint as ready before any extraction journey.
@@ -45,4 +45,6 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Glossary](./glossary.md) — global correction entries, inline edit, immediate save, delete.
 - [Settings](./settings.md) — ASR provider, model bundles, LLM fields, storage paths, cache, about.
 - [Logging and diagnostics](./logging.md) - log folder, copied diagnostics, the three failure journeys.
-- [CLI extraction](./cli-extract.md) — `vnote --help/--version/extract`, `--limit`, failure modes.
+- [CLI extraction](./cli-extract.md) — `vnote --help/--version/extract`, `--limit`, failure modes, the r42 audio matrix.
+- [Windows build and run](./windows-build.md) — `--install-dir`, the Chinese-plus-space install gate, the BOM'd PowerShell launcher, r42 evidence in `win/`.
+- [Media formats (r42)](./media-formats.md) — the format matrix, the fixture recipe, the pure-audio journey and the `.ts` playback caveat.

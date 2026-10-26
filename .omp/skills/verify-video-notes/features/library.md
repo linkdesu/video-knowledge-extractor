@@ -13,6 +13,7 @@ The library is the landing screen. A user imports a video by dropping it on the 
 - `library-open` opens the workspace: 查看笔记切片 for a finished video, 确认主题 for a `pending-confirm` video, 继续编辑 otherwise.
 - `library-confirm` clicks 确认主题 on a pending-confirm card, opening the 主题 page where the confirm job generates the selected topics.
 - `cover-img` shows the generated mid-video cover frame (`cover.jpg`, `video-cover`) on the card thumbnail.
+- `audio-only-card` (r42) for a pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`): the card carries the 纯音频 badge (`video-audio-only`, text 纯音频) over the styled empty thumbnail plus the duration; there is no `video-cover` and cover extraction is skipped entirely (no ERROR retry lines in the log). The accepted import set is `mp4, mov, m4v, webm, m4a, mp3, wav, flac, ts`; the audio-only journey and the fixture recipe are in [media-formats.md](./media-formats.md), and the `.ts` source playback caveat there is the card-level contract for `.ts` too.
 - `card-footer` pins the card action row to the bottom (`video-card-foot`, `margin-top:auto`) so a 1-line-title and a 2-line-title card in one row align (±1px). The foot holds the status capsule on the left and one non-wrapping button group on the right containing the primary action (继续编辑 / 确认主题 / 查看笔记切片 / 重试) plus 删除 (`video-delete`) on the same row.
 
 ## How to get to it (user POV)
