@@ -429,7 +429,6 @@ const OUTPUTS = [
 const WIN_ROOT = "D:\\code\\video-notes";
 const WIN_RUNS = `${WIN_ROOT}\\verify`;
 const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
-const WIN_DEFAULT_APP = `${WIN_ROOT}\\app\\Video Notes.exe`;
 const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
 const WIN_SSH_HOST = "gamepc";
 
@@ -739,8 +738,10 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
       stateInstallDir = installDir;
       remoteApp = `${installDir}\\Video Notes.exe`;
     } else {
-      remoteApp = appFlag ?? WIN_DEFAULT_APP;
+      remoteApp = appFlag ?? `${installDir}\\Video Notes.exe`;
     }
+    // the install directory is part of the run record whenever it determined the executable
+    if (stateInstallDir === undefined && appFlag === undefined) stateInstallDir = installDir;
     const appExists = sshRun(sshHost, winPs(`Test-Path -LiteralPath '${remoteApp}'`)).stdout.trim().toLowerCase();
     if (appExists !== "true") throw new RemoteError(`remote app missing on ${sshHost}: Test-Path -LiteralPath '${remoteApp}' said "${appExists}"`);
 
