@@ -27,6 +27,8 @@ export type LibraryVideo = {
   sizeBytes: number | null;
   /** 源视频分辨率；旧文档缺失为 null，卡片省略。 */
   resolution: { width: number; height: number } | null;
+  /** 源文件有无独立视频轨（r42）；无文档为 null */
+  hasVideo: boolean | null;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
@@ -235,6 +237,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       importedAt: null,
       sizeBytes: null,
       resolution: null,
+      hasVideo: null,
       topicCount: 0,
       clipCount: 0,
       updatedAt: null,
@@ -252,6 +255,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       importedAt: data.importedAt,
       sizeBytes: data.sourceBytes,
       resolution: data.resolution,
+      hasVideo: data.hasVideo,
       topicCount: data.topics.length,
       clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
       updatedAt: data.updatedAt,
@@ -289,6 +293,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
     importedAt: null,
     sizeBytes: null,
     resolution: null,
+    hasVideo: null,
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),

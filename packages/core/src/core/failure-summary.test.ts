@@ -3,6 +3,8 @@ import { describeFailure } from "./failure-summary";
 
 describe("describeFailure", () => {
   test("已知原因映射成短词", () => {
+    expect(describeFailure("切主题切片 failed (exit 234) / Stream map '' matches no streams")).toBe("该文件没有可用的音视频轨道");
+    expect(describeFailure("ffmpeg: Stream map '' matches no streams")).toBe("该文件没有可用的音视频轨道");
     expect(describeFailure("LLM 请求失败 401 Unauthorized")).toBe("API key 无效");
     expect(describeFailure("ASR 返回 403 forbidden")).toBe("API key 无效");
     expect(describeFailure("API key 无效：key 已过期")).toBe("API key 无效");

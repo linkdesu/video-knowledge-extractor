@@ -50,7 +50,7 @@ export function planTopicClip(segments: Segment[], preRoll: number = CLIP_PREROL
 }
 
 /** 多个 mp4 part 拼成一个：ffmpeg concat 流拷贝（`-c copy`，不重编码）；1 个 part 直接 rename。失败清理临时文件后抛出；列表文件由调用方清理。 */
-export async function concatClips(input: { parts: string[]; outPath: string }): Promise<void> {
+export async function concatClips(input: { parts: string[]; outPath: string; hasVideo: boolean }): Promise<void> {
   const { parts, outPath } = input;
   if (parts.length === 0) throw new Error("concatClips 至少需要一个 part");
   ensureDir(dirname(outPath));
@@ -83,10 +83,7 @@ export async function concatClips(input: { parts: string[]; outPath: string }): 
         "0",
         "-i",
         listPath,
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
+        ...(input.hasVideo ? ["-map", "0:v:0", "-map", "0:a?"] : ["-map", "0:a:0"]),
         "-c",
         "copy",
         "-movflags",
@@ -129,7 +126,7 @@ export function parseClipFileName(name: string): Segment | undefined {
 }
 
 /** 重编码保证帧精确，避免重跑覆盖用户看过的文件。 */
-export async function cutClip(input: { videoPath: string; segment: Segment; outPath: string }): Promise<void> {
+export async function cutClip(input: { videoPath: string; segment: Segment; outPath: string; hasVideo: boolean }): Promise<void> {
   const { videoPath, segment, outPath } = input;
   try {
     if (statSync(outPath).size > 0) return;
@@ -150,18 +147,9 @@ export async function cutClip(input: { videoPath: string; segment: Segment; outP
         String(segment.end - segment.start),
         "-i",
         videoPath,
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-c:a",
-        "aac",
+        ...(input.hasVideo
+          ? ["-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac"]
+          : ["-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k"]),
         "-movflags",
         "+faststart",
         partPath,

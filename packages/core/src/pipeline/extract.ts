@@ -94,10 +94,11 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       let data = readVideoData(video.outputDir);
       if (data === undefined) data = { ...emptyVideoData(video), runToken };
       else data.runToken = runToken;
+      data.hasVideo = probe.hasVideo;
       writeVideoData(video.outputDir, data);
       // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
       try {
-        await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration });
+        await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration, hasVideo: probe.hasVideo });
       } catch {
         // 封面失败只记 warn，不让导入失败
         logger().warn("ffmpeg", "封面抽帧失败");

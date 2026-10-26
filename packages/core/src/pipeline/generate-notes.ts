@@ -135,12 +135,12 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
           const u = unions[j];
           if (u === undefined) continue;
           const part = join(workDir, `${j}.mp4`);
-          await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part });
+          await cutClip({ videoPath: input.video.sourcePath, segment: u, outPath: part, hasVideo: input.hasVideo });
           parts.push(part);
           input.onProgress?.({ step: "generate-notes", done, total: batchTotal, detail: topic.title, topicId: topic.id, topicPercent: Math.round(((j + 1) / unions.length) * 80) });
         }
         const clipPath = join(topicDir, "topic.mp4");
-        await concatClips({ parts, outPath: clipPath });
+        await concatClips({ parts, outPath: clipPath, hasVideo: input.hasVideo });
         // 拼接成功后删掉该主题目录里的旧编号切片（旧数据；topic.mp4 本身不在 SLICE_RE 内）
         for (const entry of readdirSync(topicDir)) {
           if (entry !== "topic.mp4" && SLICE_RE.test(entry)) unlinkSync(join(topicDir, entry));

@@ -218,6 +218,7 @@ function makeGenerateNotesFixture(): {
     corrections,
     endpoint,
     cacheDir,
+    hasVideo: true,
   };
   const utterances = transcript.utterances.filter(
     (u) => topic.segments.some((s) => u.end > s.start && u.start < s.end),
@@ -272,6 +273,7 @@ describe("generateNotes 要点缓存", () => {
       corrections,
       endpoint,
       cacheDir: join(out, ".cache"),
+      hasVideo: true,
     } as Parameters<typeof generateNotes>[0];
     return { input };
   }
@@ -365,6 +367,7 @@ describe("generateNotes 要点缓存", () => {
       corrections,
       endpoint,
       cacheDir: "/c",
+      hasVideo: true,
     } as Parameters<typeof generateNotes>[0];
     const prompt = hashJson(noteSystemPrompt(topic, utterances, input));
     const key = cacheKey("note", {
@@ -439,6 +442,7 @@ describe("generateNotes 单文件主题切片（r33）", () => {
       endpoint,
       cacheDir: join(out, ".cache"),
       client: makeClient(["要点一"], []),
+      hasVideo: true,
     } as Parameters<typeof generateNotes>[0];
     const r = await generateNotes(input);
     expect(r.notes).toHaveLength(1);
@@ -482,6 +486,7 @@ describe("generateNotes 无时间段主题", () => {
       endpoint,
       cacheDir: join(out, ".cache"),
       client: makeClient(["要点一"], []),
+      hasVideo: true,
     } as Parameters<typeof generateNotes>[0];
     await expect(generateNotes(input)).rejects.toThrow("主题 主题A 没有可切片的时间段");
     // 没有写出 topic.md，主题不能在没有 topic.mp4 时到达 done
@@ -523,6 +528,7 @@ describe("generateNotes 重新生成的 topic.md 格式", () => {
       endpoint,
       cacheDir: join(out, ".cache"),
       client: makeClient(["要点一"], []),
+      hasVideo: true,
     };
     const r = await generateNotes(input);
     expect(r.notes).toHaveLength(1);
@@ -593,6 +599,7 @@ describe("generateNotes 模型输出格式错误", () => {
       endpoint,
       cacheDir: join(out2, ".cache"),
       client: client2,
+      hasVideo: true,
     } as Parameters<typeof generateNotes>[0];
     const r2 = await generateNotes(input2);
     expect(r2.notes).toHaveLength(1);

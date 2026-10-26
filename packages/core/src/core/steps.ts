@@ -80,7 +80,8 @@ export type GenerateNotesInput = {
   topics: Topic[];
   /** 用户选定要生成笔记的主题的目录名,由调用方分配(重新分块/编辑时保持旧名,ADR-0014);不在 map 里的主题跳过。 */
   dirNames: Map<TopicId, string>;
-  /** 生成笔记时随请求传给模型的正确写法。 */
+  /** 源有无视频轨；纯音频切片只保留音轨（r42）。 */
+  hasVideo: boolean;
   corrections: CorrectionList;
   endpoint: LlmEndpoint;
   /** 缓存根目录；每主题的笔记与切片各自落盘（ADR-0006）。 */
