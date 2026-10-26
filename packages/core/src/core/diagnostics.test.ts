@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "./logger";
-import { buildDiagnostics, errorLines } from "./diagnostics";
+import { buildDiagnostics, errorLines, errorRecords } from "./diagnostics";
 
 const NOW = new Date("2026-10-24T05:00:00.000Z");
 
@@ -147,5 +147,41 @@ describe("buildDiagnostics", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("错误摘要合并全局尾部：无 task= 的全局 ERROR 与被请求任务的 ERROR 都在且不重复", () => {
+    const dir = makeLogDir();
+    const lg = createLogger({ dir, now: () => NOW });
+    // 任务之外的全局错误（IPC 失败没有 task=）：只在全局尾部里
+    lg.error("ipc", "IPC 调用失败");
+    lg.info("app", "无任务的环境说明");
+    lg.forTask("task-b").info("app", "task-b 启动");
+    const a = lg.forTask("task-a");
+    a.error("app", "task-a 提取失败");
+    a.info("app", "task-a 完成");
+
+    const text = buildDiagnostics({ logDir: dir, environment: [], taskId: "task-a" });
+    rmSync(dir, { recursive: true, force: true });
+
+    // 摘要：全局 IPC 错误与任务错误都在，INFO 不在；任务错误同时出现在任务日志与全局尾部，只能收一次
+    const summary = section(text, "错误摘要", "最近任务");
+    expect(summary).toContain("IPC 调用失败");
+    expect(summary).toContain("task-a 提取失败");
+    expect(summary).not.toContain("环境说明");
+    expect(summary.split("task-a 提取失败").length - 1).toBe(1);
+    // 时间戳相同则保持插入顺序：尾部行在前
+    expect(summary.indexOf("IPC 调用失败")).toBeLessThan(summary.indexOf("task-a 提取失败"));
+
+    // 最近任务：仍只有被请求任务的行，全局错误与其他任务都不出现
+    const recent = section(text, "最近任务", "日志目录");
+    expect(recent).toContain("task=task-a");
+    expect(recent).toContain("task-a 提取失败");
+    expect(recent).not.toContain("IPC 调用失败");
+    expect(recent).not.toContain("task=task-b");
+    expect(recent).not.toContain("环境说明");
+
+    // 记录分组：ERROR 行与紧随其后的 stack: 行是同一条记录，不能被拆开
+    const record = ["2026-10-24T05:00:00.000Z ERROR app task=task-a 失败", "  stack: Error: boom"];
+    expect(errorRecords(record)).toEqual([record]);
   });
 });

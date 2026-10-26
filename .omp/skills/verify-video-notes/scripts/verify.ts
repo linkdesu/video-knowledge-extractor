@@ -13,7 +13,7 @@
  * Run with `--help` for the full command list.
  */
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
 const DESKTOP = join(REPO, "apps/desktop");
@@ -21,13 +21,18 @@ const VERIFY_ROOT = join(REPO, "tmp/verify");
 const LATEST = join(VERIFY_ROOT, "latest");
 
 type RunState = {
+  /** Platform the run drives; absent means mac (every state.json written before r41). */
+  target?: "mac" | "win-gamepc";
   runId: string;
   runDir: string;
   port: number;
+  /** For a win-gamepc run this is the remote Windows pid; the local ssh is sshTunnelPid. */
   pid: number;
+  /** For a win-gamepc run home / userData / modelDir are the remote Windows paths. */
   home: string;
   userData: string;
   modelDir: string;
+  /** Local copy of the app's stdout (win-gamepc pulls it into <run>/win/ on `down`). */
   appLog: string;
   /** Set when the run drives a packaged .app instead of apps/desktop. */
   appPath?: string;
@@ -37,6 +42,20 @@ type RunState = {
   /** Set by `down` when it stops the instance. */
   stoppedAt?: string;
   electron: string;
+  /** win-gamepc only: the ssh host alias (default gamepc). */
+  sshHost?: string;
+  /** win-gamepc only: the remote run directory, D:\code\video-notes\verify\<runId>. */
+  remoteRunDir?: string;
+  remoteHome?: string;
+  remoteUserData?: string;
+  remoteModelDir?: string;
+  remoteAppLog?: string;
+  /** The Windows executable the run launches ("Video Notes.exe" or an --app override). */
+  remoteApp?: string;
+  /** Local pid of `ssh -N -L <port>:127.0.0.1:<port>`, the CDP tunnel. */
+  sshTunnelPid?: number;
+  /** Task Scheduler entry that starts the app in interactive Session 1. */
+  scheduledTask?: string;
 };
 
 type Target = { type: string; url: string; title: string; webSocketDebuggerUrl: string };
@@ -50,12 +69,17 @@ const HELP = `usage: verify.ts <command>
       --app drives an already packaged .app (or its executable) instead of apps/desktop,
       and implies --no-build. --min-path replaces the child PATH with launchd's
       /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
+  up --target win-gamepc [--installer PATH | --app WINPATH] [--ssh-host NAME]
+      Drive a Windows machine over ssh instead of this Mac (see Targets below).
+      --installer runs the NSIS installer silently into the Windows app dir, --app
+      drives an exe that is already installed; the two are mutually exclusive.
+      --ssh-host picks the ssh host alias (default gamepc).
 
-  doctor [--run ID]
+  doctor [--run ID] [--target mac|win-gamepc]
       Read-only health check of the latest run: process, CDP port owner, build freshness,
       effective notes root, models/LLM readiness. Exit 1 on failure.
 
-  drive <action> [args] [--run ID]
+  drive <action> [args] [--run ID] [--target mac|win-gamepc]
       eval <expr>                 evaluate JS in the renderer, print JSON
       click <selector> [--index N]  real mouse click on the element's center
       click-text <label> [--index N]  real mouse click on a button/checkbox by text or aria-label
@@ -68,18 +92,42 @@ const HELP = `usage: verify.ts <command>
                                 N steps (default 8) to center+(dx,dy), release at the end
       wait <expr> [--timeout MS]  poll until the expression is truthy
       text                        print document.body.innerText
+      clipboard [--save PATH]     print the OS clipboard (pbpaste on mac; the app's
+                                  renderer on win) and save it
       shot [name]                 PNG screenshot -> <run>/<name>.png
       snapshot [name]             accessibility tree text -> <run>/<name>.aria.txt
       status                      library + active job + settings summary
       log [lines]                 tail the Electron log
 
-  down [--run ID] [--purge]
+  down [--run ID] [--purge] [--target mac|win-gamepc]
       Stop the Electron process this helper started (never kills by name), record
       stoppedAt in state.json, prune the renderer caches, keep the evidence.
       --purge also deletes the whole run directory (the default keeps it).
+      A win-gamepc run also stops the ssh tunnel, kills the remote process, deletes the
+      scheduled task, prunes the remote caches and pulls app.log, home\\logs and every
+      video.json / topic.md / trajectory.json / status.json into <run>/win/.
 
   runs
       List runs and whether each process is still alive.
+
+  Targets
+    mac        (default) everything lives in <repo>/tmp/verify/<run>/; up builds
+               apps/desktop and launches it locally. --target mac is the old behaviour.
+    win-gamepc a Windows machine reached over ssh. No config file; the layout is fixed:
+                 root      D:\\code\\video-notes
+                 run dir   D:\\code\\video-notes\\verify\\<run>
+                 home      <run>\\home        user-data <run>\\user-data
+                 app log   <run>\\app.log     launch    <run>\\launch.cmd
+                 models    C:\\Users\\xieal\\Documents\\video-notes\\models
+                 app       D:\\code\\video-notes\\app\\Video Notes.exe
+                 staging   D:\\code\\video-notes\\installer\\
+               Local evidence stays in <repo>/tmp/verify/<run>/; Windows artifacts are
+               pulled into <repo>/tmp/verify/<run>/win/. The app starts in interactive
+               Session 1 through schtasks (ssh lands in Session 0, which has no desktop),
+               the CDP port is forwarded with ssh -N -L <port>:127.0.0.1:<port>, and the
+               launch script neutralises HTTP(S)_PROXY so the remote Surge proxy cannot
+               answer 503 for localhost traffic. doctor, drive and down default to the
+               target recorded in state.json.
 `;
 
 function fail(message: string): never {
@@ -287,9 +335,10 @@ async function fill(cdp: Cdp, selector: string, text: string): Promise<void> {
   await type(cdp, text);
 }
 
-async function drop(cdp: Cdp, file: string): Promise<void> {
-  const path = resolve(file);
-  if (!existsSync(path)) fail(`file not found: ${path}`);
+async function drop(cdp: Cdp, file: string, winPath?: string): Promise<void> {
+  // a win run's app reads the remote filesystem: the Windows path was validated over ssh already
+  const path = winPath ?? resolve(file);
+  if (winPath === undefined && !existsSync(path)) fail(`file not found: ${path}`);
   const { x, y } = await elementCenter(cdp, "[data-testid=dropzone]", 0);
   const data = { items: [], files: [path], dragOperationsMask: 1 };
   for (const type of ["dragEnter", "dragOver", "drop"]) {
@@ -368,9 +417,162 @@ const OUTPUTS = [
   join(DESKTOP, "out/renderer/index.html"),
 ];
 
+// --------------------------------------------------------------- Windows target
+
+/** The Windows machine has a fixed layout: one root, no config file. */
+const WIN_ROOT = "D:\\code\\video-notes";
+const WIN_RUNS = `${WIN_ROOT}\\verify`;
+const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
+const WIN_DEFAULT_APP = `${WIN_ROOT}\\app\\Video Notes.exe`;
+const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
+const WIN_SSH_HOST = "gamepc";
+
+type Platform = "mac" | "win-gamepc";
+
+type SshResult = { code: number; stdout: string; stderr: string };
+
+/** A remote command exited non-zero; the message carries the command so it can be rerun by hand. */
+class RemoteError extends Error {}
+
+/** --target defaults to mac; doctor / drive / down fall back to the target in state.json. */
+function resolveTarget(explicit: string | undefined, state?: Pick<RunState, "target">): Platform {
+  const value = explicit ?? state?.target ?? "mac";
+  if (value !== "mac" && value !== "win-gamepc") {
+    fail(`unknown --target ${JSON.stringify(value)}: expected mac or win-gamepc`);
+  }
+  if (value === "win-gamepc") neutraliseProxy();
+  return value;
+}
+
+/**
+ * The Surge proxy on the Windows box answers 503 for intercepted localhost traffic, and a
+ * proxied `ssh -L` never forwards: no proxy for this process or anything it spawns.
+ */
+function neutraliseProxy(): void {
+  process.env.NO_PROXY = "127.0.0.1,localhost,*";
+  process.env.no_proxy = "127.0.0.1,localhost,*";
+  for (const key of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
+    delete process.env[key];
+  }
+}
+
+/** A drive-qualified path (C:\…, D:/…) or a UNC share (\\host\share). */
+function isWinPath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}[^\\/]/.test(path);
+}
+
+/** ssh hands the command to the remote default shell, so every Windows command names its own. */
+function winCmd(command: string): string {
+  return `cmd.exe /c "${command}"`;
+}
+
+/** PowerShell where a reply has to be read back; keep the script free of double quotes. */
+function winPs(script: string): string {
+  // a redirected console writes the OEM code page (GBK on the zh-CN box), so Chinese log and
+  // clipboard text would arrive as replacement characters; the encoding is pinned per call
+  return `pwsh -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}"`;
+}
+
+function sshExec(host: string, command: string): SshResult {
+  // a pull sends a whole file as base64 on stdout: do not let the default capture limit cut it
+  const result = Bun.spawnSync(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command], { maxBuffer: 64 * 1024 * 1024 });
+  return { code: result.exitCode ?? -1, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+}
+
+/** Last five stderr lines: the tail every remote failure is reported with. */
+function stderrTail(result: SshResult): string {
+  return result.stderr
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== "")
+    .slice(-5)
+    .join("\n");
+}
+
+/** Run a remote command; a non-zero exit fails with the command, its code and the stderr tail. */
+function sshRun(host: string, command: string): SshResult {
+  const result = sshExec(host, command);
+  if (result.code !== 0) {
+    throw new RemoteError(`remote command failed (exit ${result.code}) on ${host}: ${command}\n${stderrTail(result)}`);
+  }
+  return result;
+}
+
+/** Full paths a Get-ChildItem pipeline prints; a missing directory yields an empty list, not a failure. */
+function remoteFiles(host: string, listing: string): string[] {
+  return sshExec(host, winPs(`${listing} | ForEach-Object { $_.FullName }`))
+    .stdout.split("\n")
+    .map((line) => line.replace(/\r$/, "").trim())
+    .filter((line) => line !== "");
+}
+
+/** Local evidence directory for remote artifacts: <run>/win. */
+function winLocal(state: Pick<RunState, "runDir">): string {
+  const dir = join(state.runDir, "win");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Where a remote path lands under win/: its path below the remote run dir, else its file name. */
+function winRelPath(remotePath: string, remoteRunDir: string): string[] {
+  const path = remotePath.replace(/\//g, "\\");
+  const root = remoteRunDir.replace(/\//g, "\\").replace(/\\+$/, "");
+  if (path.toLowerCase().startsWith(`${root.toLowerCase()}\\`)) {
+    return path.slice(root.length + 1).split("\\").filter((part) => part !== "");
+  }
+  // a path outside the run dir keeps only its file name, so the pull cannot escape win/
+  return path.split("\\").filter((part) => part !== "").slice(-1);
+}
+
+/** A drop path must resolve on the Windows box: the remote app never sees this Mac's filesystem. */
+function winDropPath(host: string, file: string): string {
+  if (!isWinPath(file)) {
+    throw new RemoteError(`drop on a win run needs a Windows path the remote app can read, not the POSIX path ${file}`);
+  }
+  const probe = winCmd(`if exist "${file}" (exit 0) else (exit 1)`);
+  const result = sshExec(host, probe);
+  if (result.code !== 0) {
+    throw new RemoteError(`remote file missing (exit ${result.code}) on ${host}: ${probe}\n${stderrTail(result)}`);
+  }
+  return file;
+}
+
+/** Copy one remote file in a single round trip: base64 on stdout, so only exec is needed. */
+function pullRemoteFile(host: string, remotePath: string, localPath: string): boolean {
+  const result = sshExec(host, winPs(`[Convert]::ToBase64String([IO.File]::ReadAllBytes('${remotePath}'))`));
+  if (result.code !== 0) return false;
+  mkdirSync(dirname(localPath), { recursive: true });
+  writeFileSync(localPath, Buffer.from(result.stdout.replace(/\s+/g, ""), "base64"));
+  return true;
+}
+
+/** Windows runs live on another machine: ask it instead of the local process table. */
+function remoteAlive(state: RunState): boolean {
+  const host = state.sshHost ?? WIN_SSH_HOST;
+  const probe = winPs(`if (Get-Process -Id ${state.pid} -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' }`);
+  return sshExec(host, probe).stdout.trim() === "alive";
+}
+
+/** The app's pid: the process running our exe with this --remote-debugging-port. */
+function remoteMainPid(host: string, remoteApp: string, port: number): number {
+  const exe = remoteApp.split(/[\\/]/).pop() ?? remoteApp;
+  const probe = winPs(
+    `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq '${exe}' -and $_.CommandLine -like '*--remote-debugging-port=${port}*' } | Select-Object -First 1 -ExpandProperty ProcessId`,
+  );
+  const pid = Number(sshRun(host, probe).stdout.trim());
+  if (!Number.isFinite(pid) || pid <= 0) throw new RemoteError(`no remote pid for ${exe} on port ${port}: ${probe}`);
+  return pid;
+}
+
 async function up(args: string[]): Promise<void> {
+  // resolved before anything is created: an unknown --target must leave tmp/verify untouched
+  const target = resolveTarget(takeFlag(args, "--target"));
   const port = Number(takeFlag(args, "--port") ?? "9411");
   const runId = takeFlag(args, "--run") ?? stamp();
+  if (target === "win-gamepc") {
+    await upWin(args, port, runId);
+    return;
+  }
   const appArg = takeFlag(args, "--app");
   // --app drives an already packaged bundle: building apps/desktop cannot change what it runs
   const skipBuild = hasFlag(args, "--no-build") || appArg !== undefined;
@@ -485,8 +687,196 @@ async function up(args: string[]): Promise<void> {
   if (appPath !== undefined) console.log(`app:      ${appPath}`);
 }
 
+/** up --target win-gamepc: install or reuse the Windows app, launch it in Session 1, tunnel CDP. */
+async function upWin(args: string[], port: number, runId: string): Promise<void> {
+  const sshHost = takeFlag(args, "--ssh-host") ?? WIN_SSH_HOST;
+  const appFlag = takeFlag(args, "--app");
+  const installerFlag = takeFlag(args, "--installer");
+  if (appFlag !== undefined && installerFlag !== undefined) fail("--app and --installer are mutually exclusive");
+  if (appFlag !== undefined && !isWinPath(appFlag)) fail(`--app for win-gamepc needs a Windows path: ${appFlag}`);
+  // a local installer is uploaded, a Windows path is assumed to be on the box already
+  const uploadInstaller = installerFlag !== undefined && !isWinPath(installerFlag);
+  if (uploadInstaller && !existsSync(installerFlag)) fail(`installer not found: ${installerFlag}`);
+  const runDir = join(VERIFY_ROOT, runId);
+  if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
+  mkdirSync(runDir, { recursive: true });
+  const winDir = winLocal({ runDir });
+
+  const remoteRunDir = `${WIN_RUNS}\\${runId}`;
+  const remoteHome = `${remoteRunDir}\\home`;
+  const remoteUserData = `${remoteRunDir}\\user-data`;
+  const remoteAppLog = `${remoteRunDir}\\app.log`;
+  const remoteLaunch = `${remoteRunDir}\\launch.cmd`;
+  const task = `VNoteVerify_${runId}`;
+  const localAppLog = join(winDir, "app.log");
+  let tunnelPid: number | undefined;
+
+  try {
+    sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
+
+    let remoteApp: string;
+    if (installerFlag !== undefined) {
+      const remoteExe = uploadInstaller ? `${WIN_INSTALLER_DIR}\\${basename(installerFlag)}` : installerFlag;
+      if (uploadInstaller) {
+        process.stderr.write(`verify: uploading ${basename(installerFlag)} to ${sshHost}:${WIN_INSTALLER_DIR} …\n`);
+        const scp = Bun.spawnSync(["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", installerFlag, `${sshHost}:${WIN_INSTALLER_DIR}/`]);
+        if (scp.exitCode !== 0) {
+          const tail = scp.stderr.toString().split("\n").filter((line) => line.trim() !== "").slice(-5).join("\n");
+          throw new RemoteError(`scp failed (exit ${scp.exitCode}): scp ${installerFlag} ${sshHost}:${WIN_INSTALLER_DIR}/\n${tail}`);
+        }
+      }
+      // NSIS: /S is silent and /D= must be the last, unquoted argument
+      sshRun(sshHost, winCmd(`start /wait "" "${remoteExe}" /S /D=${WIN_ROOT}\\app`));
+      remoteApp = WIN_DEFAULT_APP;
+    } else {
+      remoteApp = appFlag ?? WIN_DEFAULT_APP;
+    }
+    const appExists = sshRun(sshHost, winPs(`Test-Path -LiteralPath '${remoteApp}'`)).stdout.trim().toLowerCase();
+    if (appExists !== "true") throw new RemoteError(`remote app missing on ${sshHost}: Test-Path -LiteralPath '${remoteApp}' said "${appExists}"`);
+
+    // launch.cmd: no proxy for the app (the remote Surge answers 503 for localhost), and the
+    // log stays in the run dir — a scheduled task's cwd is C:\Windows\System32.
+    const script = [
+      `cd /d ${remoteRunDir}`,
+      "set NO_PROXY=*",
+      "set no_proxy=*",
+      "set HTTP_PROXY=",
+      "set HTTPS_PROXY=",
+      "set http_proxy=",
+      "set https_proxy=",
+      `set VNOTE_HOME=${remoteHome}`,
+      `set VNOTE_USER_DATA=${remoteUserData}`,
+      `set VNOTE_MODEL_DIR=${WIN_MODEL_DIR}`,
+      `"${remoteApp}" --remote-debugging-port=${port} > app.log 2>&1`,
+    ].join("\r\n");
+    const payload = Buffer.from(`${script}\r\n`, "utf8").toString("base64");
+    sshRun(
+      sshHost,
+      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')))`),
+    );
+
+    // ssh lands in Session 0, which has no desktop: an interactive task starts the app in Session 1
+    sshRun(sshHost, winCmd(`schtasks /Create /TN "${task}" /TR "cmd.exe /c ${remoteLaunch}" /SC ONCE /ST 00:00 /IT /RL HIGHEST /F`));
+    sshRun(sshHost, winCmd(`schtasks /Run /TN "${task}"`));
+
+    // no -f: child.pid must be the tunnel itself, so `down` stops exactly that process
+    const tunnel = Bun.spawn(
+      [
+        "ssh",
+        "-N",
+        "-L",
+        `${port}:127.0.0.1:${port}`,
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=15",
+        sshHost,
+      ],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+    );
+    tunnelPid = tunnel.pid;
+    tunnel.unref();
+
+    // the tunnel is up but the app still has to start: poll CDP through it
+    const started = Date.now();
+    let answering = false;
+    while (Date.now() - started < 120000) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
+        if (res.ok) {
+          answering = true;
+          break;
+        }
+      } catch {
+        // tunnel or app not up yet
+      }
+      if (!alive(tunnel.pid)) {
+        throw new RemoteError(`ssh tunnel exited before CDP answered: ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}`);
+      }
+      await sleep(500);
+    }
+    if (!answering) {
+      throw new RemoteError(`CDP never answered on 127.0.0.1:${port} through ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}; see ${remoteAppLog}`);
+    }
+
+    const pid = remoteMainPid(sshHost, remoteApp, port);
+
+    // the same readiness gate as the mac path, reached through the tunnel
+    const readyStarted = Date.now();
+    let cdp: Cdp | undefined;
+    while (Date.now() - readyStarted < 40000) {
+      try {
+        cdp = await Cdp.open(port);
+        break;
+      } catch {
+        await sleep(250);
+      }
+    }
+    if (cdp === undefined) throw new RemoteError(`CDP endpoint never appeared through ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}`);
+    await waitFor(cdp, `typeof window.vnote === "object" && document.querySelector('[data-testid=nav-library]') !== null`, 20000);
+    cdp.close();
+
+    const state: RunState = {
+      target: "win-gamepc",
+      runId,
+      runDir,
+      port,
+      pid,
+      home: remoteHome,
+      userData: remoteUserData,
+      modelDir: WIN_MODEL_DIR,
+      appLog: localAppLog,
+      commit: revParse(),
+      startedAt: new Date().toISOString(),
+      electron: remoteApp,
+      sshHost,
+      remoteRunDir,
+      remoteHome,
+      remoteUserData,
+      remoteModelDir: WIN_MODEL_DIR,
+      remoteAppLog,
+      remoteApp,
+      sshTunnelPid: tunnelPid,
+      scheduledTask: task,
+    };
+    writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
+    writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
+    writeFileSync(LATEST, `${runId}\n`);
+    console.log(`run:      ${runDir}`);
+    console.log(`port:     ${port}`);
+    console.log(`pid:      ${pid} (remote ${sshHost})`);
+    console.log(`home:     ${remoteHome}`);
+    console.log(`userData: ${remoteUserData}`);
+    console.log(`log:      ${localAppLog} (pulled by down; remote ${remoteAppLog})`);
+    console.log(`app:      ${remoteApp}`);
+    console.log(`remote:   ${remoteRunDir}`);
+    console.log(`tunnel:   ssh -N -L ${port}:127.0.0.1:${port} pid ${tunnelPid}`);
+    console.log(`task:     ${task}`);
+  } catch (err) {
+    // no leftovers: the tunnel, the remote app, the task and both run dirs go away
+    if (tunnelPid !== undefined) {
+      try {
+        process.kill(tunnelPid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    sshExec(sshHost, winCmd(`schtasks /End /TN "${task}"`));
+    sshExec(sshHost, winCmd(`schtasks /Delete /TN "${task}" /F`));
+    sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    rmSync(runDir, { recursive: true, force: true });
+    fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function doctor(args: string[]): Promise<void> {
+  const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
+  const win = resolveTarget(targetFlag, state) === "win-gamepc";
   const problems: string[] = [];
   const notes: string[] = [];
   const ok = (label: string) => console.log(`ok:   ${label}`);
@@ -499,7 +889,14 @@ async function doctor(args: string[]): Promise<void> {
     problems.push(label);
   };
 
-  alive(state.pid) ? ok(`process ${state.pid} is alive (${processName(state.pid) || "unknown"})`) : bad(`process ${state.pid} is not running`);
+  if (win) {
+    const host = state.sshHost ?? WIN_SSH_HOST;
+    remoteAlive(state)
+      ? ok(`remote process ${state.pid} is alive on ${host}`)
+      : bad(`remote process ${state.pid} is not running on ${host}`);
+  } else {
+    alive(state.pid) ? ok(`process ${state.pid} is alive (${processName(state.pid) || "unknown"})`) : bad(`process ${state.pid} is not running`);
+  }
 
   let cdp: Cdp | undefined;
   try {
@@ -551,17 +948,31 @@ async function doctor(args: string[]): Promise<void> {
     }
   }
 
-  try {
-    const listen = Bun.spawnSync(["lsof", "-nP", `-iTCP:${state.port}`, "-sTCP:LISTEN", "-t"]);
-    const pids = listen.stdout.toString().trim().split(/\s+/).filter((v) => v !== "");
-    if (listen.exitCode !== 0 || pids.length === 0) warn(`lsof reports no listener on ${state.port}`);
-    else if (pids.includes(String(state.pid))) ok(`port ${state.port} is owned by pid ${state.pid}`);
-    else bad(`port ${state.port} is owned by ${pids.join(",")}, not ${state.pid}`);
-  } catch {
-    warn("lsof unavailable; cannot prove port ownership");
+  if (win) {
+    const host = state.sshHost ?? WIN_SSH_HOST;
+    const probe = winPs(`Get-NetTCPConnection -LocalPort ${state.port} -State Listen`);
+    const listen = sshExec(host, probe);
+    if (listen.code === 0 && listen.stdout.trim() !== "") {
+      ok(`remote 127.0.0.1:${state.port} is listening on ${host}`);
+    } else {
+      const tail = stderrTail(listen);
+      bad(`remote 127.0.0.1:${state.port} is not listening on ${host} (exit ${listen.code}): ${probe}${tail === "" ? "" : `\n${tail}`}`);
+    }
+  } else {
+    try {
+      const listen = Bun.spawnSync(["lsof", "-nP", `-iTCP:${state.port}`, "-sTCP:LISTEN", "-t"]);
+      const pids = listen.stdout.toString().trim().split(/\s+/).filter((v) => v !== "");
+      if (listen.exitCode !== 0 || pids.length === 0) warn(`lsof reports no listener on ${state.port}`);
+      else if (pids.includes(String(state.pid))) ok(`port ${state.port} is owned by pid ${state.pid}`);
+      else bad(`port ${state.port} is owned by ${pids.join(",")}, not ${state.pid}`);
+    } catch {
+      warn("lsof unavailable; cannot prove port ownership");
+    }
   }
 
-  if (state.appPath !== undefined) {
+  if (win) {
+    ok(`remote app ${state.remoteApp ?? "(unrecorded)"} on ${state.sshHost ?? WIN_SSH_HOST}; build freshness is not checked over ssh`);
+  } else if (state.appPath !== undefined) {
     const stamp = statSync(state.appPath).mtimeMs;
     stamp > newestSourceMtime()
       ? ok(`packaged app is newer than apps/desktop + packages/core sources (${state.appPath})`)
@@ -583,9 +994,12 @@ async function doctor(args: string[]): Promise<void> {
 
 async function drive(args: string[]): Promise<void> {
   const action = args.shift();
-  if (action === undefined) fail("drive needs an action (eval|click|type|fill|press|drop|wait|text|shot|snapshot|status|log)");
+  if (action === undefined) fail("drive needs an action (eval|click|type|fill|press|drop|wait|text|clipboard|shot|snapshot|status|log)");
+  const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
-  if (!alive(state.pid)) fail(`run ${state.runId} is not running; start a new run with \`up\``);
+  const win = resolveTarget(targetFlag, state) === "win-gamepc";
+  // a win run's pid is remote, so the local process table says nothing about it
+  if (win ? !remoteAlive(state) : !alive(state.pid)) fail(`run ${state.runId} is not running; start a new run with \`up\``);
   const cdp = await Cdp.open(state.port);
   try {
     switch (action) {
@@ -667,6 +1081,17 @@ async function drive(args: string[]): Promise<void> {
       case "drop": {
         const file = args[0];
         if (file === undefined) fail("drop needs a file path");
+        if (win) {
+          let winPath: string;
+          try {
+            winPath = winDropPath(state.sshHost ?? WIN_SSH_HOST, file);
+          } catch (err) {
+            fail(err instanceof Error ? err.message : String(err));
+          }
+          await drop(cdp, file, winPath);
+          console.log(`dropped ${winPath} on the dropzone`);
+          break;
+        }
         await drop(cdp, file);
         console.log(`dropped ${resolve(file)} on the dropzone`);
         break;
@@ -695,9 +1120,33 @@ async function drive(args: string[]): Promise<void> {
         console.log(await cdp.eval<string>("document.body.innerText"));
         break;
       }
+      case "clipboard": {
+        // mac reads its own clipboard. A Windows clipboard belongs to the interactive session,
+        // and ssh exec lives in Session 0 — Get-Clipboard over ssh sees an empty clipboard, so
+        // the app's renderer is the only reader of what the UI actually copied (r41, measured).
+        let text: string | undefined;
+        if (win) {
+          try {
+            await cdp.send("Page.bringToFront");
+            text = await cdp.eval<string>("navigator.clipboard.readText()");
+          } catch (err) {
+            fail(`cannot read the Windows clipboard through the renderer: ${String(err)}`);
+          }
+        } else {
+          text = Bun.spawnSync(["pbpaste"]).stdout.toString();
+        }
+        if (text === undefined) fail("clipboard read returned nothing");
+        // printed first so `verify.ts drive clipboard | rg …` still works
+        console.log(text);
+        const file = takeFlag(args, "--save") ?? join(win ? winLocal(state) : state.runDir, "clipboard.txt");
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, text);
+        console.log(`clipboard: ${file} (${text.length} chars)`);
+        break;
+      }
       case "shot": {
         const name = args[0] ?? `shot-${stamp()}`;
-        const file = join(state.runDir, `${name}.png`);
+        const file = join(win ? winLocal(state) : state.runDir, `${name}.png`);
         const res = await cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
         writeFileSync(file, Buffer.from(res.data, "base64"));
         console.log(`screenshot: ${file}`);
@@ -705,7 +1154,7 @@ async function drive(args: string[]): Promise<void> {
       }
       case "snapshot": {
         const name = args[0] ?? `snapshot-${stamp()}`;
-        const file = join(state.runDir, `${name}.aria.txt`);
+        const file = join(win ? winLocal(state) : state.runDir, `${name}.aria.txt`);
         const lines = await snapshot(cdp, file);
         console.log(`accessibility snapshot: ${file} (${lines} lines)`);
         break;
@@ -721,6 +1170,27 @@ async function drive(args: string[]): Promise<void> {
       }
       case "log": {
         const lines = Number(args[0] ?? "40");
+        if (win) {
+          const host = state.sshHost ?? WIN_SSH_HOST;
+          const remote = state.remoteAppLog;
+          if (remote === undefined) fail("state.json has no remoteAppLog; rerun `up --target win-gamepc`");
+          const remoteRunDir = state.remoteRunDir ?? `${WIN_RUNS}\\${state.runId}`;
+          const remoteHome = state.remoteHome ?? `${remoteRunDir}\\home`;
+          const logDir = `${remoteHome}\\logs`;
+          const app = sshExec(host, winPs(`Get-Content -LiteralPath '${remote}' -Tail ${lines} -ErrorAction SilentlyContinue`));
+          const structured = sshExec(
+            host,
+            winPs(`Get-ChildItem -LiteralPath '${logDir}' -File | Sort-Object Name | Get-Content -Tail ${lines} -ErrorAction SilentlyContinue`),
+          );
+          // stdout first, then <remoteHome>\logs\*.log in name order: the last <lines> of both
+          const combined = [app.stdout, structured.stdout]
+            .map((text) => text.replace(/\r\n/g, "\n").replace(/\n+$/, ""))
+            .filter((text) => text !== "")
+            .join("\n")
+            .split("\n");
+          console.log(combined.slice(-lines).join("\n"));
+          break;
+        }
         const text = existsSync(state.appLog) ? readFileSync(state.appLog, "utf8").split("\n") : [];
         console.log(text.slice(-lines).join("\n"));
         break;
@@ -735,7 +1205,12 @@ async function drive(args: string[]): Promise<void> {
 
 async function down(args: string[]): Promise<void> {
   const purge = hasFlag(args, "--purge");
+  const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
+  if (resolveTarget(targetFlag, state) === "win-gamepc") {
+    await downWin(state, purge);
+    return;
+  }
   if (alive(state.pid)) {
     const name = processName(state.pid);
     // a packaged run's process is the bundle executable ("Video Notes"), not "Electron"
@@ -778,15 +1253,103 @@ async function down(args: string[]): Promise<void> {
     console.log(`pruned user-data/Local Storage`);
   }
 
+  reportKept(state.runDir, purge);
+}
+
+/** The tail every `down` shares: purge the run dir or report what stayed in `evidenceDir`. */
+function reportKept(runDir: string, purge: boolean, evidenceDir: string = runDir): void {
   if (purge) {
-    rmSync(state.runDir, { recursive: true, force: true });
-    console.log(`purged ${state.runDir}; the evidence is gone`);
+    rmSync(runDir, { recursive: true, force: true });
+    // a pointer at a deleted run would make the next bare `drive`/`doctor` read a missing state.json
+    if (existsSync(LATEST) && readFileSync(LATEST, "utf8").trim() === basename(runDir)) rmSync(LATEST, { force: true });
+    console.log(`purged ${runDir}; the evidence is gone`);
     return;
   }
-  const kept = readdirSync(state.runDir);
+  const kept = readdirSync(evidenceDir);
   const pngCount = kept.filter((n) => n.endsWith(".png")).length;
   const ariaCount = kept.filter((n) => n.endsWith(".aria.txt")).length;
-  console.log(`kept ${pngCount} png, ${ariaCount} aria.txt, ${state.runDir}`);
+  console.log(`kept ${pngCount} png, ${ariaCount} aria.txt, ${evidenceDir}`);
+}
+
+/** down --target win-gamepc: stop the tunnel and the remote app, then pull the evidence. */
+async function downWin(state: RunState, purge: boolean): Promise<void> {
+  const host = state.sshHost ?? WIN_SSH_HOST;
+  const remoteRunDir = state.remoteRunDir ?? `${WIN_RUNS}\\${state.runId}`;
+  try {
+    if (state.sshTunnelPid !== undefined) {
+      try {
+        process.kill(state.sshTunnelPid, "SIGTERM");
+        console.log(`stopped ssh tunnel pid ${state.sshTunnelPid}`);
+      } catch {
+        console.log(`ssh tunnel pid ${state.sshTunnelPid} is already gone`);
+      }
+    } else {
+      console.log("no sshTunnelPid recorded; nothing to stop locally");
+    }
+
+    // /T takes the renderer and helper children with the main process
+    const kill = sshExec(host, winCmd(`taskkill /PID ${state.pid} /T /F`));
+    if (kill.code !== 0) console.log(`taskkill reported exit ${kill.code}: ${stderrTail(kill)}`);
+    const started = Date.now();
+    while (Date.now() - started < 8000 && remoteAlive(state)) await sleep(250);
+    if (remoteAlive(state)) {
+      const probe = winPs(`Get-Process -Id ${state.pid}`);
+      throw new RemoteError(`remote pid ${state.pid} is still running on ${host}: ${probe}`);
+    }
+    console.log(`stopped remote pid ${state.pid}`);
+
+    if (state.scheduledTask !== undefined) {
+      const del = sshExec(host, winCmd(`schtasks /Delete /TN "${state.scheduledTask}" /F`));
+      del.code === 0
+        ? console.log(`deleted scheduled task ${state.scheduledTask}`)
+        : console.log(`schtasks /Delete reported exit ${del.code}: ${stderrTail(del)}`);
+    }
+
+    // Prune only the space-consuming remote caches; evidence and small operator artifacts stay.
+    const remoteCaches = [
+      `${remoteRunDir}\\home\\.cache`,
+      ...["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "Partitions"].map(
+        (name) => `${remoteRunDir}\\user-data\\${name}`,
+      ),
+    ];
+    sshExec(host, winPs(`${remoteCaches.map((path) => `'${path}'`).join(",")} | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse -Force -ErrorAction SilentlyContinue }`));
+    console.log(`pruned ${remoteCaches.length} remote cache paths`);
+
+    const winDir = winLocal(state);
+    const remoteAppLog = state.remoteAppLog ?? `${remoteRunDir}\\app.log`;
+    const pulled: string[] = [];
+    const pull = (remotePath: string) => {
+      const rel = winRelPath(remotePath, remoteRunDir);
+      if (pullRemoteFile(host, remotePath, join(winDir, ...rel))) pulled.push(rel.join("/"));
+    };
+    if (pullRemoteFile(host, remoteAppLog, join(winDir, "app.log"))) pulled.push("app.log");
+    else console.log(`no remote app log at ${remoteAppLog}`);
+
+    for (const file of remoteFiles(host, `Get-ChildItem -LiteralPath '${remoteRunDir}\\home\\logs' -File -Recurse -ErrorAction SilentlyContinue`)) {
+      pull(file);
+    }
+    // every video's evidence: one video.json, its topic.md and the job's trajectory / status
+    for (const file of remoteFiles(
+      host,
+      `Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | Where-Object { @('video.json','topic.md','trajectory.json','status.json') -contains $_.Name }`,
+    )) {
+      pull(file);
+    }
+    console.log(`pulled ${pulled.length} remote file(s) into ${winDir}`);
+
+    state.stoppedAt = new Date().toISOString();
+    writeFileSync(join(state.runDir, "state.json"), JSON.stringify(state, null, 2));
+    writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+  // the remote run dir is staging for the pull: keep it by default, drop it with the local purge
+  if (purge) {
+    const dropped = sshExec(host, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    console.log(dropped.code === 0 ? `purged ${remoteRunDir} on ${host}` : `could not purge ${remoteRunDir} on ${host}: ${stderrTail(dropped)}`);
+  }
+  // the proof for a win run lives in win/, not next to state.json
+  reportKept(state.runDir, purge, purge ? state.runDir : winLocal(state));
 }
 
 function runs(): void {
@@ -799,11 +1362,19 @@ function runs(): void {
     const stateFile = join(VERIFY_ROOT, entry.name, "state.json");
     if (!existsSync(stateFile)) continue;
     const state = JSON.parse(readFileSync(stateFile, "utf8")) as RunState;
-    console.log(`${entry.name}  port=${state.port}  pid=${state.pid}  ${alive(state.pid) ? "running" : "stopped"}`);
+    // a win run's pid is remote: ask the box instead of the local process table
+    const running = state.target === "win-gamepc" ? remoteAlive(state) : alive(state.pid);
+    console.log(`${entry.name}  port=${state.port}  pid=${state.pid}  ${running ? "running" : "stopped"}`);
   }
 }
 
-const [command, ...rest] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// `--target` may lead: `verify.ts --target win-gamepc up` is `verify.ts up --target win-gamepc`
+if (argv[0] === "--target" && argv.length >= 3) {
+  const leading = argv.splice(0, 2);
+  argv.push(...leading);
+}
+const [command, ...rest] = argv;
 switch (command) {
   case "up":
     await up(rest);

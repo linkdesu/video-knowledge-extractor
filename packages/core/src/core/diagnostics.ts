@@ -24,6 +24,38 @@ export function errorLines(lines: string[]): string[] {
   return out;
 }
 
+// 一条记录 = ERROR 行 + 紧随其后的 stack: 行；合并多个来源时按记录处理，stack 不会被拆散
+export function errorRecords(lines: string[]): string[][] {
+  const records: string[][] = [];
+  for (const line of errorLines(lines)) {
+    if (line.match(LEVEL_RE)?.[1] === "ERROR") records.push([line]);
+    else if (records.length > 0) records[records.length - 1]?.push(line);
+  }
+  return records;
+}
+
+const TS_RE = /^(\d{4}-\d{2}-\d{2}T\S+)\s/;
+
+// 任务日志里的行都来自全局尾部：同一条 ERROR 首行即同一记录，先到的胜出（尾部记录带全 stack 行）
+function mergeErrorRecords(tail: string[][], task: string[][]): string[] {
+  const seen = new Set<string>();
+  const merged: string[][] = [];
+  for (const record of [...tail, ...task]) {
+    const id = record[0] ?? "";
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(record);
+  }
+  // 每条记录都带 logger 时间戳时按时间排序（任务与全局交错后仍是时间顺序）；否则保持插入顺序
+  const ordered = merged.map((record) => ({ record, stamp: TS_RE.exec(record[0] ?? "")?.[1] ?? "" }));
+  if (ordered.every((entry) => entry.stamp !== "")) {
+    ordered.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : 0));
+  }
+  const out: string[] = [];
+  for (const entry of ordered) out.push(...entry.record);
+  return out;
+}
+
 export function buildDiagnostics(input: DiagnosticsInput): string {
   const now = new Date().toISOString();
   const lines: string[] = [];
@@ -35,10 +67,12 @@ export function buildDiagnostics(input: DiagnosticsInput): string {
   lines.push("");
   const maxLines = input.maxTaskLines ?? 500;
   const taskLines = input.taskId === null ? [] : readTaskLog(input.logDir, input.taskId, maxLines);
+  const tailLines = tailLog(input.logDir, maxLines);
   // 门禁失败发生在任务入队之前，没有 task id；退回最近日志尾部，否则诊断里看不到失败原因
-  const allLines = taskLines.length > 0 ? taskLines : tailLog(input.logDir, maxLines);
+  const allLines = taskLines.length > 0 ? taskLines : tailLines;
   lines.push("## 错误摘要");
-  const errs = errorLines(allLines);
+  // 摘要取任务日志与全局尾部的并集：不带 task= 的 ERROR（IPC、运行锁、入队前的门禁失败）不能丢
+  const errs = mergeErrorRecords(errorRecords(tailLines), errorRecords(taskLines));
   lines.push(errs.length > 0 ? errs.join("\n") : "（无）");
   lines.push("");
   lines.push("## 最近任务");
