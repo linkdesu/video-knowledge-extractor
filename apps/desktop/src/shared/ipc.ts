@@ -86,6 +86,8 @@ export type LibraryVideo = {
   sizeBytes: number | null;
   /** 源视频分辨率；旧文档没有记录时为 null，卡片省略该项（ADR-0015 §6）。 */
   resolution: VideoResolution | null;
+  /** 源文件是否含视频轨；旧目录没有记录时为 null，卡片省略该项。 */
+  hasVideo: boolean | null;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;

@@ -694,6 +694,7 @@ function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
     importedAt: v.importedAt,
     sizeBytes: v.sizeBytes,
     resolution: v.resolution,
+    hasVideo: v.hasVideo,
     topicCount: v.topicCount,
     clipCount: v.clipCount,
     updatedAt: v.updatedAt,
@@ -711,7 +712,7 @@ function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
 const coverBackfillInflight = new Set<string>();
 let coverBackfillChain: Promise<void> = Promise.resolve();
 function backfillCovers(dtos: LibraryVideo[]): void {
-  const targets = dtos.filter((v): v is LibraryVideo & { sourcePath: string } => v.coverUrl === null && v.sourcePath !== null && !coverBackfillInflight.has(v.id));
+  const targets = dtos.filter((v): v is LibraryVideo & { sourcePath: string } => v.coverUrl === null && v.sourcePath !== null && v.hasVideo !== false && !coverBackfillInflight.has(v.id));
   if (targets.length === 0) return;
   for (const v of targets) coverBackfillInflight.add(v.id);
   coverBackfillChain = coverBackfillChain.then(async () => {
@@ -725,7 +726,7 @@ function backfillCovers(dtos: LibraryVideo[]): void {
       }
       try {
         const durationSeconds = v.durationSeconds ?? (await probeVideo(v.sourcePath)).duration;
-        const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath: v.sourcePath, durationSeconds });
+        const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath: v.sourcePath, durationSeconds, hasVideo: v.hasVideo ?? true });
         if (ok) succeeded.push(v.id);
       } catch (err) {
         // 失败不阻断：个别封面补齐失败不影响其余视频，但要能在日志里还原是哪个视频、为什么
@@ -1001,7 +1002,7 @@ function runModelCheckWithLog(): ModelsCheck {
 async function pickVideo(): Promise<string | null> {
   const res = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [{ name: "视频", extensions: ["mp4", "mov", "m4v", "webm"] }],
+    filters: [{ name: "媒体", extensions: ["mp4", "mov", "m4v", "webm", "m4a", "mp3", "wav", "flac", "ts"] }],
   });
   const path = res.canceled ? null : (res.filePaths[0] ?? null);
   logger().info("app", "选择视频文件", { path });
