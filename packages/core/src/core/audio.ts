@@ -8,12 +8,12 @@ import { run } from "./exec";
 /** 一段语音停顿区间。 */
 export type Silence = { start: number; end: number };
 
-/** 读视频时长与首条视频流的分辨率；无视频流（纯音频）宽高为 null。 */
-export type ProbeResult = { duration: number; width: number | null; height: number | null };
+/** 读视频时长与独立视频轨的分辨率；无视频流（纯音频）宽高为 null。 */
+export type ProbeResult = { duration: number; width: number | null; height: number | null; hasVideo: boolean };
 
 export async function probeVideo(path: string): Promise<ProbeResult> {
   const { stdout } = await run(
-    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json", path],
+    ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:stream_disposition=attached_pic:format=duration", "-of", "json", path],
     { label: `ffprobe ${path}` },
   );
   return parseProbeJson(stdout);
@@ -36,15 +36,23 @@ export function parseProbeJson(stdout: string): ProbeResult {
   if (!Number.isFinite(duration)) throw new Error(`ffprobe 无法解析时长：${stdout.trim()}`);
   let width: number | null = null;
   let height: number | null = null;
+  let hasVideo = false;
   const streams = rec.streams;
-  const stream = Array.isArray(streams) ? streams[0] : undefined;
-  if (typeof stream === "object" && stream !== null) {
-    const w = Number("width" in stream ? stream.width : undefined);
-    const h = Number("height" in stream ? stream.height : undefined);
-    if (Number.isInteger(w) && w > 0) width = w;
-    if (Number.isInteger(h) && h > 0) height = h;
+  if (Array.isArray(streams)) {
+    // 按结构选视频流（真实文件里音频流在前，第 0 条不可靠）；attached_pic 是封面（如 mp3 内嵌图），不算视频轨
+    for (const s of streams) {
+      if (typeof s !== "object" || s === null) continue;
+      if (s.codec_type !== "video") continue;
+      if (s.disposition !== undefined && typeof s.disposition === "object" && s.disposition !== null && Number((s.disposition as Record<string, unknown>).attached_pic) === 1) continue;
+      hasVideo = true;
+      const w = Number("width" in s ? (s as Record<string, unknown>).width : undefined);
+      const h = Number("height" in s ? (s as Record<string, unknown>).height : undefined);
+      if (Number.isInteger(w) && w > 0) width = w;
+      if (Number.isInteger(h) && h > 0) height = h;
+      break;
+    }
   }
-  return { duration, width, height };
+  return { duration, width, height, hasVideo };
 }
 
 /** 抽单声道 16k 采样率 pcm_s16 wav；`limitSeconds` 只取前 N 秒（开发期冒烟用）。 */

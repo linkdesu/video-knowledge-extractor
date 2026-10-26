@@ -47,6 +47,8 @@ export type VideoData = {
   asrModel: string | null;
   /** 源视频分辨率；旧文档缺失为 null，卡片省略 */
   resolution: { width: number; height: number } | null;
+  /** 源文件有无独立视频轨（r42）；null 为旧文档，按有视频处理 */
+  hasVideo: boolean | null;
   /** ASR 引擎（ADR-0016 §9 与 `AsrProvider` 同值）；旧文档缺失为 null，字幕页按本地显示 */
   asrEngine: AsrProvider | null;
   /** 写这批主题的那次运行的 token；结算后 null（ADR-0015 §7） */
@@ -177,6 +179,11 @@ function parseResolution(v: unknown, where: string): { width: number; height: nu
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) throw new Error(`${where} 的宽高必须是正的整数`);
   return { width, height };
 }
+function parseHasVideo(v: unknown, where: string): boolean | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "boolean") throw new Error(`${where} 不是布尔值`);
+  return v;
+}
 
 /** ADR-0016 §9：运行时值只有三个；旧文档的 `remote` 在读取边界映射为 `openai`。 */
 const ASR_ENGINE_VALUES = ["local", "openai", "volcengine"] as const;
@@ -256,6 +263,7 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     sourceBytes: parsed.sourceBytes === undefined ? null : parseNullableNumber(parsed.sourceBytes, `${p}.sourceBytes`),
     asrModel: parsed.asrModel === undefined ? null : parseNullableString(parsed.asrModel, `${p}.asrModel`),
     resolution: parseResolution(parsed.resolution, `${p}.resolution`),
+    hasVideo: parseHasVideo(parsed.hasVideo, `${p}.hasVideo`),
     asrEngine: parseAsrEngine(parsed.asrEngine, `${p}.asrEngine`),
     runToken: parsed.runToken === undefined ? null : parseNullableString(parsed.runToken, `${p}.runToken`),
     speakerChangedAt: parsed.speakerChangedAt === undefined ? null : parseNullableString(parsed.speakerChangedAt, `${p}.speakerChangedAt`),
@@ -304,6 +312,7 @@ export function emptyVideoData(video: Video): VideoData {
     sourceBytes: null,
     asrModel: null,
     resolution: null,
+    hasVideo: null,
     asrEngine: null,
     runToken: null,
     speakerChangedAt: null,
@@ -406,6 +415,7 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     sourceBytes: null,
     asrModel: null,
     resolution: null,
+    hasVideo: null,
     asrEngine: null,
     runToken: null,
     speakerChangedAt: null,

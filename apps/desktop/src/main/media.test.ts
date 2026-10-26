@@ -63,6 +63,11 @@ describe("源视频路由", () => {
     v2: resolve(VIDEO_DIR, "b.m4v"),
     v3: resolve(VIDEO_DIR, "c.mov"),
     v4: resolve(VIDEO_DIR, "d.webm"),
+    v5: resolve(VIDEO_DIR, "e.m4a"),
+    v6: resolve(VIDEO_DIR, "f.mp3"),
+    v7: resolve(VIDEO_DIR, "g.wav"),
+    v8: resolve(VIDEO_DIR, "h.flac"),
+    v9: resolve(VIDEO_DIR, "i.ts"),
     vbad: resolve(VIDEO_DIR, "e.txt"),
   };
   const resolveSource = (id: string) => library[id];
@@ -79,6 +84,18 @@ describe("源视频路由", () => {
     expect(contentType("v2")).toBe("video/mp4");
     expect(contentType("v3")).toBe("video/quicktime");
     expect(contentType("v4")).toBe("video/webm");
+  });
+
+  test("音频与 ts 源：content type 正确且不被 403", () => {
+    const contentType = (id: string): string | undefined => {
+      const res = decodeSourceUrl(encodeSourceUrl(id), resolveSource, fakeRealpath, () => true);
+      return "code" in res ? undefined : res.contentType;
+    };
+    expect(contentType("v5")).toBe("audio/mp4");
+    expect(contentType("v6")).toBe("audio/mpeg");
+    expect(contentType("v7")).toBe("audio/wav");
+    expect(contentType("v8")).toBe("audio/flac");
+    expect(contentType("v9")).toBe("video/mp2t");
   });
 
   test("不在库里的 videoId：404", () => {

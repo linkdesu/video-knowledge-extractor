@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { clipFileName, parseClipFileName, planClips, planTopicClip } from "./clips";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { clipFileName, concatClips, cutClip, parseClipFileName, planClips, planTopicClip } from "./clips";
 import type { Segment } from "./types";
 
 describe("planClips", () => {
@@ -118,5 +122,57 @@ describe("parseClipFileName", () => {
   test("与 clipFileName 互逆", () => {
     const name = clipFileName({ start: 2, end: 110 }, 3);
     expect(parseClipFileName(name)).toEqual({ start: 2, end: 110 });
+  });
+});
+
+function streamTypes(path: string): string[] {
+  const json = JSON.parse(
+    execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "json", path], { encoding: "utf8" }),
+  ) as { streams?: { codec_type?: string }[] };
+  return (json.streams ?? []).map((s) => s.codec_type ?? "");
+}
+
+describe("cutClip（真实 ffmpeg）", () => {
+  test("纯音频源：输出只有 audio 轨，容器保持 mp4", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const src = join(dir, "src.m4a");
+    execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=6", "-c:a", "aac", src], { stdio: "pipe" });
+    const out = join(dir, "part.mp4");
+    await cutClip({ videoPath: src, segment: { start: 0, end: 3 }, outPath: out, hasVideo: false });
+    expect(streamTypes(out)).toEqual(["audio"]);
+  });
+
+  test("有视频轨源：输出含 video 与 audio 两轨（回归）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const src = join(dir, "src.mp4");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=6", "-f", "lavfi", "-i", "sine=d=6", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src],
+      { stdio: "pipe" },
+    );
+    const out = join(dir, "part.mp4");
+    await cutClip({ videoPath: src, segment: { start: 0, end: 3 }, outPath: out, hasVideo: true });
+    expect(streamTypes(out)).toEqual(["video", "audio"]);
+  });
+
+  test("concatClips 纯音频：两 part 流拷贝拼接后只有 audio 轨", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-concat-"));
+    const src = join(dir, "src.m4a");
+    execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=6", "-c:a", "aac", src], { stdio: "pipe" });
+    const a = join(dir, "a.mp4");
+    const b = join(dir, "b.mp4");
+    await cutClip({ videoPath: src, segment: { start: 0, end: 2 }, outPath: a, hasVideo: false });
+    await cutClip({ videoPath: src, segment: { start: 4, end: 6 }, outPath: b, hasVideo: false });
+    const out = join(dir, "topic.mp4");
+    await concatClips({ parts: [a, b], outPath: out, hasVideo: false });
+    expect(streamTypes(out)).toEqual(["audio"]);
+  });
+
+  test("已存在的非空切片幂等短路", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const out = join(dir, "part.mp4");
+    execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=2", "-c:a", "aac", out], { stdio: "pipe" });
+    // 源缺失也不该报错：短路在读源之前
+    await cutClip({ videoPath: join(dir, "no-such.m4a"), segment: { start: 0, end: 2 }, outPath: out, hasVideo: false });
   });
 });

@@ -21,6 +21,27 @@ function makeMp4(path: string, seconds: number): void {
   );
 }
 
+/** 纯音频源：AAC，无视频轨；`video.json` 标 `hasVideo: false`。 */
+function makeAudioVideo(outputDir: string, mutate: (d: Record<string, unknown>) => void, seconds = 30): void {
+  mkdirSync(outputDir, { recursive: true });
+  const d: Record<string, unknown> = {
+    version: 1,
+    video: { id: "vid-audio", title: "纯音频", sourcePath: join(outputDir, "src.m4a"), durationSeconds: seconds, outputDir },
+    transcript: { speakers: [], utterances: [] },
+    chunks: [],
+    topics: [],
+    importedAt: "2026-01-01T00:00:00.000Z",
+    sourceBytes: 1234,
+    hasVideo: false,
+    asrModel: "whisper-x",
+    runToken: null,
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+  mutate(d);
+  writeFileSync(join(outputDir, "video.json"), JSON.stringify(d));
+  execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", `sine=d=${seconds}`, "-c:a", "aac", "-b:a", "128k", join(outputDir, "src.m4a")], { stdio: "pipe" });
+}
+
 /** 在临时目录里建好 `video.json` + 真实源 `src.mp4`；`outputDir` 为笔记输出目录。 */
 function makeVideo(outputDir: string, mutate: (d: Record<string, unknown>) => void, seconds = 340): void {
   mkdirSync(outputDir, { recursive: true });
@@ -726,4 +747,36 @@ describe("notesTrigger", () => {
     expect(notesTrigger({ speakerChangedAt: "2026-10-01T00:00:00.000Z" }, undefined)).toBe("speaker-changed");
     expect(notesTrigger({ speakerChangedAt: "2026-10-01T00:00:00.000Z" }, true)).toBe("regenerate");
   });
+});
+describe("纯音频源（无视频轨）", () => {
+  test("切片只保留音轨、拼接成功，topic.md 与 video.json 照常落盘", async () => {
+    const out = mkdtempSync(join(tmpdir(), "rn-audio-"));
+    makeAudioVideo(out, (d) => {
+      d.transcript = {
+        speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
+        utterances: [
+          { start: 0, end: 10, speakerId: "s1", text: "第一段" },
+          { start: 20, end: 30, speakerId: "s1", text: "第二段" },
+        ],
+      };
+      // 两段不重叠 → 两个 union，必须走 concat 拼接
+      d.topics = [topicRecord({ id: "t", title: "纯音频主题", segments: [{ start: 0, end: 10 }, { start: 20, end: 30 }], dirName: "t", status: "proposed" })];
+    });
+    const client: LlmClient = { model: endpoint.model, chat: async () => JSON.stringify({ keyPoints: ["要点"] }) };
+    const r = await runNotes({ outputDir: out, topicIds: ["t"], endpoint, cacheRoot: join(out, ".cache"), client });
+
+    expect(r.noteCount).toBe(1);
+    const clip = join(out, "t", "topic.mp4");
+    expect(existsSync(clip)).toBe(true);
+    const probe = JSON.parse(
+      execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "json", clip], { encoding: "utf8" }),
+    ) as { streams?: { codec_type?: string }[] };
+    const streamTypes = (probe.streams ?? []).map((s) => s.codec_type ?? "");
+    expect(streamTypes).toEqual(["audio"]);
+    expect(readFileSync(join(out, "t", "topic.md"), "utf8")).toContain("## 要点");
+    const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };
+    const t = json.topics.find((x) => x.id === "t") as Record<string, unknown>;
+    expect(t.status).toBe("done");
+    expect((t.clips as Array<Record<string, unknown>>)[0]?.file).toBe("topic.mp4");
+  }, 30000);
 });

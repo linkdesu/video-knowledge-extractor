@@ -115,6 +115,7 @@ export async function generateAll(
     try {
       const result = await generateNotes({
         video: data.video,
+        hasVideo: data.hasVideo ?? true,
         transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
         topics: [{ id: topic.id, title: topic.title, summary: topic.summary, segments: topic.segments }],
         dirNames: new Map([[id, dirNameOf(id)]]),

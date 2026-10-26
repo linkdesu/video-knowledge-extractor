@@ -87,7 +87,8 @@ Preconditions, once per machine (r41):
 
 - `ssh` from the mac reaches host `gamepc` (machine `Link-PC-MKII`, user `xieal`, Windows 11); `ssh gamepc "pwsh -NoProfile -Command exit"` succeeds.
 - On the box: `D:\code\video-notes` with `app\`, `installer\` and `verify\` (remote run dirs land in `verify\<runId>\`); local ASR models at `C:\Users\xieal\Documents\video-notes\models`; test videos at `C:\Users\xieal\Documents\video-notes\` (the test-video rule above).
-- A fresh box installs the app with `up --target win-gamepc --installer <path>`: a Mac path is uploaded with `scp` into `D:\code\video-notes\installer\` first, a `D:\...` path is used in place (assumed already on the box), and either form runs the NSIS installer silently into `D:\code\video-notes\app` (`/S`, `/D=` last and unquoted; `bun run package:win` produces `Video Notes-<version>-setup.exe`). `--app <win exe path>` launches an existing executable and is mutually exclusive with `--installer`; with neither flag, `up` drives the already-installed `D:\code\video-notes\app\Video Notes.exe`.
+- A fresh box installs the app with `up --target win-gamepc --installer <path>`: a Mac path is uploaded with `scp` into `D:\code\video-notes\installer\` first, a `D:\...` path is used in place (assumed already on the box), and either form runs the NSIS installer silently into the install directory (default `D:\code\video-notes\app`; `--install-dir <WINPATH>` overrides it, the `/D=` stays last and unquoted so a Chinese-plus-space target like `C:\Users\xieal\Desktop\新建文件夹\Video Notes` installs cleanly; `bun run package:win` produces `Video Notes-<version>-setup.exe`). The executable resolves as `<install-dir>\Video Notes.exe` and `state.json` records `installDir` plus that resolved `remoteApp`; `doctor` and `down` work off the recorded executable. `--app <win exe path>` launches an existing executable and is mutually exclusive with `--installer`; with neither flag, `up` drives the already-installed `<install-dir>\Video Notes.exe` (default `D:\code\video-notes\app`).
+- The launcher is `launch.ps1`, written as UTF-8 **with BOM**, and the scheduled-task action is pure ASCII: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<remoteRunDir>\launch.ps1"`. A `.cmd` would garble a Chinese path (cmd.exe reads it in the OEM code page); the BOM'd `.ps1` decodes it, and the task action itself never carries non-ASCII bytes. The script sets `NO_PROXY=*`, empties the proxy variables, sets `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR`, and launches the app in the foreground with stdout+stderr to `app.log`. The r42 gate: install into the Chinese-plus-space directory above and run at least one pure-audio journey end to end; the recipe and the format matrix are in [features/windows-build.md](./features/windows-build.md) and [features/media-formats.md](./features/media-formats.md).
 
 ```bash
 bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "D:\code\video-notes\installer\r40-Video-Notes-0.1.0-setup.exe"
@@ -95,11 +96,11 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --in
 
 What `up` does on the box (r41):
 
-1. Runs the installer (when given) or resolves the installed exe (default `D:\code\video-notes\app\Video Notes.exe`).
-2. Starts the app in interactive Session 1 through a one-shot scheduled task `VNoteVerify_<runId>`; `state.json.pid` holds the remote Windows pid.
-3. Carries `NO_PROXY=*` with empty `HTTP_PROXY` / `HTTPS_PROXY` into the process environment, because Surge on that box intercepts `127.0.0.1` and answers 503; the mac side neutralises its own proxy env for the same reason.
+1. Runs the installer (when given, into `--install-dir`, default `D:\code\video-notes\app`) or resolves the installed exe (`<install-dir>\Video Notes.exe`, or the `--app` path).
+2. Writes `launch.ps1` (UTF-8 with BOM) into the run dir and starts the app in interactive Session 1 through a one-shot scheduled task `VNoteVerify_<runId>` whose action is the pure-ASCII `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <run>\launch.ps1`; `state.json.pid` holds the remote Windows pid.
+3. The launcher carries `NO_PROXY=*` with empty `HTTP_PROXY` / `HTTPS_PROXY` into the process environment, because Surge on that box intercepts `127.0.0.1` and answers 503; the mac side neutralises its own proxy env for the same reason.
 4. Opens the local SSH tunnel `ssh -N -L <port>:127.0.0.1:<port> gamepc` and records the tunnel pid. No RustDesk, no remote GUI session: screenshots and UI driving are CDP (`Page.captureScreenshot`, `Accessibility.getFullAXTree`, `Input.*`, `Runtime.evaluate`) through that tunnel.
-5. Writes `tmp/verify/<run>/state.json`, which also records `target`, `sshHost`, `remoteRunDir`, `remoteHome`, `remoteUserData`, `remoteModelDir`, `remoteAppLog`, `remoteApp`, `sshTunnelPid`, `scheduledTask`; `pid` holds the remote Windows pid.
+5. Writes `tmp/verify/<run>/state.json`, which also records `target`, `sshHost`, `remoteRunDir`, `remoteHome`, `remoteUserData`, `remoteModelDir`, `remoteAppLog`, `remoteApp`, `installDir` (installer runs only), `sshTunnelPid`, `scheduledTask`; `pid` holds the remote Windows pid.
 
 Windows evidence lives in `tmp/verify/<run>/win/` (the contents, and the `stoppedAt` copy of `state.json`, are covered in Evidence).
 
@@ -179,7 +180,7 @@ Stable handles in this repo:
 |---|---|
 | Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings` |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
-| Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-card-foot` (the bottom-pinned action row) |
+| Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-audio-only` (the 纯音频 badge on a pure-audio source card, r42), `video-card-foot` (the bottom-pinned action row) |
 | Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close` |
 | Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`, `topic-seg-<i>` (clickable segment-label buttons on the selected topic; `i` is the segment index), `player-resize` (bottom-right resize handle, aria-label 调整播放器高度); checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
@@ -250,7 +251,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 
 | Command | Purpose |
 |---|---|
-| `up` | build + launch isolated Electron, wait for usable renderer (`--target <mac\|win-gamepc>`, default `mac`; win extras `--installer` / `--app` (mutually exclusive) / `--ssh-host`, default `gamepc`) |
+| `up` | build + launch isolated Electron, wait for usable renderer (`--target <mac\|win-gamepc>`, default `mac`; win extras `--installer` / `--app` (mutually exclusive) / `--install-dir` (default `D:\code\video-notes\app`; ignored with `--app`) / `--ssh-host`, default `gamepc`) |
 | `doctor` | read-only health check, exit 1 on failure (`--target` falls back to `state.target`) |
 | `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log / clipboard (`--save <path>`; `--target` falls back to `state.target`) |
 | `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory; `--target` falls back to `state.target`) |

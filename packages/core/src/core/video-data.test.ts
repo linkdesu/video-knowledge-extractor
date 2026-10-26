@@ -421,6 +421,60 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
   });
 });
 
+describe("hasVideo（r42）", () => {
+  test("hasVideo 写后读回往返一致（false 与 true）", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    const d = emptyVideoData(video);
+    d.hasVideo = false;
+    writeVideoData(dir, d);
+    expect(readVideoData(dir)!.hasVideo).toBe(false);
+    writeVideoData(dir, { ...d, hasVideo: true });
+    expect(readVideoData(dir)!.hasVideo).toBe(true);
+  });
+
+  test("旧文档缺 hasVideo 读回为 null", () => {
+    const dir = mkdtemp();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [], utterances: [] },
+        chunks: [],
+        topics: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(readVideoData(dir)!.hasVideo).toBeNull();
+  });
+
+  test("hasVideo 非布尔值读回报错", () => {
+    const dir = mkdtemp();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [], utterances: [] },
+        chunks: [],
+        topics: [],
+        hasVideo: "有视频",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(() => readVideoData(dir)).toThrow(/hasVideo 不是布尔值/);
+  });
+
+  test("emptyVideoData 与迁移文档的 hasVideo 默认 null", () => {
+    expect(emptyVideoData(makeVideo(mkdtemp())).hasVideo).toBeNull();
+    const dir = mkdtemp();
+    mkdirSync(join(dir, "前段"), { recursive: true });
+    writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
+    expect(migrateVideoData(dir, makeVideo(dir)).hasVideo).toBeNull();
+  });
+});
+
 describe("projectRunState", () => {
   test("有活锁原样返回（同一对象）", () => {
     const d: VideoData = { ...emptyVideoData(makeVideo(mkdtemp())), topics: [topicWith("generating")] as never[] };

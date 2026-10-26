@@ -38,6 +38,11 @@ const SOURCE_EXTENSIONS: Record<string, string> = {
   ".m4v": "video/mp4",
   ".mov": "video/quicktime",
   ".webm": "video/webm",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+  ".ts": "video/mp2t",
 };
 
 /** 源视频只认库记录里登记的 sourcePath；videoId 不在库里直接 404。 */

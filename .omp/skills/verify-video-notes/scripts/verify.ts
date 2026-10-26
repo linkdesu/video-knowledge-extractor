@@ -52,6 +52,8 @@ type RunState = {
   remoteAppLog?: string;
   /** The Windows executable the run launches ("Video Notes.exe" or an --app override). */
   remoteApp?: string;
+  /** win-gamepc, --installer runs only: the NSIS /D= target the installer installed into. */
+  installDir?: string;
   /** Local pid of `ssh -N -L <port>:127.0.0.1:<port>`, the CDP tunnel. */
   sshTunnelPid?: number;
   /** Task Scheduler entry that starts the app in interactive Session 1. */
@@ -69,10 +71,11 @@ const HELP = `usage: verify.ts <command>
       --app drives an already packaged .app (or its executable) instead of apps/desktop,
       and implies --no-build. --min-path replaces the child PATH with launchd's
       /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
-  up --target win-gamepc [--installer PATH | --app WINPATH] [--ssh-host NAME]
+  up --target win-gamepc [--installer PATH | --app WINPATH] [--install-dir WINPATH] [--ssh-host NAME]
       Drive a Windows machine over ssh instead of this Mac (see Targets below).
-      --installer runs the NSIS installer silently into the Windows app dir, --app
-      drives an exe that is already installed; the two are mutually exclusive.
+      --installer runs the NSIS installer silently into --install-dir (default
+      D:\\code\\video-notes\\app), --app drives an exe that is already installed; the two
+      are mutually exclusive. --install-dir is ignored with --app.
       --ssh-host picks the ssh host alias (default gamepc).
 
   doctor [--run ID] [--target mac|win-gamepc]
@@ -117,17 +120,20 @@ const HELP = `usage: verify.ts <command>
                  root      D:\\code\\video-notes
                  run dir   D:\\code\\video-notes\\verify\\<run>
                  home      <run>\\home        user-data <run>\\user-data
-                 app log   <run>\\app.log     launch    <run>\\launch.cmd
+                 app log   <run>\\app.log     launch    <run>\\launch.ps1
                  models    C:\\Users\\xieal\\Documents\\video-notes\\models
-                 app       D:\\code\\video-notes\\app\\Video Notes.exe
+                 app       <install-dir>\\Video Notes.exe (default D:\\code\\video-notes\\app,
+                          the NSIS /D= target of --installer; --install-dir overrides it)
                  staging   D:\\code\\video-notes\\installer\\
                Local evidence stays in <repo>/tmp/verify/<run>/; Windows artifacts are
                pulled into <repo>/tmp/verify/<run>/win/. The app starts in interactive
                Session 1 through schtasks (ssh lands in Session 0, which has no desktop),
                the CDP port is forwarded with ssh -N -L <port>:127.0.0.1:<port>, and the
-               launch script neutralises HTTP(S)_PROXY so the remote Surge proxy cannot
-               answer 503 for localhost traffic. doctor, drive and down default to the
-               target recorded in state.json.
+               launcher is launch.ps1 (UTF-8 with BOM: the script may name a non-ASCII
+               install dir, but the scheduled-task action itself is pure ASCII) and it
+               neutralises HTTP(S)_PROXY so the remote Surge proxy cannot answer 503
+               for localhost traffic. doctor, drive and down default to the target
+               recorded in state.json.
 `;
 
 function fail(message: string): never {
@@ -423,7 +429,6 @@ const OUTPUTS = [
 const WIN_ROOT = "D:\\code\\video-notes";
 const WIN_RUNS = `${WIN_ROOT}\\verify`;
 const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
-const WIN_DEFAULT_APP = `${WIN_ROOT}\\app\\Video Notes.exe`;
 const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
 const WIN_SSH_HOST = "gamepc";
 
@@ -692,8 +697,10 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const sshHost = takeFlag(args, "--ssh-host") ?? WIN_SSH_HOST;
   const appFlag = takeFlag(args, "--app");
   const installerFlag = takeFlag(args, "--installer");
+  const installDir = takeFlag(args, "--install-dir") ?? `${WIN_ROOT}\\app`;
   if (appFlag !== undefined && installerFlag !== undefined) fail("--app and --installer are mutually exclusive");
   if (appFlag !== undefined && !isWinPath(appFlag)) fail(`--app for win-gamepc needs a Windows path: ${appFlag}`);
+  if (!isWinPath(installDir)) fail(`--install-dir for win-gamepc needs a Windows path: ${installDir}`);
   // a local installer is uploaded, a Windows path is assumed to be on the box already
   const uploadInstaller = installerFlag !== undefined && !isWinPath(installerFlag);
   if (uploadInstaller && !existsSync(installerFlag)) fail(`installer not found: ${installerFlag}`);
@@ -706,7 +713,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const remoteHome = `${remoteRunDir}\\home`;
   const remoteUserData = `${remoteRunDir}\\user-data`;
   const remoteAppLog = `${remoteRunDir}\\app.log`;
-  const remoteLaunch = `${remoteRunDir}\\launch.cmd`;
+  const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
   const task = `VNoteVerify_${runId}`;
   const localAppLog = join(winDir, "app.log");
   let tunnelPid: number | undefined;
@@ -715,6 +722,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
 
     let remoteApp: string;
+    let stateInstallDir: string | undefined;
     if (installerFlag !== undefined) {
       const remoteExe = uploadInstaller ? `${WIN_INSTALLER_DIR}\\${basename(installerFlag)}` : installerFlag;
       if (uploadInstaller) {
@@ -725,38 +733,45 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
           throw new RemoteError(`scp failed (exit ${scp.exitCode}): scp ${installerFlag} ${sshHost}:${WIN_INSTALLER_DIR}/\n${tail}`);
         }
       }
-      // NSIS: /S is silent and /D= must be the last, unquoted argument
-      sshRun(sshHost, winCmd(`start /wait "" "${remoteExe}" /S /D=${WIN_ROOT}\\app`));
-      remoteApp = WIN_DEFAULT_APP;
+      // NSIS: /S is silent and /D= must be the last, unquoted argument (spaces inside are fine)
+      sshRun(sshHost, winCmd(`start /wait "" "${remoteExe}" /S /D=${installDir}`));
+      stateInstallDir = installDir;
+      remoteApp = `${installDir}\\Video Notes.exe`;
     } else {
-      remoteApp = appFlag ?? WIN_DEFAULT_APP;
+      remoteApp = appFlag ?? `${installDir}\\Video Notes.exe`;
     }
+    // the install directory is part of the run record whenever it determined the executable
+    if (stateInstallDir === undefined && appFlag === undefined) stateInstallDir = installDir;
     const appExists = sshRun(sshHost, winPs(`Test-Path -LiteralPath '${remoteApp}'`)).stdout.trim().toLowerCase();
     if (appExists !== "true") throw new RemoteError(`remote app missing on ${sshHost}: Test-Path -LiteralPath '${remoteApp}' said "${appExists}"`);
 
-    // launch.cmd: no proxy for the app (the remote Surge answers 503 for localhost), and the
-    // log stays in the run dir — a scheduled task's cwd is C:\Windows\System32.
+    // launch.ps1: no proxy for the app (the remote Surge answers 503 for localhost), and the
+    // log stays in the run dir — a scheduled task's cwd is C:\Windows\System32. The script is
+    // written as UTF-8 with BOM, because a non-ASCII install dir (Chinese + spaces) would be
+    // garbled in a .cmd read by cmd.exe's OEM code page; the scheduled-task action below is
+    // pure ASCII, so only the script carries the non-ASCII path.
     const script = [
-      `cd /d ${remoteRunDir}`,
-      "set NO_PROXY=*",
-      "set no_proxy=*",
-      "set HTTP_PROXY=",
-      "set HTTPS_PROXY=",
-      "set http_proxy=",
-      "set https_proxy=",
-      `set VNOTE_HOME=${remoteHome}`,
-      `set VNOTE_USER_DATA=${remoteUserData}`,
-      `set VNOTE_MODEL_DIR=${WIN_MODEL_DIR}`,
-      `"${remoteApp}" --remote-debugging-port=${port} > app.log 2>&1`,
+      `$env:NO_PROXY='*'`,
+      `$env:no_proxy='*'`,
+      `$env:HTTP_PROXY=''`,
+      `$env:HTTPS_PROXY=''`,
+      `$env:http_proxy=''`,
+      `$env:https_proxy=''`,
+      `$env:VNOTE_HOME='${remoteHome}'`,
+      `$env:VNOTE_USER_DATA='${remoteUserData}'`,
+      `$env:VNOTE_MODEL_DIR='${WIN_MODEL_DIR}'`,
+      `& '${remoteApp}' --remote-debugging-port=${port} *>&1 | Out-File -FilePath '${remoteAppLog}' -Encoding utf8`,
     ].join("\r\n");
     const payload = Buffer.from(`${script}\r\n`, "utf8").toString("base64");
     sshRun(
       sshHost,
-      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')))`),
+      // FromBase64String returns byte[]: handing it to WriteAllText binds the (string, string, Encoding)
+      // overload and PowerShell joins the bytes into "36 101 …", so decode to a string first
+      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')), (New-Object Text.UTF8Encoding $true))`),
     );
 
     // ssh lands in Session 0, which has no desktop: an interactive task starts the app in Session 1
-    sshRun(sshHost, winCmd(`schtasks /Create /TN "${task}" /TR "cmd.exe /c ${remoteLaunch}" /SC ONCE /ST 00:00 /IT /RL HIGHEST /F`));
+    sshRun(sshHost, winCmd(`schtasks /Create /TN "${task}" /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${remoteLaunch}" /SC ONCE /ST 00:00 /IT /RL HIGHEST /F`));
     sshRun(sshHost, winCmd(`schtasks /Run /TN "${task}"`));
 
     // no -f: child.pid must be the tunnel itself, so `down` stops exactly that process
@@ -840,6 +855,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
       remoteModelDir: WIN_MODEL_DIR,
       remoteAppLog,
       remoteApp,
+      ...(stateInstallDir !== undefined ? { installDir: stateInstallDir } : {}),
       sshTunnelPid: tunnelPid,
       scheduledTask: task,
     };

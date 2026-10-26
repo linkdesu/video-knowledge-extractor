@@ -230,6 +230,9 @@ export function LibraryPage({
                         {v.resolution.width}×{v.resolution.height}
                       </span>
                     ) : null}
+                    {v.hasVideo === false ? (
+                      <span data-testid="video-audio-only">纯音频</span>
+                    ) : null}
                     {v.topicCount > 0 ? <span>{v.topicCount} 个主题</span> : null}
                   </div>
                   <div

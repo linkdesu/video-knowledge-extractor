@@ -278,6 +278,17 @@ describe("resolution 透传与中断状态投影", () => {
     expect(listLibrary(root).find((v) => v.id === "vid-missing")!.resolution).toBeNull();
   });
 
+  test("卡片透传文档的 hasVideo；无文档为 null", () => {
+    const { root, id } = fixture();
+    const outputDir = join(root, "视频一");
+    const data = emptyVideoData({ id: id as VideoId, title: "视频一", sourcePath: "/tmp/视频一.mp4", durationSeconds: 90, outputDir });
+    data.hasVideo = false;
+    writeVideoData(outputDir, data);
+    expect(listLibrary(root).find((v) => v.id === id)!.hasVideo).toBe(false);
+    // 没有 video.json 的旧目录：hasVideo null
+    expect(listLibrary(root).find((v) => v.id === "vid-missing")!.hasVideo).toBeNull();
+  });
+
   test("无活锁时列表与详情一致：generating/queued 都按 failed 投影", () => {
     const { root, id } = fixture();
     const outputDir = join(root, "视频一");
