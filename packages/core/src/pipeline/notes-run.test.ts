@@ -768,9 +768,10 @@ describe("纯音频源（无视频轨）", () => {
     expect(r.noteCount).toBe(1);
     const clip = join(out, "t", "topic.mp4");
     expect(existsSync(clip)).toBe(true);
-    const streamTypes = execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", clip], { encoding: "utf8" })
-      .trim()
-      .split("\n");
+    const probe = JSON.parse(
+      execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "json", clip], { encoding: "utf8" }),
+    ) as { streams?: { codec_type?: string }[] };
+    const streamTypes = (probe.streams ?? []).map((s) => s.codec_type ?? "");
     expect(streamTypes).toEqual(["audio"]);
     expect(readFileSync(join(out, "t", "topic.md"), "utf8")).toContain("## 要点");
     const json = JSON.parse(readFileSync(join(out, "video.json"), "utf8")) as { topics: Array<Record<string, unknown>> };

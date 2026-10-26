@@ -126,9 +126,10 @@ describe("parseClipFileName", () => {
 });
 
 function streamTypes(path: string): string[] {
-  return execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", path], { encoding: "utf8" })
-    .trim()
-    .split("\n");
+  const json = JSON.parse(
+    execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type", "-of", "json", path], { encoding: "utf8" }),
+  ) as { streams?: { codec_type?: string }[] };
+  return (json.streams ?? []).map((s) => s.codec_type ?? "");
 }
 
 describe("cutClip（真实 ffmpeg）", () => {
