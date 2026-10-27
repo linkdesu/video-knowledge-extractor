@@ -407,15 +407,24 @@ if ($null -eq $reg -or $reg.DisplayVersion -ne $expectedVersion) {
 $asarPath = Join-Path $installDir 'resources\\app.asar'
 $fs = [System.IO.File]::OpenRead($asarPath)
 try {
-  $buf = New-Object byte[] 65536
-  $read = $fs.Read($buf, 0, $buf.Length)
+  $hdrBuf = New-Object byte[] 16
+  [void]$fs.Read($hdrBuf, 0, 16)
+  $headerSize = [BitConverter]::ToUInt32($hdrBuf, 4)
+  $jsonSize = [BitConverter]::ToUInt32($hdrBuf, 12)
+  $jsonBuf = New-Object byte[] $jsonSize
+  [void]$fs.Read($jsonBuf, 0, $jsonSize)
+  $headerObj = [System.Text.Encoding]::UTF8.GetString($jsonBuf) | ConvertFrom-Json
+  $pkgEntry = $headerObj.files."package.json"
+  $dataOffset = 8 + $headerSize + [int64]$pkgEntry.offset
+  [void]$fs.Seek($dataOffset, [System.IO.SeekOrigin]::Begin)
+  $pkgBuf = New-Object byte[] ([int]$pkgEntry.size)
+  [void]$fs.Read($pkgBuf, 0, [int]$pkgEntry.size)
+  $asarPkg = [System.Text.Encoding]::UTF8.GetString($pkgBuf) | ConvertFrom-Json
 } finally {
   $fs.Close()
 }
-$headerText = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
-$versionPattern = '"name"\\s*:\\s*"@video-notes/desktop"[\\s\\S]{0,400}?"version"\\s*:\\s*"' + [regex]::Escape($expectedVersion) + '"'
-if ($headerText -notmatch $versionPattern) {
-  throw "app.asar 内 @video-notes/desktop 的 version 未匹配 $expectedVersion"
+if ([string]$asarPkg.version -ne $expectedVersion) {
+  throw "app.asar 内 package.json 的 version ($($asarPkg.version)) 未匹配 $expectedVersion"
 }
 
 [pscustomobject]@{
