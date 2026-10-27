@@ -9,11 +9,11 @@ r42 的 QA 原片是一段加密/损坏的直播录像（`.ts`）：`ffprobe` �
 ## 决定
 
 1. **预检放在 `probeVideo` 之后、`openVideo` 之前。** `packages/core/src/core/audio.ts` 新增 `assertAudioDecodable(videoPath, wavPath)`：用现成的 `extractAudio(..., limitSeconds=2)` 抽 2 秒到 `os.tmpdir()`，无论成败都在 `finally` 删除临时文件。`runExtract` 在探到时长后立刻调用它，因此坏文件不建输出目录、不建缓存目录、不取锁、不发 `prepared`、不进 ASR。
-   - 失败判定有两条：`ffmpeg` 非零退出，或 wav 小于 `44 + 8000` 字节（0.25 秒 16 kHz 单声道 pcm_s16le）。后者只兜底「退出 0 但没产出采样」的实现差异，阈值取得比任何有意义的语音片段都短。
-   - 抛出的错误是稳定文案 `AUDIO_UNDECODABLE_ERROR`（「音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入」）。ffmpeg 的原始 stderr 只进 `logger().warn("ffmpeg", "音轨预检失败")`，不出现在消息里，避免几十行 `Number of bands ...` 冲到用户面前。
+   - 失败判定有两条：`ffmpeg` 非零退出，或 wav 小于 `44 + 8000` 字节（0.25 秒 16 kHz 单声道 pcm_s16le）。后者只兜底「退出 0 但没产出采样」的实现差异，阈值取得比任何有意义的语音片段都短；首次 2 秒产出过小时再放宽到 12 秒重抽一次，避免音轨起点偏后的有效文件被误杀。两次都过小才判失败。
+   - 抛出的错误是稳定文案 `AUDIO_UNDECODABLE_ERROR`（「音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入」）。ffmpeg 的原始 stderr 只进 `logger().warn("ffmpeg", "音轨预检失败")`，不出现在消息里，避免几十行 `Number of bands ...` 冲到用户面前。`ffmpeg` 自身不可用（`启动失败` / 命令不存在）则原样上抛：这是环境故障，不是录像损坏，CLI 在未配置日志时也要能看见。
 2. **一处文案，两处消费。** 常量在 `audio.ts`，`describeFailure` 直接引用它并返回卡片短原因「音轨无法解码，请重新导出为 mp4/m4a」。重跑一个已登记的旧视频时（main 侧已知 `outputDir`），卡片失败原因因此不再落到「视频文件损坏」；新导入则只有失败浮层，因为条目根本没创建。
-3. **不改 `extractAudio` 的失败语义。** 预检只覆盖「开头 2 秒就解不出」。若一段音频前 2 秒正常、之后损坏，仍在转写阶段按原有失败路径处理；不为尚未观察到的文件形态扩大改动面。
-4. **浮层改为布局内停靠。** `#root` 改成纵向 flex，`.vn-shell` 用 `flex: 1; min-height: 0` 占满剩余高度，`JobProgress` 外面包一层 `.vn-job-dock`（`flex: 0 0 auto`，右对齐）。浮层不再是 `position: fixed`，内容区 `.vn-content` 的底边就是停靠区的顶边，任何卡片按钮都不可能与浮层相交；关闭后内容区自动恢复满高。
+3. **不改 `extractAudio` 的失败语义。** 预检只覆盖「开头 2 秒就解不出」（产出过小时放宽到 12 秒再看一次）。若一段音频前 2 秒正常、之后损坏，仍在转写阶段按原有失败路径处理；不为尚未观察到的文件形态扩大改动面。
+4. **浮层改为布局内停靠。** `#root` 改成纵向 flex，`.vn-shell` 用 `flex: 1; min-height: 0` 占满剩余高度，`JobProgress` 外面包一层 `.vn-job-dock`（`flex: 0 0 auto`，右对齐）。浮层不再是 `position: fixed`，内容区 `.vn-content` 的底边就是停靠区的顶边，任何卡片按钮都不可能与浮层相交；关闭后内容区自动恢复满高。小窗口是同一约束的另一半：`.vn-shell` 显式 `grid-template-rows: minmax(0, 1fr)` 并 `overflow: hidden`，`.vn-main` / `.vn-content` 都设 `min-height: 0`，否则侧栏的最小内容高度会把 grid 行撑高、内容从停靠区下面穿出去（窗口 420 px 高时实测复现过）。
 
 ## Considered Options
 

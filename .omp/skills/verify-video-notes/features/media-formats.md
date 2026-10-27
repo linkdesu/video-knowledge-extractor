@@ -96,7 +96,8 @@ The fixture class is an encrypted or damaged live recording: `ffprobe` reports a
 
 ```bash
 $V drop '/Users/link/Documents/video-notes/自己造船的路飞（装逼中）_jl15999999999_2026-02-19_192711.ts'
-# fast failure: the preflight decodes 2 s, then aborts before a library entry is created
+# fast failure: the preflight decodes 2 s (12 s only if the 2 s output is too small),
+# then aborts before a library entry is created
 $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 60000
 $V eval "document.querySelector('[data-testid=job-state]').innerText"
 # expected: 失败
