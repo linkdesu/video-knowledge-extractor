@@ -53,3 +53,8 @@ For the official r42 report, the run id is `r42-<slug>` and every artifact is re
 - A failed `up` cleans the same set: tunnel, task, remote run dir, local run dir. `installDir` never leaves a half-written state.json behind.
 - The `新建文件夹` gate is the acceptance bar for r42 Windows evidence: a run that only uses `D:\code\video-notes\app` does not count, because the launcher and the install path are exactly what r42 changed.
 - Chromium source playback of a `.ts` (mpegts) on Windows is the same unproven caveat as on mac: extraction, topics and notes pass, the source-player result is recorded, not asserted (media-formats.md 「.ts source」).
+
+## Dual-machine release installation gate (r44)
+
+- Every code update round must increment the workspace version and run `bun run install:local` so both macOS (`/Applications/Video Notes.app`) and Windows `gamepc` (`D:\code\video-notes\app\Video Notes.exe`, pointed to by Desktop and Start Menu shortcuts) are updated to the new version.
+- When `verify.ts up --target win-gamepc --install-dir <custom>` is used for a custom directory gate, `verify.ts down` automatically restores the Desktop and Start Menu `Video Notes.lnk` shortcuts back to `D:\code\video-notes\app\Video Notes.exe`.
