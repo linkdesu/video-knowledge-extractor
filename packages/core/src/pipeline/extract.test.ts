@@ -8,7 +8,8 @@ import type { AsrEngine } from "../asr/engine";
 import type { SpeakerId } from "../core/types";
 import { runExtract } from "./extract";
 import { AUDIO_UNDECODABLE_ERROR } from "../core/audio";
-import { makeDecodableTs, makeUndecodableAacTs } from "../core/test-media";
+import { describeFailure } from "../core/failure-summary";
+import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "../core/test-media";
 
 const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
 
@@ -129,6 +130,22 @@ describe("runExtract 的音轨可解码预检", () => {
     expect(prepared).toBe(0);
     expect(existsSync(notesRoot)).toBe(false);
     expect(existsSync(cacheRoot)).toBe(false);
+  });
+
+  test("没有音频流的视频：保留 ffmpeg 原始失败，摘要仍是「没有可用的音视频轨道」", async () => {
+    const dir = mkdtemp();
+    const videoPath = join(dir, "silent.mp4");
+    makeVideoOnlyMp4(videoPath);
+    const err = await runExtract({
+      videoPath,
+      notesRoot: join(dir, "notes"),
+      endpoint,
+      cacheRoot: join(dir, "cache"),
+      client: fakeClient(),
+      asr: { provider: "local", modelDir: join(dir, "no-such-model") },
+    }).catch((e) => e);
+    expect((err as Error).message).toContain("does not contain any stream");
+    expect(describeFailure((err as Error).message)).toBe("该文件没有可用的音视频轨道");
   });
 
   test("干净 .ts 不被预检误杀：照常走完导入", async () => {

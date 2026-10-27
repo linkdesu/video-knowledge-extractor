@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUDIO_UNDECODABLE_ERROR, assertAudioDecodable, parseProbeJson, planChunks } from "./audio";
-import { makeDecodableTs, makeUndecodableAacTs } from "./test-media";
+import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "./test-media";
 import type { Silence } from "./audio";
 
 // 90 分钟视频，每 30s 一个 0.5s 停顿：中点在 0.25、30.25、…、5399.75。
@@ -229,5 +229,16 @@ describe("assertAudioDecodable（容器可读、音轨不可解码的预检）",
     makeDecodableTs(videoPath, 0.1);
     const err = await assertAudioDecodable(videoPath, join(dir, "preflight.wav")).catch((e) => e);
     expect((err as Error).message).toBe(AUDIO_UNDECODABLE_ERROR);
+  });
+
+  test("没有音频流的视频：原样上抛 ffmpeg 错误，不误报成音轨损坏", async () => {
+    const dir = fixtureDir();
+    const videoPath = join(dir, "silent.mp4");
+    makeVideoOnlyMp4(videoPath);
+    const wavPath = join(dir, "preflight.wav");
+    const err = await assertAudioDecodable(videoPath, wavPath).catch((e) => e);
+    expect((err as Error).message).toContain("does not contain any stream");
+    expect((err as Error).message).not.toBe(AUDIO_UNDECODABLE_ERROR);
+    expect(existsSync(wavPath)).toBe(false);
   });
 });

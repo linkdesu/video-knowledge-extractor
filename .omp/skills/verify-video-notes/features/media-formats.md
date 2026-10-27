@@ -7,7 +7,7 @@ Pure audio sources (`.m4a`, `.mp3`, `.wav`, `.flac`) are first-class inputs: imp
 - `format-matrix` the accepted input set: `mp4` (video), `mov` (video), `m4v` (video), `webm` (video), `ts` (video container, playback caveat below), `m4a` / `mp3` / `wav` / `flac` (pure audio).
 - `audio-only-pipeline` a pure audio source runs 转写 → 主题分析 → 笔记生成 end to end with no failure; cover extraction is skipped, not retried.
 - `ts-playback-caveat` extraction, topics and notes pass on a `.ts` (MPEG-TS) source; the source's in-app `<video>` playback is a recorded caveat, not a pass/fail gate.
-- `undecodable-audio-preflight` (r43) a container that probes fine but whose audio cannot be decoded (encrypted or damaged live recording) fails during import, before any library entry or ASR work, with the stable Chinese message `音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入`. The card short reason, when one exists, is `音轨无法解码，请重新导出为 mp4/m4a`; it never reads 格式不支持 or a bare 视频文件损坏.
+- `undecodable-audio-preflight` (r43) a container that probes fine but whose audio cannot be decoded (encrypted or damaged live recording) fails during import, before any library entry or ASR work, with the stable Chinese message `音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入`. The card short reason, when one exists, is `音轨无法解码，请重新导出为 mp4/m4a`; it never reads 格式不支持 or a bare 视频文件损坏. A file with no audio stream at all is not this case: the preflight rethrows the ffmpeg failure and the existing mapping reads `该文件没有可用的音视频轨道`, so a silent screen recording is not told to re-export.
 
 ## How to get to it (user POV)
 

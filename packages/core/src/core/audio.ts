@@ -75,6 +75,9 @@ const PREFLIGHT_LIMITS_SECONDS = [2, 12];
 /** 0.25 秒 16 kHz 单声道 pcm_s16le 的 wav 体积；低于它说明解码器几乎没产出可用的采样。 */
 const PREFLIGHT_MIN_WAV_BYTES = 44 + 8000;
 
+/** ffmpeg 的「没有音频流」失败；这类文件要走既有的「没有可用的音视频轨道」映射，不能算解码失败。 */
+const NO_AUDIO_STREAM_DETAILS = ["matches no streams", "does not contain any stream", "Stream map"];
+
 /**
  * probe 通过后、进入 ASR 前抽一小段音频：`ffprobe` 只读容器头，容器合法但音频载荷是乱码时它照样给出时长。
  * 解码失败或产出过小都归为同一原因（加密/损坏的录像），不把 ffmpeg 的原始 stderr 交给用户；
@@ -87,7 +90,8 @@ export async function assertAudioDecodable(videoPath: string, wavPath: string): 
         await extractAudio(videoPath, wavPath, limit);
       } catch (err) {
         const detail = (err as Error).message;
-        if (detail.includes("启动失败")) throw err;
+        // ffmpeg 不可用、或根本没有音频流：都不是「解码失败」，原样上抛，让既有失败映射与日志口径生效
+        if (detail.includes("启动失败") || NO_AUDIO_STREAM_DETAILS.some((s) => detail.includes(s))) throw err;
         logger().warn("ffmpeg", "音轨预检失败", { videoPath, limit, detail });
         throw new Error(AUDIO_UNDECODABLE_ERROR);
       }

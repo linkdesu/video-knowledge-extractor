@@ -15,6 +15,15 @@ export function makeDecodableTs(path: string, seconds = 2): void {
   );
 }
 
+/** 只有视频轨、没有音频的 mp4：用来确认预检不会把它误报成音轨损坏。 */
+export function makeVideoOnlyMp4(path: string): void {
+  execFileSync(
+    "ffmpeg",
+    ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", path],
+    { stdio: "pipe" },
+  );
+}
+
 /**
  * 容器合法、AAC 载荷是垃圾：复现加密/损坏的直播录像（ffprobe 照给时长，ffmpeg 解码全错、退出非零）。
  * 只改写 ADTS 帧头之后的载荷，TS 包结构、PES 与 ADTS 帧头保持完整，所以 demux 成功、decode 失败。
