@@ -13,7 +13,8 @@
     "fetch:ffmpeg": "bun scripts/fetch-ffmpeg.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "bun test --passWithNoTests",
-    "rbp:vendor": "bun scripts/vendor-reactbits.ts"
+    "rbp:vendor": "bun scripts/vendor-reactbits.ts",
+    "install:local": "bun scripts/install-local.ts"
   },
   "dependencies": {
     "@video-notes/core": "workspace:*",
