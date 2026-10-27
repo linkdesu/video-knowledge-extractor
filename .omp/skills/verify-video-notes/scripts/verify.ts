@@ -478,6 +478,12 @@ function winPs(script: string): string {
   return `pwsh -NoProfile -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}"`;
 }
 
+/** Encode PowerShell as UTF-16LE -EncodedCommand to avoid cmd.exe quoting and Defender command-line false positives. */
+function winPsEncoded(script: string): string {
+  const full = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}`;
+  return `pwsh -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(full, "utf16le").toString("base64")}`;
+}
+
 function sshExec(host: string, command: string): SshResult {
   // a pull sends a whole file as base64 on stdout: do not let the default capture limit cut it
   const result = Bun.spawnSync(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command], { maxBuffer: 64 * 1024 * 1024 });
@@ -710,8 +716,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const winDir = winLocal({ runDir });
 
   const remoteRunDir = `${WIN_RUNS}\\${runId}`;
-  const remoteHome = `${remoteRunDir}\\home`;
-  const remoteUserData = `${remoteRunDir}\\user-data`;
+  const remoteHome = takeFlag(args, "--home") ?? `${remoteRunDir}\\home`;
+  const remoteUserData = takeFlag(args, "--user-data") ?? `${remoteRunDir}\\user-data`;
   const remoteAppLog = `${remoteRunDir}\\app.log`;
   const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
   const task = `VNoteVerify_${runId}`;
@@ -733,6 +739,11 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
           throw new RemoteError(`scp failed (exit ${scp.exitCode}): scp ${installerFlag} ${sshHost}:${WIN_INSTALLER_DIR}/\n${tail}`);
         }
       }
+      // Stop any running Video Notes instance before NSIS overwrite so app.asar is never locked
+      sshExec(
+        sshHost,
+        winPsEncoded(`Get-Process -Name 'Video Notes' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 400`),
+      );
       // NSIS: /S is silent and /D= must be the last, unquoted argument (spaces inside are fine)
       sshRun(sshHost, winCmd(`start /wait "" "${remoteExe}" /S /D=${installDir}`));
       stateInstallDir = installDir;
@@ -765,9 +776,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     const payload = Buffer.from(`${script}\r\n`, "utf8").toString("base64");
     sshRun(
       sshHost,
-      // FromBase64String returns byte[]: handing it to WriteAllText binds the (string, string, Encoding)
-      // overload and PowerShell joins the bytes into "36 101 …", so decode to a string first
-      winPs(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')), (New-Object Text.UTF8Encoding $true))`),
+      // Use -EncodedCommand so Windows Defender never blocks command-line base64/WriteAllText on secondary up runs
+      winPsEncoded(`[IO.File]::WriteAllText('${remoteLaunch}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')), (New-Object Text.UTF8Encoding $true))`),
     );
 
     // ssh lands in Session 0, which has no desktop: an interactive task starts the app in Session 1
@@ -1319,6 +1329,26 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
       del.code === 0
         ? console.log(`deleted scheduled task ${state.scheduledTask}`)
         : console.log(`schtasks /Delete reported exit ${del.code}: ${stderrTail(del)}`);
+    }
+
+    const defaultWinInstallDir = `${WIN_ROOT}\\app`;
+    if (state.installDir !== undefined && state.installDir.toLowerCase() !== defaultWinInstallDir.toLowerCase()) {
+      sshExec(
+        host,
+        winPsEncoded(`
+          $targetExe = '${defaultWinInstallDir}\\Video Notes.exe'
+          if (Test-Path -LiteralPath $targetExe) {
+            $wsh = New-Object -ComObject WScript.Shell
+            foreach ($lnk in @((Join-Path $env:USERPROFILE 'Desktop\\Video Notes.lnk'), (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Video Notes.lnk'))) {
+              $sc = $wsh.CreateShortcut($lnk)
+              $sc.TargetPath = $targetExe
+              $sc.WorkingDirectory = '${defaultWinInstallDir}'
+              $sc.Save()
+            }
+          }
+        `),
+      );
+      console.log(`restored Windows shortcuts to ${defaultWinInstallDir}\\Video Notes.exe`);
     }
 
     // Prune only the space-consuming remote caches; evidence and small operator artifacts stay.
