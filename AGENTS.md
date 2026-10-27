@@ -17,7 +17,7 @@
      ```
      （合并进 `main` 后也可直接执行 `bun run install:local`）。
    - 该命令会自动完成并校验：
-     - **macOS (`workstation-1`)**：执行 `package:mac` 打包，将最新产物覆盖安装到 `/Applications/Video Notes.app`，清除隔离属性（`xattr -cr`）并完成 ad-hoc 签名，校验 `Info.plist` 的 `CFBundleShortVersionString` 与当前版本号一致。
+     - **macOS (`workstation-1`)**：执行 `package:mac` 打包，将最新产物覆盖安装到 `/Applications/Video Notes.app`，清除隔离属性（`xattr -cr`，不改动二进制签名、不触碰系统钥匙串），校验 `Info.plist` 的 `CFBundleShortVersionString` 与当前版本号一致。
      - **Windows (`gamepc`)**：自动获取对应版本的 `Video Notes-<version>-setup.exe`（本地或 GitHub Actions `windows-build.yml` 产物），上传至 `gamepc:D:\code\video-notes\installer\`，先停止正在运行的 `Video Notes.exe` 防止文件锁冲突，再静默安装到标准路径 `D:\code\video-notes\app\Video Notes.exe`，修复桌面与开始菜单快捷方式指向，并校验 `Uninstall Video Notes.exe`、注册表 `DisplayVersion` 及 `resources\app.asar` 版本号完全一致。
 
 ## 模型与评审

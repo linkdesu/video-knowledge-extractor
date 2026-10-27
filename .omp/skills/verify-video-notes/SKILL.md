@@ -70,7 +70,7 @@ bun run install:local --check-bump-against origin/main
 
 `bun run install:local` verifies:
 - All 4 `package.json` files share the same semver and (with `--check-bump-against`) are strictly greater than the previous version;
-- macOS `/Applications/Video Notes.app` has `CFBundleShortVersionString === <version>`, quarantine cleared (`xattr -cr`), and valid ad-hoc signature;
+- macOS `/Applications/Video Notes.app` has `CFBundleShortVersionString === <version>`, quarantine cleared (`xattr -cr`), without touching macOS Keychain (`safeStorage` removed in r44);
 - Windows `gamepc` has any running `Video Notes.exe` stopped before NSIS overwrite, `D:\code\video-notes\app\Video Notes.exe` installed, Desktop & Start Menu `.lnk` shortcuts pointing to `D:\code\video-notes\app\Video Notes.exe`, and `Uninstall Video Notes.exe` `ProductVersion`, Uninstall Registry `DisplayVersion`, and `resources\app.asar` version all matching `<version>`.
 
 ### Packaged app

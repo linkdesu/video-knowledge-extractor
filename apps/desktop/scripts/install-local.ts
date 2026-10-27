@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   assertVersionBumped,
@@ -93,15 +93,36 @@ function runCmd(
 }
 
 function runWinPwsh(sshHost: string, psScript: string): string {
-  const encoded = Buffer.from(psScript, "utf16le").toString("base64");
-  return runCmd("ssh", [
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=10",
-    sshHost,
-    `pwsh -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
-  ]);
+  const fullScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n${psScript.replace(/\r?\n/g, "\r\n")}\r\n`;
+  if (fullScript.length < 600) {
+    const encoded = Buffer.from(fullScript, "utf16le").toString("base64");
+    return runCmd("ssh", [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      sshHost,
+      `pwsh -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
+    ]);
+  }
+  const localTmpDir = resolve(repoRoot, "tmp/installer");
+  mkdirSync(localTmpDir, { recursive: true });
+  const localPs1 = resolve(localTmpDir, "install-local-remote.ps1");
+  const remotePs1 = `${defaultWinInstallerStageDir}\\install-local-remote.ps1`;
+  writeFileSync(localPs1, `\uFEFF${fullScript}`, "utf8");
+  runCmd("scp", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", localPs1, `${sshHost}:${remotePs1}`]);
+  try {
+    return runCmd("ssh", [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=10",
+      sshHost,
+      `pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${remotePs1}"`,
+    ]);
+  } finally {
+    rmSync(localPs1, { force: true });
+  }
 }
 
 function readAndVerifyWorkspaceVersion(checkBumpAgainst: string | null): {
@@ -174,7 +195,6 @@ function installMacApp(version: string, skipMacBuild: boolean) {
   }
   runCmd("ditto", [macReleaseAppPath, macSystemAppPath]);
   runCmd("xattr", ["-cr", macSystemAppPath]);
-  runCmd("codesign", ["--force", "--deep", "--sign", "-", macSystemAppPath]);
 
   const installedVersion = readMacPlistVersion(macSystemAppPath);
   if (installedVersion !== version) {

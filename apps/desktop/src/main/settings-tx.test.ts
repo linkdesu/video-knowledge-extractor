@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecretStore, type SecretCodec, type SecretStore } from "./secrets";
+import { createSecretStore, plainFileCodec, type SecretCodec, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 
 function fakeCodec(decryptError: string | null = null): SecretCodec {
@@ -328,5 +328,12 @@ describe("pending 接受新增的密钥 id", () => {
     const err = replayCredentialTransaction(w);
     expect(err).toContain("不完整");
     expect(readFileSync(pendingPath(w), "utf8")).toContain("enc:");
+  });
+  test("plainFileCodec 遇到旧版 safeStorage 密文 pending 时静默挪开并按无 pending 继续", () => {
+    const w = makeWorld();
+    writeFileSync(pendingPath(w), Buffer.from([0x76, 0x31, 0x30, 0xaa, 0xbb, 0xcc]));
+    const err = replayCredentialTransaction({ ...w, codec: plainFileCodec });
+    expect(err).toBe(null);
+    expect(() => readFileSync(pendingPath(w))).toThrow();
   });
 });
