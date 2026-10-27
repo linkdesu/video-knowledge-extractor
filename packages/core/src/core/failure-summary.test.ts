@@ -5,6 +5,7 @@ describe("describeFailure", () => {
   test("已知原因映射成短词", () => {
     expect(describeFailure("切主题切片 failed (exit 234) / Stream map '' matches no streams")).toBe("该文件没有可用的音视频轨道");
     expect(describeFailure("ffmpeg: Stream map '' matches no streams")).toBe("该文件没有可用的音视频轨道");
+    expect(describeFailure("[out#0/wav] Output file does not contain any stream")).toBe("该文件没有可用的音视频轨道");
     expect(describeFailure("LLM 请求失败 401 Unauthorized")).toBe("API key 无效");
     expect(describeFailure("ASR 返回 403 forbidden")).toBe("API key 无效");
     expect(describeFailure("API key 无效：key 已过期")).toBe("API key 无效");
@@ -17,6 +18,9 @@ describe("describeFailure", () => {
     expect(describeFailure("未配置 LLM 端点")).toBe("LLM 未配置");
     expect(describeFailure("LLM 未配齐：接口地址")).toBe("LLM 未配置");
     expect(describeFailure("worker 进程退出（退出码 1）\nstack")).toBe("处理进程意外退出");
+    expect(describeFailure("音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入")).toBe(
+      "音轨无法解码，请重新导出为 mp4/m4a",
+    );
   });
 
   test("未知消息取第一非空行", () => {

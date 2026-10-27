@@ -7,6 +7,7 @@ Pure audio sources (`.m4a`, `.mp3`, `.wav`, `.flac`) are first-class inputs: imp
 - `format-matrix` the accepted input set: `mp4` (video), `mov` (video), `m4v` (video), `webm` (video), `ts` (video container, playback caveat below), `m4a` / `mp3` / `wav` / `flac` (pure audio).
 - `audio-only-pipeline` a pure audio source runs 转写 → 主题分析 → 笔记生成 end to end with no failure; cover extraction is skipped, not retried.
 - `ts-playback-caveat` extraction, topics and notes pass on a `.ts` (MPEG-TS) source; the source's in-app `<video>` playback is a recorded caveat, not a pass/fail gate.
+- `undecodable-audio-preflight` (r43) a container that probes fine but whose audio cannot be decoded (encrypted or damaged live recording) fails during import, before any library entry or ASR work, with the stable Chinese message `音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入`. The card short reason, when one exists, is `音轨无法解码，请重新导出为 mp4/m4a`; it never reads 格式不支持 or a bare 视频文件损坏. A file with no audio stream at all is not this case: the preflight rethrows the ffmpeg failure and the existing mapping reads `该文件没有可用的音视频轨道`, so a silent screen recording is not told to re-export.
 
 ## How to get to it (user POV)
 
@@ -86,9 +87,35 @@ On a Windows run the same journey is the r42 gate: drop `C:\Users\xieal\Document
 
 Do not assert the *source* `.ts` plays in the app's `<video>`: measured in the r42 renderer, `document.createElement("video").canPlayType("video/mp2t") === ""`, so Chromium cannot decode the source container and the source-fallback player has nothing to show. The generated `topic.mp4` plays normally (it is h264 + aac in mp4). Record the measured result as an observation in the report and keep it a caveat, not a gate.
 
+### Recipe: container readable, audio undecodable (r43)
+
+The fixture class is an encrypted or damaged live recording: `ffprobe` reports a duration and an `aac` stream (often `sample_rate=0`), but almost every AAC frame fails to decode. Reproduce it with the r43 fixture in the allowed test-video directory, or with Link's original recording (manual only; never commit it):
+
+- synthetic, committed test: `packages/core/src/core/test-media.ts` (`makeUndecodableAacTs`) writes a tiny mpegts whose ADTS headers and TS/PES structure stay valid while the AAC payload is garbage; the core tests assert both the failure and the clean `.ts` pass.
+- manual, real-world: `/Users/link/Documents/video-notes/自己造船的路飞（装逼中）_jl15999999999_2026-02-19_192711.ts` (mac).
+
+```bash
+$V drop '/Users/link/Documents/video-notes/自己造船的路飞（装逼中）_jl15999999999_2026-02-19_192711.ts'
+# fast failure: the preflight decodes 2 s (12 s only if the 2 s output is too small),
+# then aborts before a library entry is created
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 60000
+$V eval "document.querySelector('[data-testid=job-state]').innerText"
+# expected: 失败
+$V eval "document.querySelector('[data-testid=job-banner]').innerText.includes('音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入')"
+# expected: true
+$V eval "window.vnote.listLibrary().then(v => v.length)"
+# expected: unchanged (no card is created for a source the pipeline cannot read)
+$V shot r43-undecodable-ts
+# the log shows the stage and the decoded-error detail, and no raw ffmpeg error reaches the banner
+$V log 40
+# expected: 音轨预检 start / 警告 音轨预检失败 / 错误 音轨预检 失败
+```
+
+The regression pair is the same run's clean `.ts`: `r42-src-30s.ts` imports to `pending-confirm` (the `.ts source` recipe above). A clean `.ts` that fails the preflight is the false-positive regression; a bad `.ts` that creates a card or starts 转写 is the false-negative regression.
+
 ## Gotchas
 
-- The `job-banner` overlays the bottom action row of the cards while a job is finishing: `elementFromPoint` at the button centre hits `DIV[job-banner]`, so `click '[data-testid=card-confirm-topics]'` lands on the banner and nothing happens. Close it first with `click '[data-testid=job-close]'` (or assert the button is the hit target) before clicking any card action on the same screen.
+- The `job-banner` used to overlay the bottom action row of the cards (r42 QA). Since r43 it is docked in `data-testid="job-dock"` below the scrollable content, so `elementFromPoint` at a card button centre hits the button once the button is scrolled into view; `contentBottom === dockTop` proves the split layout. Do not `job-close` first as a workaround; assert the hit target instead (library.md 「Banner does not block card actions」). A banner that still covers the button is the regression.
 - `listLibrary()` is ordered by id ascending, not by import order. Never index a multi-video library with `v[0]`; select by `id`, `status` or `sourcePath`.
 - Cover extraction is skipped for audio-only sources by design: a missing `video-cover` is correct there, not a failure. The card shows the styled empty thumbnail plus the duration. A `video-cover` appearing on an audio-only card, or an ERROR cover retry line in the log, is the regression.
 - An audio-only `topic.mp4` is an mp4 with exactly one AAC audio stream and no video stream (ffprobe: 1 `audio`, 0 `video`); the `clip-player` is a `<video>` with `videoWidth === 0` that still plays audio. See notes.md 「Audio-only clip」.

@@ -1,6 +1,8 @@
 import { rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { probeVideo, extractAudio } from "../core/audio";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { probeVideo, extractAudio, assertAudioDecodable } from "../core/audio";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections, countCorrectionsHits } from "../core/corrections";
 import { acquireVideoLock } from "../core/lock";
@@ -82,6 +84,12 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     const probe = await logger().step("ffmpeg", "ffprobe", () => probeVideo(input.videoPath));
     const sourceBytes = statSync(input.videoPath).size;
     logger().info("ffmpeg", "媒体探测完成", { durationSeconds: probe.duration, width: probe.width, height: probe.height, sourceBytes, durationMs: Math.round(performance.now() - probeStart) });
+    // 容器可读但音轨解不出（加密/损坏的直播录像）：抽 2 秒音频预检，在建目录、进 ASR 之前失败
+    const preflightStart = performance.now();
+    await logger().step("ffmpeg", "音轨预检", () =>
+      assertAudioDecodable(input.videoPath, join(tmpdir(), `vnote-preflight-${taskId}.wav`)),
+    );
+    logger().info("ffmpeg", "音轨预检通过", { durationMs: Math.round(performance.now() - preflightStart) });
     const video = openVideo(input.videoPath, probe.duration, notesRoot);
     const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));
     // 锁在 cacheDir 创建后获取，获取失败原样抛给调用方；整条流水线都在锁内跑

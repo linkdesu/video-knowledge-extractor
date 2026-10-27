@@ -181,7 +181,7 @@ Stable handles in this repo:
 | Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings` |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
 | Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-audio-only` (the 纯音频 badge on a pure-audio source card, r42), `video-card-foot` (the bottom-pinned action row) |
-| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close` |
+| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-dock` (the layout slot below `.vn-content`, r43) |
 | Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`, `topic-seg-<i>` (clickable segment-label buttons on the selected topic; `i` is the segment index), `player-resize` (bottom-right resize handle, aria-label 调整播放器高度); checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
 | Notes | `note-row`, `note-open`, `clip-block`, `clip-player` (one `<video>` per topic, the concatenated `topic.mp4`), `clip-seg-<i>` (clickable segment-label chips, seek to `segmentOffsets[i]`), `clip-sub` (clickable subtitle rows), `player` (the 主题-page player; not the notes clip-player) |

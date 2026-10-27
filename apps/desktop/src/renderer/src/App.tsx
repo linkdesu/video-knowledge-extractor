@@ -293,11 +293,13 @@ export function App() {
       </AppFrame>
 
       {job !== null ? (
-        <JobProgress
-          job={job}
-          onCancel={() => void cancelJob()}
-          onClose={() => setJob(null)}
-        />
+        <div className="vn-job-dock" data-testid="job-dock">
+          <JobProgress
+            job={job}
+            onCancel={() => void cancelJob()}
+            onClose={() => setJob(null)}
+          />
+        </div>
       ) : null}
       <ToastHost />
     </>

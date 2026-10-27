@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 
 // monitoring-9 改造：任务浮层 JobProgress 按 kind 显示标题；
 // 任务浮层不再用进度条/百分比，用「n/m」与已用时长（r37）。
+// r43：浮层停靠在 App 布局底部（.vn-job-dock），不再 fixed 覆盖卡片操作区；只负责卡片内容。
 // ProgressBar 保留导出：库页等其它调用方仍在使用。
 
 export function ProgressBar({ percent }: { percent: number }) {
@@ -162,7 +163,7 @@ export function JobProgress({
   return (
     <div
       data-testid="job-banner"
-      className="vn-card fixed bottom-4 right-4 z-40 w-[440px] max-w-[calc(100vw-2rem)] p-4"
+      className="vn-card w-[440px] max-w-full p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-[16px] font-[450] tracking-[-0.015em]">

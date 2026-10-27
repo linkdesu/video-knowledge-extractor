@@ -55,6 +55,21 @@ body,
   margin: 0;
 }
 
+/* 任务浮层停靠在内容区下方（r43）：占布局高度，不覆盖卡片操作按钮。 */
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+.vn-job-dock {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+  position: relative;
+  z-index: 40;
+}
+
 body {
   background-color: var(--vn-bg);
   color: var(--vn-fg);
@@ -120,7 +135,11 @@ textarea {
   z-index: 1;
   display: grid;
   grid-template-columns: 236px 1fr;
-  height: 100vh;
+  /* 显式 minmax(0,1fr)：窗口比侧栏最小内容还矮时，行也跟着缩，内容不会溢到下方停靠区 */
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
 }
 
 .vn-aside {
@@ -131,6 +150,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  overflow-y: auto;
 }
 
 .vn-brand {
@@ -187,6 +207,7 @@ textarea {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 .vn-topbar {
@@ -222,6 +243,7 @@ textarea {
 
 .vn-content {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 26px 28px 40px;
   scrollbar-width: thin;

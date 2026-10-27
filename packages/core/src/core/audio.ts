@@ -1,9 +1,11 @@
 /**
  * 视频/音频的 ffmpeg、ffprobe 操作，以及按语音停顿的分块（ADR-0001）。
  */
+import { rmSync, statSync } from "node:fs";
 import type { Chunk } from "./types";
 import { CHUNK_MAX_SECONDS, CHUNK_MIN_SECONDS, CHUNK_TARGET_SECONDS } from "./config";
 import { run } from "./exec";
+import { logger } from "./logger";
 
 /** 一段语音停顿区间。 */
 export type Silence = { start: number; end: number };
@@ -62,6 +64,50 @@ export async function extractAudio(videoPath: string, wavPath: string, limitSeco
     ["ffmpeg", "-y", ...limitArgs, "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
     { label: `抽取音频 ${videoPath}` },
   );
+}
+
+/** 容器可读但音轨解不出（加密/损坏的直播录像）时给用户的稳定文案；UI 卡片与测试都引用它。 */
+export const AUDIO_UNDECODABLE_ERROR = "音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入";
+
+/** 先抽 2 秒；产出过小时放宽到 12 秒，覆盖音轨起点偏后的有效文件。 */
+const PREFLIGHT_LIMITS_SECONDS = [2, 12];
+
+/** 0.25 秒 16 kHz 单声道 pcm_s16le 的 wav 体积；低于它说明解码器几乎没产出可用的采样。 */
+const PREFLIGHT_MIN_WAV_BYTES = 44 + 8000;
+
+/** ffmpeg 的「没有音频流」失败；这类文件要走既有的「没有可用的音视频轨道」映射，不能算解码失败。 */
+const NO_AUDIO_STREAM_DETAILS = ["matches no streams", "does not contain any stream", "Stream map"];
+
+/**
+ * probe 通过后、进入 ASR 前抽一小段音频：`ffprobe` 只读容器头，容器合法但音频载荷是乱码时它照样给出时长。
+ * 解码失败或产出过小都归为同一原因（加密/损坏的录像），不把 ffmpeg 的原始 stderr 交给用户；
+ * ffmpeg 自身不可用则原样上抛，避免把环境故障说成文件损坏。
+ */
+export async function assertAudioDecodable(videoPath: string, wavPath: string): Promise<void> {
+  try {
+    for (const limit of PREFLIGHT_LIMITS_SECONDS) {
+      try {
+        await extractAudio(videoPath, wavPath, limit);
+      } catch (err) {
+        const detail = (err as Error).message;
+        // ffmpeg 不可用、或根本没有音频流：都不是「解码失败」，原样上抛，让既有失败映射与日志口径生效
+        if (detail.includes("启动失败") || NO_AUDIO_STREAM_DETAILS.some((s) => detail.includes(s))) throw err;
+        logger().warn("ffmpeg", "音轨预检失败", { videoPath, limit, detail });
+        throw new Error(AUDIO_UNDECODABLE_ERROR);
+      }
+      let size = 0;
+      try {
+        size = statSync(wavPath).size;
+      } catch {
+        // ffmpeg 退出 0 却没有产物：与产出过小同处理
+      }
+      if (size >= PREFLIGHT_MIN_WAV_BYTES) return;
+      logger().warn("ffmpeg", "音轨预检产出过小", { videoPath, limit, wavBytes: size });
+    }
+    throw new Error(AUDIO_UNDECODABLE_ERROR);
+  } finally {
+    rmSync(wavPath, { force: true });
+  }
 }
 
 /** silencedetect 找出停顿区间。 */
