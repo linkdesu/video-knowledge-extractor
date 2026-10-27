@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecretStore, type SecretCodec } from "./secrets";
+import { createSecretStore, plainFileCodec, type SecretCodec } from "./secrets";
 
 /** 假 codec：base64「加密」，可注入解密失败，覆盖往返、坏密文、权限、clear，不依赖 Electron。 */
 function fakeCodec(decryptError: string | null = null): SecretCodec {
@@ -185,5 +185,18 @@ describe("createSecretStore", () => {
     store.clear("llm");
     store.clear("volcAppKey");
     expect(store.all()).toEqual(["asr-key", "volc-api", "volc-access"]);
+  });
+  test("plainFileCodec：0o600 本地 JSON 往返且遇到旧版 safeStorage 二进制密文时静默重置不报错", () => {
+    const file = tempFile();
+    // 模拟旧版 safeStorage 留下的 v10 二进制密文
+    writeFileSync(file, Buffer.from([0x76, 0x31, 0x30, 0x89, 0xfe, 0x00, 0x42]));
+    const migrated = createSecretStore({ file, codec: plainFileCodec });
+    expect(migrated.error()).toBe(null);
+    expect(migrated.available()).toBe(true);
+    expect(migrated.has("llm")).toBe(false);
+    migrated.set("llm", "sk-plain-123");
+    const reloaded = createSecretStore({ file, codec: plainFileCodec });
+    expect(reloaded.error()).toBe(null);
+    expect(reloaded.get("llm")).toBe("sk-plain-123");
   });
 });

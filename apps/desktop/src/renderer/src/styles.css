@@ -166,10 +166,20 @@ textarea {
   background: #7c3aed;
   box-shadow: 0 0 18px rgba(124, 58, 237, 0.35);
 }
+.vn-brand-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
 .vn-brand b {
   font-size: 15px;
   letter-spacing: 0.2px;
   color: var(--vn-fg);
+}
+.vn-brand-ver {
+  font-size: 11px;
+  color: var(--vn-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .vn-nav {

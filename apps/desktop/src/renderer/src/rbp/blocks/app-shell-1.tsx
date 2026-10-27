@@ -19,11 +19,13 @@ export function AppFrame({
   active,
   onNavigate,
   crumb,
+  appVersion,
   children,
 }: {
   active: NavKey;
   onNavigate: (key: NavKey) => void;
   crumb: Crumb;
+  appVersion?: string | null;
   children: ReactNode;
 }) {
   return (
@@ -31,8 +33,13 @@ export function AppFrame({
       <aside className="vn-aside">
         <div className="vn-brand">
           <div className="vn-logo" aria-hidden="true" />
-          <div>
+          <div className="vn-brand-meta">
             <b>VideoNotes</b>
+            {appVersion ? (
+              <span className="vn-brand-ver" data-testid="app-version">
+                v{appVersion}
+              </span>
+            ) : null}
           </div>
         </div>
         <nav className="vn-nav" aria-label="Primary">

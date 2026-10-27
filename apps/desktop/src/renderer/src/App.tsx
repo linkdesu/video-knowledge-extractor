@@ -32,10 +32,18 @@ export function App() {
   const [libError, setLibError] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [job, setJob] = useState<JobSnapshot | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const routeRef = useRef(route);
   useEffect(() => {
     routeRef.current = route;
   }, [route]);
+
+  useEffect(() => {
+    window.vnote
+      .settings()
+      .then((s) => setAppVersion(s.appVersion))
+      .catch(() => undefined);
+  }, []);
 
   const refreshLibrary = useCallback(() => {
     setLibError(null);
@@ -250,6 +258,7 @@ export function App() {
       </div>
       <AppFrame
         active={navKey}
+        appVersion={appVersion}
         onNavigate={(key) => {
           if (key === "glossary") setRoute({ name: "glossary" });
           else if (key === "settings") setRoute({ name: "settings" });

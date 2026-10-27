@@ -27,7 +27,7 @@ Preconditions:
 - `tmp/r26-e2e/short-30s.mp4` exists (see the map README).
 
 - **Help.** Run `bun run --silent vnote --help`. Exit 0; stdout starts with `用法:` and lists `extract`, `--help`, `--version`.
-- **Version.** Run `bun run --silent vnote --version`. Exit 0; stdout is `0.1.0`.
+- **Version.** Run `bun run --silent vnote --version`. Exit 0; stdout matches `package.json#version` (e.g. `0.1.1`).
 - **Extract with a limit.** Run, from the repo root:
 
   ```bash

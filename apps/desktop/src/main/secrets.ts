@@ -1,18 +1,50 @@
 import { openSync, readFileSync, chmodSync, renameSync, writeSync, closeSync } from "node:fs";
 
-/** 密钥只存在于主进程（ADR-0015 §3）：safeStorage 密文 + 自写原子写，绝不落盘明文。 */
+/**
+ * 密钥只存在于主进程（ADR-0015 §3）。r44 起不再使用 Electron safeStorage：
+ * macOS 上它把加密钥匙存进登录钥匙串并绑定二进制 cdhash，本地 ad-hoc 签名每次重装都会弹钥匙串授权框。
+ * 现在 secrets.bin 是 0o600 权限的本地 JSON 文件（仅当前用户可读），不触碰系统钥匙串。
+ */
 
 /** 五个密钥位（ADR-0016 §5）：`asr` 沿用 r23 的 OpenAI 兼容 key，不迁移已存值。 */
 export const SECRET_IDS = ["llm", "asr", "volcApiKey", "volcAppKey", "volcAccessKey"] as const;
 
 export type SecretId = (typeof SECRET_IDS)[number];
 
-/** 加密器边界：Electron 用 safeStorage 包装，单测注入假实现（无 Electron 也能测往返与坏密文）。 */
+/** 编解码边界：生产用 plainFileCodec（不碰钥匙串），单测注入假实现（往返与坏密文）。 */
 export type SecretCodec = {
   available(): boolean;
   encrypt(plain: string): Buffer;
   decrypt(cipher: Buffer): string;
 };
+
+/** 旧版 safeStorage 密文（非 JSON 字节）：无法也不应再解密，调用方静默重置。 */
+export class LegacyCipherError extends Error {
+  constructor() {
+    super("旧版系统加密密文，已不再支持");
+    this.name = "LegacyCipherError";
+  }
+}
+
+/** 生产 codec：UTF-8 明文 JSON + 0o600；以 `{` 开头之外的字节视为旧版 safeStorage 密文。 */
+export const plainFileCodec: SecretCodec = {
+  available: () => true,
+  encrypt: (plain: string) => Buffer.from(plain, "utf8"),
+  decrypt: (cipher: Buffer) => {
+    const text = cipher.toString("utf8");
+    if (!text.trimStart().startsWith("{")) throw new LegacyCipherError();
+    return text;
+  },
+};
+
+/** 把无法读取的旧文件挪到旁边（不删除，便于排查），返回是否成功。 */
+export function setAsideLegacy(path: string): void {
+  try {
+    renameSync(path, `${path}.legacy-${Date.now()}`);
+  } catch {
+    // 挪不动也不阻塞：下次 set 会覆盖
+  }
+}
 
 /** 二进制原子写：临时文件 0o600 → 写 → rename → 0o600；rename 前的权限窗口不暴露目标名。 */
 export function writeBinaryAtomic(path: string, data: Buffer): void {
@@ -79,6 +111,12 @@ function readStored(s: StoreImpl): void {
   try {
     plain = s.codec.decrypt(cipher);
   } catch (err) {
+    if (err instanceof LegacyCipherError) {
+      // 旧版 safeStorage 密文：静默重置为空，用户在设置页重新填写一次 key 即可
+      setAsideLegacy(s.file);
+      s.values = {};
+      return;
+    }
     failLoad(s, `密钥文件解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}`);
     return;
   }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { saveSettings, validateSettingsPatch } from "@video-notes/core/storage";
 import type { SettingsPatch as CoreSettingsPatch, AppSettings, EnvRecord } from "@video-notes/core/storage";
 import type { SecretPatch } from "../shared/ipc";
-import { SECRET_IDS, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
+import { LegacyCipherError, SECRET_IDS, setAsideLegacy, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 
 /**
  * 端点与密钥分属 settings.json 与 secrets.bin，两份文件之间进程崩溃会留下「新地址配旧 key」的半套。
@@ -65,6 +65,11 @@ function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | nu
   try {
     plain = codec.decrypt(cipher);
   } catch (err) {
+    if (err instanceof LegacyCipherError) {
+      // 旧版 safeStorage 密文的 pending 无法重放：挪开后按无 pending 继续，不设门禁
+      setAsideLegacy(pendingPath(userData));
+      return { tx: null, error: null };
+    }
     // 保留原文件不静默丢弃（ADR-0015 §3）
     return { tx: null, error: `pending 事务解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}` };
   }

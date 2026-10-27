@@ -55,6 +55,24 @@ Isolation limits:
 - Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
 - Logs sit in the visible `<notesRoot>/logs` directory (r39). One active `vnote-YYYY-MM-DD.log` per day: a write that would push it past 8 MB rolls it to `vnote-YYYY-MM-DD.<n>.log`, and the directory always keeps at most 7 files, the oldest deleted at roll time.
 
+### Mandatory version bump & dual-machine local install (r44)
+
+Every round that modifies application or core code **must**:
+
+1. **Bump the version** across all four workspace manifests (`package.json`, `apps/desktop/package.json`, `apps/cli/package.json`, `packages/core/package.json`) relative to `origin/main`. The sidebar brand header renders `[data-testid=app-version]` (`v<version>`), and `doctor` asserts `window.vnote.settings().appVersion === apps/desktop/package.json#version`.
+2. **Reinstall the built app on both Mac and Windows (`gamepc`)** via `bun run install:local` so the user can launch the app directly from `/Applications/Video Notes.app` on macOS or the Desktop/Start Menu `Video Notes` shortcut (`D:\code\video-notes\app\Video Notes.exe`) on Windows `gamepc` for final acceptance:
+
+```bash
+# Verify version bump against origin/main, build & install macOS /Applications/Video Notes.app,
+# and silently install the matching Windows NSIS setup.exe onto gamepc (D:\code\video-notes\app)
+bun run install:local --check-bump-against origin/main
+```
+
+`bun run install:local` verifies:
+- All 4 `package.json` files share the same semver and (with `--check-bump-against`) are strictly greater than the previous version;
+- macOS `/Applications/Video Notes.app` has `CFBundleShortVersionString === <version>`, quarantine cleared (`xattr -cr`), without touching macOS Keychain (`safeStorage` removed in r44);
+- Windows `gamepc` has any running `Video Notes.exe` stopped before NSIS overwrite, `D:\code\video-notes\app\Video Notes.exe` installed, Desktop & Start Menu `.lnk` shortcuts pointing to `D:\code\video-notes\app\Video Notes.exe`, and `Uninstall Video Notes.exe` `ProductVersion`, Uninstall Registry `DisplayVersion`, and `resources\app.asar` version all matching `<version>`.
+
 ### Packaged app
 
 `bun run package:mac` in `apps/desktop` produces `release/Video Notes-darwin-arm64/Video Notes.app` and a DMG. Drive the installed bundle, not `apps/desktop/out`:
@@ -178,7 +196,7 @@ Stable handles in this repo:
 
 | Surface | Handle |
 |---|---|
-| Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings` |
+| Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings`, `app-version` (sidebar brand version badge `v<version>`, r44) |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
 | Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-audio-only` (the 纯音频 badge on a pure-audio source card, r42), `video-card-foot` (the bottom-pinned action row) |
 | Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-dock` (the layout slot below `.vn-content`, r43) |

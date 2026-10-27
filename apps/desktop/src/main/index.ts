@@ -11,7 +11,6 @@ import {
   ipcMain,
   net,
   protocol,
-  safeStorage,
   shell,
   utilityProcess,
   type UtilityProcess,
@@ -116,7 +115,7 @@ import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { createModelDownloader } from "./models-downloader";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
-import { createSecretStore, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
+import { createSecretStore, plainFileCodec, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 import { llmDraftCredentials } from "./llm-draft-creds";
 import { applyDetailCorrections } from "./detail-corrections";
@@ -243,12 +242,8 @@ if (settingsRead.file.modelDir === undefined) {
   if (migration.warning !== null) console.warn(migration.warning);
 }
 
-// Electron codec 包装 safeStorage（ready 后可用）；单测注入假 codec
-const electronCodec: SecretCodec = {
-  available: () => safeStorage.isEncryptionAvailable(),
-  encrypt: (plain: string) => safeStorage.encryptString(plain),
-  decrypt: (cipher: Buffer) => safeStorage.decryptString(cipher),
-};
+// r44：不再使用 safeStorage（macOS 钥匙串按 cdhash 授权，ad-hoc 重装必弹授权框）；0o600 本地文件
+const electronCodec: SecretCodec = plainFileCodec;
 let secretStore: SecretStore | undefined;
 /** pending 事务门禁（ADR-0016 §5 硬规则 2）：非 null 时不发布运行时、不端点发现，拒绝入队与连接测试。 */
 let credentialTxError: string | null = null;
