@@ -17,6 +17,9 @@ describe("describeFailure", () => {
     expect(describeFailure("未配置 LLM 端点")).toBe("LLM 未配置");
     expect(describeFailure("LLM 未配齐：接口地址")).toBe("LLM 未配置");
     expect(describeFailure("worker 进程退出（退出码 1）\nstack")).toBe("处理进程意外退出");
+    expect(describeFailure("音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入")).toBe(
+      "音轨无法解码，请重新导出为 mp4/m4a",
+    );
   });
 
   test("未知消息取第一非空行", () => {

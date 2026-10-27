@@ -1,9 +1,11 @@
 /**
  * 视频/音频的 ffmpeg、ffprobe 操作，以及按语音停顿的分块（ADR-0001）。
  */
+import { rmSync, statSync } from "node:fs";
 import type { Chunk } from "./types";
 import { CHUNK_MAX_SECONDS, CHUNK_MIN_SECONDS, CHUNK_TARGET_SECONDS } from "./config";
 import { run } from "./exec";
+import { logger } from "./logger";
 
 /** 一段语音停顿区间。 */
 export type Silence = { start: number; end: number };
@@ -62,6 +64,37 @@ export async function extractAudio(videoPath: string, wavPath: string, limitSeco
     ["ffmpeg", "-y", ...limitArgs, "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
     { label: `抽取音频 ${videoPath}` },
   );
+}
+
+/** 容器可读但音轨解不出（加密/损坏的直播录像）时给用户的稳定文案；UI 卡片与测试都引用它。 */
+export const AUDIO_UNDECODABLE_ERROR = "音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入";
+
+/** 预检只抽前 2 秒：够判解码器是否工作，又不为坏文件跑完整转码。 */
+const PREFLIGHT_LIMIT_SECONDS = 2;
+
+/** 0.25 秒 16 kHz 单声道 pcm_s16le 的 wav 体积；低于它说明解码器几乎没产出可用的采样。 */
+const PREFLIGHT_MIN_WAV_BYTES = 44 + 8000;
+
+/**
+ * probe 通过后、进入 ASR 前抽一小段音频：`ffprobe` 只读容器头，容器合法但音频载荷是乱码时它照样给出时长。
+ * 解码失败或产出过小都归为同一原因（加密/损坏的录像），不把 ffmpeg 的原始 stderr 交给用户。
+ */
+export async function assertAudioDecodable(videoPath: string, wavPath: string): Promise<void> {
+  try {
+    try {
+      await extractAudio(videoPath, wavPath, PREFLIGHT_LIMIT_SECONDS);
+    } catch (err) {
+      logger().warn("ffmpeg", "音轨预检失败", { videoPath, detail: (err as Error).message });
+      throw new Error(AUDIO_UNDECODABLE_ERROR);
+    }
+    const { size } = statSync(wavPath);
+    if (size < PREFLIGHT_MIN_WAV_BYTES) {
+      logger().warn("ffmpeg", "音轨预检产出过小", { videoPath, wavBytes: size });
+      throw new Error(AUDIO_UNDECODABLE_ERROR);
+    }
+  } finally {
+    rmSync(wavPath, { force: true });
+  }
 }
 
 /** silencedetect 找出停顿区间。 */

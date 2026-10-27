@@ -131,7 +131,7 @@ export {
   saveVideoCorrections,
 } from "./core/corrections-io";
 export type { CorrectionFileEntry } from "./core/corrections-io";
-export { probeVideo, parseProbeJson, planChunks } from "./core/audio";
+export { probeVideo, parseProbeJson, planChunks, assertAudioDecodable, AUDIO_UNDECODABLE_ERROR } from "./core/audio";
 export type { ProbeResult, ChunkLimits } from "./core/audio";
 export { createAsrEngine } from "./asr/engine";
 export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOptions } from "./asr/engine";
