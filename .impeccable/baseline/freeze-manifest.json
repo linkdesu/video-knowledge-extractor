@@ -1,8 +1,8 @@
 {
-  "run_id": "r45-dev-smoke",
+  "run_id": "r45-freeze",
   "round": 1,
-  "frozen_at": "2026-10-28T17:35:41.919Z",
-  "baseline_commit": "caafaa1cf39f5c62bed415fff9ffc0c4ea01bc21",
+  "frozen_at": "2026-10-28T17:55:19.558Z",
+  "baseline_commit": "660f053ad3e8d8091d598cf09e5aec3b5f414e1e",
   "open_questions": 0,
   "detect": {
     "targets": [
@@ -16,11 +16,11 @@
   "baseline": {
     "baseline": {
       "file": ".impeccable/baseline/baseline.png",
-      "sha256": "1ec832e3dc891a55439256aefd1a2c339543362ea4c58f211f100fd4eceb0bdb"
+      "sha256": "4c17ba1c1ce75e0045f7b165f50fbbca9befeb27906c94e34602619c7ab639e7"
     },
     "selectors": {
       "file": ".impeccable/baseline/selectors.json",
-      "sha256": "c4840af585e8af2e57c609f0e692016adc85b236ee873a82c31fe636ea2fbce2"
+      "sha256": "17b08cc99f09a401dee6e8d170d07e11e0c5499489892d8e6c15a83c0b47f39f"
     },
     "impeccable_report": {
       "file": ".impeccable/baseline/impeccable-report.json",

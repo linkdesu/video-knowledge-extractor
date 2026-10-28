@@ -1,8 +1,8 @@
 {
   "url": "vnote-app://bundle/index.html",
   "title": "VideoNotes",
-  "captured_at": "2026-10-28T17:35:41.919Z",
-  "run_id": "r45-dev-smoke",
+  "captured_at": "2026-10-28T17:55:19.558Z",
+  "run_id": "r45-freeze",
   "round": 1,
   "required": {
     "app_version": true,
@@ -12,22 +12,9 @@
   "testids": [
     "app-version",
     "breadcrumb",
-    "card-continue",
     "dropzone",
-    "job-banner",
-    "job-cancel",
-    "job-log-line",
-    "job-log-tail",
-    "job-state",
-    "job-toggle-log",
     "nav-glossary",
     "nav-library",
-    "nav-settings",
-    "video-card",
-    "video-card-foot",
-    "video-cover",
-    "video-delete",
-    "video-status",
-    "video-title"
+    "nav-settings"
   ]
 }
