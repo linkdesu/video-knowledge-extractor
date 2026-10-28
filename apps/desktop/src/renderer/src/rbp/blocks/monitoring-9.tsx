@@ -134,6 +134,7 @@ function cardContent(job: JobSnapshot, now: number): CardContent {
 }
 
 const COMPACT_VIEWPORT_MAX_HEIGHT = 700;
+const COMPACT_JOB_INSET_FLOOR = 240;
 
 const TONE_CLASS = {
   run: "text-[var(--vn-fg)]",
@@ -180,14 +181,19 @@ export function JobProgress({
     if (banner === null) return;
     const rootStyle = document.documentElement.style;
     const updateInset = () => {
-      const inset = Math.max(360, Math.ceil(banner.getBoundingClientRect().height) + 32);
+      const floor = window.innerHeight <= COMPACT_VIEWPORT_MAX_HEIGHT
+        ? COMPACT_JOB_INSET_FLOOR
+        : 360;
+      const inset = Math.max(floor, Math.ceil(banner.getBoundingClientRect().height) + 32);
       rootStyle.setProperty("--vn-job-inset", `${inset}px`);
     };
     updateInset();
     const observer = new ResizeObserver(updateInset);
     observer.observe(banner);
+    window.addEventListener("resize", updateInset);
     return () => {
       observer.disconnect();
+      window.removeEventListener("resize", updateInset);
       rootStyle.removeProperty("--vn-job-inset");
     };
   }, []);

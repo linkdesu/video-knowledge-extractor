@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   JobSnapshot,
   JobStep,
@@ -349,7 +350,7 @@ export function LibraryPage({
         </div>
       ) : null}
 
-      {rerunOpen ? (
+      {rerunOpen ? createPortal(
         <div
           className="vn-mask"
           role="dialog"
@@ -406,10 +407,11 @@ export function LibraryPage({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
 
-      {deleting !== null ? (
+      {deleting !== null ? createPortal(
         <div
           className="vn-mask"
           role="dialog"
@@ -447,7 +449,8 @@ export function LibraryPage({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </>
   );

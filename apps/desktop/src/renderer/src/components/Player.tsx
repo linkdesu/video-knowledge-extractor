@@ -72,14 +72,18 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
         borderRadius: 16,
         overflow: "hidden",
         border: "1px solid var(--vn-line)",
-        display: "grid",
-        placeItems: "center",
-        // 占位态保留渐变与 16/10；视频态让容器跟随视频真实尺寸居中。
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // 占位态使用可随内容增高的纵向流，避免错误文案在矮容器被裁切。
         ...(showPlaceholder
           ? {
+              flexDirection: "column",
+              gap: 12,
+              padding: 24,
+              minHeight: 220,
               background:
                 "radial-gradient(200px 160px at 70% 20%, rgba(139,92,246,0.35), transparent 70%), linear-gradient(160deg,#101322,#07080d)",
-              aspectRatio: "16 / 10",
             }
           : { background: "#07080d", ...(height !== null && height !== undefined ? { height } : { minHeight: 240 }) }),
       }}
@@ -107,11 +111,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
               data-testid="player-unsupported-format"
               role="status"
               style={{
-                position: "absolute",
-                top: "calc(50% + 44px)",
-                left: "50%",
-                transform: "translateX(-50%)",
-                width: "min(360px, calc(100% - 48px))",
+                maxWidth: 360,
                 margin: 0,
                 color: "var(--vn-muted)",
                 fontSize: 14,

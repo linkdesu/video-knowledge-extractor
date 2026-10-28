@@ -253,7 +253,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
               <Player
                 ref={playerRef}
                 mediaUrl={clipPlayer !== null ? clipPlayer.mediaUrl : detail.mediaUrl}
-                sourcePath={detail.video.sourcePath}
+                sourcePath={clipPlayer !== null ? null : detail.video.sourcePath}
                 ranges={clipPlayer !== null ? [] : selected.segments}
                 height={height}
               />
