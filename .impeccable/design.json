@@ -12,7 +12,7 @@
       "border-strong": { "role": "neutral", "displayName": "Strong border", "canonical": "rgba(255, 255, 255, 0.14)" },
       "foreground": { "role": "neutral", "displayName": "Foreground text", "canonical": "#eef0f6" },
       "muted": { "role": "neutral", "displayName": "Muted text", "canonical": "#9aa3b8" },
-      "dim": { "role": "neutral", "displayName": "Dim text", "canonical": "#6f7890" },
+      "dim": { "role": "neutral", "displayName": "Dim text", "canonical": "#7d87a0" },
       "violet": { "role": "primary", "displayName": "Violet accent", "canonical": "#8b5cf6" },
       "cyan": { "role": "secondary", "displayName": "Cyan accent", "canonical": "#22d3ee" },
       "pink": { "role": "tertiary", "displayName": "Pink accent", "canonical": "#f472b6" },

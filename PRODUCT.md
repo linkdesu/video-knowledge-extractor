@@ -1,8 +1,6 @@
 # PRODUCT — video-notes
 
-The product truth every design round converges on. Each prototype round fills
-the open questions here; the freeze gate refuses to close while a section is
-still a guess.
+模板说明：本文件是设计轮次收敛的产品真相；每轮原型只改 Open questions，`--freeze` 要求它为 0。
 
 ## One-liner
 
