@@ -26,6 +26,14 @@
 - 评审与判分必须同时包含两个模型，各至少一个：`sol-reviewer`（`openai-codex/gpt-6.1-sol`）与 `k3-reviewer`（`kimi-code/k3`）。interrogate 派这两个评审；arena cross-judge 派两个只读 judge（两模型各一），评分分歧处记为缺口。
 - `scout` / `sonic` 跑 `mimo-v2.6-flash`，只做调研与轻量档，禁止担任 reviewer 或 judge。
 
+## UI 设计与 Impeccable 视觉门禁（r45）
+
+- 凡涉及 `apps/desktop/src/renderer/` 的 UI/布局/样式修改，必须派 `@designer` 子代理执行；评审用 `@impeccable-finish-reviewer` 或双模型 reviewer。新功能/界面改版可先跑 `bun run design:prototype --round <N>` 多轮原型工作流。
+- 顶层布局铁律：`.vn-shell` 与 `.vn-aside` 的高度必须恒等于 `100vh`（`window.innerHeight`），任何浮层/底部栏/局部组件都不能挤压 `.vn-shell`；任务浮层是右下角 `fixed` 卡片（`job-banner`，日志可折叠 `job-toggle-log`，视口高度 ≤700px 时默认收起），浮层打开时内容区加动态底部留白（`.vn-shell[data-has-job="true"] .vn-content { padding-bottom: var(--vn-job-inset, 360px) }`，值由浮层自身的 `ResizeObserver` 写为 `max(360, 高度 + 32)`）。
+- `.impeccable/config.json` 豁免的三条规则（`ai-color-palette` / `gradient-text` / `dark-glow`）是品牌决定，改它等于改品牌；其它 rule 一律不豁免，见 `DESIGN.md` 的「Detector waivers」。
+- 每次验证必跑 `bun run verify:detect`（源码 + 运行中 Electron `--cdp` 实时扫描），`primary` 必须为 0；`doctor` 会硬校验视口高度不变量，不满足即失败。
+- `impeccable detect` 本机二进制为 `/Users/link/.impeccable/bin/0.1.18/impeccable`（可用 `IMPECCABLE_BIN` 覆盖）。
+
 ## Agent skills
 
 ### Issue tracker

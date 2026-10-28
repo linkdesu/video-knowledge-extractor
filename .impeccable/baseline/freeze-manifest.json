@@ -1,0 +1,30 @@
+{
+  "run_id": "r45-dev-smoke",
+  "round": 1,
+  "frozen_at": "2026-10-28T17:35:41.919Z",
+  "baseline_commit": "caafaa1cf39f5c62bed415fff9ffc0c4ea01bc21",
+  "open_questions": 0,
+  "detect": {
+    "targets": [
+      "apps/desktop/src/renderer/src"
+    ],
+    "findings": 0,
+    "primary": 0,
+    "advisory": 0,
+    "report": ".impeccable/baseline/impeccable-report.json"
+  },
+  "baseline": {
+    "baseline": {
+      "file": ".impeccable/baseline/baseline.png",
+      "sha256": "1ec832e3dc891a55439256aefd1a2c339543362ea4c58f211f100fd4eceb0bdb"
+    },
+    "selectors": {
+      "file": ".impeccable/baseline/selectors.json",
+      "sha256": "c4840af585e8af2e57c609f0e692016adc85b236ee873a82c31fe636ea2fbce2"
+    },
+    "impeccable_report": {
+      "file": ".impeccable/baseline/impeccable-report.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    }
+  }
+}

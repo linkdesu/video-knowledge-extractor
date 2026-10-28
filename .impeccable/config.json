@@ -1,0 +1,11 @@
+{
+  "detector": {
+    "ignoreRules": [
+      "ai-color-palette",
+      "gradient-text",
+      "dark-glow"
+    ],
+    "ignoreFiles": [],
+    "ignoreValues": []
+  }
+}

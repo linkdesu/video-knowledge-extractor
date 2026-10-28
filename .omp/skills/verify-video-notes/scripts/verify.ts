@@ -14,7 +14,18 @@
  */
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-
+import { createHash } from "node:crypto";
+import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
+import { jobPaddingProblems, viewportProblems } from "./lib/layout";
+import {
+  appendSeeds,
+  cardTemplate,
+  countOpenQuestions,
+  listed,
+  parseRound,
+  productTemplate,
+  renderCard,
+} from "./lib/prototype";
 const REPO = resolve(import.meta.dirname, "../../../..");
 const DESKTOP = join(REPO, "apps/desktop");
 const VERIFY_ROOT = join(REPO, "tmp/verify");
@@ -112,6 +123,35 @@ const HELP = `usage: verify.ts <command>
 
   runs
       List runs and whether each process is still alive.
+
+  detect [--run ID] [--target mac|win-gamepc] [--source-only]
+      Hard gate: \`impeccable detect --json\` over apps/desktop/src/renderer/src
+      (never the repo root, never tmp/) plus, unless --source-only, a live scan of
+      the running Electron over CDP (\`detect --cdp <port>\` from state.json; the
+      live scan is not a business check — if a live run exists but cannot be
+      scanned the gate fails, it does not pass silently). Zero primary findings
+      (severity error/warning/high) is required; advisory items are reported and
+      never block. The merged report lands in <run>/impeccable-report.json
+      (tmp/verify/latest-impeccable-report.json without a run) and, for a
+      win-gamepc target, also <run>/win/impeccable-report.json.
+      Exit 1 on any primary finding or on a failed scan.
+
+  prototype [--run ID] --round <N> [--seed "…"] [--confirmed "…"] [--rejected "…"]
+            [--open "…"] [--freeze] [--target mac|win-gamepc]
+      Multi-round design-prototype loop. Round mode: scaffolds PRODUCT.md when
+      missing (a structured template), appends --seed into it, runs
+      \`impeccable concept-seed\` (no positional args, no --json; it refuses to run
+      without PRODUCT.md in the working directory) into
+      .impeccable/concept-seed.txt, and creates/updates
+      .impeccable/rounds/round-<N>-decision-card.md with its
+      .impeccable/briefs/round-<N>-decisions.md mirror. --open "None"/"无"/
+      "clear" resets the Open Questions section. \`--freeze\` is the QA baseline
+      gate: PRODUCT.md + DESIGN.md + this round's decision card must exist, the
+      Open Questions must be empty, \`impeccable detect\` must report 0 primary
+      findings, and the live Electron (CDP) must expose the required
+      [data-testid] selectors (app-version, nav-library, breadcrumb) — then the
+      baseline is exported to .impeccable/baseline/ (baseline.png, selectors.json,
+      impeccable-report.json, freeze-manifest.json). Exit 1 on any failed check.
 
   Targets
     mac        (default) everything lives in <repo>/tmp/verify/<run>/; up builds
@@ -967,6 +1007,37 @@ async function doctor(args: string[]): Promise<void> {
       probe.ffmpeg ? ok("ffmpeg found") : warn("ffmpeg not found: extraction journeys cannot run");
       probe.modelsReady ? ok("local ASR models ready") : warn("local ASR models not ready: extraction journeys cannot run");
       probe.llmConfigured ? ok("LLM endpoint configured") : warn("LLM endpoint not configured: extraction journeys cannot run");
+      // 顶层视口布局不变量（硬门禁）：.vn-shell / .vn-aside 恒等于 window.innerHeight（±2px）；
+      // 任务浮层打开时 .vn-content 必须有 >= 360px 的底部安全留白。
+      const layoutSample = await cdp.eval<{
+        innerHeight: number;
+        shellHeight: number;
+        asideHeight: number;
+        hasJob: boolean;
+        contentPaddingBottom: number;
+      }>(
+        `(() => {
+          const shell = document.querySelector('.vn-shell');
+          const aside = document.querySelector('.vn-aside');
+          const content = document.querySelector('.vn-content');
+          const cs = content ? getComputedStyle(content) : null;
+          return {
+            innerHeight: window.innerHeight,
+            shellHeight: shell ? shell.getBoundingClientRect().height : -1,
+            asideHeight: aside ? aside.getBoundingClientRect().height : -1,
+            hasJob: document.querySelector('[data-testid="job-banner"]') !== null,
+            contentPaddingBottom: cs ? parseFloat(cs.paddingBottom) || 0 : 0,
+          };
+        })()`,
+      );
+      for (const problem of viewportProblems(layoutSample)) bad(`viewport invariant: ${problem}`);
+      if (viewportProblems(layoutSample).length === 0) {
+        ok(
+          `viewport invariant: .vn-shell ${layoutSample.shellHeight}px == innerHeight ${layoutSample.innerHeight}px, ` +
+            `.vn-aside ${layoutSample.asideHeight}px`,
+        );
+      }
+      for (const problem of jobPaddingProblems({ hasJob: layoutSample.hasJob, contentPaddingBottom: layoutSample.contentPaddingBottom })) bad(`job overlay: ${problem}`);
     } catch (err) {
       bad(`renderer probe failed: ${String(err)}`);
     } finally {
@@ -1414,6 +1485,394 @@ function runs(): void {
   }
 }
 
+// ------------------------------------------------------- impeccable 门禁（detect / prototype）
+
+
+function slugOf(root: string): string {
+  const manifest = join(root, "package.json");
+  if (existsSync(manifest)) {
+    try {
+      const parsed = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string };
+      if (parsed.name) return parsed.name;
+    } catch {
+      // 坏的 package.json 是项目的问题，不是本命令的问题：退回目录名
+    }
+  }
+  return basename(root);
+}
+
+/** 把事件追加到 <runDir>/verify-events.jsonl；runDir 不存在时跳过记录。 */
+function appendVerifyEvent(runDir: string | undefined, kind: string, action: string, ok: boolean, detail: string, evidence?: string): void {
+  if (!runDir || !existsSync(runDir)) return;
+  const entry: Record<string, unknown> = { at: new Date().toISOString(), kind, action, ok, detail };
+  if (evidence) entry.evidence = evidence;
+  writeFileSync(join(runDir, "verify-events.jsonl"), `${JSON.stringify(entry)}\n`, { flag: "a" });
+}
+/** 非致命版 readState：run 不存在时返回 null（prototype 的 round 模式允许没有 run；freeze 模式要求有 run 以拿 CDP 会话）。 */
+function tryReadState(runId?: string): RunState | null {
+  if (runId !== undefined) {
+    const file = join(VERIFY_ROOT, runId, "state.json");
+    return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
+  }
+  if (!existsSync(LATEST)) return null;
+  const file = join(VERIFY_ROOT, readFileSync(LATEST, "utf8").trim(), "state.json");
+  return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
+}
+
+interface DetectResult {
+  runId: string;
+  targets: string[];
+  findings: ImpeccableFinding[];
+  primary: ImpeccableFinding[];
+  advisory: ImpeccableFinding[];
+  reportPath: string;
+  /** CI 且本机无二进制时记 skip；此时不写报告、不计门禁。 */
+  skipped: boolean;
+}
+
+/**
+ * detect 的主体：静态扫 apps/desktop/src/renderer/src（绝不扫仓库根、绝不扫 tmp/），
+ * 非 --source-only 时再用 CDP 探活并做实时扫描（live run 存在却扫不到 = 门禁失效，计入失败；
+ * 没有任何 run 时实时扫描只记 warn 并跳过）。结果合并去重后写报告。
+ */
+async function runDetect(state: RunState | null, options: { target: "mac" | "win-gamepc"; sourceOnly: boolean }): Promise<DetectResult> {
+  const runId = state?.runId ?? "(no run)";
+  const staticTarget = "apps/desktop/src/renderer/src";
+  const targets: string[] = [staticTarget];
+  const reportPath =
+    state !== null && existsSync(state.runDir)
+      ? join(state.runDir, "impeccable-report.json")
+      : join(VERIFY_ROOT, "latest-impeccable-report.json");
+  const binary = resolveImpeccableBin();
+  if (binary === null) {
+    if (process.env.CI === "true") {
+      console.log("skipped: impeccable not installed (CI)");
+      return { runId, targets, findings: [], primary: [], advisory: [], reportPath, skipped: true };
+    }
+    fail("impeccable detect is mandatory on a dev/verify machine but no binary was found; install it or set IMPECCABLE_BIN");
+  }
+  const all: ImpeccableFinding[] = [];
+
+  const runScan = (label: string, scanArgs: string[]): void => {
+    const run = runImpeccable(binary, scanArgs, REPO);
+    let findings: ImpeccableFinding[];
+    try {
+      findings = parseFindings(run.stdout);
+    } catch (err) {
+      fail(`${label}: ${String(err)}; stderr: ${run.stderr.trim().split("\n").slice(-3).join(" | ")}`);
+    }
+    if (findings.length === 0 && run.exitStatus !== 0) {
+      fail(`${label}: exit ${run.exitStatus} with no findings; stderr: ${run.stderr.trim().split("\n").slice(-3).join(" | ")}`);
+    }
+    all.push(...findings);
+  };
+
+  runScan("static scan", ["detect", staticTarget, "--json"]);
+
+  if (!options.sourceOnly) {
+    if (state === null) {
+      console.log("warn: no verification run (no state.json): live CDP scan skipped, source-only findings stand");
+    } else {
+      let cdp: Cdp | undefined;
+      try {
+        cdp = await Cdp.open(state.port);
+        runScan("CDP scan", ["detect", "--cdp", String(state.port), "--json"]);
+      } catch (err) {
+        fail(`CDP scan: no live page answer on port ${state.port} (${String(err)}); a live run that cannot be scanned fails the gate, it does not pass silently`);
+      } finally {
+        cdp?.close();
+      }
+    }
+  }
+
+  const merged = dedupeFindings(all);
+  const { primary, advisory } = classifyFindings(merged);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, `${JSON.stringify(merged, null, 2)}\n`);
+  if (options.target === "win-gamepc" && state !== null) {
+    const winDir = join(state.runDir, "win");
+    mkdirSync(winDir, { recursive: true });
+    writeFileSync(join(winDir, "impeccable-report.json"), `${JSON.stringify(merged, null, 2)}\n`);
+  }
+  return {
+    runId,
+    targets,
+    findings: merged,
+    primary,
+    advisory,
+    reportPath,
+    skipped: false,
+  };
+}
+
+/** 硬门禁：primary > 0 → 逐条打印并 exit 1；只有 advisory → exit 0。 */
+function enforceGate(result: DetectResult, target: "mac" | "win-gamepc", livePort: number | null): void {
+  console.log(`impeccable detect: ${result.runId} (${target})`);
+  console.log(`  targets: ${result.targets.join(", ")}${livePort === null ? "" : `, --cdp ${livePort}`}`);
+  console.log(`  findings: ${result.findings.length} (primary ${result.primary.length}, advisory ${result.advisory.length})`);
+  console.log(`  report: ${result.reportPath}`);
+  if (result.primary.length > 0) {
+    for (const finding of result.primary) {
+      const where = finding.file ?? finding.selector ?? "?";
+      const at = finding.line !== undefined ? `:${finding.line}` : "";
+      const what = finding.snippet ?? finding.message ?? finding.description ?? "";
+      console.log(`fail: ${finding.antipattern ?? finding.name ?? "unknown"} @ ${where}${at} — ${what}`);
+    }
+    process.exit(1);
+  }
+}
+
+async function detect(args: string[]): Promise<void> {
+  // 没有 run 也能跑源码扫描（CI 与改动前的自查）：此时只跳过 CDP 实时扫描，
+  // 有 run 却扫不到 CDP 才算门禁失效（见 runDetect）。
+  const state = tryReadState(takeFlag(args, "--run"));
+  const target = resolveTarget(takeFlag(args, "--target"), state ?? undefined);
+  const sourceOnly = hasFlag(args, "--source-only");
+  const result = await runDetect(state, { target, sourceOnly });
+  if (result.skipped) return;
+  enforceGate(result, target, sourceOnly || state === null ? null : state.port);
+  appendVerifyEvent(
+    state?.runDir,
+    "detect",
+    "impeccable-detect",
+    true,
+    `${result.findings.length} findings (primary ${result.primary.length}, advisory ${result.advisory.length}) in ${result.targets.join(", ")}`,
+    "impeccable-report.json",
+  );
+}
+
+async function prototype(args: string[]): Promise<void> {
+  const round = parseRound(takeFlag(args, "--round"));
+  const seedText = listed(takeFlag(args, "--seed"));
+  const confirmed = listed(takeFlag(args, "--confirmed"));
+  const rejected = listed(takeFlag(args, "--rejected"));
+  const open = listed(takeFlag(args, "--open"));
+  const freeze = hasFlag(args, "--freeze");
+  const stateOrNull = tryReadState(takeFlag(args, "--run"));
+  const target = resolveTarget(takeFlag(args, "--target"), stateOrNull ?? undefined);
+  const runDir = stateOrNull?.runDir;
+  const record = (action: string, ok: boolean, detail: string, evidence?: string): void =>
+    appendVerifyEvent(runDir, "prototype", action, ok, detail, evidence);
+
+  const slug = slugOf(REPO);
+  const productFile = join(REPO, "PRODUCT.md");
+
+  if (freeze) {
+    const cardRel = `.impeccable/rounds/round-${round}-decision-card.md`;
+    const missing = [
+      !existsSync(productFile) ? "PRODUCT.md" : null,
+      !existsSync(join(REPO, "DESIGN.md")) ? "DESIGN.md" : null,
+      !existsSync(join(REPO, cardRel)) ? cardRel : null,
+    ].filter((entry): entry is string => entry !== null);
+    if (missing.length > 0) {
+      record("freeze", false, `missing ${missing.join(", ")}`);
+      fail(`freeze blocked: missing ${missing.join(", ")}`);
+    }
+    const openCount = countOpenQuestions(readFileSync(join(REPO, cardRel), "utf8"));
+    if (openCount > 0) {
+      record("freeze", false, `${openCount} open question(s) in ${cardRel}`);
+      fail(`freeze blocked: ${openCount} open question(s) remain in ${cardRel} (only "- None" / "无" is allowed)`);
+    }
+    if (stateOrNull === null) {
+      record("freeze", false, "no verification run: the live Electron CDP session is required for the baseline");
+      fail("freeze blocked: no verification run (run `verify.ts up` first) — the baseline is captured through the live Electron CDP session");
+    }
+    const detect = await runDetect(stateOrNull, { target, sourceOnly: false });
+    if (detect.skipped) fail("freeze blocked: impeccable detect was skipped (no binary on this machine)");
+    if (detect.primary.length > 0) {
+      record("freeze-detect", false, `${detect.primary.length} primary impeccable findings`);
+      fail(`freeze blocked: impeccable detect reports ${detect.primary.length} primary finding(s); see ${detect.reportPath}`);
+    }
+
+    const baselineDir = join(REPO, ".impeccable", "baseline");
+    mkdirSync(baselineDir, { recursive: true });
+    const baselineFile = join(baselineDir, "baseline.png");
+    const selectorsFile = join(baselineDir, "selectors.json");
+    const impeccableReportFile = join(baselineDir, "impeccable-report.json");
+
+    let cdp: Cdp;
+    try {
+      cdp = await Cdp.open(stateOrNull.port);
+    } catch (err) {
+      record("freeze-baseline", false, `no live Electron on port ${stateOrNull.port}: ${String(err)}`);
+      fail(`freeze blocked: no live Electron CDP session (start one with \`verify.ts up\`): ${String(err)}`);
+    }
+    try {
+      const shot = await cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
+      writeFileSync(baselineFile, Buffer.from(shot.data, "base64"));
+      const dom = await cdp.eval<{ url: string; title: string; testids: string[] }>(
+        `(() => {
+          const testids = Array.from(document.querySelectorAll("[data-testid]"))
+            .map((el) => el.getAttribute("data-testid"))
+            .filter((value) => typeof value === "string" && value.length > 0);
+          return { url: location.href, title: document.title, testids: Array.from(new Set(testids)).sort() };
+        })()`,
+      );
+      const required = {
+        app_version: dom.testids.includes("app-version"),
+        nav_library: dom.testids.includes("nav-library"),
+        breadcrumb: dom.testids.includes("breadcrumb"),
+      };
+      const absent = (Object.entries(required) as Array<[string, boolean]>)
+        .filter(([, value]) => !value)
+        .map(([key]) => key);
+      if (absent.length > 0) {
+        record("freeze-baseline", false, `missing required selector(s): ${absent.join(", ")}`);
+        fail(`freeze blocked: the running app lacks required [data-testid] selector(s): ${absent.join(", ")}`);
+      }
+      writeFileSync(
+        selectorsFile,
+        `${JSON.stringify(
+          {
+            url: dom.url,
+            title: dom.title,
+            captured_at: new Date().toISOString(),
+            run_id: stateOrNull.runId,
+            round,
+            required,
+            testids: dom.testids,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } finally {
+      cdp.close();
+    }
+    writeFileSync(impeccableReportFile, `${JSON.stringify(detect.findings, null, 2)}\n`);
+
+    const manifest = {
+      run_id: stateOrNull.runId,
+      round,
+      frozen_at: new Date().toISOString(),
+      baseline_commit: revParse(),
+      open_questions: 0,
+      detect: {
+        targets: detect.targets,
+        findings: detect.findings.length,
+        primary: 0,
+        advisory: detect.advisory.length,
+        report: ".impeccable/baseline/impeccable-report.json",
+      },
+      baseline: {
+        baseline: { file: ".impeccable/baseline/baseline.png", sha256: createHash("sha256").update(readFileSync(baselineFile)).digest("hex") },
+        selectors: { file: ".impeccable/baseline/selectors.json", sha256: createHash("sha256").update(readFileSync(selectorsFile)).digest("hex") },
+        impeccable_report: { file: ".impeccable/baseline/impeccable-report.json", sha256: createHash("sha256").update(readFileSync(impeccableReportFile)).digest("hex") },
+      },
+    };
+    const manifestFile = join(baselineDir, "freeze-manifest.json");
+    writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+    record("freeze", true, `.impeccable/baseline/ (round ${round}, 0 open questions)`, ".impeccable/baseline/freeze-manifest.json");
+    console.log(
+      JSON.stringify(
+        {
+          run_id: stateOrNull.runId,
+          status: "frozen",
+          round,
+          baseline: ".impeccable/baseline",
+          files: [
+            ".impeccable/baseline/baseline.png",
+            ".impeccable/baseline/selectors.json",
+            ".impeccable/baseline/impeccable-report.json",
+            ".impeccable/baseline/freeze-manifest.json",
+          ],
+          manifest: ".impeccable/baseline/freeze-manifest.json",
+          detect: { findings: detect.findings.length, primary: 0, advisory: detect.advisory.length },
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  // ---- Round 模式 ----
+  const created = !existsSync(productFile);
+  if (created) {
+    writeFileSync(productFile, productTemplate(slug, seedText[0] ?? null));
+  } else if (seedText.length > 0) {
+    writeFileSync(productFile, appendSeeds(readFileSync(productFile, "utf8"), seedText));
+  }
+
+  const seedRun: { exitStatus: number; stdout: string; stderr: string } | null = (() => {
+    const binary = resolveImpeccableBin();
+    if (binary === null) {
+      if (process.env.CI === "true") {
+        record("concept-seed", true, "skipped: impeccable is not installed on this machine (CI)");
+        return null;
+      }
+      fail("impeccable concept-seed is mandatory on a dev/verify machine but no binary was found; install it or set IMPECCABLE_BIN");
+    }
+    // concept-seed 没有位置参数、没有 --json：从工作目录读 PRODUCT.md。
+    return runImpeccable(binary, ["concept-seed"], REPO);
+  })();
+  const seedFile = join(REPO, ".impeccable", "concept-seed.txt");
+  if (seedRun !== null) {
+    mkdirSync(dirname(seedFile), { recursive: true });
+    writeFileSync(seedFile, `${seedRun.stdout}${seedRun.stderr ? `\n${seedRun.stderr}` : ""}`);
+    const seedOk = seedRun.exitStatus === 0;
+    record(
+      "concept-seed",
+      seedOk,
+      seedOk ? ".impeccable/concept-seed.txt" : `impeccable concept-seed exited ${seedRun.exitStatus}: ${seedRun.stderr.trim().split("\n").slice(-2).join(" ")}`,
+      ".impeccable/concept-seed.txt",
+    );
+    if (!seedOk) {
+      fail(`impeccable concept-seed failed (exit ${seedRun.exitStatus}); PRODUCT.md must exist in the repo root`);
+    }
+  }
+
+  const cardRel = `.impeccable/rounds/round-${round}-decision-card.md`;
+  const briefRel = `.impeccable/briefs/round-${round}-decisions.md`;
+  const cardFile = join(REPO, cardRel);
+  mkdirSync(dirname(cardFile), { recursive: true });
+  mkdirSync(join(REPO, ".impeccable", "briefs"), { recursive: true });
+  const previous = existsSync(cardFile) ? readFileSync(cardFile, "utf8") : cardTemplate(round, stateOrNull?.runId ?? "(no run)", slug);
+  const header = [
+    `# Round ${round} — Decision Card (${slug})`,
+    "",
+    `- run: \`${stateOrNull?.runId ?? "(no run)"}\``,
+    `- round: ${round}`,
+    `- updated: ${new Date().toISOString()}`,
+    `- PRODUCT.md: ${created ? "created this round" : "updated this round"}`,
+    "",
+  ];
+  // `--open None`（或 无 / clear）是本轮收口的方式：重置待决节，而不是追加占位 bullet。
+  const clearOpen = open.some((entry) => /^(none|无|clear|clear all)$/i.test(entry));
+  const card = renderCard(
+    previous,
+    header,
+    { confirmed, rejected, open: clearOpen ? [] : open },
+    clearOpen,
+  );
+  writeFileSync(cardFile, card);
+  writeFileSync(join(REPO, briefRel), card);
+  record(`round-${round}-decision-card`, true, `${cardRel} (+ ${briefRel})`, cardRel);
+
+  console.log(
+    JSON.stringify(
+      {
+        run_id: stateOrNull?.runId ?? "(no run)",
+        status: "ok",
+        round,
+        product_md: "PRODUCT.md",
+        decision_card: cardRel,
+        briefs: briefRel,
+        confirmed,
+        rejected,
+        open_questions: countOpenQuestions(card),
+        next: [
+          `dispatch @designer to build/iterate the round-${round} prototype`,
+          `bun run verify prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --confirmed "..." --rejected "..." --open "..."`,
+          `bun run verify prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --freeze`,
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 const argv = process.argv.slice(2);
 // `--target` may lead: `verify.ts --target win-gamepc up` is `verify.ts up --target win-gamepc`
 if (argv[0] === "--target" && argv.length >= 3) {
@@ -1436,6 +1895,12 @@ switch (command) {
     break;
   case "runs":
     runs();
+    break;
+  case "detect":
+    await detect(rest);
+    break;
+  case "prototype":
+    await prototype(rest);
     break;
   case undefined:
   case "help":

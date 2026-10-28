@@ -16,3 +16,6 @@ task:
     reviewer: "@slow"
     security-reviewer: "@slow"
     k3-reviewer: "@plan"
+    designer: "@designer"
+    impeccable-finish-reviewer: "@designer"
+    impeccable-documenter: "@smol"

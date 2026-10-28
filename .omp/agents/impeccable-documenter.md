@@ -1,0 +1,1 @@
+/Volumes/Data/skills/link-stack/adapters/omp/agents/impeccable-documenter.md

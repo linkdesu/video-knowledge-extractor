@@ -150,7 +150,8 @@ Read-only checks, exit code 1 on failure:
 - `settings().appVersion` equals `apps/desktop/package.json`;
 - the listening port is owned by the recorded pid (`lsof`);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`.
-- `state.json`'s `commit` differs from the current `git rev-parse HEAD` (warning only: the sources moved since launch; never fails the check).
+
+**顶层视口布局不变量（硬门禁，r45）：** 读 `window.innerHeight`、`.vn-shell` 与 `.vn-aside` 的 `getBoundingClientRect().height`，断言两者与 `innerHeight` 的差 `<= 2`；任务浮层打开时（`[data-testid=job-banner]` 存在）`.vn-content` 的 `padding-bottom >= 360`。不满足即 `fail` 并以退出码 1 结束。
 
 On `--target win-gamepc` (r41) the mac-only checks are replaced: the remote process is checked over ssh with `Get-Process -Id`, the remote listener with `Get-NetTCPConnection -LocalPort <port> -State Listen`, and the CDP page comes through the tunnel instead of the local port; the `lsof` port-owner check and the `apps/desktop/out/` build-freshness check are skipped (the mac build is irrelevant to the installed Windows app). The shared checks — notes root equals the remote home (compared case- and separator-insensitively) and app version against `apps/desktop/package.json` — run the same way.
 
@@ -199,7 +200,8 @@ Stable handles in this repo:
 | Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings`, `app-version` (sidebar brand version badge `v<version>`, r44) |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
 | Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-audio-only` (the 纯音频 badge on a pure-audio source card, r42), `video-card-foot` (the bottom-pinned action row) |
-| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-dock` (the layout slot below `.vn-content`, r43) |
+| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-toggle-log`（右下角 `fixed` 浮层卡片上的日志折叠按钮，`aria-expanded`；折叠时 `job-log-tail` 整个节点从 DOM 消失，进度行/状态/操作按钮保留。r43 的块级停靠槽位已废弃，r45 起不存在） |
+| Player | `player-unsupported-format`（MPEG-TS 源：`<video>` error 时出现的不可预览提示，文案「当前源容器（MPEG-TS）不支持在内置播放器直接预览，主题切片（MP4）与笔记提取不受影响」） |
 | Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`, `topic-seg-<i>` (clickable segment-label buttons on the selected topic; `i` is the segment index), `player-resize` (bottom-right resize handle, aria-label 调整播放器高度); checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
 | Notes | `note-row`, `note-open`, `clip-block`, `clip-player` (one `<video>` per topic, the concatenated `topic.mp4`), `clip-seg-<i>` (clickable segment-label chips, seek to `segmentOffsets[i]`), `clip-sub` (clickable subtitle rows), `player` (the 主题-page player; not the notes clip-player) |
@@ -212,6 +214,17 @@ Read state through the same preload bridge the UI uses: `window.vnote.listLibrar
 
 Background refreshing: the library and detail views refresh on job events. After a job finishes, allow one event tick before reading the DOM; `wait` on the expected DOM state instead of assuming it.
 
+## Visual design gates (r45)
+
+### `verify.ts detect`
+
+硬门禁：`impeccable detect --json` 静态扫 `apps/desktop/src/renderer/src`（绝不用仓库根或 `tmp/`），加上对运行中 Electron 的实时 CDP 扫描（`detect --cdp <port>`，端口取自 `state.json`；实时扫描不是业务校验——存在运行实例却扫不到时门禁失败，不静默通过）。`--source-only` 跳过实时扫描；`--target win-gamepc` 时报告另写 `<run>/win/impeccable-report.json`。合并去重后的报告落盘 `<run>/impeccable-report.json`（无 `--run` 时写 `tmp/verify/latest-impeccable-report.json`）。`primary`（severity error/warning/high）必须为 0，`advisory` 只报告不阻塞；存在 `primary` 或扫描失败时退出码 1。
+
+### `verify.ts prototype`
+
+多轮设计原型闭环，别名 `bun run design:prototype`。Round 模式五步（`--round <N>`，可附 `--seed` / `--confirmed` / `--rejected` / `--open`）：1) `PRODUCT.md` 缺失时 scaffold 结构化模板；2) 把 `--seed` 追加进 `PRODUCT.md`；3) 跑 `impeccable concept-seed`（无位置参数、无 `--json`；工作目录没有 `PRODUCT.md` 时会拒绝运行）存到 `.impeccable/concept-seed.txt`；4) 创建/更新 `.impeccable/rounds/round-<N>-decision-card.md` 及其镜像 `.impeccable/briefs/round-<N>-decisions.md`（四节：Confirmed / Rejected / Open Questions / Key Selectors）；5) `--open "None"`/`"无"`/`"clear"` 重置 Open Questions 节。
+
+`--freeze` 是 QA 基线门禁，四项检查：`PRODUCT.md` 与 `DESIGN.md` 及本轮决策卡存在、Open Questions 为空、`impeccable detect` 报告 0 `primary`、运行中 Electron（CDP）暴露必需的 `[data-testid]` 选择器（`app-version`、`nav-library`、`breadcrumb`）；全部通过后把基线导出到 `.impeccable/baseline/`（`baseline.png`、`selectors.json`、`impeccable-report.json`、`freeze-manifest.json`）。任一检查失败退出码 1。
 ## Evidence
 
 Every proof goes under the run directory printed by `up` (`tmp/verify/<run>/`). Names are yours; keep them stable per feature:

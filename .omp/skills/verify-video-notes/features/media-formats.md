@@ -111,11 +111,28 @@ $V log 40
 # expected: 音轨预检 start / 警告 音轨预检失败 / 错误 音轨预检 失败
 ```
 
-The regression pair is the same run's clean `.ts`: `r42-src-30s.ts` imports to `pending-confirm` (the `.ts source` recipe above). A clean `.ts` that fails the preflight is the false-positive regression; a bad `.ts` that creates a card or starts 转写 is the false-negative regression.
+
+### Recipe: MPEG-TS source preview notice (r45, player area)
+
+A `.ts` source that cannot be previewed in the built-in player must say so, without failing the pipeline. Import `r42-src-30s.ts` (the `.ts source` recipe above), open its 字幕 or 主题 page, and the source `<video>` errors:
+
+```bash
+# after the .ts source card is confirmed and the 字幕/主题 page is open
+$V wait "document.querySelector('[data-testid=player-unsupported-format]') !== null" --timeout 30000
+$V eval "document.querySelector('[data-testid=player-unsupported-format]').innerText"
+# expected: 当前源容器（MPEG-TS）不支持在内置播放器直接预览，主题切片（MP4）与笔记提取不受影响
+# the notice only appears when the <video> actually errored on a .ts/.mts/.m2ts source;
+# a playable source (or a non-TS container) renders no notice
+$V eval "(() => { const el = document.querySelector('[data-testid=player-unsupported-format]'); const v = document.querySelector('video'); return { present: el !== null, videoErrored: v ? v.error !== null : false }; })()"
+# expected: { present: true, videoErrored: true }
+$V shot r45-ts-preview-notice
+```
+
+The notice is informational: extraction, topics and notes are unaffected (the generated `topic.mp4` plays normally — h264 + aac in mp4). A `.ts` source that errors but shows no `player-unsupported-format` notice, or a notice on a non-TS source, is the regression.
 
 ## Gotchas
 
-- The `job-banner` used to overlay the bottom action row of the cards (r42 QA). Since r43 it is docked in `data-testid="job-dock"` below the scrollable content, so `elementFromPoint` at a card button centre hits the button once the button is scrolled into view; `contentBottom === dockTop` proves the split layout. Do not `job-close` first as a workaround; assert the hit target instead (library.md 「Banner does not block card actions」). A banner that still covers the button is the regression.
+- The `job-banner` used to overlay the bottom action row of the cards (r42 QA). Since r45 it is a `fixed` bottom-right overlay card: the layout is untouched (`.vn-shell` / `.vn-aside` stay `innerHeight`, asserted by `doctor`), the content area carries a 360 px bottom reservation while the banner is open, and `elementFromPoint` at a card button centre hits the button once the button is scrolled into view. The r43 split layout and its equal-edge assertion are gone (the r43 block-level dock slot and its testid do not exist). Do not `job-close` first as a workaround; assert the hit target instead (library.md 「Banner does not block card actions」). A banner that still eats the button (the reservation constant smaller than the banner) is the regression.
 - `listLibrary()` is ordered by id ascending, not by import order. Never index a multi-video library with `v[0]`; select by `id`, `status` or `sourcePath`.
 - Cover extraction is skipped for audio-only sources by design: a missing `video-cover` is correct there, not a failure. The card shows the styled empty thumbnail plus the duration. A `video-cover` appearing on an audio-only card, or an ERROR cover retry line in the log, is the regression.
 - An audio-only `topic.mp4` is an mp4 with exactly one AAC audio stream and no video stream (ffprobe: 1 `audio`, 0 `video`); the `clip-player` is a `<video>` with `videoWidth === 0` that still plays audio. See notes.md 「Audio-only clip」.

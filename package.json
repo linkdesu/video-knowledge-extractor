@@ -1,6 +1,6 @@
 {
   "name": "video-notes",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.0",
@@ -11,8 +11,11 @@
   "scripts": {
     "vnote": "bun run apps/cli/src/cli.ts",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
-    "install:local": "bun run apps/desktop/scripts/install-local.ts"
+    "test": "turbo run test && bun run test:tools",
+    "test:tools": "bun test ./.omp/skills/verify-video-notes/scripts/lib",
+    "install:local": "bun run apps/desktop/scripts/install-local.ts",
+    "design:prototype": "bun .omp/skills/verify-video-notes/scripts/verify.ts prototype",
+    "verify:detect": "bun .omp/skills/verify-video-notes/scripts/verify.ts detect"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

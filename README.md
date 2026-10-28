@@ -59,7 +59,7 @@ Windows x64 通过 NSIS 安装包安装（`Video Notes-<version>-setup.exe`）�
 
 转写默认走本地引擎；也可以用 `VNOTE_ASR_PROVIDER=remote` 或设置页切换到远程 ASR（OpenAI 兼容转录接口）。远程转写没有说话人分离，全部字幕归说话人1；端点不返回逐句时间戳时直接报「不能用于字幕」，不伪造整块字幕。
 
-主题分析与笔记走你配置的一个 OpenAI 兼容端点。桌面端以设置页保存的 `settings.json`（接口地址与模型名）加系统密钥库（safeStorage，apiKey，绝不落盘明文）为唯一真相来源，设置页是唯一写入入口；打包版永不读 `.env`，也不读 LLM 环境变量，`keySource` 只有 `stored` 与 `none`。dev 模式可以把 `.env` 当种子数据：只填充 `settings.json` 尚无保存值的 `baseUrl`/`model`，key 只在没有已存 key 时作回退，不覆盖、不锁定，保存后种子即失效；设置页把这种情况标为「dev 模式种子」。LLM 配置是一个三字段表单（接口地址、API key、模型名），「保存」一次在一个 crash-recoverable 凭据事务里写 `settings.json` 与密钥库，无改动时保存禁用；「测试连接」与「拉取模型」用当前草稿即可，不需要先保存。模型字段是组合框：可自由输入，也可从拉取的 `GET <base>/models` 列表里选；模型名留空时代码按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。错误按状态码译成中文人话（如 401 →「API key 无效或已停用」），不携带响应体。CLI 保持 env-only 契约：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` 两个变量都设才生效，`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 可留空交给自动发现；`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录，端点变量两组名字都认、按字段独立取值并允许混用、规范名优先（[ADR-0023](docs/adr/0023-llm-provider-config-form.md)）。
+主题分析与笔记走你配置的一个 OpenAI 兼容端点。桌面端以设置页保存的 `settings.json`（接口地址与模型名）加本机私有密钥文件（`0600` 权限，`secrets.bin`，仅在用户主动保存时写入，不进系统钥管/钥匙串）为唯一真相来源，设置页是唯一写入入口；打包版永不读 `.env`，也不读 LLM 环境变量，`keySource` 只有 `stored` 与 `none`。dev 模式可以把 `.env` 当种子数据：只填充 `settings.json` 尚无保存值的 `baseUrl`/`model`，key 只在没有已存 key 时作回退，不覆盖、不锁定，保存后种子即失效；设置页把这种情况标为「dev 模式种子」。LLM 配置是一个三字段表单（接口地址、API key、模型名），「保存」一次在一个 crash-recoverable 凭据事务里写 `settings.json` 与本机私有密钥文件，无改动时保存禁用；「测试连接」与「拉取模型」用当前草稿即可，不需要先保存。模型字段是组合框：可自由输入，也可从拉取的 `GET <base>/models` 列表里选；模型名留空时代码按固定规则自选一个通用 chat 模型，选择结果确定（同一份列表恒选同一个）。错误按状态码译成中文人话（如 401 →「API key 无效或已停用」），不携带响应体。CLI 保持 env-only 契约：`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`、`VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY` 两个变量都设才生效，`VNOTE_LLM_MODEL` / `IDEALSOFT_API_MODEL` 可留空交给自动发现；`.env` 从 cwd 与 notes 根目录各读一份，shell 显式变量优先，cwd 优先于 notes 根目录，端点变量两组名字都认、按字段独立取值并允许混用、规范名优先（[ADR-0023](docs/adr/0023-llm-provider-config-form.md)）。
 
 ## 命令与开发
 
@@ -97,7 +97,7 @@ bun run fetch:ffmpeg # 拉取固定 sha256 的 ffmpeg 9.0.2 essentials 静态包
 | `VNOTE_ASR_BASE_URL` / `VNOTE_ASR_MODEL` / `VNOTE_ASR_API_KEY` | 远程 ASR（OpenAI 兼容转录接口）的端点、模型名与密钥 |
 | `VNOTE_ENABLE_CLOUD_ASR` | 设 `1` 才在桌面端启用云端 ASR（OpenAI 兼容 / 火山）；默认只走本地 sherpa-onnx |
 | `VNOTE_FFMPEG_DIR` | 额外优先搜索 ffmpeg/ffprobe 的目录（打包后的 app 默认补 `/opt/homebrew/bin`、`/usr/local/bin`） |
-| `VNOTE_USER_DATA` | 只在开发/验收时用：覆盖 Electron `userData`（settings.json 与密钥库的位置），避免截图改动真实配置 |
+| `VNOTE_USER_DATA` | 只在开发/验收时用：覆盖 Electron `userData`（settings.json 与密钥文件的位置），避免截图改动真实配置 |
 | `REACTBITS_LICENSE_KEY` | 只在开发期拉取 RBP 源码时用；不进 lockfile、不进 `components.json`，界面运行时不读 |
 
 ```bash
@@ -109,7 +109,7 @@ bun run test
 
 ## 当前状态
 
-ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部命中缓存。ADR-0014 延后的四项能力按 [ADR-0015](docs/adr/0015-prototype-deferred-features.md) 补齐：远程 ASR 走 OpenAI 兼容转录接口（设置页或 `VNOTE_ASR_*` 配置）、卡片显示探测到的清晰度、设置页可编辑 LLM 字段（密钥走系统密钥库）、模型首次启动自动下载与本地导入（断点续传、sha256 校验）。[ADR-0016](docs/adr/0016-volcengine-flash-asr-provider.md) 增加火山引擎录音文件识别：极速版同步上传 WAV 并按 300 秒分块，标准版异步 submit/query（只接受公网 URL，本地视频请用极速版或本地 ASR）；设置页可切换提供方与鉴权方式，密钥仍只进 `secrets.bin`。Electron 桌面端能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消。
+ADR 0001–0009 的三步流水线已跑通并落盘，重跑同一输入全部命中缓存。ADR-0014 延后的四项能力按 [ADR-0015](docs/adr/0015-prototype-deferred-features.md) 补齐：远程 ASR 走 OpenAI 兼容转录接口（设置页或 `VNOTE_ASR_*` 配置）、卡片显示探测到的清晰度、设置页可编辑 LLM 字段（密钥走本机私有密钥文件 0600）、模型首次启动自动下载与本地导入（断点续传、sha256 校验）。[ADR-0016](docs/adr/0016-volcengine-flash-asr-provider.md) 增加火山引擎录音文件识别：极速版同步上传 WAV 并按 300 秒分块，标准版异步 submit/query（只接受公网 URL，本地视频请用极速版或本地 ASR）；设置页可切换提供方与鉴权方式，密钥仍只进 `secrets.bin`。Electron 桌面端能导入（文件对话框或把视频拖进空态区域）、看库、看主题与切片、编辑纠错词表、重跑与取消。
 
 [ADR-0017](docs/adr/0017-mac-unsigned-package.md) 把打包做成 `bun run package:mac`：macOS arm64 未签名 `.app` 与 `.dmg`，asar 解包原生模块，启动时补 Homebrew 的 PATH，重启后自动校验已就位的模型；试用版本默认只启用本地 ASR，云端提供方藏在 `VNOTE_ENABLE_CLOUD_ASR=1` 后面。
 
