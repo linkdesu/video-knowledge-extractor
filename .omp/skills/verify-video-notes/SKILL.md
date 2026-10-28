@@ -86,7 +86,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r26-install/V
 
 `--app` resolves `Contents/MacOS/<CFBundleExecutable>` from `Contents/Info.plist` and implies `--no-build`; the run records `appPath` in `state.json`, and `doctor` compares the bundle's mtime against the sources instead of `out/`. `--min-path` replaces the child PATH with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, so `settings().ffmpeg === true` proves the app's own PATH repair (`/opt/homebrew/bin`, `/usr/local/bin`) and not your shell.
 
-The packaged app never reads `.env` (r30): its LLM configuration comes from 设置 only — base url and model into `settings.json`, the key into the system keychain, one atomic save. A dev (unpacked) app loads `.env` only as a seed for fields without a saved value; the key hint then reads `key 由 dev 模式的 .env 种子提供；在这里输入并保存会覆盖已存 key`. On a machine without any saved value, 设置 is the only credential path, and it is the path a real user takes.
+The packaged app never reads `.env` (r30): its LLM configuration comes from 设置 only — base url and model into `settings.json`, the key into the local 0600 key file (`secrets.bin`), one atomic save. A dev (unpacked) app loads `.env` only as a seed for fields without a saved value; the key hint then reads `key 由 dev 模式的 .env 种子提供；在这里输入并保存会覆盖已存 key`. On a machine without any saved value, 设置 is the only credential path, and it is the path a real user takes.
 A packaged run must complete at least one write-operation closed loop (features/settings.md 「LLM 保存闭环」), one restart, and a `doctor`; launch plus screenshots is not acceptance.
 
 Teardown (always, including after a failed journey):
@@ -151,7 +151,7 @@ Read-only checks, exit code 1 on failure:
 - the listening port is owned by the recorded pid (`lsof`);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`.
 
-**顶层视口布局不变量（硬门禁，r45）：** 读 `window.innerHeight`、`.vn-shell` 与 `.vn-aside` 的 `getBoundingClientRect().height`，断言两者与 `innerHeight` 的差 `<= 2`；任务浮层打开时（`[data-testid=job-banner]` 存在）`.vn-content` 的 `padding-bottom >= 360`。不满足即 `fail` 并以退出码 1 结束。
+**顶层视口布局不变量（硬门禁，r45）：** 读 `window.innerHeight`、`.vn-shell` 与 `.vn-aside` 的 `getBoundingClientRect().height`，断言两者与 `innerHeight` 的差 `<= 2`；任务浮层打开时（`[data-testid=job-banner]` 存在）`.vn-content` 的 `padding-bottom` 必须 `>= 浮层实际高度 + 32px` 且 `>= 240px`（矮窗口下限降级后仍成立）。不满足即 `fail` 并以退出码 1 结束。
 
 On `--target win-gamepc` (r41) the mac-only checks are replaced: the remote process is checked over ssh with `Get-Process -Id`, the remote listener with `Get-NetTCPConnection -LocalPort <port> -State Listen`, and the CDP page comes through the tunnel instead of the local port; the `lsof` port-owner check and the `apps/desktop/out/` build-freshness check are skipped (the mac build is irrelevant to the installed Windows app). The shared checks — notes root equals the remote home (compared case- and separator-insensitively) and app version against `apps/desktop/package.json` — run the same way.
 

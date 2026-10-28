@@ -127,7 +127,7 @@ The app shell keeps navigation in a 236px side rail and scrollable work in a cen
 - **Dark-only:** `html` remains `.dark`, and `color-scheme` is `dark` (`apps/desktop/src/renderer/index.html:2`; `styles.css:3-4, 28`).
 - **Chinese-only UI:** the document language is `zh-CN` and the main navigation labels are Chinese (`index.html:2`; `rbp/blocks/app-shell-1.tsx:8-14`).
 - **Translucent layered surfaces:** panels use alpha backgrounds, fine borders, and blur (`styles.css:273-278`).
-- **Window-height shell, independent job dock:** the shell is `100vh`; the job card is fixed and content gets a bottom safety inset (`styles.css:119-140, 248-253`; `rbp/blocks/monitoring-9.tsx:168-172`).
+- **Window-height shell, fixed job overlay:** the shell is `100vh`; the job card is fixed and content gets a bottom safety inset (`styles.css:119-140, 248-253`; `rbp/blocks/monitoring-9.tsx:206-212`).
 
 ## Colors
 
@@ -191,7 +191,7 @@ Every renderer type size in the observed requested scale is listed with actual u
 | `13px` | Supporting text, standard button labels, form fields, radio labels, and notes-page supporting copy (`styles.css:267-270, 295-309, 498-510, 743-746`; `pages/NotesPage.tsx:66-80, 128-130`; `pages/TopicsPage.tsx:182-185`; `VideoWorkspace.tsx:24-26`). |
 | `14px` | Renderer body default, unsupported-player message, topic/note titles, and note action controls (`styles.css:59-65`; `components/Player.tsx:105-120`; `components/TopicList.tsx:74-82`; `components/NoteList.tsx:47-49`). |
 | `15px` | Brand name and sidebar icon glyphs (`styles.css:160-163, 196-200`). |
-| `16px` | Dropzone heading, selected note title, and job-dock title (`styles.css:396-400`; `pages/NotesPage.tsx:86-89`; `rbp/blocks/monitoring-9.tsx:173-176`). |
+| `16px` | Dropzone heading, selected note title, and job overlay title (`styles.css:396-400`; `pages/NotesPage.tsx:86-89`; `rbp/blocks/monitoring-9.tsx:213-216`). |
 | `17px` | Modal heading (`styles.css:708-720`). |
 | `24px` | Notes-page title (`pages/NotesPage.tsx:52-56`). |
 | `26px` | `.vn-h1` page heading and dropzone upload glyph (`styles.css:254-260`; `rbp/blocks/empty-state-5.tsx:59-64`). |
@@ -202,9 +202,9 @@ The `26px` `.vn-h1` uses `line-height: 1.25`; base body is `14px / 1.6`, and log
 
 `.vn-shell` is a full-window grid with a 236px navigation column and a flexible main column, one constrained grid row, hidden outer overflow, and `height: 100vh`; `.vn-aside` occupies that row and scrolls vertically when needed (`styles.css:119-140`). Thus the shell and aside fill the viewport/window height; the job overlay is fixed-positioned and never changes that height.
 
-The top bar is 62px high with 24px horizontal padding (`.vn-topbar`, `styles.css:209-218`). The main content scrolls inside `.vn-content` with `padding: 26px 28px 40px`; when `.vn-shell[data-has-job="true"]`, its bottom padding becomes `var(--vn-job-inset, 360px)` (`styles.css:240-249`). `JobProgress` measures itself with a `ResizeObserver` and sets `--vn-job-inset = max(360, ceil(bannerHeight) + 32)` on `document.documentElement` (`rbp/blocks/monitoring-9.tsx:178-193`), so a taller banner (long failure copy, wrapped header) still clears the last card at full scroll; the 360px floor is what `verify.ts doctor` asserts. `.vn-wrap` is centered and capped at 1160px (`styles.css:250-253`).
+The top bar is 62px high with 24px horizontal padding (`.vn-topbar`, `styles.css:209-218`). The main content scrolls inside `.vn-content` with `padding: 26px 28px 40px`; when `.vn-shell[data-has-job="true"]`, its bottom padding becomes `var(--vn-job-inset, 360px)` (`styles.css:240-249`). `JobProgress` measures itself with a `ResizeObserver` and sets `--vn-job-inset = max(floor, ceil(bannerHeight) + 32)` on `document.documentElement`, where `floor` is 360px normally and 240px when the viewport is 700px tall or shorter (`rbp/blocks/monitoring-9.tsx:136-137,184-197`). A taller banner (long failure copy, wrapped header) still clears the last card at full scroll, and a short window does not lose all of its content area to a 360px floor. `verify.ts doctor` asserts the real relation: `padding-bottom >= bannerHeight + 32` and `>= 240`. `.vn-wrap` is centered and capped at 1160px (`styles.css:250-253`).
 
-The job overlay is `[data-testid="job-banner"]`, a fixed lower-right card with `bottom-4 right-4 z-40 w-[440px]`, a viewport-width maximum, and 16px inset from the edge (`rbp/blocks/monitoring-9.tsx:168-172`). It overlays rather than compresses the main shell; the additional content bottom padding is the scroll-safe space beneath it, not a layout-height change (`styles.css:124-129, 248-249`). The aside uses 14px horizontal padding, while the content inset is 28px (`styles.css:135-140, 240-245`); both exceed the 12–16px minimum inset floor.
+The job overlay is `[data-testid="job-banner"]`, a fixed lower-right card with `bottom-4 right-4 z-40 w-[440px]`, a viewport-width maximum, and 16px inset from the edge (`rbp/blocks/monitoring-9.tsx:206-212`). It overlays rather than compresses the main shell; the additional content bottom padding is the scroll-safe space beneath it, not a layout-height change (`styles.css:124-129, 248-249`). The aside uses 14px horizontal padding, while the content inset is 28px (`styles.css:135-140, 240-245`); both exceed the 12–16px minimum inset floor.
 
 ## Elevation & Depth
 
@@ -242,7 +242,7 @@ The documented rendered radius scale is the eight distinct literal values below;
 The app shell has three navigation keys—`library`, `glossary`, and `settings`—rendered with Chinese labels (视频库、术语表、设置) as `.vn-nav-btn` buttons (`rbp/blocks/app-shell-1.tsx:8-14, 52-67`). Inactive items use muted text; hover brightens, and `.on` uses a violet/cyan gradient and inset violet border (`styles.css:171-195`). The top breadcrumb is `.vn-crumb` in the 62px top bar (`styles.css:209-228`; `app-shell-1.tsx:69-97`).
 
 ### Progress and Job Dock
-`.vn-progress` is a 6px rounded track whose fill uses `--vn-grad`; determinate width transitions over 0.4s (`styles.css:551-570`). The task dock is fixed at the lower-right, shows task state, expandable log, and state-dependent cancel/close actions (`rbp/blocks/monitoring-9.tsx:168-250`). `.vn-model-log` is a compact, independently scrollable monospace surface (`styles.css:628-660`).
+`.vn-progress` is a 6px rounded track whose fill uses `--vn-grad`; determinate width transitions over 0.4s (`styles.css:551-570`). The job overlay is fixed at the lower-right, shows task state, an expandable log, and state-dependent cancel/close actions (`rbp/blocks/monitoring-9.tsx:206-286`). `.vn-model-log` is a compact, independently scrollable monospace surface (`styles.css:628-660`).
 
 ### Dropzone and Player
 `.vn-drop` is a dashed 1.5px, 18px-radius drop surface with 34px padding and a violet radial highlight; hover and drag states strengthen the highlight (`styles.css:382-405`; `rbp/blocks/empty-state-5.tsx:38-70`). The player uses a 16px-radius, clipped, bordered dark frame and a 16:10 placeholder (`components/Player.tsx:67-85`).
@@ -251,14 +251,15 @@ The app shell has three navigation keys—`library`, `glossary`, and `settings`�
 
 ### Do:
 - **Do** preserve the single `.dark` renderer theme and `color-scheme: dark` (`index.html:2`; `styles.css:3-4, 28`).
-- **Do** preserve the 100vh shell/aside, the fixed lower-right job overlay, and the job-open content bottom inset (floor 360px, `--vn-job-inset`) (`styles.css:119-140, 248-249`; `monitoring-9.tsx:168-193`).
+- **Do** preserve the 100vh shell/aside, the fixed lower-right job overlay, and the job-open content bottom inset (`--vn-job-inset = max(360 | 240 at <=700px tall, bannerHeight + 32)`) (`styles.css:119-140, 248-249`; `monitoring-9.tsx:136-137,184-197`).
 - **Do** use the CSS-defined `--vn-*` palette and cite selector/token sources when extending it (`styles.css:31-49`).
 - **Do** retain the Chinese-only interface and current system font fallbacks (`index.html:2`; `app-shell-1.tsx:8-14`; `styles.css:6-10`).
 
 ### Don't:
 - **Don't** invent light/dark or language switches; neither is implemented (`index.html:2`; `app-shell-1.tsx:8-14`).
 - **Don't** lower `--vn-dim` (`#7d87a0`) back toward `#6f7890`: the shipped value is measured at 5.16:1 on `#10131c` and 5.45:1 on `#0b0b14`, while `#6f7890` measured 4.2–4.4:1 and failed WCAG AA for body text.
-- **Don't** make the job overlay participate in shell sizing (no flex row, no `.vn-job-dock` slot — that was r43 and it truncated the window) and don't remove `--vn-job-inset` (`styles.css:124-129, 248-249`; `monitoring-9.tsx:168-193`).
+- **Don't** render `.vn-mask` dialogs inside `.vn-shell`: it creates a `z-index: 1` stacking context, so the fixed job overlay (`z-40`) would paint above a `z-50` mask. The three dialogs (rerun range, delete video, merge speakers) are `createPortal(..., document.body)`.
+- **Don't** make the job overlay participate in shell sizing (no flex row, no `.vn-job-dock` slot — that was r43 and it truncated the window) and don't remove `--vn-job-inset` (`styles.css:124-129, 248-249`; `monitoring-9.tsx:184-197,206-212`).
 - **Don't** claim that interaction animations are limited to `:focus-visible`: existing CSS includes nav/button/dropzone hover transitions, progress movement, toast entrance, and aurora drift (`styles.css:88-117, 171-195, 295-314, 382-395, 559-570, 672-696`). This is an observed mismatch with the requested interaction-motion constraint, not a new motion prescription.
 
 ## Selectors
@@ -270,11 +271,11 @@ Stable `data-testid` hooks observed in the renderer:
 | `app-version` | `rbp/blocks/app-shell-1.tsx:45-49` |
 | `nav-library` / `nav-glossary` / `nav-settings` | `rbp/blocks/app-shell-1.tsx:8-14, 52-65` (keys map to `nav-${item.key}`) |
 | `breadcrumb` | `rbp/blocks/app-shell-1.tsx:69-97` |
-| `job-banner` | `rbp/blocks/monitoring-9.tsx:168-172` |
-| `job-state` | `rbp/blocks/monitoring-9.tsx:178-192` |
-| `job-toggle-log` | `rbp/blocks/monitoring-9.tsx:193-203` |
-| `job-log-tail` | `rbp/blocks/monitoring-9.tsx:209-227` |
-| `job-cancel` / `job-close` | `rbp/blocks/monitoring-9.tsx:228-250` |
+| `job-banner` | `rbp/blocks/monitoring-9.tsx:206-212` |
+| `job-state` | `rbp/blocks/monitoring-9.tsx:218-231` |
+| `job-toggle-log` | `rbp/blocks/monitoring-9.tsx:233-245` |
+| `job-log-tail` | `rbp/blocks/monitoring-9.tsx:248-263` |
+| `job-cancel` / `job-close` | `rbp/blocks/monitoring-9.tsx:270-286` |
 | `player` / `player-unsupported-format` | `components/Player.tsx:67-70, 105-108` |
 | `dropzone` | `rbp/blocks/empty-state-5.tsx:38-44` |
 | `settings-page` | `pages/SettingsPage.tsx:481-484` |

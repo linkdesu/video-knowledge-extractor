@@ -9,13 +9,14 @@
     "packages/*"
   ],
   "scripts": {
-    "vnote": "bun run apps/cli/src/cli.ts",
-    "typecheck": "turbo run typecheck",
+    "design:prototype": "bun .omp/skills/verify-video-notes/scripts/verify.ts prototype",
+    "install:local": "bun run apps/desktop/scripts/install-local.ts",
     "test": "turbo run test && bun run test:tools",
     "test:tools": "bun test ./.omp/skills/verify-video-notes/scripts/lib",
-    "install:local": "bun run apps/desktop/scripts/install-local.ts",
-    "design:prototype": "bun .omp/skills/verify-video-notes/scripts/verify.ts prototype",
-    "verify:detect": "bun .omp/skills/verify-video-notes/scripts/verify.ts detect"
+    "typecheck": "turbo run typecheck && bun run typecheck:tools",
+    "typecheck:tools": "tsc --noEmit -p .omp/skills/verify-video-notes/scripts/tsconfig.json",
+    "verify:detect": "bun .omp/skills/verify-video-notes/scripts/verify.ts detect",
+    "vnote": "bun run apps/cli/src/cli.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { countOpenQuestions, listed, parseRound, renderCard } from "./prototype";
+import { appendSeeds, countOpenQuestions, listed, mergeBullets, parseRound, renderCard } from "./prototype";
 
 describe("parseRound", () => {
   test('"2" → 2', () => {
@@ -66,5 +66,33 @@ describe("renderCard", () => {
     const out = renderCard(card, header, { confirmed: [], rejected: [], open: [] }, false);
     expect(out).toContain("## Notes (自定义小节)");
     expect(out).toContain("- 保留我");
+  });
+});
+
+describe("appendSeeds", () => {
+  test("没有 Seed 小节时追加一个小节", () => {
+    const out = appendSeeds("# PRODUCT — x\n\n## One-liner\n\n句子\n", ["第一条种子"]);
+    expect(out).toContain("## Seed (design prototype rounds)");
+    expect(out).toContain("- 第一条种子");
+    expect(out.indexOf("## Seed")).toBeGreaterThan(out.indexOf("## One-liner"));
+  });
+
+  test("已有 Seed 小节时只追加缺的条目，不重复", () => {
+    const base = "# PRODUCT — x\n\n## Seed (design prototype rounds)\n\n- 第一条种子\n\n## Users\n\n- 用户\n";
+    const once = appendSeeds(base, ["第一条种子", "第二条种子"]);
+    const twice = appendSeeds(once, ["第二条种子"]);
+    expect(twice.split("\n").filter((l) => l.trim() === "- 第一条种子")).toHaveLength(1);
+    expect(twice.split("\n").filter((l) => l.trim() === "- 第二条种子")).toHaveLength(1);
+    expect(twice.indexOf("## Seed")).toBeLessThan(twice.indexOf("## Users"));
+  });
+});
+
+describe("mergeBullets", () => {
+  test("占位符 - None / - 无 与空行被丢弃，回退到 fallback", () => {
+    expect(mergeBullets(["- None", "- 无", "", "  "], [], ["- 兜底"])).toEqual(["- 兜底"]);
+  });
+
+  test("已有条目保留顺序，新增追加，重复不重复", () => {
+    expect(mergeBullets(["- 甲", "- 乙"], ["丙", "甲"], ["- 兜底"])).toEqual(["- 甲", "- 乙", "- 丙"]);
   });
 });

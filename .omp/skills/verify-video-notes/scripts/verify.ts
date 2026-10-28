@@ -1008,36 +1008,48 @@ async function doctor(args: string[]): Promise<void> {
       probe.modelsReady ? ok("local ASR models ready") : warn("local ASR models not ready: extraction journeys cannot run");
       probe.llmConfigured ? ok("LLM endpoint configured") : warn("LLM endpoint not configured: extraction journeys cannot run");
       // 顶层视口布局不变量（硬门禁）：.vn-shell / .vn-aside 恒等于 window.innerHeight（±2px）；
-      // 任务浮层打开时 .vn-content 必须有 >= 360px 的底部安全留白。
+      // 任务浮层打开时 .vn-content 的底部留白必须盖住浮层本体（banner 高度 + 32，下限 240）。
       const layoutSample = await cdp.eval<{
         innerHeight: number;
         shellHeight: number;
         asideHeight: number;
         hasJob: boolean;
+        bannerHeight: number;
         contentPaddingBottom: number;
       }>(
         `(() => {
           const shell = document.querySelector('.vn-shell');
           const aside = document.querySelector('.vn-aside');
           const content = document.querySelector('.vn-content');
+          const banner = document.querySelector('[data-testid="job-banner"]');
           const cs = content ? getComputedStyle(content) : null;
           return {
             innerHeight: window.innerHeight,
             shellHeight: shell ? shell.getBoundingClientRect().height : -1,
             asideHeight: aside ? aside.getBoundingClientRect().height : -1,
-            hasJob: document.querySelector('[data-testid="job-banner"]') !== null,
+            hasJob: banner !== null,
+            bannerHeight: banner ? banner.getBoundingClientRect().height : -1,
             contentPaddingBottom: cs ? parseFloat(cs.paddingBottom) || 0 : 0,
           };
         })()`,
       );
-      for (const problem of viewportProblems(layoutSample)) bad(`viewport invariant: ${problem}`);
-      if (viewportProblems(layoutSample).length === 0) {
+      const viewportIssues = viewportProblems(layoutSample);
+      for (const problem of viewportIssues) bad(`viewport invariant: ${problem}`);
+      if (viewportIssues.length === 0) {
         ok(
           `viewport invariant: .vn-shell ${layoutSample.shellHeight}px == innerHeight ${layoutSample.innerHeight}px, ` +
             `.vn-aside ${layoutSample.asideHeight}px`,
         );
       }
-      for (const problem of jobPaddingProblems({ hasJob: layoutSample.hasJob, contentPaddingBottom: layoutSample.contentPaddingBottom })) bad(`job overlay: ${problem}`);
+      const overlayIssues = jobPaddingProblems(layoutSample);
+      for (const problem of overlayIssues) bad(`job overlay: ${problem}`);
+      if (overlayIssues.length === 0) {
+        ok(
+          layoutSample.hasJob
+            ? `job overlay: banner ${Math.ceil(layoutSample.bannerHeight)}px, .vn-content padding-bottom ${layoutSample.contentPaddingBottom}px`
+            : "job overlay: no active job, bottom inset not required",
+        );
+      }
     } catch (err) {
       bad(`renderer probe failed: ${String(err)}`);
     } finally {
@@ -1624,8 +1636,11 @@ function enforceGate(result: DetectResult, target: "mac" | "win-gamepc", livePor
 
 async function detect(args: string[]): Promise<void> {
   // 没有 run 也能跑源码扫描（CI 与改动前的自查）：此时只跳过 CDP 实时扫描，
-  // 有 run 却扫不到 CDP 才算门禁失效（见 runDetect）。
-  const state = tryReadState(takeFlag(args, "--run"));
+  // 有 run 却扫不到 CDP 才算门禁失效（见 runDetect）。显式写错的 --run 是拼写
+  // 错误而不是「没有 run」：静默降级成源码扫描会让门禁假装通过。
+  const runFlag = takeFlag(args, "--run");
+  const state = tryReadState(runFlag);
+  if (runFlag !== undefined && state === null) fail(`no verification run named ${runFlag}: tmp/verify/${runFlag}/state.json is missing`);
   const target = resolveTarget(takeFlag(args, "--target"), state ?? undefined);
   const sourceOnly = hasFlag(args, "--source-only");
   const result = await runDetect(state, { target, sourceOnly });
@@ -1648,7 +1663,9 @@ async function prototype(args: string[]): Promise<void> {
   const rejected = listed(takeFlag(args, "--rejected"));
   const open = listed(takeFlag(args, "--open"));
   const freeze = hasFlag(args, "--freeze");
-  const stateOrNull = tryReadState(takeFlag(args, "--run"));
+  const runFlag = takeFlag(args, "--run");
+  const stateOrNull = tryReadState(runFlag);
+  if (runFlag !== undefined && stateOrNull === null) fail(`no verification run named ${runFlag}: tmp/verify/${runFlag}/state.json is missing`);
   const target = resolveTarget(takeFlag(args, "--target"), stateOrNull ?? undefined);
   const runDir = stateOrNull?.runDir;
   const record = (action: string, ok: boolean, detail: string, evidence?: string): void =>
@@ -1863,8 +1880,8 @@ async function prototype(args: string[]): Promise<void> {
         open_questions: countOpenQuestions(card),
         next: [
           `dispatch @designer to build/iterate the round-${round} prototype`,
-          `bun run verify prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --confirmed "..." --rejected "..." --open "..."`,
-          `bun run verify prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --freeze`,
+          `bun run design:prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --confirmed "..." --rejected "..." --open "..."`,
+          `bun run design:prototype --run ${stateOrNull?.runId ?? "<run-id>"} --round ${round} --freeze`,
         ],
       },
       null,
