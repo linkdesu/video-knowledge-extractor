@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 // monitoring-9 改造：任务浮层 JobProgress 按 kind 显示标题；
 // 任务浮层不再用进度条/百分比，用「n/m」与已用时长（r37）。
-// r43：浮层停靠在 App 布局底部（.vn-job-dock），不再 fixed 覆盖卡片操作区；只负责卡片内容。
+// r45：右下角 fixed 浮层 + 内容区动态底部留白，绝不挤压 .vn-shell 100vh。
 // ProgressBar 保留导出：库页等其它调用方仍在使用。
 
 export function ProgressBar({ percent }: { percent: number }) {
@@ -133,6 +133,8 @@ function cardContent(job: JobSnapshot, now: number): CardContent {
   }
 }
 
+const COMPACT_VIEWPORT_MAX_HEIGHT = 700;
+
 const TONE_CLASS = {
   run: "text-[var(--vn-fg)]",
   idle: "text-[var(--vn-muted)]",
@@ -150,46 +152,97 @@ export function JobProgress({
 }) {
   // running 时本地时钟每秒走一格，用于「已用 MM:SS」；卸载时清理。
   const now = useNow(job.state === "running");
+  const [logsExpanded, setLogsExpanded] = useState(
+    () => window.innerHeight > COMPACT_VIEWPORT_MAX_HEIGHT,
+  );
   const content = cardContent(job, now);
+  const bannerRef = useRef<HTMLDivElement | null>(null);
   // tail -f 跟随：初始贴底；用户上滚即停，滚回底部（24px 内）在下次追加时恢复。
   const logRef = useRef<HTMLDivElement | null>(null);
   const followRef = useRef(true);
+  useEffect(() => {
+    setLogsExpanded(window.innerHeight > COMPACT_VIEWPORT_MAX_HEIGHT);
+    followRef.current = true;
+  }, [job.jobId]);
+  useEffect(() => {
+    let wasCompact = window.innerHeight <= COMPACT_VIEWPORT_MAX_HEIGHT;
+    const onResize = () => {
+      const isCompact = window.innerHeight <= COMPACT_VIEWPORT_MAX_HEIGHT;
+      if (isCompact === wasCompact) return;
+      wasCompact = isCompact;
+      setLogsExpanded(!isCompact);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  useEffect(() => {
+    const banner = bannerRef.current;
+    if (banner === null) return;
+    const rootStyle = document.documentElement.style;
+    const updateInset = () => {
+      const inset = Math.max(360, Math.ceil(banner.getBoundingClientRect().height) + 32);
+      rootStyle.setProperty("--vn-job-inset", `${inset}px`);
+    };
+    updateInset();
+    const observer = new ResizeObserver(updateInset);
+    observer.observe(banner);
+    return () => {
+      observer.disconnect();
+      rootStyle.removeProperty("--vn-job-inset");
+    };
+  }, []);
   useEffect(() => {
     const el = logRef.current;
     if (el !== null && followRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [job.logs.length]);
+  }, [job.jobId, job.logs.length, logsExpanded]);
   return (
     <div
       data-testid="job-banner"
-      className="vn-card w-[440px] max-w-full p-4"
+      ref={bannerRef}
+      className="vn-card fixed bottom-4 right-4 z-40 w-[440px] max-w-[calc(100vw-2rem)] p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-[16px] font-[450] tracking-[-0.015em]">
           {JOB_TITLES[job.kind]}
         </h2>
-        <span
-          data-testid="job-state"
-          className={cn(
-            "inline-flex items-center gap-1.5 text-[14px] font-[450] tabular-nums",
-            TONE_CLASS[content.stateTone],
-          )}
-        >
-          {content.showSpinner ? (
-            <span
-              aria-hidden="true"
-              className="inline-block size-2.5 shrink-0 rounded-full border border-current border-t-transparent animate-spin motion-reduce:animate-none"
-            />
+        <div className="flex items-center gap-2">
+          <span
+            data-testid="job-state"
+            className={cn(
+              "inline-flex items-center gap-1.5 text-[14px] font-[450] tabular-nums",
+              TONE_CLASS[content.stateTone],
+            )}
+          >
+            {content.showSpinner ? (
+              <span
+                aria-hidden="true"
+                className="inline-block size-2.5 shrink-0 rounded-full border border-current border-t-transparent animate-spin motion-reduce:animate-none"
+              />
+            ) : null}
+            {content.stateLabel}
+          </span>
+          {job.logs.length > 0 ? (
+            <button
+              type="button"
+              data-testid="job-toggle-log"
+              aria-expanded={logsExpanded}
+              onClick={() => setLogsExpanded((expanded) => !expanded)}
+              className="vn-btn sm"
+            >
+              {logsExpanded ? "收起日志" : "展开日志"}
+            </button>
           ) : null}
-          {content.stateLabel}
-        </span>
+        </div>
       </div>
-      {content.body !== null ? <div className="mt-2">{content.body}</div> : null}
-      {job.logs.length > 0 ? (
+      {content.body !== null ? (
+        <div className="mt-2">{content.body}</div>
+      ) : null}
+      {logsExpanded && job.logs.length > 0 ? (
         <div
           data-testid="job-log-tail"
-          className="vn-model-log"
+          className="vn-model-log flat"
           ref={logRef}
           onScroll={(e) => {
             const el = e.currentTarget;

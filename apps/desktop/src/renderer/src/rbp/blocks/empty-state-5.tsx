@@ -60,7 +60,7 @@ export default function DropZone({ onImport, onImportPath, busy }: Props) {
       <div style={{ fontSize: 26 }} aria-hidden="true">
         ⇪
       </div>
-      <h3>点击或拖放视频到这里</h3>
+      <h2>点击或拖放视频到这里</h2>
       <p>支持 mp4 / mov / m4a / mp3 / wav / flac 等 · 仅本地文件</p>
       {dropError !== null ? (
         <p className="vn-hint" style={{ marginTop: 8 }}>

@@ -259,6 +259,7 @@ export function App() {
       <AppFrame
         active={navKey}
         appVersion={appVersion}
+        hasActiveJob={job !== null}
         onNavigate={(key) => {
           if (key === "glossary") setRoute({ name: "glossary" });
           else if (key === "settings") setRoute({ name: "settings" });
@@ -302,13 +303,11 @@ export function App() {
       </AppFrame>
 
       {job !== null ? (
-        <div className="vn-job-dock" data-testid="job-dock">
-          <JobProgress
-            job={job}
-            onCancel={() => void cancelJob()}
-            onClose={() => setJob(null)}
-          />
-        </div>
+        <JobProgress
+          job={job}
+          onCancel={() => void cancelJob()}
+          onClose={() => setJob(null)}
+        />
       ) : null}
       <ToastHost />
     </>

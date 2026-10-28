@@ -360,7 +360,7 @@ export function LibraryPage({
           }}
         >
           <div className="vn-modal">
-            <h3>选择重跑范围</h3>
+            <h2>选择重跑范围</h2>
             <p>
               受影响的视频：
               {videos.find((v) => v.id === expandedId)?.title ?? ""}。
@@ -420,7 +420,7 @@ export function LibraryPage({
           }}
         >
           <div className="vn-modal">
-            <h3>确认删除</h3>
+            <h2>确认删除</h2>
             <p>
               确认删除《{deleting.title}》？将同时删除该视频的字幕、主题、笔记及切片文件，原视频文件不受影响。
             </p>

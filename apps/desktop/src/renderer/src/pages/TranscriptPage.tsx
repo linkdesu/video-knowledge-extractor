@@ -118,7 +118,12 @@ export function TranscriptPage({ detail, onRefresh, onPage }: PageContext) {
       }
       detail={
         <>
-          <Player ref={playerRef} mediaUrl={detail.mediaUrl} onTime={setT} />
+          <Player
+            ref={playerRef}
+            mediaUrl={detail.mediaUrl}
+            sourcePath={detail.video.sourcePath}
+            onTime={setT}
+          />
           {remoteAsr ? (
             <p className="vn-hint" style={{ marginTop: 14 }}>
               远程 ASR 不含说话人分离。

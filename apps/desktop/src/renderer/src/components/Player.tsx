@@ -19,6 +19,8 @@ export type PlayerHandle = {
 type Props = {
   /** 源视频 media url；null 时直接显示占位。 */
   mediaUrl: string | null;
+  /** 源视频路径；用于识别内置播放器不支持的容器格式。 */
+  sourcePath?: string | null;
   onTime?: (t: number) => void;
   /** 当前主题的时间段；占位与角标显示用。 */
   ranges?: SegmentInfo[];
@@ -28,7 +30,7 @@ type Props = {
 
 // 源视频播放器：格式不可播（error）或没有 mediaUrl 时回退到占位。
 export const Player = forwardRef<PlayerHandle, Props>(function Player(
-  { mediaUrl, onTime, ranges, height },
+  { mediaUrl, sourcePath, onTime, ranges, height },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -36,6 +38,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
   const [t, setT] = useState(0);
 
   const showPlaceholder = mediaUrl === null || error;
+  const mpegTs = /\.(ts|mts|m2ts)$/i.test(sourcePath ?? "");
 
   const seek = useCallback(
     (seconds: number) => {
@@ -99,17 +102,39 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
           >
             ▶
           </div>
-          <span
-            style={{
-              position: "absolute",
-              left: 14,
-              bottom: 12,
-              fontSize: 11,
-              color: "var(--vn-muted)",
-            }}
-          >
-            播放器 · 视频预览
-          </span>
+          {error && mpegTs ? (
+            <p
+              data-testid="player-unsupported-format"
+              role="status"
+              style={{
+                position: "absolute",
+                top: "calc(50% + 44px)",
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: "min(360px, calc(100% - 48px))",
+                margin: 0,
+                color: "var(--vn-muted)",
+                fontSize: 14,
+                fontWeight: 500,
+                lineHeight: 1.7,
+                textAlign: "center",
+              }}
+            >
+              当前源容器（MPEG-TS）不支持在内置播放器直接预览，主题切片（MP4）与笔记提取不受影响
+            </p>
+          ) : (
+            <span
+              style={{
+                position: "absolute",
+                left: 14,
+                bottom: 12,
+                fontSize: 11,
+                color: "var(--vn-muted)",
+              }}
+            >
+              播放器 · 视频预览
+            </span>
+          )}
         </>
       ) : (
         <video

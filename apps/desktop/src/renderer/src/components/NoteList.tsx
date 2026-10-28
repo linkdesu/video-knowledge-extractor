@@ -45,7 +45,7 @@ export function NoteList({ topics, selectedId, onSelect, onRegenerate, job, now 
                 : "border-neutral-900/10 dark:border-neutral-100/14"
             }`}
           >
-            <h4 className="text-[14px] font-[450]">{t.title}</h4>
+            <h2 className="text-[14px] font-[450]">{t.title}</h2>
             <span className={`mt-1.5 inline-block text-[12px] tabular-nums ${STATUS_TONE[t.status]}`}>
               {liveState ? topicStateLabel(state, topicElapsedSeconds(t, job, now)) : TOPIC_STATUS_LABEL[t.status]}
             </span>

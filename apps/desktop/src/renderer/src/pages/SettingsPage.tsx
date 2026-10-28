@@ -441,7 +441,7 @@ export function SettingsPage() {
 
   const llmSaved: LlmSaved = { baseUrl: llm.baseUrl ?? "", model: llm.model, apiKey: llm.apiKey };
   const llmDirtyNow = llmCard !== null && llmDirty(llmSaved, llmCard.draft);
-  // 保存整表单需要凭证事务：只有「要写新 key」且密钥库不可用时才禁用。
+  // 保存整表单需要凭证事务：只有「要写新 key」且本机私有密钥文件（0600）不可用时才禁用。
   const keyChanged =
     llmCard !== null &&
     llmCard.draft.apiKey.trim() !== "" &&
@@ -477,7 +477,7 @@ export function SettingsPage() {
   return (
     <>
       <h1 className="vn-h1">设置</h1>
-      <p className="vn-sub">模型、存储与缓存。API key 存在系统密钥库，输入框可编辑替换。</p>
+      <p className="vn-sub">模型、存储与缓存。API key 存在本机私有密钥文件（0600），输入框可编辑替换。</p>
 
       <div className="vn-grid vn-cards2" data-testid="settings-page">
         <SettingsPanel title="语音转写" testId="settings-asr">
@@ -1002,7 +1002,7 @@ function KeyRow({
         </span>
       ) : hasKey ? (
         <span className="vn-hint" data-testid={`${testId}-saved`}>
-          已保存（系统密钥库），可粘贴新 key 覆盖
+          已保存（本机私有密钥文件 0600），可粘贴新 key 覆盖
         </span>
       ) : null}
       {keyStorageAvailable ? null : (

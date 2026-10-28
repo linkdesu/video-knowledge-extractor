@@ -20,16 +20,23 @@ export function AppFrame({
   onNavigate,
   crumb,
   appVersion,
+  hasActiveJob,
   children,
 }: {
   active: NavKey;
   onNavigate: (key: NavKey) => void;
   crumb: Crumb;
   appVersion?: string | null;
+  hasActiveJob?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="vn-shell">
+    <div
+      className="vn-shell"
+      data-has-job={
+        hasActiveJob === undefined ? undefined : hasActiveJob ? "true" : "false"
+      }
+    >
       <aside className="vn-aside">
         <div className="vn-brand">
           <div className="vn-logo" aria-hidden="true" />
