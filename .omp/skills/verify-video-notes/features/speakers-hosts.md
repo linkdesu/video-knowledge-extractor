@@ -22,7 +22,7 @@ On the 字幕 page the speaker panel lists every top-level speaker (说话人1, 
 Preconditions:
 
 - A running instance with a real import (see [library.md](./library.md)) whose source has at least two speakers. The host auto-detection needs the LLM endpoint, so the run must be a normal seeded one (`config-seed.md`), not `--empty-settings`.
-- Use the dedicated audio fixture `r46-luffy-interview-6min.m4a` — mac `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a`, Windows `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a` (built and decode-checked in [media-formats.md](./media-formats.md) 「路飞访谈纯音频」). It is a pure-audio interview, so the same run also proves the audio card. Import it by dropping that path, then wait for `activeJob() === null`.
+- Use the dedicated audio fixture `r46-luffy-interview-6min.m4a` — mac `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a`, Windows `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a`. Both derive from the decodable audio-only source `自己造船的路飞（装逼中）_jl15999999999_2026-01-27_205719.ts` — mac `/Users/link/Documents/video-notes/…_2026-01-27_205719.ts`, Windows `D:\code\video-notes\fixtures\r46-luffy-interview-source.ts` (probe, trial decode, derivation and the Windows copies are in [media-formats.md](./media-formats.md) 「路飞访谈纯音频」). The fixture is pure audio, so the same run also proves the audio card. Import it by dropping that path, then wait for `activeJob() === null`.
 - You are inside the video workspace on the 字幕 page.
 
 ```bash

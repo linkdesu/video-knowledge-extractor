@@ -47,23 +47,34 @@ Windows runs the same six commands with `C:\Users\xieal\Documents\video-notes\` 
 
 ### Fixture: 路飞访谈纯音频（r46，主播验收用）
 
-The 30-second clips carry too little dialogue for host detection, and the standalone `自己造船的路飞（装逼中）_…_192711.ts` under `video-notes/` has a corrupt AAC track (import fails the audio preflight). The decodable copy of that interview is the normalized `media.mp3` inside its video data directory. r46 derives a 6-minute, mono AAC excerpt from it — one file used for both the pure-audio card and the host journeys:
+The 30-second clips carry too little dialogue for host detection. The usable long source is the **audio-only MPEG-TS** interview `自己造船的路飞（装逼中）_jl15999999999_2026-01-27_205719.ts` (44,223,992 bytes, 1840.9 s, AAC 44.1 kHz stereo, no video stream): `ffprobe` reads it, a 60-second trial decode and the **full-file decode** both exit 0 (the only stderr is four `non monotonically increasing dts` muxer warnings at the very end — they do not fail the decode, and the app's import preflight passes). r46 derives a 6-minute, mono AAC excerpt from it — one file used for both the pure-audio card and the host journeys:
 
-| Platform | Exact path |
-|---|---|
-| macOS | `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a` (4.3 MB, 360 s, AAC mono) |
-| Windows (`gamepc`) | `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a` (same bytes) |
+| Platform | Exact path | Bytes |
+|---|---|---|
+| macOS | `/Users/link/Documents/video-notes/自己造船的路飞（装逼中）_jl15999999999_2026-01-27_205719.ts` (source) | 44,223,992 |
+| macOS | `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a` (fixture) | 4,516,200 |
+| Windows (`gamepc`) | `D:\code\video-notes\fixtures\r46-luffy-interview-source.ts` (same source bytes) | 44,223,992 |
+| Windows (`gamepc`) | `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a` (same fixture bytes) | 4,516,200 |
 
 ```bash
-# mac: rebuild from the decodable normalized audio (the .ts next to it is corrupt)
-SRC="/Users/link/Documents/video-notes/自己造船的路飞-装逼中-jl15999999999-2026-01-27-205719-dd1827d9/media.mp3"
-ffmpeg -v error -y -ss 0 -t 360 -i "$SRC" -ac 1 -c:a aac -b:a 96k \
+SRC="/Users/link/Documents/video-notes/自己造船的路飞（装逼中）_jl15999999999_2026-01-27_205719.ts"
+# 1) confirm the audio is usable before deriving anything
+ffprobe -v error -show_entries format=duration,format_name -show_entries stream=codec_type,codec_name,channels \
+  -of default=nw=1 "$SRC"                                   # audio-only AAC, mpegts, 1840.9 s
+ffmpeg -v error -t 60 -i "$SRC" -f null - ; echo "trial=$?"  # 0
+ffmpeg -v error -i "$SRC" -f null - ; echo "full=$?"         # 0
+# 2) derive the 6-minute pure-audio fixture
+ffmpeg -v error -y -ss 0 -t 360 -i "$SRC" -vn -ac 1 -c:a aac -b:a 96k \
   "/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a"
 ffmpeg -v error -i "/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a" -f null -   # decode must exit 0
-# Windows: copy the same file to D:\code\video-notes\fixtures\ and decode-check with the app's bundled ffmpeg
+# 3) Windows copy (both files) + decode check with the app's bundled ffmpeg
+scp "$SRC" 'gamepc:D:/code/video-notes/fixtures/r46-luffy-interview-source.ts'
+scp "/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a" 'gamepc:D:/code/video-notes/fixtures/r46-luffy-interview-6min.m4a'
+ssh gamepc 'powershell -NoProfile -Command "$ff=\"D:\code\video-notes\app\resources\ffmpeg\ffmpeg.exe\"; & $ff -v error -i \"D:\code\video-notes\fixtures\r46-luffy-interview-source.ts\" -t 120 -f null -; $LASTEXITCODE; & $ff -v error -i \"D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a\" -f null -; $LASTEXITCODE"'
+# both exit 0
 ```
 
-Facts worth asserting: `ffprobe` reports no video stream, `format_name` contains `mp4`/`m4a`, the whole-file decode exits 0 on both machines, and the card shows `video-audio-only-icon`. The interview is over-segmented by local diarization (many speakers for a few voices) — that is the known clustering issue (out of scope), so the host acceptance asserts the shape and the click behaviour, not a speaker count.
+The source itself also runs the whole pipeline: `VNOTE_HOME=<tmp> bun run vnote extract "$SRC" --limit 180` exits 0, writes `video.json` with `hasVideo:false`, `normalized:"transcode"`, `mediaPath:"media.mp3"`, `hostSource:"auto"` and a host list. Facts worth asserting for the fixture: `ffprobe` reports no video stream, `format_name` contains `mp4`/`m4a`, the whole-file decode exits 0 on both machines, and the card shows `video-audio-only-icon`. The interview is over-segmented by local diarization (7 speakers for a few voices) — that is the known clustering issue (out of scope), so the host acceptance asserts the shape and the click behaviour, not a speaker count.
 
 ### Recipe: Pure-audio journey (import → topics → notes, one per audio fixture)
 
