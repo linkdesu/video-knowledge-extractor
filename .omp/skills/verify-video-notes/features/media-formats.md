@@ -45,6 +45,26 @@ ffmpeg -y -ss 120 -t 30 -i "$SRC" -c copy -f mpegts          "$OUT/r42-src-30s.t
 
 Windows runs the same six commands with `C:\Users\xieal\Documents\video-notes\` paths (fixtures land in `C:\Users\xieal\Documents\video-notes\` directly, no subdirectory). `r42-src-30s.ts` is a container-level remux: `-c copy -f mpegts` produces a file that ffmpeg itself plays (verify with `ffprobe`); that proves the container, not the app's source playback.
 
+### Fixture: 路飞访谈纯音频（r46，主播验收用）
+
+The 30-second clips carry too little dialogue for host detection, and the standalone `自己造船的路飞（装逼中）_…_192711.ts` under `video-notes/` has a corrupt AAC track (import fails the audio preflight). The decodable copy of that interview is the normalized `media.mp3` inside its video data directory. r46 derives a 6-minute, mono AAC excerpt from it — one file used for both the pure-audio card and the host journeys:
+
+| Platform | Exact path |
+|---|---|
+| macOS | `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a` (4.3 MB, 360 s, AAC mono) |
+| Windows (`gamepc`) | `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a` (same bytes) |
+
+```bash
+# mac: rebuild from the decodable normalized audio (the .ts next to it is corrupt)
+SRC="/Users/link/Documents/video-notes/自己造船的路飞-装逼中-jl15999999999-2026-01-27-205719-dd1827d9/media.mp3"
+ffmpeg -v error -y -ss 0 -t 360 -i "$SRC" -ac 1 -c:a aac -b:a 96k \
+  "/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a"
+ffmpeg -v error -i "/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a" -f null -   # decode must exit 0
+# Windows: copy the same file to D:\code\video-notes\fixtures\ and decode-check with the app's bundled ffmpeg
+```
+
+Facts worth asserting: `ffprobe` reports no video stream, `format_name` contains `mp4`/`m4a`, the whole-file decode exits 0 on both machines, and the card shows `video-audio-only-icon`. The interview is over-segmented by local diarization (many speakers for a few voices) — that is the known clustering issue (out of scope), so the host acceptance asserts the shape and the click behaviour, not a speaker count.
+
 ### Recipe: Pure-audio journey (import → topics → notes, one per audio fixture)
 
 For `r42-audio-30s.m4a` (repeat the same journey for `.mp3`, `.wav`, `.flac` in the same run or in new runs):

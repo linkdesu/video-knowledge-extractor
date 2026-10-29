@@ -36,9 +36,9 @@ Preconditions:
 - Failure journeys 1 and 3 need no LLM at all; journey 2 uses a local mock; journey 4 is a real extraction (real endpoint, real token spend). Say so in the report.
 - Read the on-disk log with `tail tmp/verify/<run>/home/logs/vnote-$(date +%F).log`; the task id in its `task=` fields is the job `runToken`.
 
-### Recipe: ffmpeg 关键参数摘要与 home 脱敏（r46）
+### Recipe: ffmpeg 关键参数摘要、路径脱敏与提示词版本（r46）
 
-Every ffmpeg/ffprobe call writes two lines: the unchanged full argv (`INFO ffmpeg <binary> cmd=[...]`) and one `命令摘要` line with `input`, `output`, `mode` (`copy` = 换封装, `transcode` = 转码), `videoCodec`, `audioCodec`, `label`. All log text has the user's home prefix replaced with `~` after secret redaction.
+Every ffmpeg/ffprobe call writes two lines: the unchanged full argv (`INFO ffmpeg <binary> cmd=[...]`) and one `命令摘要` line with `input`, `output`, `mode` (`copy` = 换封装, `transcode` = 转码), `videoCodec`, `audioCodec`, `label`. After secret redaction the logger rewrites the home prefix: macOS/Linux `$HOME` → `~`, Windows `C:\Users\<user>` → `%USERPROFILE%` (a drive-letter profile path is also caught when `USERPROFILE` is unset). Every real model call also writes one `提示词版本` line with `promptId`, `promptSource` (`default`/`custom`), `promptSha256` (64 hex), `model`, `kind`, and `hosts` (resolved names, note generation only) — never the prompt body, never a key.
 
 ```bash
 # import (or rerun) anything that runs ffmpeg — the cover frame alone is enough
@@ -48,11 +48,14 @@ LOG="tmp/verify/<run>/home/logs/vnote-$(date +%F).log"
 rg -c "命令摘要" "$LOG"          # expected: > 0
 rg "命令摘要" "$LOG" | tail -5   # expected: input=… output=… mode=copy|transcode … label=…
 rg "cmd=\[" "$LOG" | tail -3     # expected: the full argv is still there
-rg -c "/Users/link" "$LOG"       # expected: 0 — home prefix rewritten to ~
+rg -c "/Users/link" "$LOG"       # expected: 0 — mac home prefix rewritten to ~
+rg -c 'C:\\Users\\[A-Za-z0-9._-]+' "$LOG"   # expected: 0 on a Windows run — rewritten to %USERPROFILE%
 rg -c "cmd=\[\"ffmpeg\"" "$LOG"  # expected: > 0 for a transcode/remux/cover run
+rg "提示词版本" "$LOG" | tail -4  # expected: promptId=… promptSource="default|custom" promptSha256="<64 hex>" … hosts=[…]
+rg -c "你是播客转写分析器|你是视频主题分析器|根据主题与字幕抽取" "$LOG"   # expected: 0 — no prompt body
 ```
 
-Two assertions, both literal: a `命令摘要` line exists with the five fields, and `rg -c "<HOME>" "$LOG"` returns 0 while `rg -c "~"` finds the rewritten paths. Re-run with a `.ts` source to see `-ss` placement differences in the argv; the summary's `mode`/codec fields must stay correct.
+The literal assertions: a `命令摘要` line exists with the five fields, `rg -c "<HOME>" "$LOG"` returns 0 (and on Windows `rg -c 'C:\\Users\\<user>'` returns 0), a `提示词版本` line exists per real model call with a 64-hex sha and the default/custom source, and no prompt body appears anywhere in the log. Re-run with a `.ts` source to see `-ss` placement differences in the argv; the summary's `mode`/codec fields must stay correct.
 
 ### Recipe: missing models (gate error, no task id)
 

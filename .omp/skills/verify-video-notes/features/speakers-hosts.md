@@ -22,12 +22,13 @@ On the 字幕 page the speaker panel lists every top-level speaker (说话人1, 
 Preconditions:
 
 - A running instance with a real import (see [library.md](./library.md)) whose source has at least two speakers. The host auto-detection needs the LLM endpoint, so the run must be a normal seeded one (`config-seed.md`), not `--empty-settings`.
+- Use the dedicated audio fixture `r46-luffy-interview-6min.m4a` — mac `/Users/link/Documents/video-notes/r46-luffy-interview-6min.m4a`, Windows `D:\code\video-notes\fixtures\r46-luffy-interview-6min.m4a` (built and decode-checked in [media-formats.md](./media-formats.md) 「路飞访谈纯音频」). It is a pure-audio interview, so the same run also proves the audio card. Import it by dropping that path, then wait for `activeJob() === null`.
 - You are inside the video workspace on the 字幕 page.
 
 ```bash
 # 1) automation result is in the document (no UI action yet)
 $V eval "window.vnote.listLibrary().then(v => v[0].id).then(id => window.vnote.getVideo(id)).then(d => ({ hosts: d.hosts, speakers: d.transcript.speakers.map(s => ({ id: s.id, name: s.name, merged: s.mergedInto })) }))"
-# expected: hosts is a non-empty id list on a two-speaker interview; every host id exists in speakers and is top-level
+# expected: hosts is a non-empty id list; every host id exists in speakers and is top-level
 VDIR="$($V eval "window.vnote.listLibrary().then(v => v[0].outputDir)")"
 rg -o '"hostSource": *"[a-z]*"' "$VDIR/video.json" | tail -1
 # expected: "hostSource": "auto"        (absent or null when the run genuinely has no host candidate)
@@ -54,20 +55,22 @@ $V click '[data-testid=speaker-host-toggle-<A>]'
 $V eval "window.vnote.listLibrary().then(v => v[0].id).then(id => window.vnote.getVideo(id)).then(d => d.hosts)"
 # let H = that list; restart the run, then:
 $V eval "window.vnote.listLibrary().then(v => v[0].id).then(id => window.vnote.getVideo(id)).then(d => d.hosts)"
-# expected: exactly H after the restart; video.json still carries them
+# expected: exactly H after the restart; video.json still carries them with "hostSource": "manual"
 $V shot speakers-host-restart
 
-# 4) the prompt uses the hosts (after the next note generation)
-$V click '[data-testid=topic-view-<topicId>]'   # select a done topic, then regenerate from 主题 → 生成笔记
-rg -c "主播：" "$VDIR"/<topicDir>/trajectory.json
-# expected: 1 — the host line is in request.messages[0].content
+# 4) the next note generation records the host list in both log and evidence
+$V click '[data-testid=topic-view-<topicId>]'   # select a topic, then generate from 主题 → 生成笔记
+rg "提示词版本" "$VDIR/logs/vnote-$(date +%F).log" | rg "note-key-points" | tail -1
+# expected: … promptId="note-key-points" promptSource="default|custom" promptSha256="<64 hex>" … hosts=["<names>"]
+python3 -c "import json,sys; p=json.load(open(sys.argv[1]))['history'][-1]['request']['prompt']; assert p['id']=='note-key-points' and len(p['sha256'])==64 and p['hosts']; print(p['hosts'])" "$VDIR"/<topicDir>/trajectory.json
+# expected: the resolved host names; no `messages` key and no prompt body in the file
 ```
 
-Literal assertions: `getVideo(id).hosts` reflects each click immediately (a second click on the same row removes only that id), `video.json` `hosts`/`hostSource` agree with the DTO, the same list survives a real restart, and the regenerated topic's `trajectory.json` request contains the `主播：` line. Clicking the toggle must not trigger a rename: the name input keeps its value.
+Literal assertions: `getVideo(id).hosts` reflects each click immediately (a second click on the same row removes only that id), `video.json` `hosts`/`hostSource` agree with the DTO (`auto` after import, `manual` after a click), the same list survives a real restart, and the next note generation records the host names in the `提示词版本` log line and in `trajectory.json` `request.prompt.hosts`. Clicking the toggle must not trigger a rename: the name input keeps its value.
 
 ## Gotchas
 
-- **Do not assert a fixed host count.** Detection is model-driven on a real endpoint: a clean two-person interview yields the answering side (often both, when both answer each other), a lecture yields the single speaker, and a clip where nobody answers a question may yield `hosts: []` with `hostSource: null`. Assert the shape (`hosts ⊂ top-level speakers`) and the click behaviour, then report what the run actually detected.
+- **Do not assert a fixed host count.** Detection is model-driven on a real endpoint: a clean two-person interview yields the answering side (often both, when both answer each other), a lecture yields the single speaker, and a clip where nobody answers a question may yield `hosts: []` with `hostSource: null`. The 路飞 fixture is heavily over-segmented by local diarization (7 speakers for a few voices, the known clustering issue), so assert the shape (`hosts ⊂ top-level speakers`) and the click behaviour, then report what the run actually detected.
 - **Merged speakers cannot be hosts.** The toggle only exists on top-level rows; calling `setHosts` with a member id fails with `已被合并，不能单独设为主播`. Unmerge first if you need that id.
 - **Host changes do not regenerate notes by themselves.** The next 生成笔记 / 主题重跑 uses the new list (prompt hash changes → cache miss); an existing `topic.md` stays as it was until then.
 - **The auto-detection call is cached** (`<cacheRoot>/<videoId>/host-detect/`). Re-importing the same transcript does not spend tokens again; to force a fresh model answer, change the prompt (settings → LLM 提示词) or clear the cache.

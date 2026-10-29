@@ -383,7 +383,7 @@ $V eval "window.vnote.prompts().then(p => p.find(x => x.id === 'host-detect').cu
 $V shot settings-prompts-default
 ```
 
-Literal assertions: `prompts().find(id).customized` flips to `true` only after a successful save, the invalid `{{NOPE}}` save leaves `customized === false` and shows the backend error, the restart run reads the same `value`, and 恢复默认 returns the code default while dropping the key from `prompts.json`. A run that edited a prompt and then re-generated topics must show the new text in `trajectory.json` `request.messages` (cache key changes with the prompt hash).
+Literal assertions: `prompts().find(id).customized` flips to `true` only after a successful save, the invalid `{{NOPE}}` save leaves `customized === false` and shows the backend error, the restart run reads the same `value`, and 恢复默认 returns the code default while dropping the key from `prompts.json`. A run that edited a prompt and then re-generated a topic must show the change in two places, neither of which contains the prompt body: the `提示词版本` log line (`promptSource="custom"` and a `promptSha256` different from the default run) and `trajectory.json` `request.prompt` (`source`, `sha256`, `hosts`, `chars` — no `messages`).
 
 ## Gotchas
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
