@@ -86,7 +86,8 @@ async function computeSample(
     if (seg.end - seg.start >= EMBED_MIN_SECONDS && to > from) {
       const stream = extractor.createStream();
       stream.acceptWaveform({ samples: samples.subarray(from, to), sampleRate });
-      if (extractor.isReady(stream)) v = Array.from(extractor.compute(stream));
+      // Electron utility process 禁止 napi 外部缓冲（默认 true 会抛 External buffers are not allowed）。
+      if (extractor.isReady(stream)) v = Array.from(extractor.compute(stream, false));
     }
     embeddings.push({ start: seg.start, end: seg.end, v });
     if (i % 25 === 0) post({ step: "embed", done: i + 1, total: segments.length, detail: null });
@@ -135,8 +136,10 @@ function main(): void {
   port.on("message", (event) => {
     const message = event.data as LabRunMessage;
     if (message === null || typeof message !== "object" || message.type !== "run") return;
+    // Electron utilityProcess 的结构化克隆会拒收含外部内存缓冲的消息（实测 embed 阶段抛
+    // "External buffers are not allowed"）；进度/结果都是纯 JSON，统一走字符串。
     const post = (progress: { step: "extract" | "diarize" | "embed" | "decode" | "save"; done: number; total: number; detail: string | null }) => {
-      port.postMessage({ type: "progress", ...progress });
+      port.postMessage(JSON.stringify({ type: "progress", ...progress }));
     };
     void (async () => {
       try {
@@ -145,10 +148,10 @@ function main(): void {
             ? importExperimentDir(message.sourcePath, message.outDir, message.id, message.name)
             : await computeSample(message, post);
         writeSampleFile(message.outDir, file);
-        port.postMessage({ type: "done", meta: file });
+        port.postMessage(JSON.stringify({ type: "done", meta: file }));
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
-        port.postMessage({ type: "error", message: error.message, stack: error.stack });
+        port.postMessage(JSON.stringify({ type: "error", message: error.message, stack: error.stack }));
       }
     })();
   });

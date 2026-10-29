@@ -162,8 +162,16 @@ export function createLabRuntime(options: LabRuntimeOptions) {
         stderr = `${stderr}${chunk.toString()}`.slice(-4000);
       });
       proc.on("message", (raw: unknown) => {
-        if (typeof raw !== "object" || raw === null || !("type" in raw)) return;
-        const msg = raw as { type: string; step?: LabProgress["step"]; done?: number; total?: number; detail?: string | null; message?: string; stack?: string };
+        let parsed: unknown = raw;
+        if (typeof raw === "string") {
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return;
+          }
+        }
+        if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) return;
+        const msg = parsed as { type: string; step?: LabProgress["step"]; done?: number; total?: number; detail?: string | null; message?: string; stack?: string };
         if (msg.type === "progress" && msg.step !== undefined) {
           options.send({
             sampleId,
@@ -181,7 +189,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
         }
         if (msg.type === "error") {
           state.settled = true;
-          reject(new Error(msg.message ?? "Lab 导入失败"));
+          reject(new Error(`${msg.message ?? "Lab 导入失败"}${msg.stack === undefined ? "" : `\n${msg.stack}`}`));
         }
       });
       proc.on("exit", (code: number) => {

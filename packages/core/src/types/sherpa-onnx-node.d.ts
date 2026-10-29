@@ -21,6 +21,6 @@ declare module "sherpa-onnx-node" {
     constructor(config: unknown);
     createStream(): { acceptWaveform(input: { samples: Float32Array; sampleRate: number }): void };
     isReady(stream: unknown): boolean;
-    compute(stream: unknown): Float32Array;
+    compute(stream: unknown, enableExternalBuffer?: boolean): Float32Array;
   }
 }

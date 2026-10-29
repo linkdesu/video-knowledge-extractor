@@ -1852,7 +1852,7 @@ void app.whenReady().then(async () => {
     const lab = createLabRuntime({
       root: labRoot,
       modelDir: modelDirOfCurrentSettings,
-      isBusy: () => queue.active() !== null,
+      isBusy: () => queue.busy(),
       send: (progress: LabProgress) => {
         for (const w of BrowserWindow.getAllWindows()) w.webContents.send(LAB_IPC.progress, progress);
       },
