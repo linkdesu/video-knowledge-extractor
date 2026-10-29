@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { defaultModelDir } from "./model-dir";
 
-const HOME = "/Users/link";
-const UNIFIED = `${HOME}/Documents/video-notes/models`;
-const LEGACY = `${HOME}/.cache/video-notes/models`;
+const HOME = join("/", "Users", "link");
+const UNIFIED = join(HOME, "Documents", "video-notes", "models");
+const LEGACY = join(HOME, ".cache", "video-notes", "models");
 
 function only(...present: string[]): (path: string) => boolean {
   return (path) => present.includes(path);
