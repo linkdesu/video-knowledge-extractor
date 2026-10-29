@@ -710,7 +710,7 @@ textarea {
 .vn-elapsed {
   display: flex;
   justify-content: space-between;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--vn-dim);
   margin-top: 4px;
 }

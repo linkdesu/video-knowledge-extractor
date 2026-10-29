@@ -127,7 +127,7 @@ function Row({
       ) : null}
       <div
         style={{
-          fontSize: 10.5,
+          fontSize: 11,
           color: "var(--vn-dim)",
           marginTop: 6,
           fontVariantNumeric: "tabular-nums",
@@ -164,23 +164,21 @@ export function TopicList({
   const anyGenerating = topics.some((t) => topicGenerating(t, job));
   const now = useNow(anyGenerating);
   return (
-    <div className="vn-card" style={{ padding: 8 }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {topics.map((t) => (
-          <Row
-            key={t.id}
-            topic={t}
-            selected={t.id === selectedId}
-            job={job}
-            now={now}
-            mergeMode={mergeMode}
-            mergePicked={mergePicked}
-            onSelect={onSelect}
-            onToggleSelected={onToggleSelected}
-            onToggleMergePick={onToggleMergePick}
-          />
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {topics.map((t) => (
+        <Row
+          key={t.id}
+          topic={t}
+          selected={t.id === selectedId}
+          job={job}
+          now={now}
+          mergeMode={mergeMode}
+          mergePicked={mergePicked}
+          onSelect={onSelect}
+          onToggleSelected={onToggleSelected}
+          onToggleMergePick={onToggleMergePick}
+        />
+      ))}
     </div>
   );
 }

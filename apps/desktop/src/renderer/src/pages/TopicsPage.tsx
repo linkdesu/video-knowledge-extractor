@@ -304,7 +304,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                 <div
                   style={{
                     padding: "12px 14px 0",
-                    fontSize: 10.5,
+                    fontSize: 11,
                     color: "var(--vn-dim)",
                     fontVariantNumeric: "tabular-nums",
                   }}
