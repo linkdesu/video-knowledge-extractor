@@ -36,6 +36,24 @@ Preconditions:
 - Failure journeys 1 and 3 need no LLM at all; journey 2 uses a local mock; journey 4 is a real extraction (real endpoint, real token spend). Say so in the report.
 - Read the on-disk log with `tail tmp/verify/<run>/home/logs/vnote-$(date +%F).log`; the task id in its `task=` fields is the job `runToken`.
 
+### Recipe: ffmpeg 关键参数摘要与 home 脱敏（r46）
+
+Every ffmpeg/ffprobe call writes two lines: the unchanged full argv (`INFO ffmpeg <binary> cmd=[...]`) and one `命令摘要` line with `input`, `output`, `mode` (`copy` = 换封装, `transcode` = 转码), `videoCodec`, `audioCodec`, `label`. All log text has the user's home prefix replaced with `~` after secret redaction.
+
+```bash
+# import (or rerun) anything that runs ffmpeg — the cover frame alone is enough
+$V drop '/Users/link/Documents/video-notes/<video>.mp4'
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
+LOG="tmp/verify/<run>/home/logs/vnote-$(date +%F).log"
+rg -c "命令摘要" "$LOG"          # expected: > 0
+rg "命令摘要" "$LOG" | tail -5   # expected: input=… output=… mode=copy|transcode … label=…
+rg "cmd=\[" "$LOG" | tail -3     # expected: the full argv is still there
+rg -c "/Users/link" "$LOG"       # expected: 0 — home prefix rewritten to ~
+rg -c "cmd=\[\"ffmpeg\"" "$LOG"  # expected: > 0 for a transcode/remux/cover run
+```
+
+Two assertions, both literal: a `命令摘要` line exists with the five fields, and `rg -c "<HOME>" "$LOG"` returns 0 while `rg -c "~"` finds the rewritten paths. Re-run with a `.ts` source to see `-ss` placement differences in the argv; the summary's `mode`/codec fields must stay correct.
+
 ### Recipe: missing models (gate error, no task id)
 
 ```bash

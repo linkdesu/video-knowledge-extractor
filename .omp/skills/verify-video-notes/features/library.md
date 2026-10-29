@@ -13,7 +13,8 @@ The library is the landing screen. A user imports a video by dropping it on the 
 - `library-open` opens the workspace: 查看笔记切片 for a finished video, 确认主题 for a `pending-confirm` video, 继续编辑 otherwise.
 - `library-confirm` clicks 确认主题 on a pending-confirm card, opening the 主题 page where the confirm job generates the selected topics.
 - `cover-img` shows the generated mid-video cover frame (`cover.jpg`, `video-cover`) on the card thumbnail.
-- `audio-only-card` (r42) for a pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`): the card carries the 纯音频 badge (`video-audio-only`, text 纯音频) over the styled empty thumbnail plus the duration; there is no `video-cover` and cover extraction is skipped entirely (no ERROR retry lines in the log). The picker filter is `mp4, mov, m4v, webm, mkv, avi, flv, ts, mts, m2ts, m4a, mp3, wav, flac, wma` (the dropzone applies no filter); the audio-only journey and the fixture recipe are in [media-formats.md](./media-formats.md). Since r45b a non-direct-play source is normalized on import (`media.mp4`/`media.mp3`, `video.json` `originalPath`/`mediaPath`/`normalized`), so the card and the player share one playable file.
+- `audio-only-card` (r42, icon r46) for a pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`): the card carries the 纯音频 badge (`video-audio-only`, text 纯音频) and the duration; there is no `video-cover`, cover extraction is skipped entirely (no ERROR retry lines in the log), and since r46 the thumbnail area shows a music-note icon (`video-audio-only-icon`) on a plain surface instead of the decorative gradient. The picker filter is `mp4, mov, m4v, webm, mkv, avi, flv, ts, mts, m2ts, m4a, mp3, wav, flac, wma` (the dropzone applies no filter); the audio-only journey and the fixture recipe are in [media-formats.md](./media-formats.md). Since r45b a non-direct-play source is normalized on import (`media.mp4`/`media.mp3`, `video.json` `originalPath`/`mediaPath`/`normalized`), so the card and the player share one playable file.
+- `card-title` (r46) is plain text: no pointer cursor, no hover colour change, no underline. `video-title` is a `<span>` and clicking it does nothing; the only interactive parts of a card are the bottom action row and 删除.
 - `card-footer` pins the card action row to the bottom (`video-card-foot`, `margin-top:auto`) so a 1-line-title and a 2-line-title card in one row align (±1px). The foot holds the status capsule on the left and one non-wrapping button group on the right containing the primary action (继续编辑 / 确认主题 / 查看笔记切片 / 重试) plus 删除 (`video-delete`) on the same row.
 
 ## How to get to it (user POV)
@@ -196,6 +197,26 @@ $V shot library-refresh-partial
 ```
 
 The literal assertion is the tag text read right after the 视频库 click: `video-status` equals 部分完成 and `listLibrary()` agrees. A card that still reads 已完成 here (while `listLibrary()` already returns `n`) is the P2 regression: the renderer cached the old list.
+
+### Recipe: 纯音频 icon 与卡片标题去交互（r46）
+
+A pure-audio card shows the music-note icon and no cover; every card title is inert text. Both assertions are DOM reads on the library page (no job required).
+
+```bash
+# pick the pure-audio card: the card whose meta row carries the 纯音频 badge
+$V eval "[...document.querySelectorAll('[data-testid=video-card]')].map(c => ({ title: c.querySelector('[data-testid=video-title]').innerText, audioOnly: c.querySelector('[data-testid=video-audio-only]') !== null, icon: c.querySelector('[data-testid=video-audio-only-icon]') !== null, cover: c.querySelector('[data-testid=video-cover]') !== null, bg: getComputedStyle(c.querySelector('.vn-thumb')).backgroundImage }))"
+# expected: for every audio-only card icon === true, cover === false, bg === "none";
+#           for every video card icon === false (cover true when the frame was extracted)
+# the title is plain text and inert
+$V eval "(() => { const t = document.querySelector('[data-testid=video-title]'); const cs = getComputedStyle(t); const before = cs.color; t.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); return { cursor: cs.cursor, color: cs.color, decoration: cs.textDecorationLine, afterHoverColor: before }; })()"
+# expected: { cursor: "auto", color: <var(--vn-fg)>, decoration: "none", ... }
+$V click '[data-testid=video-title]'
+$V eval "document.querySelector('[data-testid=topics-generate]') === null"
+# expected: true — clicking the title stays on the library (no workspace opened)
+$V shot library-card-title
+```
+
+The literal proofs: a pure-audio card has `video-audio-only-icon` and no `video-cover`; `.vn-thumb` computes `background-image: none` for it; `.vn-title` computes `cursor` other than `pointer` and the `.vn-title:hover` rule no longer exists, so a hover changes nothing.
 
 ## Gotchas
 

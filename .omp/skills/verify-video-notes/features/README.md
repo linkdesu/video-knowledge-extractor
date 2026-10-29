@@ -42,6 +42,7 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Library and import](./library.md) — drop a video, watch the job, read the card, rerun, per-video glossary.
 - [Private verify config (r45c)](./config-seed.md) — every run is seeded with the private LLM config (`0600`, outside the repo); `seed-config`, `export-private-config`, `--empty-settings`.
 - [Topics workspace](./topics.md) — inspect topics, select them for notes, merge, delete segments and subtitle lines.
+- [Speakers and hosts (r46)](./speakers-hosts.md) — auto-detected 主播, 设为主播 / 取消主播 (multi-select, immediate save, survives restart), hosts in the key-points prompt.
 - [Notes and clips](./notes.md) — read generated notes, inspect clips, play a clip, reveal the output directory.
 - [Glossary](./glossary.md) — global correction entries, inline edit, immediate save, delete.
 - [Settings](./settings.md) — ASR provider, model bundles, LLM fields, storage paths, cache, about.

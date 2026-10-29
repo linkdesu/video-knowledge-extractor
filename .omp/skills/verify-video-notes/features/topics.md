@@ -209,6 +209,23 @@ $V shot topics-generate-count
 
 Unchecking that topic returns the button to the disabled 所选主题笔记已生成 state. With nothing selected the label is 生成笔记（0 个新主题） and a click only shows the toast 先勾选要生成的主题.
 
+### Recipe: 字幕区加高（r46，视口相关且不裁切）
+
+Each per-segment `subtitle-list` now sizes by viewport: the first segment is `clamp(320px, 42vh, 520px)` and later segments `clamp(240px, 30vh, 400px)`. The list stays scrollable inside its card, delete buttons stay reachable, and the top-level layout invariant (`.vn-shell` / `.vn-aside` == `innerHeight`) still holds.
+
+```bash
+$V wait "document.querySelectorAll('[data-testid=subtitle-list]').length >= 1"
+$V eval "(() => { const lists = [...document.querySelectorAll('[data-testid=subtitle-list]')]; return lists.map(l => ({ h: l.getBoundingClientRect().height, innerH: window.innerHeight, rows: l.querySelectorAll('[role=button]').length, overflow: getComputedStyle(l).overflowY, shell: document.querySelector('.vn-shell').getBoundingClientRect().height, aside: document.querySelector('.vn-aside').getBoundingClientRect().height })); })()"
+# expected at 860px viewport: first list h ≈ 361 (>= 320), later lists h >= 240, overflow "auto",
+#   shell === aside === innerH (±2)
+$V eval "(() => { const l = document.querySelector('[data-testid=subtitle-list]'); const last = [...l.querySelectorAll('[role=button]')].at(-1); const del = l.parentElement.querySelector('[data-testid^=subtitle-delete-]'); return { listBottom: l.getBoundingClientRect().bottom, deleteTop: del?.getBoundingClientRect().top ?? null, lastRowVisible: last !== null && last.getBoundingClientRect().top < l.getBoundingClientRect().bottom }; })()"
+# expected: deleteTop is not null and the delete button is inside the card (not clipped by the list)
+bun .omp/skills/verify-video-notes/scripts/verify.ts doctor   # layout invariant is a hard gate
+$V shot topics-subtitle-height
+```
+
+Literal assertions: the first list's measured height is `>= 320`, every later list `>= 240`, `overflow-y` is `auto`, and `doctor` passes — a taller list that pushes `.vn-shell` past `innerHeight` fails doctor, which is the anti-clipping check.
+
 ## Gotchas
 
 - The step tabs have no test ids. Their accessible names are `1 字幕`, `2 主题`, `3 笔记`; pass `主题` to `click-text`, which strips the leading number. Do not click by position — the tab order is a UI detail.

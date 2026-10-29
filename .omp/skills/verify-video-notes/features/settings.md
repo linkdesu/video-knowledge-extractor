@@ -13,6 +13,7 @@ Settings shows what the app will actually use: local ASR model bundles and their
 - `settings-llm-key` is an editable password input (`type=password`, test ids `settings-llm-key-input` / `settings-llm-key-reveal`) prefilled with the saved key (r32, masked; the eye shows plaintext). The single form 保存 keeps the saved key when the input is empty, and replaces it when the input holds a different key. Since r36 the row also has an explicit 清空 button (`settings-llm-key-clear`), shown while `llm.keyStorageAvailable` and either `llm.hasKey` or the input has text: it deletes the stored key in the same credential-transaction path, empties the input and flips the hint to `settings-llm-key-none`, with no 保存 click. The four ASR key fields follow the same pattern.
 - `settings-llm-fetch-models` calls `<base>/models` with the draft's base url and key (falling back to the stored or dev-seeded key when the key input is empty) and renders every returned id as an option in `settings-llm-model-listbox`; a failure renders inline at `settings-llm-models-error`, and a 401 reads `模型发现失败：API key 无效或已停用` with the response body never echoed.
 - `settings-test-llm` calls the configured endpoint (network).
+- `settings-prompts` (r46) is the `LLM 提示词` card (`settings-prompts`), placed after the LLM connection card: one editor per LLM step (`prompt-card-<id>`, ids `segment-chunk` / `segment-merge` / `note-key-points` / `host-detect`), each with a title, description, the allowed variables as `{{NAME}}` chips (`prompt-var-<id>-<NAME>`, tooltip = description), a monospace textarea (`prompt-editor-<id>`), 保存 (`prompt-save-<id>`, disabled while the draft equals the saved value), 恢复默认 (`prompt-reset-<id>`, enabled only when a custom version exists) and an inline status line (`prompt-status-<id>`: 已保存 / 已恢复默认 / the backend's Chinese validation error). A customised step shows a 已自定义 chip. Defaults are the code's prompts; overrides live in `<userData>/prompts.json` and are read by the worker on every job, so an edit applies to the next run without a restart. A template may omit variables but may only use declared ones (`{{NOPE}}` and unbalanced braces are rejected before saving).
 - `settings-storage` shows notesRoot, cacheRoot and modelDir; locked fields display 由环境变量控制.
 - `settings-clear-cache` deletes the cache under cacheRoot and reports the freed size.
 - `settings-about` shows `VideoNotes <version>` and `ffmpeg <version>`.
@@ -345,6 +346,45 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r30-install/V
 3. `$V shot pkg-restart`, `$V snapshot pkg-restart`, `doctor` exit 0 for both runs.
 
 Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
+
+### Recipe: LLM 提示词保存 / 恢复默认 / 重启保留（r46）
+
+The `LLM 提示词` card edits the four LLM step templates. Saved overrides live in `<userData>/prompts.json`; the default template is what the code ships. All mutations go through the textarea + buttons (no `eval` writes).
+
+```bash
+$V click '[data-testid=nav-settings]'
+$V wait "document.querySelector('[data-testid=settings-prompts]') !== null"
+$V eval "window.vnote.prompts().then(p => p.map(x => ({ id: x.id, customized: x.customized, vars: x.variables.map(v => v.name), chars: x.value.length })))"
+# expected: four steps (segment-chunk, segment-merge, note-key-points, host-detect), all customized:false,
+#           host-detect vars include SPEAKERS and LANGUAGE_HINT
+# 1) edit + save a step
+$V fill '[data-testid=prompt-editor-host-detect]' '<custom text that keeps {{SPEAKERS}}>'
+$V click '[data-testid=prompt-save-host-detect]'
+$V wait "document.querySelector('[data-testid=prompt-status-host-detect]').innerText === '已保存'" --timeout 5000
+$V eval "window.vnote.prompts().then(p => p.find(x => x.id === 'host-detect').customized)"
+# expected: true
+cat "tmp/verify/<run>/user-data/prompts.json"
+# expected: {"version":1,"prompts":{"host-detect":"<custom text …>"}}
+# 2) invalid template is rejected and does not persist
+$V fill '[data-testid=prompt-editor-segment-chunk]' 'oops {{NOPE}}'
+$V click '[data-testid=prompt-save-segment-chunk]'
+$V wait "document.querySelector('[data-testid=prompt-status-segment-chunk]').innerText.includes('NOPE')" --timeout 5000
+$V eval "window.vnote.prompts().then(p => p.find(x => x.id === 'segment-chunk').customized)"
+# expected: false — the rejected template was not written
+# 3) restart keeps the custom version (SKILL.md 「Simulating a restart」 with the same --user-data)
+$V eval "window.vnote.prompts().then(p => ({ value: p.find(x => x.id === 'host-detect').value, customized: p.find(x => x.id === 'host-detect').customized }))"
+# expected: the same custom text and customized:true after the restart run
+$V shot settings-prompts-custom
+# 4) 恢复默认 removes the override
+$V click '[data-testid=prompt-reset-host-detect]'
+$V wait "document.querySelector('[data-testid=prompt-status-host-detect]').innerText === '已恢复默认'" --timeout 5000
+$V eval "window.vnote.prompts().then(p => p.find(x => x.id === 'host-detect').customized)"
+# expected: false, and prompts.json no longer has the key
+$V shot settings-prompts-default
+```
+
+Literal assertions: `prompts().find(id).customized` flips to `true` only after a successful save, the invalid `{{NOPE}}` save leaves `customized === false` and shows the backend error, the restart run reads the same `value`, and 恢复默认 returns the code default while dropping the key from `prompts.json`. A run that edited a prompt and then re-generated topics must show the new text in `trajectory.json` `request.messages` (cache key changes with the prompt hash).
+
 ## Gotchas
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
 - **旧版系统加密密钥（r45c）。** ≤0.1.0 的 `secrets.bin` 是 safeStorage 密文。Windows 上它是 DPAPI（随用户、不随签名），新版本启动时会自动解密并迁移成 `0600` 本地 JSON，`llm.hasKey` 保持 true；macOS 的钥匙串绑定 cdhash，重装后无法免授权解密，文件被挪到 `secrets.bin.legacy-<ts>` 并写一条 WARN 日志，用户需在设置页重新填写一次 key。settings.json 里的 baseUrl/model 两种情况都保留。
