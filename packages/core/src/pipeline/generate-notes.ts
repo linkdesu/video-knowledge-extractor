@@ -8,6 +8,7 @@ import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
 import { logger } from "../core/logger";
 import { ensureDir, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
+import { renderPrompt } from "../core/prompts";
 import type { ChatMessage, GenerateNotesInput, GenerateNotesResult, LlmClient, TrajectoryTrigger } from "../core/steps";
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
 import { createLlmClient, tryParseJson } from "../llm/openai";
@@ -39,13 +40,35 @@ function correctionLines(input: GenerateNotesInput): string {
     .join("\n");
 }
 
-/** 要点提示词全文；测试用它复算缓存键里的提示词哈希。 */
+/**
+ * 要点提示词的主播段：没有主播、或 id 都解析不到说话人时返回空串（不渲染空 `主播：` 行）；
+ * 否则一行说明主播观点是主要内容，其余发言只是问题或上下文。
+ */
+function hostLine(input: GenerateNotesInput, names: Map<string, string>): string {
+  const resolved: string[] = [];
+  for (const id of input.hosts ?? []) {
+    const name = names.get(id);
+    // 合并后的说话人可能多个 id 指向同一名字，只列一次
+    if (name === undefined || resolved.includes(name)) continue;
+    resolved.push(name);
+  }
+  if (resolved.length === 0) return "";
+  return `主播：${resolved.join("、")}。以主播的观点为主要内容，其他人的发言只作为问题或上下文。\n`;
+}
+
+/** 要点提示词全文（r46 起走提示词注册表）；测试用它复算缓存键里的提示词哈希。 */
 export function noteSystemPrompt(topic: Topic, utterances: Utterance[], input: GenerateNotesInput): string {
   const lines = utterances.map((u) => `[${hms(u.start)} - ${hms(u.end)}] ${u.text}`).join("\n");
-  return (
-    `根据主题与字幕抽取 3-6 条要点，只输出 JSON {"keyPoints":[string]}。\n` +
-    `术语按下表正确写法：\n${correctionLines(input) || "（无）"}\n\n` +
-    `主题：${topic.title}\n摘要：${topic.summary}\n\n字幕：\n${lines}`
+  return renderPrompt(
+    "note-key-points",
+    {
+      HOSTS: hostLine(input, speakerNameMap(input.transcript.speakers)),
+      GLOSSARY: correctionLines(input) || "（无）",
+      TOPIC_TITLE: topic.title,
+      TOPIC_SUMMARY: topic.summary,
+      UTTERANCES: lines,
+    },
+    input.prompts,
   );
 }
 

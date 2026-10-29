@@ -6,12 +6,13 @@
  * | transcribe         | 分块音频哈希、识别/分离/标点模型、单段上限                       |
  * | topic-candidates   | 分块纠错后字幕键、块提示词文本哈希、合并提示词文本哈希、端点模型名 |
  * | note               | 主题（标题/摘要/时间段）、该主题的纠错后字幕、系统提示词文本哈希、端点模型名、词表内容 |
+ * | host-detect        | 说话人统计与示例发言、提示词文本哈希、端点模型名                    |
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type CacheStep = "transcribe" | "topic-candidates" | "note";
+export type CacheStep = "transcribe" | "topic-candidates" | "note" | "host-detect";
 
 declare const cacheBrand: unique symbol;
 

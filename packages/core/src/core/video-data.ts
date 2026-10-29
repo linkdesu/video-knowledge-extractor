@@ -5,12 +5,15 @@ import { isVideoLocked } from "./lock";
 import { writeJsonAtomic } from "./paths";
 import type { NormalizeMode } from "./media-normalize";
 import type { AsrProvider } from "./settings";
-import type { Chunk, Segment, SpeakerId, TopicId, Transcript, Utterance, Video, VideoId } from "./types";
+import type { Chunk, Segment, Speaker, SpeakerId, TopicId, Transcript, Utterance, Video, VideoId } from "./types";
 
 export const VIDEO_DATA_FILE = "video.json";
 export const VIDEO_DATA_VERSION = 1;
 
 export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-rerun" | "proposed";
+
+/** 主播的来源：自动识别 / 人工修正 / 未识别（旧文档、还没跑识别、或已被用户清空）。 */
+export type HostSource = "auto" | "manual" | null;
 
 export type TopicClip = { file: string; start: number; end: number; segmentIndexes: number[]; segmentOffsets: number[] };
 
@@ -64,6 +67,10 @@ export type VideoData = {
   mediaPath: string | null;
   /** 规范化方式：none（原文件直读）/ remux（换封装）/ transcode（转码）；旧文档缺失为 null */
   normalized: NormalizeMode | null;
+  /** 主播，可以多个，按识别/用户顺序；空数组表示未识别或已清空 */
+  hosts: SpeakerId[];
+  /** 主播的来源：自动识别 / 人工修正 / 未识别 */
+  hostSource: HostSource;
   updatedAt: string;
 };
 
@@ -229,6 +236,30 @@ function parseNormalized(v: unknown, where: string): NormalizeMode | null {
   return v as NormalizeMode;
 }
 
+/**
+ * 主播列表：缺失、形状不对、id 不在说话人表里的项一律丢弃（旧文档没有这个字段），
+ * 去重并保持原顺序；宁可少一个主播，也不让一个坏字段挡住整个文档。
+ */
+function parseHosts(v: unknown, speakers: readonly Speaker[]): SpeakerId[] {
+  if (!Array.isArray(v)) return [];
+  const known = new Set<string>(speakers.map((s) => s.id));
+  const out: SpeakerId[] = [];
+  for (const item of v) {
+    if (typeof item !== "string" || !known.has(item) || out.includes(item as SpeakerId)) continue;
+    out.push(item as SpeakerId);
+  }
+  return out;
+}
+
+const HOST_SOURCE_VALUES: Record<string, "auto" | "manual"> = { auto: "auto", manual: "manual" };
+
+/** 主播来源：没有主播就是未识别；值不认识的也按未识别处理，不抛错。 */
+function parseHostSource(v: unknown, hosts: readonly SpeakerId[]): HostSource {
+  if (hosts.length === 0) return null;
+  if (typeof v !== "string") return null;
+  return HOST_SOURCE_VALUES[v] ?? null;
+}
+
 /** 播放、抽音、切片、封面用的绝对路径：有规范化产物用产物，否则原文件（旧数据兼容）。 */
 export function mediaAbsolutePath(data: Pick<VideoData, "mediaPath" | "video">): string {
   return data.mediaPath === null ? data.video.sourcePath : resolve(data.video.outputDir, data.mediaPath);
@@ -284,6 +315,7 @@ export function readVideoData(outputDir: string): VideoData | undefined {
       text: readString(u.text, `${p}.transcript.utterances[${i}].text`),
     };
   });
+  const hosts = parseHosts(parsed.hosts, speakerList);
   return {
     version: VIDEO_DATA_VERSION,
     video: v,
@@ -302,6 +334,8 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     originalPath: parsed.originalPath === undefined ? null : parseNullableString(parsed.originalPath, `${p}.originalPath`),
     mediaPath: parseMediaPath(parsed.mediaPath, `${p}.mediaPath`),
     normalized: parseNormalized(parsed.normalized, `${p}.normalized`),
+    hosts,
+    hostSource: parseHostSource(parsed.hostSource, hosts),
     updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
   };
 }
@@ -354,6 +388,8 @@ export function emptyVideoData(video: Video): VideoData {
     originalPath: video.sourcePath,
     mediaPath: null,
     normalized: null,
+    hosts: [],
+    hostSource: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -460,6 +496,8 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     originalPath: video.sourcePath === "" ? null : video.sourcePath,
     mediaPath: null,
     normalized: null,
+    hosts: [],
+    hostSource: null,
     updatedAt: new Date().toISOString(),
   };
 }

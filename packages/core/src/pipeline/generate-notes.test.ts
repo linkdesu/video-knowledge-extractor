@@ -183,6 +183,105 @@ describe("renderIndexMarkdown", () => {
   });
 });
 
+describe("noteSystemPrompt 提示词注册表（r46）", () => {
+  const topic: Topic = {
+    id: "t1" as never,
+    title: "主题A",
+    summary: "这是摘要",
+    segments: [{ start: 120, end: 150 }],
+  };
+  const utterances: Utterance[] = [{ start: 121, end: 126, speakerId: "spk-1" as SpeakerId, text: "第一句" }];
+  const speakers = [
+    { id: "spk-1" as SpeakerId, name: "张三", color: "#000" },
+    { id: "spk-2" as SpeakerId, name: "李四", color: "#111" },
+  ];
+
+  function promptInput(extra: Partial<Parameters<typeof generateNotes>[0]> = {}): Parameters<typeof generateNotes>[0] {
+    const video: Video = {
+      id: "v1" as never,
+      title: "测试视频",
+      sourcePath: "/no/such/file.mp4",
+      durationSeconds: 600,
+      outputDir: "/no/such/out",
+    };
+    return {
+      video,
+      transcript: { speakers, utterances },
+      topics: [topic],
+      dirNames: new Map([[topic.id, "主题A"]]),
+      corrections,
+      endpoint,
+      cacheDir: "/no/such/cache",
+      hasVideo: true,
+      ...extra,
+    };
+  }
+
+  function noteKeyOf(input: Parameters<typeof generateNotes>[0], system: string): string {
+    return cacheKey("note", {
+      topic: hashJson(topic),
+      transcript: hashJson(utterances.map((u) => [u.start, u.end, u.speakerId, u.text])),
+      prompt: hashJson(system),
+      model: input.endpoint.model,
+      baseUrl: input.endpoint.baseUrl.trim().replace(/\/+$/, ""),
+      corrections: hashJson(input.corrections),
+    }).hash;
+  }
+
+  test("没有主播时与旧提示词逐字一致", () => {
+    expect(noteSystemPrompt(topic, utterances, promptInput())).toBe(
+      `根据主题与字幕抽取 3-6 条要点，只输出 JSON {"keyPoints":[string]}。\n` +
+        `术语按下表正确写法：\n- skill → SQL\n\n` +
+        `主题：主题A\n摘要：这是摘要\n\n字幕：\n[00:02:01 - 00:02:06] 第一句`,
+    );
+  });
+
+  test("主播 id 解析成名字，主播行以换行结束并紧接术语段", () => {
+    const prompt = noteSystemPrompt(topic, utterances, promptInput({ hosts: ["spk-1" as SpeakerId] }));
+    expect(prompt).toContain("主播：张三");
+    expect(prompt).toContain("以主播的观点为主要内容，其他人的发言只作为问题或上下文。");
+    expect(prompt).toContain("主播：张三。以主播的观点为主要内容，其他人的发言只作为问题或上下文。\n术语按下表正确写法：");
+  });
+
+  test("解析不到的说话人 id 被忽略，不渲染空的主播行", () => {
+    const prompt = noteSystemPrompt(topic, utterances, promptInput({ hosts: ["spk-9" as SpeakerId] }));
+    expect(prompt).not.toContain("主播：");
+    expect(prompt).toBe(noteSystemPrompt(topic, utterances, promptInput()));
+  });
+
+  test("多个主播按给定顺序列出名字", () => {
+    const prompt = noteSystemPrompt(topic, utterances, promptInput({ hosts: ["spk-2" as SpeakerId, "spk-1" as SpeakerId] }));
+    expect(prompt).toContain("主播：李四、张三。");
+  });
+
+  test("prompts 覆盖生效：提示词带覆盖标记，缓存键与默认不同", () => {
+    const override =
+      "OVERRIDE-MARKER 主题={{TOPIC_TITLE}} 摘要={{TOPIC_SUMMARY}} 词表={{GLOSSARY}} 主播={{HOSTS}} 字幕={{UTTERANCES}}";
+    const overridden = promptInput({ prompts: { "note-key-points": override } });
+    const prompt = noteSystemPrompt(topic, utterances, overridden);
+    expect(prompt).toContain("OVERRIDE-MARKER");
+    expect(prompt).toContain("主题=主题A");
+    expect(noteKeyOf(overridden, prompt)).not.toBe(noteKeyOf(promptInput(), noteSystemPrompt(topic, utterances, promptInput())));
+  });
+
+  test("覆盖模板进到真实请求：模型收到的系统提示词带覆盖标记", async () => {
+    const { input } = makeGenerateNotesFixture();
+    const seen: string[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages) => {
+        seen.push(messages.map((m) => m.content).join("\n"));
+        return JSON.stringify({ keyPoints: ["要点"] });
+      },
+    };
+    // 切片对不存在的源文件必然失败；只验证模型收到的提示词
+    await expect(
+      generateNotes({ ...input, prompts: { "note-key-points": "OVERRIDE-MARKER {{UTTERANCES}}" }, client }),
+    ).rejects.toThrow();
+    expect(seen[0]).toContain("OVERRIDE-MARKER");
+  });
+});
+
 function makeGenerateNotesFixture(): {
   input: Parameters<typeof generateNotes>[0];
   topic: Topic;

@@ -9,6 +9,7 @@ import {
   mergeTopics,
   renameSpeaker,
   recoverInterruptedRun,
+  setHosts,
   setTopicProgress,
   setTopicSelected,
   settleRunWhileLocked,
@@ -515,5 +516,57 @@ describe("mergeSpeakers / unmergeSpeaker", () => {
     expect(sp1.name).toBe("张老师");
     expect(sp1.customName).toBe(true);
     expect(sp2.mergedInto).toBe("sp1" as never);
+  });
+});
+
+describe("设置主播（r46）", () => {
+  test("按输入顺序去重后落盘，来源记为 manual，且不重写 topic.md", () => {
+    const { dir } = makeFixture([
+      { id: "sp1", name: "说话人1", color: "#f00" },
+      { id: "sp2", name: "说话人2", color: "#0f0" },
+    ]);
+    const mdBefore = readFileSync(join(dir, "topic-a", "topic.md"), "utf8");
+    const d = setHosts(dir, ["sp2", "sp1", "sp2"]);
+    expect(d.hosts.map((id) => String(id))).toEqual(["sp2", "sp1"]);
+    expect(d.hostSource).toBe("manual");
+    const onDisk = readVideoData(dir)!;
+    expect(onDisk.hosts.map((id) => String(id))).toEqual(["sp2", "sp1"]);
+    expect(onDisk.hostSource).toBe("manual");
+    // 主播只影响提示词与界面：topic.md 逐字不变
+    expect(readFileSync(join(dir, "topic-a", "topic.md"), "utf8")).toBe(mdBefore);
+  });
+
+  test("空数组清空主播，来源回到 null", () => {
+    const { dir } = makeFixture([
+      { id: "sp1", name: "说话人1", color: "#f00" },
+      { id: "sp2", name: "说话人2", color: "#0f0" },
+    ]);
+    setHosts(dir, ["sp1"]);
+    const d = setHosts(dir, []);
+    expect(d.hosts).toHaveLength(0);
+    expect(d.hostSource).toBeNull();
+    expect(readVideoData(dir)!.hostSource).toBeNull();
+  });
+
+  test("不存在的说话人 id 被拒绝", () => {
+    const { dir } = makeFixture();
+    expect(() => setHosts(dir, ["sp-999"])).toThrow("说话人 sp-999 不存在");
+  });
+
+  test("已被合并的说话人不能单独设为主播", () => {
+    const { dir } = makeFixture([
+      { id: "sp1", name: "说话人1", color: "#f00" },
+      { id: "sp2", name: "说话人2", color: "#0f0" },
+    ]);
+    mergeSpeakers(dir, ["sp1", "sp2"], "主播甲");
+    expect(() => setHosts(dir, ["sp2"])).toThrow("说话人 sp2 已被合并，不能单独设为主播");
+    // 存活者仍然可以设
+    expect(setHosts(dir, ["sp1"]).hosts.map((id) => String(id))).toEqual(["sp1"]);
+  });
+
+  test("别人持锁时拒绝", () => {
+    const { dir } = makeFixture();
+    holdLock(dir);
+    expect(() => setHosts(dir, ["sp1"])).toThrow("视频正在生成，完成后再编辑");
   });
 });

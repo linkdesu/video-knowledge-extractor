@@ -5,7 +5,7 @@ import { renderIndexMarkdown, renderTopicMarkdown } from "./render";
 import { speakerNameMap } from "./speaker-map";
 import { readVideoData, writeVideoData } from "./video-data";
 import type { TopicRecord, VideoData } from "./video-data";
-import type { Segment, Speaker, Video } from "./types";
+import type { Segment, Speaker, SpeakerId, Video } from "./types";
 
 const MERGE_GAP_SECONDS = 0.5;
 
@@ -146,6 +146,26 @@ export function unmergeSpeaker(outputDir: string, speakerId: string): VideoData 
     markSpeakerChanged(data);
     for (const t of data.topics) affected.add(t.id);
   });
+}
+
+/** 设置主播（r46）：按输入顺序去重，`[]` 表示清空；只接受顶层说话人，不存在或已被合并的 id 直接拒绝。
+ * 主播只影响提示词与界面，不动 `topic.md`，所以不重渲染派生产物。 */
+export function setHosts(outputDir: string, speakerIds: string[]): VideoData {
+  return apply(outputDir, (data) => {
+    const byId = new Map<string, Speaker>(data.transcript.speakers.map((s) => [s.id, s]));
+    const hosts: SpeakerId[] = [];
+    for (const id of speakerIds) {
+      if (hosts.includes(id as SpeakerId)) continue;
+      const speaker = byId.get(id);
+      if (speaker === undefined) throw new Error(`说话人 ${id} 不存在`);
+      if (speaker.mergedInto !== null && speaker.mergedInto !== undefined) {
+        throw new Error(`说话人 ${id} 已被合并，不能单独设为主播`);
+      }
+      hosts.push(speaker.id);
+    }
+    data.hosts = hosts;
+    data.hostSource = hosts.length > 0 ? "manual" : null;
+  }, { update: false });
 }
 
 /** 删单条字幕：删掉该字幕，覆盖到它的所有主题重渲染 `topic.md`。 */

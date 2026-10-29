@@ -1,6 +1,7 @@
 import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
 import { resolveCorrections } from "../core/corrections";
 import { logger } from "../core/logger";
+import { renderPrompt } from "../core/prompts";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { SegmentTopicsInput, SegmentTopicsResult } from "../core/steps";
 import type { Segment, Topic, TopicId } from "../core/types";
@@ -25,19 +26,6 @@ function requireTopics(raw: RawResponse | undefined, text: string, label: string
   }
   return topics;
 }
-
-const CHUNK_SYSTEM_PROMPT =
-  "你是视频主题分析器。只输出 JSON，不要解释。" +
-  "只使用给出的时间戳，每个时间段必须落在该块范围内。" +
-  "主题数 1-4，title 不超过 20 字，summary 不超过 60 字。" +
-  "始终输出顶层对象，只有一个主题也要放进 topics 数组。" +
-  '输出格式：{"topics":[{"title":string,"summary":string,"segments":[{"start":number,"end":number}]}]}';
-
-const MERGE_SYSTEM_PROMPT =
-  "你是视频主题分析器。只输出 JSON，不要解释。" +
-  "给出的是各分块的候选主题，把跨块属于同一主题的候选合并成一个主题，保留多个时间段。" +
-  "只使用给出的时间戳。" +
-  '输出格式：{"topics":[{"title":string,"summary":string,"segments":[{"start":number,"end":number}]}]}';
 
 /** 术语表段：合并后（本视频优先于全局）的正确写法，随提示词一起进缓存键。 */
 function glossarySection(corrections: SegmentTopicsInput["corrections"]): string {
@@ -103,7 +91,8 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   const maxEnd = input.transcript.utterances.reduce((m, u) => Math.max(m, u.end), 0);
   const candidates: RawTopic[] = [];
   const glossary = glossarySection(input.corrections);
-  const chunkPrompt = CHUNK_SYSTEM_PROMPT + glossary;
+  // 提示词来自 core 的注册表（r46）：用户覆盖优先，没有覆盖时与旧字符串逐字一致，旧缓存继续命中
+  const chunkPrompt = renderPrompt("segment-chunk", { GLOSSARY: glossary }, input.prompts);
   const chunkPromptHash = hashJson(chunkPrompt);
   const startedAt = performance.now();
 
@@ -143,7 +132,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     return { topics: [] };
   }
 
-  const mergePrompt = MERGE_SYSTEM_PROMPT + glossary;
+  const mergePrompt = renderPrompt("segment-merge", { GLOSSARY: glossary }, input.prompts);
   const mergeKey = cacheKey("topic-candidates", {
     kind: "merge",
     candidates: hashJson(candidates),

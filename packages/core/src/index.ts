@@ -127,6 +127,7 @@ export {
   mergeSpeakers,
   unmergeSpeaker,
   setTopicSelected,
+  setHosts,
   setTopicProgress,
   settleRunWhileLocked,
   recoverInterruptedRun,
@@ -178,4 +179,25 @@ export type { VideoId } from "./core/types";
 export type { Utterance } from "./core/types";
 export { applyCorrections } from "./core/corrections";
 export { projectTopicArtifacts } from "./core/topic-artifacts";
+export {
+  PROMPT_SPECS,
+  promptSpec,
+  promptVariableNames,
+  validatePromptTemplate,
+  effectiveTemplate,
+  renderPrompt,
+} from "./core/prompts";
+export type { PromptId, PromptSpec, PromptVariable, PromptOverrides, PromptValidation } from "./core/prompts";
+export {
+  PROMPTS_FILE,
+  PROMPTS_VERSION,
+  MAX_PROMPT_CHARS,
+  promptsPath,
+  parsePromptOverrides,
+  readPromptOverrides,
+  savePromptOverride,
+  resetPromptOverride,
+  promptStatuses,
+} from "./core/prompt-store";
+export type { PromptsFile, PromptStatusDto } from "./core/prompt-store";
 export { checkModels, type RequiredModelId, type RequiredModel, type ModelsCheck } from "./core/models-required";
