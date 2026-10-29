@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -88,6 +89,37 @@ export function redactSecrets(text: string, secrets: Iterable<string>): string {
     .replace(/\b(api[_]?key|token)=([A-Za-z0-9\-_~+/=.]+)/gi, "$1=[redacted]");
 }
 
+/**
+ * Home prefixes worth hiding: HOME, USERPROFILE and os.homedir(), skipping empty values and "/"
+ * (a bare root would rewrite every absolute path). Longest first, de-duplicated, so nested roots
+ * resolve to the most specific one. The log path calls this per write, never at import time.
+ */
+export function homePathRedactions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const homes = new Set<string>();
+  for (const raw of [env.HOME, env.USERPROFILE, homedir()]) {
+    const home = raw?.trim();
+    if (home === undefined || home === "" || home === "/") continue;
+    homes.add(home);
+  }
+  return [...homes].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Replaces each home prefix with `~`. Matching is a literal substring replacement rather than a
+ * path-boundary check: paths reach the log quoted inside JSON, argv arrays and URLs where no
+ * leading delimiter exists. The trade-off is that a sibling like `/Users/linko` also collapses to
+ * `~o`, which is harmless for a log line and keeps every real `$HOME/...` occurrence covered.
+ */
+export function redactHomePaths(text: string, homes: Iterable<string>): string {
+  let out = text;
+  for (const home of homes) {
+    // never let a stray "/" or a single character eat the whole line
+    if (home.length < 2) continue;
+    out = out.split(home).join("~");
+  }
+  return out;
+}
+
 function fmtValue(v: unknown): string | null {
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   try {
@@ -97,10 +129,10 @@ function fmtValue(v: unknown): string | null {
   }
 }
 
-// 字段值里的字符串（含数组元素，argv 的 URL 也走这里）统一 redact
-function redactValue(v: unknown, secrets: Set<string>): unknown {
-  if (typeof v === "string") return redactSecrets(v, secrets);
-  if (Array.isArray(v)) return v.map((e) => (typeof e === "string" ? redactSecrets(e, secrets) : e));
+// String field values (and array elements, e.g. argv URLs) are redacted: secrets first, then homes
+function redactValue(v: unknown, secrets: Set<string>, homes: string[]): unknown {
+  if (typeof v === "string") return redactHomePaths(redactSecrets(v, secrets), homes);
+  if (Array.isArray(v)) return v.map((e) => (typeof e === "string" ? redactHomePaths(redactSecrets(e, secrets), homes) : e));
   return v;
 }
 
@@ -209,12 +241,15 @@ export function createLogger(opts?: LoggerOptions): Logger {
         dateKey = date.toDateString();
         pruneIfPossible(dir);
       }
+      // Homes are read on every write (never snapshotted at import): env changes take effect immediately
+      const homes = homePathRedactions();
       const redacted: LogFields = {};
       for (const [k, v] of Object.entries(fields ?? {})) {
         if (v === undefined) continue;
-        redacted[k] = redactValue(v, secrets);
+        redacted[k] = redactValue(v, secrets, homes);
       }
-      const safeMessage = redactSecrets(message, secrets);
+      // Secrets first, then homes: a key can never leak through a truncated home prefix
+      const safeMessage = redactHomePaths(redactSecrets(message, secrets), homes);
       const taskId = moduleTask ?? processTask;
       const line = renderLine(date, lvl, module, safeMessage, redacted, taskId);
       writeLogLine(date, line);

@@ -6,11 +6,13 @@ import {
   configureLogging,
   createLogger,
   formatLogLine,
+  homePathRedactions,
   KEEP_FILES,
   logger,
   logFileName,
   pruneOldLogs,
   readTaskLog,
+  redactHomePaths,
   redactSecrets,
   rollLogFileName,
   runWithTask,
@@ -179,6 +181,80 @@ describe("redactSecrets", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("homePathRedactions / redactHomePaths", () => {
+  test("前缀去重、更长者在前、跳过空值与 /", () => {
+    const homes = homePathRedactions({ HOME: "/Users/a/deep", USERPROFILE: "/Users/a/deep", HOMEDRIVE: "C:" });
+    expect(homes.filter((h) => h === "/Users/a/deep")).toHaveLength(1);
+    expect(homes).not.toContain("/");
+    expect(homes).not.toContain("");
+    for (let i = 1; i < homes.length; i++) {
+      expect(homes[i - 1]!.length).toBeGreaterThanOrEqual(homes[i]!.length);
+    }
+  });
+
+  test("HOME=/ 时不把根当作前缀", () => {
+    expect(homePathRedactions({ HOME: "/" })).not.toContain("/");
+  });
+
+  test("替换所有出现；无关文本原样保留", () => {
+    expect(redactHomePaths("/Users/link/a/b.mp4", ["/Users/link"])).toBe("~/a/b.mp4");
+    // 路径嵌在 JSON / URL 里也命中
+    expect(redactHomePaths('path="/Users/link/a.mp4" url=file:///Users/link/a.mp4', ["/Users/link"])).toBe('path="~/a.mp4" url=file://~/a.mp4');
+    // 无关文本不动
+    expect(redactHomePaths("nothing here to see", ["/Users/link"])).toBe("nothing here to see");
+    // 空列表不动
+    expect(redactHomePaths("/Users/link/a.mp4", [])).toBe("/Users/link/a.mp4");
+  });
+});
+
+describe("日志里的 home 替换", () => {
+  const FIXTURE_HOME = "/tmp/r46-home-fixture";
+
+  function withHome(home: string, fn: () => void): void {
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.HOME;
+      else process.env.HOME = prev;
+    }
+  }
+
+  test("消息与数组字段里的 home 变成 ~；原始 home 不出现；secret 仍是 [redacted]", () => {
+    // logger 在改 env 之前创建：证明 homes 是写入时惰性读取
+    const { l, lines } = makeSinkLogger();
+    withHome(FIXTURE_HOME, () => {
+      const input = `${FIXTURE_HOME}/Videos/a b.mp4`;
+      const output = `${FIXTURE_HOME}/out/a.mp4`;
+      l.info("ffmpeg", `打开 ${input}`, {
+        cmd: ["ffmpeg", "-i", input, "-c", "copy", output],
+        auth: "Bearer sk-live-987654321",
+      });
+    });
+    const line = lines.at(-1)!;
+    expect(line).toContain("打开 ~/Videos/a b.mp4");
+    expect(line).toContain('"~/Videos/a b.mp4"');
+    expect(line).toContain('"~/out/a.mp4"');
+    expect(line).not.toContain(FIXTURE_HOME);
+    expect(line).toContain('auth="Bearer [redacted]"');
+    expect(line).not.toContain("sk-live-987654321");
+  });
+
+  test("secret 先替换再替换 home：密钥不会因 home 截断而漏出", () => {
+    const { l, lines } = makeSinkLogger();
+    const secret = `{{SECRET_${Date.now()}}}`;
+    l.addSecret(secret);
+    withHome(FIXTURE_HOME, () => {
+      l.info("app", `key=${secret} dir=${FIXTURE_HOME}/keys`);
+    });
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(secret);
+    expect(line).toContain("[redacted]");
+    expect(line).toContain("dir=~/keys");
   });
 });
 
