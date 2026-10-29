@@ -276,6 +276,7 @@ export async function runTopics(input: {
         cacheDir,
         client,
         corrections,
+        hosts: data.hosts,
         prompts: input.prompts,
         ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
       });

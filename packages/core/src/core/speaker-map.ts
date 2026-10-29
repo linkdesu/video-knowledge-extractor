@@ -27,3 +27,16 @@ export function resolveSpeaker(speakers: ReadonlyArray<SpeakerRef>, id: string):
 export function speakerNameMap(speakers: ReadonlyArray<SpeakerRef>): Map<string, string> {
   return new Map(speakers.map((s) => [s.id, resolveSpeaker(speakers, s.id).name]));
 }
+
+/** 主播名单（r47）：解析成存活者名字，按传入顺序去重；解析不到或已合并掉的 id 丢弃。 */
+export function hostNames(speakers: ReadonlyArray<SpeakerRef>, hosts: ReadonlyArray<string> | undefined): string[] {
+  if (hosts === undefined || hosts.length === 0) return [];
+  const top = new Set(speakers.filter((s) => (s.mergedInto ?? null) === null).map((s) => s.id));
+  const names: string[] = [];
+  for (const id of hosts) {
+    if (!top.has(id)) continue;
+    const name = resolveSpeaker(speakers, id).name;
+    if (name !== "" && !names.includes(name)) names.push(name);
+  }
+  return names;
+}

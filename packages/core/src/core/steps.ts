@@ -63,6 +63,8 @@ export type SegmentTopicsInput = {
   cacheDir: string;
   /** 合并后的术语表（全局 + 本视频），随提示词注入正确写法；不传视为空表。 */
   corrections?: CorrectionList;
+  /** 主播（r47）：划分/合并时只声明谁是主播，不做加权；缺省视为未识别。 */
+  hosts?: ReadonlyArray<SpeakerId>;
   /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
   client?: LlmClient;
   /** 用户对提示词的覆盖（r46）：没有覆盖的步骤用代码里的默认模板。 */

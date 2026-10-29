@@ -159,7 +159,7 @@ describe("validatePromptTemplate", () => {
   });
 
   test("未知占位符被拒绝且错误消息里列出占位符名", () => {
-    const result = validatePromptTemplate("segment-chunk", "只输出 JSON。{{GLOSSARY}}{{GREETING}}");
+    const result = validatePromptTemplate("segment-chunk", '只输出 JSON。{"topics":[]}{{GLOSSARY}}{{GREETING}}');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("GREETING");
@@ -175,16 +175,25 @@ describe("validatePromptTemplate", () => {
     }
   });
 
-  test("可以完全不用变量", () => {
-    expect(validatePromptTemplate("note-key-points", "只输出 JSON。")).toEqual({ ok: true });
+  test("可以完全不用变量，但不能丢掉输出格式约束", () => {
+    expect(validatePromptTemplate("note-key-points", '只输出 JSON。{"keyPoints":[string]}')).toEqual({ ok: true });
+    const missing = validatePromptTemplate("note-key-points", "只输出 JSON。");
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.error).toContain("输出格式");
+      expect(missing.error).toContain('{"keyPoints"');
+    }
+    // 自定义模板删掉 JSON 形状也会被拒——模型拿不到输出约束时任务会直接失败
+    expect(validatePromptTemplate("segment-merge", "合并主题即可").ok).toBe(false);
+    expect(validatePromptTemplate("host-detect", "找出主播").ok).toBe(false);
   });
 });
 
 describe("override 与回退", () => {
   test("覆盖模板按变量渲染", () => {
-    const overrides = { "segment-chunk": "只输出 JSON。{{GLOSSARY}}" };
+    const overrides = { "segment-chunk": '只输出 JSON。{"topics":[]}{{GLOSSARY}}' };
     expect(renderPrompt("segment-chunk", { GLOSSARY: GLOSSARY_LITERAL }, overrides)).toBe(
-      `只输出 JSON。${GLOSSARY_LITERAL}`,
+      `只输出 JSON。{"topics":[]}${GLOSSARY_LITERAL}`,
     );
   });
 
@@ -198,7 +207,10 @@ describe("override 与回退", () => {
     expect(effectiveTemplate("segment-merge", { "segment-merge": "   " })).toBe(fallback);
     expect(effectiveTemplate("segment-merge")).toBe(fallback);
     expect(effectiveTemplate("segment-merge", { "segment-merge": "坏的 {{NOPE}}" })).toBe(fallback);
-    expect(effectiveTemplate("segment-merge", { "segment-merge": "{{GLOSSARY}}" })).toBe("{{GLOSSARY}}");
+    // 缺少输出格式约束也算无效覆盖，回退默认
+    expect(effectiveTemplate("segment-merge", { "segment-merge": "{{GLOSSARY}}" })).toBe(fallback);
+    const valid = { "segment-merge": '{"topics":[]}{{GLOSSARY}}' };
+    expect(effectiveTemplate("segment-merge", valid)).toBe('{"topics":[]}{{GLOSSARY}}');
   });
 });
 
@@ -215,7 +227,7 @@ describe("promptFingerprint", () => {
   });
 
   test("custom override: source is custom and the sha differs from the default render", () => {
-    const overrides = { "note-key-points": "只输出 JSON。" };
+    const overrides = { "note-key-points": '只输出 JSON。{"keyPoints":[string]}' };
     const rendered = renderPrompt("note-key-points", {}, overrides);
     const custom = promptFingerprint("note-key-points", rendered, overrides);
     const fallback = promptFingerprint("note-key-points", renderPrompt("note-key-points", {}));

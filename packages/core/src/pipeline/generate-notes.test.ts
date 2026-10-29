@@ -257,7 +257,7 @@ describe("noteSystemPrompt 提示词注册表（r46）", () => {
 
   test("prompts 覆盖生效：提示词带覆盖标记，缓存键与默认不同", () => {
     const override =
-      "OVERRIDE-MARKER 主题={{TOPIC_TITLE}} 摘要={{TOPIC_SUMMARY}} 词表={{GLOSSARY}} 主播={{HOSTS}} 字幕={{UTTERANCES}}";
+      'OVERRIDE-MARKER {"keyPoints":[string]} 主题={{TOPIC_TITLE}} 摘要={{TOPIC_SUMMARY}} 词表={{GLOSSARY}} 主播={{HOSTS}} 字幕={{UTTERANCES}}';
     const overridden = promptInput({ prompts: { "note-key-points": override } });
     const prompt = noteSystemPrompt(topic, utterances, overridden);
     expect(prompt).toContain("OVERRIDE-MARKER");
@@ -277,7 +277,7 @@ describe("noteSystemPrompt 提示词注册表（r46）", () => {
     };
     // 切片对不存在的源文件必然失败；只验证模型收到的提示词
     await expect(
-      generateNotes({ ...input, prompts: { "note-key-points": "OVERRIDE-MARKER {{UTTERANCES}}" }, client }),
+      generateNotes({ ...input, prompts: { "note-key-points": 'OVERRIDE-MARKER {"keyPoints":[string]} {{UTTERANCES}}' }, client }),
     ).rejects.toThrow();
     expect(seen[0]).toContain("OVERRIDE-MARKER");
   });
@@ -761,7 +761,7 @@ describe("generateNotes 轨迹请求与请求日志（r46）", () => {
 
   test("自定义提示词在轨迹里标 custom，sha 与默认模板不同", async () => {
     const { input, topic, utterances } = makeGenerateNotesFixture();
-    const prompts = { "note-key-points": "OVERRIDE-MARKER {{UTTERANCES}}" };
+    const prompts = { "note-key-points": 'OVERRIDE-MARKER {"keyPoints":[string]} {{UTTERANCES}}' };
     const withHosts = { ...withHostsFixture(input), prompts };
     await expect(generateNotes({ ...withHosts, client: makeClient(["要点一"], []) })).rejects.toThrow();
     const prompt = noteSystemPrompt(topic, utterances, withHosts);

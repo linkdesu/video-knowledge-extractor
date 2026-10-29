@@ -227,6 +227,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
           cacheDir,
           client,
           corrections,
+          hosts: data.hosts,
           ...(input.prompts !== undefined ? { prompts: input.prompts } : {}),
           ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
         }),

@@ -14,7 +14,7 @@ import type { GenerateNotesInput, GenerateNotesResult, LlmClient, TrajectoryTrig
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
 import { createLlmClient, tryParseJson } from "../llm/openai";
 import { renderIndexMarkdown, renderTopicMarkdown } from "../core/render";
-import { speakerNameMap } from "../core/speaker-map";
+import { hostNames as resolveHostNames, speakerNameMap } from "../core/speaker-map";
 import { appendTrajectory } from "../core/trajectory";
 import type { TrajectoryRequest } from "../core/trajectory";
 
@@ -43,22 +43,6 @@ function correctionLines(input: GenerateNotesInput): string {
 }
 
 /**
- * Resolved host names, in the order the caller listed them: unknown ids and repeated names
- * (merged speakers can map several ids to one name) are dropped. Logs and the trajectory record
- * carry these names, never speaker ids.
- */
-function hostNames(input: GenerateNotesInput): string[] {
-  const names = speakerNameMap(input.transcript.speakers);
-  const resolved: string[] = [];
-  for (const id of input.hosts ?? []) {
-    const name = names.get(id);
-    if (name === undefined || resolved.includes(name)) continue;
-    resolved.push(name);
-  }
-  return resolved;
-}
-
-/**
  * 要点提示词的主播段：没有主播、或 id 都解析不到说话人时返回空串（不渲染空 `主播：` 行）；
  * 否则一行说明主播观点是主要内容，其余发言只是问题或上下文。
  */
@@ -73,7 +57,7 @@ export function noteSystemPrompt(topic: Topic, utterances: Utterance[], input: G
   return renderPrompt(
     "note-key-points",
     {
-      HOSTS: hostLine(hostNames(input)),
+      HOSTS: hostLine(resolveHostNames(input.transcript.speakers, input.hosts)),
       GLOSSARY: correctionLines(input) || "（无）",
       TOPIC_TITLE: topic.title,
       TOPIC_SUMMARY: topic.summary,
@@ -90,7 +74,9 @@ type NotePrompt = { text: string; fingerprint: PromptFingerprint; hosts: string[
 
 function notePrompt(topic: Topic, utterances: Utterance[], input: GenerateNotesInput): NotePrompt {
   const text = noteSystemPrompt(topic, utterances, input);
-  return { text, fingerprint: promptFingerprint("note-key-points", text, input.prompts), hosts: hostNames(input) };
+  // 主播名只用于日志与轨迹：解析不到/已合并的 id 丢掉，按文档顺序去重
+  const hosts = resolveHostNames(input.transcript.speakers, input.hosts);
+  return { text, fingerprint: promptFingerprint("note-key-points", text, input.prompts), hosts };
 }
 
 /** 取要点：缓存命中时 `rawText` 为 null（没调用模型）；模型输出不是合法要点 JSON 时报错（失败不落缓存）。 */

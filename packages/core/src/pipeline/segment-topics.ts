@@ -2,6 +2,7 @@ import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
 import { resolveCorrections } from "../core/corrections";
 import { logger } from "../core/logger";
 import { promptFingerprint, renderPrompt } from "../core/prompts";
+import { hostNames as resolveHostNames } from "../core/speaker-map";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { SegmentTopicsInput, SegmentTopicsResult } from "../core/steps";
 import type { Segment, Topic, TopicId } from "../core/types";
@@ -32,6 +33,16 @@ function glossarySection(corrections: SegmentTopicsInput["corrections"]): string
   const entries = resolveCorrections(corrections ?? { global: [], video: [] });
   if (entries.length === 0) return "";
   return `术语按下表正确写法：\n${entries.map((e) => `- ${e.from} → ${e.to}`).join("\n")}\n`;
+}
+
+/**
+ * 主题划分/合并提示词的主播段（r47）：只声明谁是主播，不做加权；没有主播或 id 都解析不到时为空串，
+ * 保证默认渲染与 r46 逐字一致。主题归属仍由模型自己判断。
+ */
+function hostsSection(input: SegmentTopicsInput): string {
+  const names = resolveHostNames(input.transcript.speakers, input.hosts);
+  if (names.length === 0) return "";
+  return `主播：${names.join("、")}。划分主题时以主播发起或回答的话题为主线，其他人的发言作为提问或上下文。\n`;
 }
 
 function renderChunkLines(input: SegmentTopicsInput, chunkIndex: number): string[] {
@@ -91,8 +102,10 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   const maxEnd = input.transcript.utterances.reduce((m, u) => Math.max(m, u.end), 0);
   const candidates: RawTopic[] = [];
   const glossary = glossarySection(input.corrections);
-  // 提示词来自 core 的注册表（r46）：用户覆盖优先，没有覆盖时与旧字符串逐字一致，旧缓存继续命中
-  const chunkPrompt = renderPrompt("segment-chunk", { GLOSSARY: glossary }, input.prompts);
+  const hosts = hostsSection(input);
+  // 提示词来自 core 的注册表（r46）：用户覆盖优先，没有覆盖时与旧字符串逐字一致，旧缓存继续命中；
+  // r47 起主播段随提示词进缓存键（主播变了自然换键）
+  const chunkPrompt = renderPrompt("segment-chunk", { HOSTS: hosts, GLOSSARY: glossary }, input.prompts);
   const chunkFingerprint = promptFingerprint("segment-chunk", chunkPrompt, input.prompts);
   const chunkPromptHash = hashJson(chunkPrompt);
   const startedAt = performance.now();
@@ -122,6 +135,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
           promptSha256: chunkFingerprint.sha256,
           model: client.model,
           kind: "chunk",
+          hosts: resolveHostNames(input.transcript.speakers, input.hosts),
         });
         const text = await client.chat([
           { role: "system", content: chunkPrompt },
@@ -141,7 +155,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
     return { topics: [] };
   }
 
-  const mergePrompt = renderPrompt("segment-merge", { GLOSSARY: glossary }, input.prompts);
+  const mergePrompt = renderPrompt("segment-merge", { HOSTS: hosts, GLOSSARY: glossary }, input.prompts);
   const mergeFingerprint = promptFingerprint("segment-merge", mergePrompt, input.prompts);
   const mergeKey = cacheKey("topic-candidates", {
     kind: "merge",
@@ -159,6 +173,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       promptSha256: mergeFingerprint.sha256,
       model: client.model,
       kind: "merge",
+      hosts: resolveHostNames(input.transcript.speakers, input.hosts),
     });
     const compact = candidates.map((t) => ({
       title: typeof t.title === "string" ? t.title : "",

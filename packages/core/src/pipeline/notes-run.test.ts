@@ -728,7 +728,10 @@ describe("runTopics 术语表接线", () => {
       cacheRoot: join(out, ".cache"),
       client,
       // 覆盖模板同时验 runTopics 把 prompts 传给划主题与要点两步（r46）
-      prompts: { "segment-chunk": "CHUNK-MARKER{{GLOSSARY}}", "note-key-points": "NOTE-MARKER{{HOSTS}}{{UTTERANCES}}" },
+      prompts: {
+        "segment-chunk": 'CHUNK-MARKER{"topics":[]}{{HOSTS}}{{GLOSSARY}}',
+        "note-key-points": 'NOTE-MARKER{"keyPoints":[string]}{{HOSTS}}{{UTTERANCES}}',
+      },
     });
 
     // 分块提示词带合并术语表，冲突项用本视频写法
@@ -780,7 +783,7 @@ describe("主播与提示词接线（r46）", () => {
       endpoint,
       cacheRoot: join(out, ".cache"),
       client,
-      prompts: { "note-key-points": "OVERRIDE-MARKER {{HOSTS}}{{UTTERANCES}}" },
+      prompts: { "note-key-points": 'OVERRIDE-MARKER {"keyPoints":[string]}{{HOSTS}}{{UTTERANCES}}' },
     });
 
     const system = systems.join("\n");

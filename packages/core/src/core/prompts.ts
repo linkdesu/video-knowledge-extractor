@@ -18,6 +18,11 @@ export type PromptSpec = {
   variables: PromptVariable[];
   /** 默认模板：变量写成 {{NAME}}，渲染时整体替换。 */
   defaultTemplate: string;
+  /**
+   * 输出格式约束（r47）：模板必须包含这个片段，否则模型拿不到输出形状。
+   * 保存时校验，缺了就提示；默认模板本身都满足。
+   */
+  outputContract: { marker: string; hint: string };
 };
 
 export type PromptOverrides = Partial<Record<PromptId, string>>;
@@ -38,8 +43,15 @@ const GLOSSARY_VARIABLE: PromptVariable = {
   description: "纠错词表段（形如「术语按下表正确写法：」加若干「- 原文 → 正确写法」行）；没有纠错时传空字符串。",
 };
 
-/** 与 pipeline/segment-topics.ts 里原来的 CHUNK_SYSTEM_PROMPT 逐字一致，末尾直接接术语表段（无分隔符）。 */
+/** 主播段（r47）：只声明谁是主播，不做加权；没有主播时为空字符串。 */
+const HOSTS_VARIABLE: PromptVariable = {
+  name: "HOSTS",
+  description: "主播段（形如「主播：A、B。…」并以换行结尾）；没有主播时传空字符串。",
+};
+
+/** 与 pipeline/segment-topics.ts 里原来的 CHUNK_SYSTEM_PROMPT 逐字一致；r47 前面加主播段（空串时逐字不变）。 */
 const SEGMENT_CHUNK_TEMPLATE =
+  "{{HOSTS}}" +
   "你是视频主题分析器。只输出 JSON，不要解释。" +
   "只使用给出的时间戳，每个时间段必须落在该块范围内。" +
   "主题数 1-4，title 不超过 20 字，summary 不超过 60 字。" +
@@ -47,8 +59,9 @@ const SEGMENT_CHUNK_TEMPLATE =
   '输出格式：{"topics":[{"title":string,"summary":string,"segments":[{"start":number,"end":number}]}]}' +
   "{{GLOSSARY}}";
 
-/** 与 pipeline/segment-topics.ts 里原来的 MERGE_SYSTEM_PROMPT 逐字一致，末尾直接接术语表段（无分隔符）。 */
+/** 与 pipeline/segment-topics.ts 里原来的 MERGE_SYSTEM_PROMPT 逐字一致；r47 前面加主播段（空串时逐字不变）。 */
 const SEGMENT_MERGE_TEMPLATE =
+  "{{HOSTS}}" +
   "你是视频主题分析器。只输出 JSON，不要解释。" +
   "给出的是各分块的候选主题，把跨块属于同一主题的候选合并成一个主题，保留多个时间段。" +
   "只使用给出的时间戳。" +
@@ -82,23 +95,27 @@ export const PROMPT_SPECS: readonly PromptSpec[] = [
   {
     id: "segment-chunk",
     title: "主题切分（单块）",
-    description: "对单个字幕块抽取 1-4 个候选主题，输出 JSON。",
-    variables: [GLOSSARY_VARIABLE],
+    description:
+      "对单个字幕块抽取 1-4 个候选主题，输出 JSON。主播段只声明谁是主播、不做加权；保存时必须保留输出格式 {\"topics\":[…]}。",
+    variables: [HOSTS_VARIABLE, GLOSSARY_VARIABLE],
     defaultTemplate: SEGMENT_CHUNK_TEMPLATE,
+    outputContract: { marker: '{"topics"', hint: '输出格式：{"topics":[{"title","summary","segments"}]}' },
   },
   {
     id: "segment-merge",
     title: "主题合并",
-    description: "把各分块的候选主题合并成最终主题，保留多个时间段。",
-    variables: [GLOSSARY_VARIABLE],
+    description:
+      "把各分块的候选主题合并成最终主题，保留多个时间段。主播段只声明谁是主播、不做加权；保存时必须保留输出格式 {\"topics\":[…]}。",
+    variables: [HOSTS_VARIABLE, GLOSSARY_VARIABLE],
     defaultTemplate: SEGMENT_MERGE_TEMPLATE,
+    outputContract: { marker: '{"topics"', hint: '输出格式：{"topics":[{"title","summary","segments"}]}' },
   },
   {
     id: "note-key-points",
     title: "主题要点",
-    description: "按主题与字幕抽取 3-6 条要点，输出 JSON。",
+    description: "按主题与字幕抽取 3-6 条要点，输出 JSON；保存时必须保留输出格式 {\"keyPoints\":[…]}。",
     variables: [
-      { name: "HOSTS", description: "主播段，没有主播时为空串。" },
+      HOSTS_VARIABLE,
       {
         name: "GLOSSARY",
         description: "纠错词表行（每行「- 原文 → 正确写法」）；没有纠错时传「（无）」，与旧提示词保持一致。",
@@ -108,16 +125,18 @@ export const PROMPT_SPECS: readonly PromptSpec[] = [
       { name: "UTTERANCES", description: "主题内字幕行，每行「[HH:MM:SS - HH:MM:SS] 文本」。" },
     ],
     defaultTemplate: NOTE_KEY_POINTS_TEMPLATE,
+    outputContract: { marker: '{"keyPoints"', hint: '输出格式：{"keyPoints":[string]}' },
   },
   {
     id: "host-detect",
     title: "主播识别",
-    description: "根据说话人统计与示例发言判断谁是主播，输出 JSON。",
+    description: "根据说话人统计与示例发言判断谁是主播，输出 JSON；保存时必须保留输出格式 {\"hosts\":[…]}。",
     variables: [
       { name: "SPEAKERS", description: "说话人列表：每人的发言统计与示例发言。" },
       { name: "LANGUAGE_HINT", description: "可选的语言提示（例如「请用中文输出」）；没有时传空字符串。" },
     ],
     defaultTemplate: HOST_DETECT_TEMPLATE,
+    outputContract: { marker: '{"hosts"', hint: '输出格式：{"hosts":[string]}' },
   },
 ];
 
@@ -164,6 +183,10 @@ export function validatePromptTemplate(id: PromptId, text: string): PromptValida
   if (unknown.length > 0) {
     const names = [...new Set(unknown)].join("、");
     return { ok: false, error: `提示词里有未知占位符：${names}。可用占位符：${[...allowed].join("、")}。` };
+  }
+  const contract = promptSpec(id).outputContract;
+  if (!text.includes(contract.marker)) {
+    return { ok: false, error: `提示词缺少输出格式约束：必须包含 ${contract.marker}（${contract.hint}）。` };
   }
   return { ok: true };
 }
