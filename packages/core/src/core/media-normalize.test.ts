@@ -121,7 +121,7 @@ describe("normalizeMedia（真 ffmpeg）", () => {
 
   function codecsOf(file: string): string[] {
     const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", file], { encoding: "utf8" });
-    return out.trim().split("\n").sort();
+    return out.trim().split(/\r?\n/).map((line) => line.trim()).sort();
   }
 
   test("ts(h264+aac) → media.mp4 流拷贝，产物可被 ffprobe 读回", async () => {
