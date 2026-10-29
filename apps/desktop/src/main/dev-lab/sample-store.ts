@@ -108,7 +108,7 @@ export function readSample(root: string, id: string): LabSampleData {
   const anchors =
     file.anchorsFile === ""
       ? undefined
-      : readJson<{ anchors: { ranges: [number, number][] }[] }>(join(dir, file.anchorsFile));
+      : readJson<{ anchors: { speaker?: string; ranges: [number, number][] }[] }>(join(dir, file.anchorsFile));
   const texts = segtext?.rows ?? segments.segments.map((s) => ({ start: s.start, end: s.end, text: "" }));
   return {
     meta: sampleMetaFromFile(root, file),
@@ -117,7 +117,12 @@ export function readSample(root: string, id: string): LabSampleData {
     texts,
     silences: silences?.silences ?? [],
     givenLabels: labels ?? null,
-    anchorRanges: (anchors?.anchors ?? []).flatMap((a) => a.ranges.map(([start, end]) => ({ start, end }))),
+    // 主播簇数只认主播锚点（speaker "H"）；没有 H 标记的锚点文件按全部范围算。
+    anchorRanges: (() => {
+      const all = anchors?.anchors ?? [];
+      const hosts = all.filter((a) => a.speaker === "H");
+      return (hosts.length > 0 ? hosts : all).flatMap((a) => a.ranges.map(([start, end]) => ({ start, end })));
+    })(),
   };
 }
 

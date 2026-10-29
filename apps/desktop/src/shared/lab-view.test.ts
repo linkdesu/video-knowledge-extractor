@@ -37,6 +37,24 @@ describe("Lab 视图计算", () => {
     expect(wide[1]?.filler).toBe(false);
   });
 
+  test("跨方案编号重排不算差异，合并/错分才算", () => {
+    const a = config("baseline", ["speaker-1", "speaker-2"], [
+      { start: 0, end: 4, speakerId: "speaker-1", text: "一" },
+      { start: 4, end: 9, speakerId: "speaker-2", text: "二" },
+    ]);
+    const renamed = config("refine", ["speaker-9", "speaker-8"], [
+      { start: 0, end: 4, speakerId: "speaker-9", text: "一" },
+      { start: 4, end: 9, speakerId: "speaker-8", text: "二" },
+    ]);
+    expect(buildRows(a, renamed, 1).filter((r) => r.diff)).toHaveLength(0);
+
+    const merged = config("refine", ["speaker-9"], [
+      { start: 0, end: 4, speakerId: "speaker-9", text: "一" },
+      { start: 4, end: 9, speakerId: "speaker-9", text: "二" },
+    ]);
+    expect(buildRows(a, merged, 1).filter((r) => r.diff)).toHaveLength(1);
+  });
+
   test("阈值只影响过滤结果，摘要随之变化", () => {
     const at1 = summarize(A, B, 1);
     const at05 = summarize(A, B, 0.5);

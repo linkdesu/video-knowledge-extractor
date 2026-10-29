@@ -93,6 +93,41 @@ export function summarize(configA: LabConfig, configB: LabConfig, thresholdSecon
   };
 }
 
+/**
+ * 跨方案说话人对应关系：编号在各自方案里按时长重排，直接比 id 会把「同一个簇换了号」算成差异。
+ * 用线段重叠时长建一张 A↔B 权重表，两边各取重叠最多的对方当主对应；
+ * B 簇的主 A 说话人不是本行 A 说话人时，说明这个 B 簇合并了 A 的两个簇 → 记差异。
+ */
+export function speakerMap(aLines: LabLine[], bLines: LabLine[]): {
+  aToB: Map<string, string>;
+  bToA: Map<string, string>;
+} {
+  const pairs = new Map<string, number>();
+  const bump = (aId: string, bId: string, seconds: number) => {
+    const key = `${aId}\u0000${bId}`;
+    pairs.set(key, (pairs.get(key) ?? 0) + seconds);
+  };
+  for (const a of aLines) {
+    for (const b of bLines) {
+      const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+      if (overlap > 0) bump(a.speakerId, b.speakerId, overlap);
+    }
+  }
+  const aBest = new Map<string, { id: string; weight: number }>();
+  const bBest = new Map<string, { id: string; weight: number }>();
+  for (const [key, weight] of pairs) {
+    const [aId = "", bId = ""] = key.split("\u0000");
+    const a = aBest.get(aId);
+    if (a === undefined || weight > a.weight) aBest.set(aId, { id: bId, weight });
+    const b = bBest.get(bId);
+    if (b === undefined || weight > b.weight) bBest.set(bId, { id: aId, weight });
+  }
+  return {
+    aToB: new Map([...aBest].map(([id, best]) => [id, best.id])),
+    bToA: new Map([...bBest].map(([id, best]) => [id, best.id])),
+  };
+}
+
 /** B 方案的行按当前阈值判语气词、与 A 对齐、算差异、贴标记。 */
 export function buildRows(
   configA: LabConfig,
@@ -101,12 +136,15 @@ export function buildRows(
   marks: Record<string, string> = {},
 ): LabRow[] {
   const filterB = configB.name === "refine_filter";
+  const { aToB, bToA } = speakerMap(configA.lines, configB.lines);
   return alignLines(configB.lines, configA.lines).map((aligned) => {
     const { line } = aligned;
     const filler = filterB && isFillerLine(line, thresholdSeconds);
     // 同一时间点上 A 侧也被过滤时不算差异：两边都当它不存在。
     const aFiller = configA.name === "refine_filter" && isFillerLine(line, thresholdSeconds);
-    const diff = aligned.aSpeakerId !== null && aligned.aSpeakerId !== line.speakerId;
+    const mapped = aligned.aSpeakerId === null ? null : aToB.get(aligned.aSpeakerId) ?? aligned.aSpeakerId;
+    const merged = aligned.aSpeakerId !== null && bToA.get(line.speakerId) !== aligned.aSpeakerId;
+    const diff = mapped !== null && (mapped !== line.speakerId || merged);
     const filteredDiff = filler !== aFiller;
     const mark = marks[labLineKey(line)];
     return {
