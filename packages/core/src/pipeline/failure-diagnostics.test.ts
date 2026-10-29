@@ -40,9 +40,9 @@ function firstModelPath(modelDir: string): string {
   return join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
 }
 
-/** 日志里的路径形态：JSON 转义 + home 前缀脱敏（mac ~ / Windows %USERPROFILE%）。 */
+/** 日志里的路径形态：先脱敏 home 前缀（日志层顺序），再按 JSON.stringify 转义。 */
 function loggedPath(path: string): string {
-  return redactHomePaths(JSON.stringify(path).slice(1, -1), homePathPrefixes());
+  return JSON.stringify(redactHomePaths(path, homePathPrefixes())).slice(1, -1);
 }
 
 describe("三种失败都能从诊断文本里看出来", () => {
