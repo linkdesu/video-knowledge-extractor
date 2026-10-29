@@ -40,6 +40,7 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 ## Features
 
 - [Library and import](./library.md) — drop a video, watch the job, read the card, rerun, per-video glossary.
+- [Private verify config (r45c)](./config-seed.md) — every run is seeded with the private LLM config (`0600`, outside the repo); `seed-config`, `export-private-config`, `--empty-settings`.
 - [Topics workspace](./topics.md) — inspect topics, select them for notes, merge, delete segments and subtitle lines.
 - [Notes and clips](./notes.md) — read generated notes, inspect clips, play a clip, reveal the output directory.
 - [Glossary](./glossary.md) — global correction entries, inline edit, immediate save, delete.
@@ -47,4 +48,4 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Logging and diagnostics](./logging.md) - log folder, copied diagnostics, the three failure journeys.
 - [CLI extraction](./cli-extract.md) — `vnote --help/--version/extract`, `--limit`, failure modes, the r42 audio matrix.
 - [Windows build and run](./windows-build.md) — `--install-dir`, the Chinese-plus-space install gate, the BOM'd PowerShell launcher, r42 evidence in `win/`.
-- [Media formats (r42)](./media-formats.md) — the format matrix, the fixture recipe, the pure-audio journey and the `.ts` playback caveat.
+- [Media formats (r42, r45b normalized imports)](./media-formats.md) — the direct-play matrix, import-time normalization (`media.mp4`/`media.mp3`), the fixture recipe, the pure-audio journey and the `.ts` legacy playback notice.

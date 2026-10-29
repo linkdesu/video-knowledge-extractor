@@ -146,6 +146,19 @@ describe("parseProbeJson", () => {
     expect(r.width).toBe(1920);
     expect(r.height).toBe(886);
     expect(r.hasVideo).toBe(true);
+    expect(r.videoCodec).toBe("h264");
+    expect(r.audioCodec).toBe("aac");
+  });
+
+  test("容器名（format_name）缺失时为空串，有则原样给出", () => {
+    const raw = JSON.stringify({
+      streams: [{ index: 0, codec_type: "video", codec_name: "hevc", width: 1920, height: 1080 }],
+      format: { duration: "5", format_name: "mov,mp4,m4a,3gp,3g2,mj2" },
+    });
+    const r = parseProbeJson(raw);
+    expect(r.formatName).toBe("mov,mp4,m4a,3gp,3g2,mj2");
+    expect(r.videoCodec).toBe("hevc");
+    expect(r.audioCodec).toBeNull();
   });
 
   test("纯音频：hasVideo 为 false，宽高为 null，不报错", () => {
@@ -154,18 +167,24 @@ describe("parseProbeJson", () => {
       format: { duration: "30" },
     });
     const r = parseProbeJson(raw);
-    expect(r).toEqual({ duration: 30, width: null, height: null, hasVideo: false });
+    expect(r).toEqual({ duration: 30, width: null, height: null, hasVideo: false, formatName: "", videoCodec: null, audioCodec: "aac" });
     expect(parseProbeJson(JSON.stringify({ streams: [], format: { duration: "5" } }))).toEqual({
       duration: 5,
       width: null,
       height: null,
       hasVideo: false,
+      formatName: "",
+      videoCodec: null,
+      audioCodec: null,
     });
     expect(parseProbeJson(JSON.stringify({ format: { duration: "5" } }))).toEqual({
       duration: 5,
       width: null,
       height: null,
       hasVideo: false,
+      formatName: "",
+      videoCodec: null,
+      audioCodec: null,
     });
   });
 
@@ -184,12 +203,13 @@ describe("parseProbeJson", () => {
   });
 
   test("非法宽高（负数/非整数/字符串）：按 null 处理", () => {
+    const expectShape = { duration: 1, width: null, height: 10, hasVideo: true, formatName: "", videoCodec: null, audioCodec: null };
     const r1 = parseProbeJson(JSON.stringify({ streams: [{ codec_type: "video", width: -5, height: 10 }], format: { duration: "1" } }));
-    expect(r1).toEqual({ duration: 1, width: null, height: 10, hasVideo: true });
+    expect(r1).toEqual(expectShape);
     const r2 = parseProbeJson(JSON.stringify({ streams: [{ codec_type: "video", width: 10.5, height: 10 }], format: { duration: "1" } }));
-    expect(r2).toEqual({ duration: 1, width: null, height: 10, hasVideo: true });
+    expect(r2).toEqual(expectShape);
     const r3 = parseProbeJson(JSON.stringify({ streams: [{ codec_type: "video", width: "abc", height: 10 }], format: { duration: "1" } }));
-    expect(r3).toEqual({ duration: 1, width: null, height: 10, hasVideo: true });
+    expect(r3).toEqual(expectShape);
   });
 
   test("坏 JSON 与缺失时长：报错", () => {

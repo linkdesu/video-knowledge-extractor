@@ -57,6 +57,9 @@
     ".omp/skills/why": "/Volumes/Data/skills/link-stack/skills/why",
     ".omp/agents/poteto-agent.md": "/Volumes/Data/skills/link-stack/adapters/omp/agents/poteto-agent.md",
     ".omp/agents/comment-sicko.md": "/Volumes/Data/skills/link-stack/adapters/omp/agents/comment-sicko.md",
+    ".omp/agents/designer.md": "/Volumes/Data/skills/link-stack/adapters/omp/agents/designer.md",
+    ".omp/agents/impeccable-finish-reviewer.md": "/Volumes/Data/skills/link-stack/adapters/omp/agents/impeccable-finish-reviewer.md",
+    ".omp/agents/impeccable-documenter.md": "/Volumes/Data/skills/link-stack/adapters/omp/agents/impeccable-documenter.md",
     ".omp/extensions/poteto-mode.ts": "/Volumes/Data/skills/link-stack/adapters/omp/extensions/poteto-mode.ts"
   },
   "verifyCommands": [],

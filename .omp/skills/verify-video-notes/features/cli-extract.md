@@ -8,6 +8,7 @@
 - `cli-version` prints the CLI package version.
 - `cli-extract` runs 转写 → 主题分析 → 生成笔记 and prints video title, output directory, model, token usage, topic/note counts, timings and cache hits.
 - `cli-limit` processes only the first N seconds of the video (`--limit <秒>`).
+- `cli-media-normalization` (r45b) `vnote extract` runs the same import-time normalization as the app (core pipeline): non-direct-play sources land a `media.mp4`/`media.mp3` next to `video.json` with `originalPath`/`mediaPath`/`normalized`, and the 「格式转换」 step reports percent on stderr. The CLI accepts any probed format; the `mp4, mov, m4v, webm, m4a, mp3, wav, flac, ts` list is the app's picker filter, not a CLI restriction.
 - `cli-audio-matrix` (r42) accepts the same input set as the app: `mp4, mov, m4v, webm, m4a, mp3, wav, flac, ts`. For a pure audio source (`.m4a` / `.mp3` / `.wav` / `.flac`) the run completes end to end and cover extraction is skipped, exactly as in the app (the card-level contract and journey are in [media-formats.md](./media-formats.md); the per-topic `topic.mp4` there is an mp4 with one AAC audio stream and no video stream, `topic.md` still lands).
 - `cli-errors` exits 1 with a Chinese message for a missing video, an unknown flag, or a missing LLM endpoint.
 

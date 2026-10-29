@@ -15,6 +15,7 @@ LLM 端点: VNOTE_LLM_BASE_URL / IDEALSOFT_API_URL、VNOTE_LLM_API_KEY / IDEALSO
 `;
 
 const STEP_LABELS: Record<StepName, string> = {
+  normalize: "格式转换",
   transcribe: "转写",
   "segment-topics": "主题分析",
   "generate-notes": "生成笔记",

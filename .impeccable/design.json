@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-29T00:00:00Z",
+  "title": "Design System: Video Notes",
+  "extensions": {
+    "colorMeta": {
+      "canvas": { "role": "neutral", "displayName": "Near-black canvas", "canonical": "#07080d" },
+      "canvas-raised": { "role": "neutral", "displayName": "Raised canvas", "canonical": "#0b0d15" },
+      "panel": { "role": "neutral", "displayName": "Translucent panel", "canonical": "rgba(20, 23, 34, 0.72)" },
+      "panel-raised": { "role": "neutral", "displayName": "Raised translucent panel", "canonical": "rgba(28, 32, 46, 0.6)" },
+      "border": { "role": "neutral", "displayName": "Subtle border", "canonical": "rgba(255, 255, 255, 0.08)" },
+      "border-strong": { "role": "neutral", "displayName": "Strong border", "canonical": "rgba(255, 255, 255, 0.14)" },
+      "foreground": { "role": "neutral", "displayName": "Foreground text", "canonical": "#eef0f6" },
+      "muted": { "role": "neutral", "displayName": "Muted text", "canonical": "#9aa3b8" },
+      "dim": { "role": "neutral", "displayName": "Dim text", "canonical": "#7d87a0" },
+      "violet": { "role": "primary", "displayName": "Violet accent", "canonical": "#8b5cf6" },
+      "cyan": { "role": "secondary", "displayName": "Cyan accent", "canonical": "#22d3ee" },
+      "pink": { "role": "tertiary", "displayName": "Pink accent", "canonical": "#f472b6" },
+      "lime": { "role": "accent", "displayName": "Lime accent", "canonical": "#a3e635" },
+      "amber": { "role": "accent", "displayName": "Amber accent", "canonical": "#fbbf24" },
+      "rb-accent": { "role": "primary", "displayName": "React Bits accent", "canonical": "oklch(57% 0.195 275)" },
+      "media-black": { "role": "neutral", "displayName": "Media black", "canonical": "#000" },
+      "button-violet": { "role": "primary", "displayName": "Button violet", "canonical": "#7c3aed" },
+      "button-violet-hover": { "role": "primary", "displayName": "Button violet hover", "canonical": "#6d28d9" },
+      "danger": { "role": "accent", "displayName": "Danger", "canonical": "#dc2626" },
+      "danger-hover": { "role": "accent", "displayName": "Danger hover", "canonical": "#b91c1c" },
+      "error-text": { "role": "accent", "displayName": "Error text", "canonical": "#fda4af" },
+      "warning-text": { "role": "accent", "displayName": "Warning text", "canonical": "#fcd34d" },
+      "success-text": { "role": "accent", "displayName": "Success text", "canonical": "#6ee7b7" },
+      "success-border": { "role": "accent", "displayName": "Success border", "canonical": "rgba(52, 211, 153, 0.3)" },
+      "success-fill": { "role": "accent", "displayName": "Success fill", "canonical": "rgba(52, 211, 153, 0.08)" },
+      "cyan-tag": { "role": "secondary", "displayName": "Cyan tag", "canonical": "#67e8f9" },
+      "lavender-hover": { "role": "accent", "displayName": "Lavender hover", "canonical": "#c4b5fd" },
+      "thumbnail-indigo": { "role": "neutral", "displayName": "Thumbnail indigo", "canonical": "#1e1b4b" },
+      "thumbnail-slate": { "role": "neutral", "displayName": "Thumbnail slate", "canonical": "#0f172a" },
+      "aurora-violet": { "role": "accent", "displayName": "Aurora violet", "canonical": "#4c1d95" },
+      "aurora-cyan": { "role": "accent", "displayName": "Aurora cyan", "canonical": "#0e7490" },
+      "aurora-pink": { "role": "accent", "displayName": "Aurora pink", "canonical": "#9d174d" },
+      "black-overlay-35": { "role": "neutral", "displayName": "Black overlay 35", "canonical": "rgba(0, 0, 0, 0.35)" },
+      "black-overlay-55": { "role": "neutral", "displayName": "Black overlay 55", "canonical": "rgba(0,0,0,0.55)" },
+      "black-overlay-55-spaced": { "role": "neutral", "displayName": "Black overlay 55 spaced", "canonical": "rgba(0, 0, 0, 0.55)" },
+      "black-overlay-60": { "role": "neutral", "displayName": "Black overlay 60", "canonical": "rgba(0, 0, 0, 0.6)" },
+      "black-overlay-65": { "role": "neutral", "displayName": "Black overlay 65", "canonical": "rgba(0, 0, 0, 0.65)" },
+      "error-border-45": { "role": "accent", "displayName": "Error border 45", "canonical": "rgba(248, 113, 113, 0.45)" },
+      "error-border-55": { "role": "accent", "displayName": "Error border 55", "canonical": "rgba(248, 113, 113, 0.55)" },
+      "danger-fill": { "role": "accent", "displayName": "Danger fill", "canonical": "rgba(244, 63, 94, 0.08)" },
+      "danger-border": { "role": "accent", "displayName": "Danger border", "canonical": "rgba(244, 63, 94, 0.3)" },
+      "focus-violet": { "role": "primary", "displayName": "Focus violet", "canonical": "rgba(124, 58, 237, 0.6)" }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "System UI body", "purpose": "Default renderer typography, 14px at 1.6 line-height." },
+      "compact": { "displayName": "Compact text", "purpose": "11px badges, metadata and supporting labels." },
+      "small": { "displayName": "Small text", "purpose": "12px controls and supporting copy." },
+      "supporting": { "displayName": "Supporting text", "purpose": "13px secondary content and controls." },
+      "brand": { "displayName": "Brand", "purpose": "15px sidebar brand and icon glyphs." },
+      "section-title": { "displayName": "Section title", "purpose": "16px component and job headings." },
+      "modal-title": { "displayName": "Modal title", "purpose": "17px dialog heading." },
+      "notes-page-title": { "displayName": "Notes page title", "purpose": "24px title on the notes surface." },
+      "page-title": { "displayName": "Page title", "purpose": "26px page heading." },
+      "mono-log": { "displayName": "Monospace log", "purpose": "Compact model and job output, 11px / 1.5." }
+    },
+    "shadows": [
+      { "name": "logo-glow", "value": "0 0 18px rgba(124, 58, 237, 0.35)", "purpose": "Violet glow around the sidebar logo (styles.css:148-154)." },
+      { "name": "primary-button", "value": "0 6px 18px rgba(124, 58, 237, 0.25)", "purpose": "Depth on primary buttons (styles.css:320-329)." },
+      { "name": "danger-button", "value": "0 6px 18px rgba(220, 38, 38, 0.25)", "purpose": "Depth on destructive buttons (styles.css:335-344)." },
+      { "name": "select-list", "value": "0 18px 50px rgba(0, 0, 0, 0.5)", "purpose": "Separate the select popup from content (styles.css:849-864)." }
+    ],
+    "motion": [
+      { "name": "aurora-drift", "value": "vn-drift; 18s/22s/26s ease-in-out infinite alternate (direction varies)", "purpose": "Slow movement of the three blurred background glows (styles.css:88-117)." },
+      { "name": "interactive-hover", "value": "0.18s", "purpose": "Navigation and base button hover transitions (styles.css:171-195, 295-314)." },
+      { "name": "progress-fill", "value": "width 0.4s", "purpose": "Determinate job progress fill transition (styles.css:551-565)." },
+      { "name": "indeterminate-progress", "value": "vn-indeterminate 1.4s ease-in-out infinite", "purpose": "Moving indeterminate job progress (styles.css:566-579)." },
+      { "name": "toast-entrance", "value": "vn-slidein 0.25s ease", "purpose": "Toast entrance (styles.css:672-696)." }
+    ],
+    "layout": {
+      "shell": "236px 1fr grid; minmax(0, 1fr) row; width 100%; height 100vh; overflow hidden (styles.css:119-129).",
+      "aside": "236px grid column; vertical auto overflow (styles.css:119-140).",
+      "content": "padding 26px 28px 40px; 360px bottom padding while data-has-job=true (styles.css:240-249).",
+      "job-dock": "fixed bottom-4 right-4 z-40 w-[440px] max-w-[calc(100vw-2rem)] p-4 (monitoring-9.tsx:168-172).",
+      "wrap": "centered max-width 1160px (styles.css:250-253)."
+    },
+    "rules": [
+      { "name": "The Single Dark Theme Rule", "body": "Keep the renderer in its implemented dark-only state; do not add an unimplemented light theme or theme switch (index.html:2; styles.css:3-4, 28).", "section": "colors" }
+    ],
+    "dos": [
+      "Do preserve the single .dark renderer theme and color-scheme: dark (index.html:2; styles.css:3-4, 28).",
+      "Do preserve the 100vh shell/aside, fixed lower-right job dock, and 360px job-open content bottom inset (styles.css:119-140, 248-249; monitoring-9.tsx:168-172).",
+      "Do use the CSS-defined --vn-* palette and cite selector/token sources when extending it (styles.css:31-49).",
+      "Do retain the Chinese-only interface and current system font fallbacks (index.html:2; app-shell-1.tsx:8-14; styles.css:6-10)."
+    ],
+    "donts": [
+      "Don't invent light/dark or language switches; neither is implemented (index.html:2; app-shell-1.tsx:8-14).",
+      "Don't claim tested contrast ratios: no contrast measurements or guarantees are present in the inspected source (styles.css:31-49).",
+      "Don't make the job dock participate in shell sizing or remove its content safety inset (styles.css:124-129, 248-249; monitoring-9.tsx:168-172).",
+      "Don't claim that interaction animations are limited to :focus-visible: existing CSS includes nav/button/dropzone hover transitions, progress movement, toast entrance, and aurora drift (styles.css:88-117, 171-195, 295-314, 382-395, 559-570, 672-696). This is an observed mismatch with the requested interaction-motion constraint, not a new motion prescription."
+    ]
+  },
+  "components": [
+    {
+      "name": "Base Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Base appearance from .vn-btn; default variant is outlined translucent, with a 0.18s hover state (styles.css:295-314).",
+      "html": "<button class=\"ds-btn\">Action</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 16px; border-radius: 11px; border: 1px solid var(--vn-line2); background: rgba(255, 255, 255, 0.04); color: var(--vn-fg); font: 13px var(--font-sans); cursor: pointer; transition: 0.18s; white-space: nowrap; } .ds-btn:hover { background: rgba(255, 255, 255, 0.09); transform: translateY(-1px); } .ds-btn:focus-visible { outline: 2px solid rgba(139, 92, 246, 0.6); outline-offset: 1px; }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Violet call-to-action variant, matched to the implemented .vn-btn.primary (styles.css:320-329).",
+      "html": "<button class=\"ds-btn-primary\">Continue</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; padding: 9px 16px; border: 0; border-radius: 11px; background: #7c3aed; color: #fff; font: 600 13px var(--font-sans); cursor: pointer; box-shadow: 0 6px 18px rgba(124, 58, 237, 0.25); transition: 0.18s; } .ds-btn-primary:hover { background: #6d28d9; } .ds-btn-primary:focus-visible { outline: 2px solid rgba(139, 92, 246, 0.6); outline-offset: 1px; }"
+    },
+    {
+      "name": "Navigation Item",
+      "kind": "nav",
+      "refersTo": "",
+      "description": "Vertical side-rail navigation item with muted idle state and violet/cyan active state (styles.css:171-195).",
+      "html": "<button class=\"ds-nav\">视频库</button>",
+      "css": ".ds-nav { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 0; border-radius: 11px; background: transparent; color: var(--vn-muted); font: 14px var(--font-sans); cursor: pointer; transition: 0.18s; } .ds-nav:hover { background: rgba(255, 255, 255, 0.05); color: var(--vn-fg); } .ds-nav:focus-visible { outline: 2px solid rgba(139, 92, 246, 0.6); outline-offset: 1px; } .ds-nav[aria-current=page] { background: linear-gradient(90deg, rgba(139, 92, 246, 0.22), rgba(34, 211, 238, 0.07)); color: #fff; box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.35); }"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "",
+      "description": "Compact, non-wrapping status pill matching .vn-tag (styles.css:345-379).",
+      "html": "<span class=\"ds-tag\">处理中</span>",
+      "css": ".ds-tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--vn-line); border-radius: 99px; background: rgba(255, 255, 255, 0.03); color: var(--vn-muted); font: 11px var(--font-sans); line-height: 1.4; white-space: nowrap; flex-shrink: 0; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Translucent glass panel with fine border, blur and 18px corners matching .vn-card (styles.css:273-278).",
+      "html": "<section class=\"ds-card\">Workspace content</section>",
+      "css": ".ds-card { background: var(--vn-panel); border: 1px solid var(--vn-line); border-radius: 18px; backdrop-filter: blur(16px); }"
+    },
+    {
+      "name": "Job Dock",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Fixed lower-right job progress card that overlays the shell (monitoring-9.tsx:168-172).",
+      "html": "<aside class=\"ds-job-dock\" aria-label=\"任务进度\">任务进度</aside>",
+      "css": ".ds-job-dock { position: fixed; right: 1rem; bottom: 1rem; z-index: 40; width: 440px; max-width: calc(100vw - 2rem); padding: 1rem; background: var(--vn-panel); border: 1px solid var(--vn-line); border-radius: 18px; backdrop-filter: blur(16px); }"
+    }
+  ]
+}

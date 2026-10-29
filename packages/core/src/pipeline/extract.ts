@@ -1,14 +1,15 @@
-import { rmSync, statSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { probeVideo, extractAudio, assertAudioDecodable } from "../core/audio";
+import { decideNormalization, normalizeMedia, targetFileName } from "../core/media-normalize";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
 import { applyCorrections, countCorrectionsHits } from "../core/corrections";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { sweepStaleTopicDirs } from "../core/outputs";
-import { emptyVideoData, readVideoData, writeVideoData, type TopicRecord } from "../core/video-data";
+import { emptyVideoData, mediaAbsolutePath, readVideoData, writeVideoData, type TopicRecord } from "../core/video-data";
 import { settleRunWhileLocked } from "../core/edits";
 import { ensureCoverFrame } from "../core/cover";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
@@ -103,21 +104,65 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       if (data === undefined) data = { ...emptyVideoData(video), runToken };
       else data.runToken = runToken;
       data.hasVideo = probe.hasVideo;
+      data.originalPath = video.sourcePath;
       writeVideoData(video.outputDir, data);
-      // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
-      try {
-        await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: video.sourcePath, durationSeconds: probe.duration, hasVideo: probe.hasVideo });
-      } catch {
-        // 封面失败只记 warn，不让导入失败
-        logger().warn("ffmpeg", "封面抽帧失败");
-      }
       // 接收屏障：等 main 的 ACK 才继续（超时由调用方处理，不写主题）
       if (input.onPrepared !== undefined) {
         await input.onPrepared({ videoId: video.id, outputDir: video.outputDir, runToken });
       }
+      // 媒体规范化（r45b，ADR-0033）：音轨预检已在建目录前跑过，坏音轨不会走到这里。
+      // 已规范化过的重跑直接复用产物；产物丢失才重来。
+      const decision = decideNormalization({
+        extension: extname(video.sourcePath).toLowerCase(),
+        formatName: probe.formatName,
+        hasVideo: probe.hasVideo,
+        videoCodec: probe.videoCodec,
+        audioCodec: probe.audioCodec,
+      });
+      const reused =
+        data.mediaPath !== null &&
+        data.normalized !== null &&
+        data.normalized !== "none" &&
+        existsSync(resolve(video.outputDir, data.mediaPath));
+      if (reused) {
+        logger().info("ffmpeg", "格式转换复用已有产物", { mediaPath: data.mediaPath, normalized: data.normalized });
+      } else if (decision.mode === "none") {
+        data.mediaPath = null;
+        data.normalized = "none";
+        logger().info("ffmpeg", "格式转换跳过", { reason: "容器与编码可直读", formatName: probe.formatName, videoCodec: probe.videoCodec, audioCodec: probe.audioCodec });
+      } else {
+        const normalized = await logger().step("ffmpeg", "格式转换", () =>
+          normalizeMedia({
+            sourcePath: video.sourcePath,
+            outputDir: video.outputDir,
+            decision,
+            durationSeconds: probe.duration,
+            ...(input.onProgress !== undefined
+              ? {
+                  onProgress: (percent: number) => {
+                    input.onProgress?.({ step: "normalize", done: percent, total: 100, detail: `${percent}%` });
+                  },
+                }
+              : {}),
+          }),
+        );
+        data.mediaPath = targetFileName(decision);
+        data.normalized = normalized.mode;
+      }
+      writeVideoData(video.outputDir, data);
+      // 预览、ASR、主题切片、封面统一读规范化产物；旧数据没有 mediaPath 时回退原文件
+      const mediaPath = mediaAbsolutePath(data);
+      logger().info("ffmpeg", "规范化媒体就绪", { mediaPath, normalized: data.normalized });
+      // 封面失败绝不让导入失败（r33）；锁内、屏障前后皆可
+      try {
+        await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: mediaPath, durationSeconds: probe.duration, hasVideo: probe.hasVideo });
+      } catch {
+        // 封面失败只记 warn，不让导入失败
+        logger().warn("ffmpeg", "封面抽帧失败");
+      }
       const wavPath = `${cacheDir}/audio.wav`;
       const audioStart = performance.now();
-      await logger().step("ffmpeg", "抽取音频", () => extractAudio(video.sourcePath, wavPath, input.limitSeconds));
+      await logger().step("ffmpeg", "抽取音频", () => extractAudio(mediaPath, wavPath, input.limitSeconds));
       logger().info("ffmpeg", "抽取音频完成", { durationMs: Math.round(performance.now() - audioStart), wavBytes: statSync(wavPath).size });
       timings.audio = t();
 

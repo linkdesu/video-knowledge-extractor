@@ -179,6 +179,25 @@ export function App() {
     [],
   );
 
+  const rerunVideo = useCallback(async () => {
+    if (route.name !== "video") return;
+    const videoId = route.videoId;
+    const video = detail?.video.id === videoId
+      ? detail.video
+      : videos?.find((v) => v.id === videoId);
+    if (video === undefined) {
+      showToast("重跑失败：未找到视频");
+      return;
+    }
+    try {
+      const sourcePath = video.sourcePath ?? await window.vnote.pickVideo();
+      if (sourcePath === null) return;
+      await window.vnote.startExtract({ kind: "existing", videoId, sourcePath });
+    } catch (err) {
+      showToast(`重跑失败：${errMessage(err)}`);
+    }
+  }, [detail, route, videos]);
+
   const rebuild = useCallback((videoId: string) => {
     window.vnote
       .rebuildTopics(videoId)
@@ -259,6 +278,7 @@ export function App() {
       <AppFrame
         active={navKey}
         appVersion={appVersion}
+        hasActiveJob={job !== null}
         onNavigate={(key) => {
           if (key === "glossary") setRoute({ name: "glossary" });
           else if (key === "settings") setRoute({ name: "settings" });
@@ -279,6 +299,7 @@ export function App() {
             onRefresh={() => refreshDetail(route.videoId)}
             onStartNotes={startNotes}
             onRebuildTopics={() => rebuild(route.videoId)}
+            onRerunVideo={rerunVideo}
           />
         ) : route.name === "library" ? (
           <LibraryPage
@@ -290,7 +311,6 @@ export function App() {
             onOpenVideo={(v, page) => openVideo(v.id, page)}
             onImport={() => void importVideo()}
             onImportPath={(path) => void importPath(path)}
-            onRebuild={(id) => void rebuild(id)}
             onRerun={(v) => void rerun(v)}
             onDelete={removeVideo}
           />
@@ -302,13 +322,11 @@ export function App() {
       </AppFrame>
 
       {job !== null ? (
-        <div className="vn-job-dock" data-testid="job-dock">
-          <JobProgress
-            job={job}
-            onCancel={() => void cancelJob()}
-            onClose={() => setJob(null)}
-          />
-        </div>
+        <JobProgress
+          job={job}
+          onCancel={() => void cancelJob()}
+          onClose={() => setJob(null)}
+        />
       ) : null}
       <ToastHost />
     </>

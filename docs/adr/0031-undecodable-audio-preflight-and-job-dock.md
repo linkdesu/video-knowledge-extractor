@@ -16,6 +16,8 @@ r42 的 QA 原片是一段加密/损坏的直播录像（`.ts`）：`ffprobe` �
 3. **不改 `extractAudio` 的失败语义。** 预检只覆盖「开头 2 秒就解不出」（产出过小时放宽到 12 秒再看一次）。若一段音频前 2 秒正常、之后损坏，仍在转写阶段按原有失败路径处理；不为尚未观察到的文件形态扩大改动面。
 4. **浮层改为布局内停靠。** `#root` 改成纵向 flex，`.vn-shell` 用 `flex: 1; min-height: 0` 占满剩余高度，`JobProgress` 外面包一层 `.vn-job-dock`（`flex: 0 0 auto`，右对齐）。浮层不再是 `position: fixed`，内容区 `.vn-content` 的底边就是停靠区的顶边，任何卡片按钮都不可能与浮层相交；关闭后内容区自动恢复满高。小窗口是同一约束的另一半：`.vn-shell` 显式 `grid-template-rows: minmax(0, 1fr)` 并 `overflow: hidden`，`.vn-main` / `.vn-content` 都设 `min-height: 0`，否则侧栏的最小内容高度会把 grid 行撑高、内容从停靠区下面穿出去（窗口 420 px 高时实测复现过）。
 
+> r45 已取代本条：见 [ADR-0032](./0032-top-layer-viewport-invariant-and-job-overlay.md)。
+
 ## Considered Options
 
 - **预检放在 `prepared` 之后**：能留下一条失败卡片和短原因，但会为注定失败的文件建目录、抽封面、发一次 prepared。用户在坏文件上看到的仍是一张要手动删除的空卡片。采用更早的失败点，让「无法处理」的文件根本不进库。

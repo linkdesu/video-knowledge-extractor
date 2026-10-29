@@ -1,4 +1,4 @@
-# Settings
+# Settings (requires: empty-settings)
 
 Settings shows what the app will actually use: local ASR model bundles and their readiness, the LLM endpoint and model, storage directories, cache size and the app/ffmpeg versions. The LLM panel is a single-card form (baseUrl, key, model) saved atomically by one 保存 button; no LLM field is ever locked by environment variables (r30), and the trial build exposes only local ASR.
 
@@ -9,7 +9,7 @@ Settings shows what the app will actually use: local ASR model bundles and their
 - `settings-model-required` lists the four required models (`model-required-asr`, `model-required-diarization`, `model-required-speaker-embedding`, `model-required-punctuation`). Each `.vn-model` card is a left/right flex row: the left side (`flex: 1; min-width: 0`) holds the label and the expected relative path in monospace with `word-break: break-all`, then the missing paths in red; the right side (`flex-shrink: 0`) holds one short status `.vn-tag` — 就绪 (`ok`), 缺失 (`err`), 下载中 (`accent`, that bundle only) — and, while the model is missing, a per-model 下载 button (`model-download-<id>`). The tag never takes the path text, so a long multi-line path cannot squeeze it into an ellipse (`white-space: nowrap; flex-shrink: 0; align-self: center; line-height: 1.4` in `styles.css`).
 - `settings-model-download` is the bottom action row: 下载模型 (`model-download`, every missing bundle; disabled while a download runs or when all four are ready), 取消 (`model-cancel`, enabled only while a download runs), 检测本地模型 (`model-verify`, re-runs `checkModels` and refreshes `settings().asr.local.ready`). A running download renders `model-download-progress` (`.vn-progress`), `model-download-message` (state, percent, received/total) and the fixed-height `model-download-log` fed by `models:event`.
 - **Readiness is file presence** (r38, unchanged from r37's 检测本地模型): `checkModels(modelDir)` only checks that every required path exists. A model copied into `modelDir` while the app runs is usable after one 检测本地模型 click — no restart, no sha256 pass, no download. The same `checkModels` verdict gates 提取前检查 (`ensurePipelineReady`), `settings().asr.local.ready` and `测试连接` for local ASR.
-- `settings-llm` is a single-card form: 接口地址 (text input `settings-llm-base-url`), API key (password input `settings-llm-key-input` with reveal toggle `settings-llm-key-reveal`), 模型名 (combobox input `settings-llm-model` role=combobox plus listbox `settings-llm-model-listbox` role=listbox and option rows `settings-llm-model-option-<i>` role=option with `data-value` the model id), 拉取模型 (`settings-llm-fetch-models`, disabled only while a fetch is in flight or while the draft baseUrl is empty), 测试连接 (`settings-test-llm`) and the single 保存 button (`settings-llm-save`). 拉取模型 and 测试连接 use the draft values in front of you and require no prior save. All edits are local drafts; the one save submits baseUrl + model to `settings.json` and the key to the system keychain in one credential transaction.
+- `settings-llm` is a single-card form: 接口地址 (text input `settings-llm-base-url`), API key (password input `settings-llm-key-input` with reveal toggle `settings-llm-key-reveal`), 模型名 (combobox input `settings-llm-model` role=combobox plus listbox `settings-llm-model-listbox` role=listbox and option rows `settings-llm-model-option-<i>` role=option with `data-value` the model id), 拉取模型 (`settings-llm-fetch-models`, disabled only while a fetch is in flight or while the draft baseUrl is empty), 测试连接 (`settings-test-llm`) and the single 保存 button (`settings-llm-save`). 拉取模型 and 测试连接 use the draft values in front of you and require no prior save. All edits are local drafts; the one save submits baseUrl + model to `settings.json` and the key to the local private key file (`secrets.bin`, `0600` permissions) in one credential transaction. The key file is written only when the user actively saves; nothing is written on load.
 - `settings-llm-key` is an editable password input (`type=password`, test ids `settings-llm-key-input` / `settings-llm-key-reveal`) prefilled with the saved key (r32, masked; the eye shows plaintext). The single form 保存 keeps the saved key when the input is empty, and replaces it when the input holds a different key. Since r36 the row also has an explicit 清空 button (`settings-llm-key-clear`), shown while `llm.keyStorageAvailable` and either `llm.hasKey` or the input has text: it deletes the stored key in the same credential-transaction path, empties the input and flips the hint to `settings-llm-key-none`, with no 保存 click. The four ASR key fields follow the same pattern.
 - `settings-llm-fetch-models` calls `<base>/models` with the draft's base url and key (falling back to the stored or dev-seeded key when the key input is empty) and renders every returned id as an option in `settings-llm-model-listbox`; a failure renders inline at `settings-llm-models-error`, and a 401 reads `模型发现失败：API key 无效或已停用` with the response body never echoed.
 - `settings-test-llm` calls the configured endpoint (network).
@@ -26,6 +26,7 @@ Settings shows what the app will actually use: local ASR model bundles and their
 
 Preconditions:
 
+- `requires: empty-settings` — start the run with `verify.ts up --empty-settings`: the default run seeds a saved LLM endpoint/key from the private config (config-seed.md), and these journeys assert the virgin settings page (`settings-llm-key-none`, drafts, save flow).
 - A running instance; `doctor` reports the app version and ffmpeg.
 - For network-free verification, do not click 测试连接, 拉取模型 or 下载模型 (the download controls exist since r38, but a full set is ~1.1 GB).
 
@@ -119,7 +120,7 @@ On a metered connection skip both clicks; type the model instead: `$V fill '[dat
 
 ### Recipe: LLM 保存闭环（single save, write closed loop）
 
-One save button submits the whole form atomically: baseUrl + model into `settings.json`, the key into the system keychain in one credential transaction. The button is disabled while the draft equals the saved values, so fill at least one field first.
+One save button submits the whole form atomically: baseUrl + model into `settings.json`, the key into the local private key file (`secrets.bin`, `0600`) in one credential transaction. The button is disabled while the draft equals the saved values, so fill at least one field first.
 
 ```bash
 $V click-text '设置'
@@ -153,7 +154,7 @@ $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.l
 # expected: { "baseUrl": "<origin>+<pathname of $ENDPOINT>", "model": "<model>", "hasKey": true }
 cat tmp/verify/<run>/user-data/settings.json
 # expected: "llm" contains "baseUrl": "<same as the settings() readback>" and "model": "<model>"
-# 7) the key landed in the keychain; the input keeps it (masked) and the hint flips
+# 7) the key landed in the 0600 key file; the input keeps it (masked) and the hint flips
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
 # expected: the key you saved, still there (r32 never clears it; ADR-0024)
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
@@ -180,7 +181,7 @@ $V click '[data-testid=settings-llm-model]'
 # expected: the full list again (5 ids for the repo's mock) — the selected value does not filter it
 ```
 
-A failed save must render at `settings-llm-save-error` (inline, readable text), never only as a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`. The button is disabled when the draft equals the saved values, or when a non-empty key differs from the saved one while `llm.keyStorageAvailable` is false (a key cannot be written without keychain access); that is the `llmSaveBlocked` rule, not a defect. An emptied key input means 「保留已存 key」 and does not enable 保存 by itself.
+A failed save must render at `settings-llm-save-error` (inline, readable text), never only as a toast: assert `document.querySelector('[data-testid=settings-llm-save-error]') !== null`. The button is disabled when the draft equals the saved values, or when a non-empty key differs from the saved one while `llm.keyStorageAvailable` is false (a key cannot be written without a writable 0600 key file); that is the `llmSaveBlocked` rule, not a defect. An emptied key input means 「保留已存 key」 and does not enable 保存 by itself.
 
 Note on `settings().llm.baseUrl`: the preload bridge returns the effective base url normalized to origin+pathname (`displayUrl`), so compare against that shape, not the raw input text.
 
@@ -226,7 +227,7 @@ $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 $V click '[data-testid=settings-llm-key-reveal]'
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').type"
 # expected: "password"
-# a form save lands the key in the keychain
+# a form save lands the key in the 0600 key file
 $V fill '[data-testid=settings-llm-key-input]' 'sk-verify-r32'
 $V wait "document.querySelector('[data-testid=settings-llm-save]').disabled === false"
 $V click '[data-testid=settings-llm-save]'
@@ -266,7 +267,7 @@ $V eval "document.querySelector('[data-testid=settings-llm-key-saved]') !== null
 # 2) explicit clear
 $V click '[data-testid=settings-llm-key-clear]'
 $V wait "window.vnote.settings().then(s => !s.llm.hasKey && s.llm.apiKey === null)"
-# expected: condition met — hasKey false, the keychain value is gone
+# expected: condition met — hasKey false, the key file value is gone
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').value === '' && document.querySelector('[data-testid=settings-llm-key-none]') !== null"
 # expected: true — input emptied, hint reads 尚未保存 key
 # the clear button is now gone (no stored key, empty input)
@@ -278,7 +279,7 @@ $V status
 # expected: exit 0
 ```
 
-Restart the run (「restart persistence」) and read `settings().llm.hasKey` again: it must stay `false`, proving the keychain value was deleted, not just hidden. Clearing with a env-only key (`keySource: "env"`) cannot remove the environment value; the stored key is cleared and the `settings-llm-key-env` hint remains.
+Restart the run (「restart persistence」) and read `settings().llm.hasKey` again: it must stay `false`, proving the key file value was deleted, not just hidden. Clearing with a env-only key (`keySource: "env"`) cannot remove the environment value; the stored key is cleared and the `settings-llm-key-env` hint remains.
 
 ### Recipe: 401 错误文案（readable，正文不回显）
 
@@ -346,7 +347,8 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r30-install/V
 Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
 ## Gotchas
 - **`.env` never locks an LLM field (r30).** There is no `settings().llm.locked` and no 由环境变量控制 hint on the LLM inputs; a run started from the repo root performs the full baseUrl write closed loop. The packaged app never reads `.env`; a dev (unpacked) app loads it only as a seed for fields without a saved value, a saved value always wins. The `vnote` CLI keeps the env-only configuration.
-- **The separate key save button is gone (r30); the explicit clear button is back (r36).** `settings-llm-key-save` does not exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without keychain access). `settings-llm-key-clear` exists only while the key store is available and a key is stored or the input has text; an empty input plus 保存 still means 「保持原 key」 and never deletes it.
+- **旧版系统加密密钥（r45c）。** ≤0.1.0 的 `secrets.bin` 是 safeStorage 密文。Windows 上它是 DPAPI（随用户、不随签名），新版本启动时会自动解密并迁移成 `0600` 本地 JSON，`llm.hasKey` 保持 true；macOS 的钥匙串绑定 cdhash，重装后无法免授权解密，文件被挪到 `secrets.bin.legacy-<ts>` 并写一条 WARN 日志，用户需在设置页重新填写一次 key。settings.json 里的 baseUrl/model 两种情况都保留。
+- **The separate key save button is gone (r30); the explicit clear button is back (r36).** `settings-llm-key-save` does not exist; the LLM key rides the single form 保存, which is also disabled when a non-empty key is typed but `keyStorageAvailable` is false (a key cannot be written without a writable 0600 key file). `settings-llm-key-clear` exists only while the key store is available and a key is stored or the input has text; an empty input plus 保存 still means 「保持原 key」 and never deletes it.
 
 - The app never downloads models by itself (r28). Since r38 设置 offers both paths explicitly: 下载模型 downloads the missing bundles (with per-bundle 下载 on each missing card and a 取消 that aborts the in-flight one), while a model the user drops into the model directory is usable after one 检测本地模型 click.
 - Model files placed manually are 就绪 as soon as they exist (r37/r38: `checkModels` is existence-only, no sha256 pass, no 未校验 state); there is nothing to run after copying files but 检测本地模型. The online downloader skips a bundle whose files already exist, so a mixed manual/online directory does not re-download what is there.

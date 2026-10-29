@@ -1,16 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import type {
-  JobSnapshot,
-  JobStep,
-  LibraryVideo,
-  VideoDetail,
-  VideoStatus,
-} from "../../../shared/ipc";
+import { useState } from "react";
+import { createPortal } from "react-dom";
+import type { JobSnapshot, JobStep, LibraryVideo, VideoStatus } from "../../../shared/ipc";
 import DropZone from "../rbp/blocks/empty-state-5";
 import { ProgressBar } from "../rbp/blocks/monitoring-9";
-import { VideoGlossaryPanel } from "../components/VideoGlossaryPanel";
-import { errMessage, fmtBytes, fmtClock } from "../lib/format";
-import { showToast } from "../lib/toast";
+import { fmtBytes, fmtClock } from "../lib/format";
 
 const STATUS_TAG: Record<VideoStatus, { label: string; cls: string }> = {
   done: { label: "已完成", cls: "vn-tag ok" },
@@ -23,11 +16,13 @@ const STATUS_TAG: Record<VideoStatus, { label: string; cls: string }> = {
 
 const STEP_LABEL: Record<JobStep, string> = {
   prepare: "准备",
+  normalize: "格式转换",
   transcribe: "转写",
   "segment-topics": "主题分析",
   "generate-notes": "生成笔记",
   cleanup: "清理",
 };
+
 function importLabel(iso: string | null): string {
   if (iso === null) return "—";
   const d = new Date(iso);
@@ -42,8 +37,6 @@ function importLabel(iso: string | null): string {
   return md;
 }
 
-type RerunScope = "topics" | "asr";
-
 export function LibraryPage({
   videos,
   job,
@@ -53,7 +46,6 @@ export function LibraryPage({
   onOpenVideo,
   onImport,
   onImportPath,
-  onRebuild,
   onRerun,
   onDelete,
 }: {
@@ -65,68 +57,11 @@ export function LibraryPage({
   onOpenVideo: (video: LibraryVideo, page: "topics" | "notes") => void;
   onImport: () => void;
   onImportPath: (path: string) => void;
-  onRebuild: (videoId: string) => void;
   onRerun: (video: LibraryVideo) => void;
   onDelete: (video: LibraryVideo) => Promise<void>;
 }) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<VideoDetail | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const [rerunOpen, setRerunOpen] = useState(false);
-  const [rerunScope, setRerunScope] = useState<RerunScope>("topics");
   const [deleting, setDeleting] = useState<LibraryVideo | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  useEffect(() => {
-    if (expandedId === null) {
-      setDetail(null);
-      setDetailError(null);
-      return;
-    }
-    let cancelled = false;
-    setDetail(null);
-    setDetailError(null);
-    window.vnote
-      .getVideo(expandedId)
-      .then((d) => {
-        if (!cancelled) setDetail(d);
-      })
-      .catch((err) => {
-        if (!cancelled) setDetailError(errMessage(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [expandedId]);
-
-  const refreshDetail = useCallback(async () => {
-    if (expandedId === null) return;
-    try {
-      const d = await window.vnote.getVideo(expandedId);
-      setDetail(d);
-      setDetailError(null);
-    } catch (err) {
-      setDetailError(errMessage(err));
-    }
-  }, [expandedId]);
-
-  const closeGlossary = useCallback(() => {
-    setExpandedId(null);
-    setDetail(null);
-    setDetailError(null);
-  }, []);
-
-  const confirmRerun = () => {
-    const video = videos.find((v) => v.id === expandedId);
-    setRerunOpen(false);
-    if (video === undefined) return;
-    if (rerunScope === "topics") {
-      onRebuild(video.id);
-      showToast("已排队：仅重新生成主题 + 笔记");
-    } else {
-      onRerun(video);
-      showToast("已排队：重新转写 + 主题 + 笔记");
-    }
-  };
 
   const confirmDelete = () => {
     const target = deleting;
@@ -135,7 +70,6 @@ export function LibraryPage({
     void onDelete(target)
       .then(() => {
         setDeleting(null);
-        setExpandedId((cur) => (cur === target.id ? null : cur)); // 被删的卡若展开过，清掉展开态
       })
       .finally(() => setDeleteBusy(false));
   };
@@ -192,12 +126,13 @@ export function LibraryPage({
                 : running.state === "queued"
                   ? "排队中"
                   : percent > 0
-                    ? running.step === "transcribe"
-                      ? `转写中 ${Math.round(percent)}%`
-                      : `处理中 ${Math.round(percent)}%`
+                    ? running.step === "normalize"
+                      ? `格式转换 ${Math.round(percent)}%`
+                      : running.step === "transcribe"
+                        ? `转写中 ${Math.round(percent)}%`
+                        : `处理中 ${Math.round(percent)}%`
                     : `${STEP_LABEL[running.step]}中`;
             const cls = running !== null ? "vn-tag warn" : STATUS_TAG[v.status].cls;
-            const expanded = expandedId === v.id;
             return (
               <div key={v.id} className="vn-card vn-vcard" data-testid="video-card">
                 <div className="vn-thumb">
@@ -214,14 +149,9 @@ export function LibraryPage({
                   </span>
                 </div>
                 <div className="vn-vbody">
-                  <button
-                    type="button"
-                    className="vn-title"
-                    data-testid="video-title"
-                    onClick={() => (expanded ? closeGlossary() : setExpandedId(v.id))}
-                  >
+                  <span className="vn-title" data-testid="video-title">
                     {v.title}
-                  </button>
+                  </span>
                   <div className="vn-meta">
                     <span>{importLabel(v.importedAt)}</span>
                     <span>{v.sizeBytes !== null ? fmtBytes(v.sizeBytes) : "—"}</span>
@@ -293,10 +223,7 @@ export function LibraryPage({
                         type="button"
                         data-testid="video-delete"
                         className="vn-btn sm"
-                        onClick={(e) => {
-                          e.stopPropagation(); // 点删除不展开/打开视频
-                          setDeleting(v);
-                        }}
+                        onClick={() => setDeleting(v)}
                       >
                         删除
                       </button>
@@ -310,38 +237,6 @@ export function LibraryPage({
                   {running !== null && running.state === "running" && percent > 0 ? (
                     <ProgressBar percent={percent} />
                   ) : null}
-                  {expanded ? (
-                    <div
-                      style={{
-                        marginTop: 8,
-                        borderTop: "1px solid var(--vn-line)",
-                        paddingTop: 8,
-                      }}
-                    >
-                      {detailError !== null ? (
-                        <p className="vn-hint">加载本视频术语表失败：{detailError}</p>
-                      ) : detail !== null ? (
-                        <VideoGlossaryPanel
-                          videoId={detail.video.id}
-                          entries={detail.corrections}
-                          onSaved={refreshDetail}
-                        />
-                      ) : null}
-                      <div className="vn-row" style={{ marginTop: 8 }}>
-                        <button
-                          type="button"
-                          data-testid="rerun-scope-open"
-                          className="vn-btn sm"
-                          onClick={() => {
-                            setRerunScope("topics");
-                            setRerunOpen(true);
-                          }}
-                        >
-                          修改后选择重跑范围
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             );
@@ -349,67 +244,7 @@ export function LibraryPage({
         </div>
       ) : null}
 
-      {rerunOpen ? (
-        <div
-          className="vn-mask"
-          role="dialog"
-          aria-modal="true"
-          aria-label="选择重跑范围"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setRerunOpen(false);
-          }}
-        >
-          <div className="vn-modal">
-            <h3>选择重跑范围</h3>
-            <p>
-              受影响的视频：
-              {videos.find((v) => v.id === expandedId)?.title ?? ""}。
-            </p>
-            <div
-              className={`vn-radio${rerunScope === "topics" ? " on" : ""}`}
-              role="radio"
-              aria-checked={rerunScope === "topics"}
-              onClick={() => setRerunScope("topics")}
-            >
-              <div style={{ width: 16 }}>●</div>
-              <div>
-                <b>仅重新生成主题和笔记</b>
-                <span>不重跑 ASR，约 40 秒。</span>
-              </div>
-            </div>
-            <div
-              className={`vn-radio${rerunScope === "asr" ? " on" : ""}`}
-              role="radio"
-              aria-checked={rerunScope === "asr"}
-              onClick={() => setRerunScope("asr")}
-            >
-              <div style={{ width: 16 }}>○</div>
-              <div>
-                <b>连同语音重新转写</b>
-                <span>术语作为 ASR 上下文，字幕、主题、笔记全部更新。</span>
-              </div>
-            </div>
-            <div
-              className="vn-row"
-              style={{ justifyContent: "flex-end", marginTop: 18 }}
-            >
-              <button type="button" className="vn-btn" onClick={() => setRerunOpen(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                data-testid="rerun-confirm"
-                className="vn-btn primary"
-                onClick={confirmRerun}
-              >
-                开始重跑
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {deleting !== null ? (
+      {deleting !== null ? createPortal(
         <div
           className="vn-mask"
           role="dialog"
@@ -420,7 +255,7 @@ export function LibraryPage({
           }}
         >
           <div className="vn-modal">
-            <h3>确认删除</h3>
+            <h2>确认删除</h2>
             <p>
               确认删除《{deleting.title}》？将同时删除该视频的字幕、主题、笔记及切片文件，原视频文件不受影响。
             </p>
@@ -447,7 +282,8 @@ export function LibraryPage({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </>
   );

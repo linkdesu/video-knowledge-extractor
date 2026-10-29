@@ -14,8 +14,15 @@ apps/desktop/release-win/
 apps/desktop/win-resources/
 apps/desktop/.cache/
 
-# `~/.gitignore_global` 整体忽略 .omp/；仓库只收项目技能（.omp/skills 已有大量跟踪文件），
-# 本机配置、agents、sessions 与缓存继续忽略。父目录被忽略时子路径的取反不生效，所以逐层写。
+# `~/.gitignore_global` 整体忽略 .omp/；仓库收项目技能（.omp/skills）与项目级子代理
+# （.omp/agents 的 link-stack 符号链接，r45 起纳入版本管理），sessions 与缓存继续忽略。
+# 父目录被忽略时子路径的取反不生效，所以逐层写。
 !.omp/
 .omp/*
 !.omp/skills/
+!.omp/agents/
+.omp/agents/*
+!.omp/agents/*.md
+
+# concept-seed 是一次性的原型灵感 roll（含本机 roll key），不进版本库；round 卡片与 baseline 才提交。
+.impeccable/concept-seed.txt

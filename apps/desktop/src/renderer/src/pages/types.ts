@@ -9,4 +9,5 @@ export type PageContext = {
   onPage: (page: WorkspacePage) => void;
   onStartNotes: (topicIds: string[], options?: { force?: boolean }) => Promise<void>;
   onRebuildTopics: () => Promise<void>;
+  onRerunVideo: () => Promise<void>;
 };

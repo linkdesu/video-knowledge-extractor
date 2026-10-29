@@ -29,7 +29,9 @@ ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, req
 
 **Test video rule (per platform, absolute).** Mac runs use only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); Windows runs use only videos under `C:\Users\xieal\Documents\video-notes\` (for example `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, `C:\Users\xieal\Documents\video-notes\测试视频 1.mp4`). Never a video from another directory.
 
-The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root. The desktop app does not persist env config: the packaged app never reads `.env` at all; a dev (unpacked) app takes `VNOTE_LLM_*` from its **process environment** (or `.env`) as a seed for fields with no saved value, and a saved value always wins. Exporting `VNOTE_LLM_BASE_URL` / `VNOTE_LLM_MODEL` / `VNOTE_LLM_API_KEY` in front of `verify.ts up` is therefore the way to hand a real endpoint to a dev run without ever typing the key into a shell-visible `fill` argument.
+The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root.
+
+The desktop app is configured from **files**, not the environment (r45c): `verify.ts up` seeds every run's isolated userData with the private LLM config before the app starts — mac `~/.config/video-notes-verify/llm.json`, Windows `%USERPROFILE%\.config\video-notes-verify\llm.json`, both `0600` and outside the repo (details: [features/config-seed.md](./features/config-seed.md)). An ambient `VNOTE_LLM_*` / `IDEALSOFT_*` is stripped from the child process, so the seeded files are the only source and `--empty-settings` really means empty. A feature that asserts a virgin settings page marks itself `requires: empty-settings` and starts with `up --empty-settings`. Never type a key into a shell-visible `fill` argument.
 
 Start an isolated instance:
 
@@ -40,10 +42,11 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up
 What `up` does:
 
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
-2. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411`.
-3. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache.
-4. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
-5. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run.
+2. Seeds the run userData from the private LLM config (`settings.json` version 3 + `secrets.bin` version 2, both `0600`; `state.json` records `configSeeded: true`). `--empty-settings` skips this for feature journeys that assert a virgin settings page.
+3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment.
+4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache.
+5. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
+6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run.
 
 Isolation limits:
 
@@ -54,6 +57,30 @@ Isolation limits:
 - A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
 - Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
 - Logs sit in the visible `<notesRoot>/logs` directory (r39). One active `vnote-YYYY-MM-DD.log` per day: a write that would push it past 8 MB rolls it to `vnote-YYYY-MM-DD.<n>.log`, and the directory always keeps at most 7 files, the oldest deleted at roll time.
+
+### Private LLM config (r45c)
+
+Every run gets a real LLM configuration without touching the key in a shell:
+
+```bash
+# once per machine: export the installed app's config into the private file (prints no values)
+bun .omp/skills/verify-video-notes/scripts/verify.ts export-private-config
+bun .omp/skills/verify-video-notes/scripts/verify.ts export-private-config --target win-gamepc
+
+# normal runs: `up` seeds automatically
+bun .omp/skills/verify-video-notes/scripts/verify.ts up
+
+# write the config into an existing run's userData (restart the run afterwards)
+bun .omp/skills/verify-video-notes/scripts/verify.ts seed-config --run <run>
+
+# a feature that asserts a virgin settings page (requires: empty-settings)
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --empty-settings
+```
+
+- Private file: mac `~/.config/video-notes-verify/llm.json`, Windows `%USERPROFILE%\.config\video-notes-verify\llm.json`; shape `{ "baseUrl", "apiKey", "model"? }`. It must be mode `0600` (on Windows: only the current-user ACE) and outside the repo. The repo carries only the template [config/llm.example.json](./config/llm.example.json).
+- A missing file fails the run with the template path, a copy command and the `chmod 600` line; a `0644` file fails with the same `chmod 600` instruction. The key is never echoed.
+- `up` writes the same shapes the app itself reads: `<userData>/settings.json` (`version: 3`, `llm.baseUrl`/`llm.model`) and `<userData>/secrets.bin` (`version: 2`, `llm`). Existing other fields/keys are preserved.
+- Windows runs fetch the private file over ssh and write it with `icacls /inheritance:r` for the current user only.
 
 ### Mandatory version bump & dual-machine local install (r44)
 
@@ -86,7 +113,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r26-install/V
 
 `--app` resolves `Contents/MacOS/<CFBundleExecutable>` from `Contents/Info.plist` and implies `--no-build`; the run records `appPath` in `state.json`, and `doctor` compares the bundle's mtime against the sources instead of `out/`. `--min-path` replaces the child PATH with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, so `settings().ffmpeg === true` proves the app's own PATH repair (`/opt/homebrew/bin`, `/usr/local/bin`) and not your shell.
 
-The packaged app never reads `.env` (r30): its LLM configuration comes from 设置 only — base url and model into `settings.json`, the key into the system keychain, one atomic save. A dev (unpacked) app loads `.env` only as a seed for fields without a saved value; the key hint then reads `key 由 dev 模式的 .env 种子提供；在这里输入并保存会覆盖已存 key`. On a machine without any saved value, 设置 is the only credential path, and it is the path a real user takes.
+The packaged app never reads `.env` (r30): its LLM configuration comes from 设置 only — base url and model into `settings.json`, the key into the local 0600 key file (`secrets.bin`), one atomic save. A dev (unpacked) app loads `.env` only as a seed for fields without a saved value; the key hint then reads `key 由 dev 模式的 .env 种子提供；在这里输入并保存会覆盖已存 key`. On a machine without any saved value, 设置 is the only credential path, and it is the path a real user takes.
 A packaged run must complete at least one write-operation closed loop (features/settings.md 「LLM 保存闭环」), one restart, and a `doctor`; launch plus screenshots is not acceptance.
 
 Teardown (always, including after a failed journey):
@@ -150,7 +177,8 @@ Read-only checks, exit code 1 on failure:
 - `settings().appVersion` equals `apps/desktop/package.json`;
 - the listening port is owned by the recorded pid (`lsof`);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`.
-- `state.json`'s `commit` differs from the current `git rev-parse HEAD` (warning only: the sources moved since launch; never fails the check).
+
+**顶层视口布局不变量（硬门禁，r45）：** 读 `window.innerHeight`、`.vn-shell` 与 `.vn-aside` 的 `getBoundingClientRect().height`，断言两者与 `innerHeight` 的差 `<= 2`；任务浮层打开时（`[data-testid=job-banner]` 存在）`.vn-content` 的 `padding-bottom` 必须 `>= 浮层实际高度 + 32px` 且 `>= 240px`（矮窗口下限降级后仍成立）。不满足即 `fail` 并以退出码 1 结束。
 
 On `--target win-gamepc` (r41) the mac-only checks are replaced: the remote process is checked over ssh with `Get-Process -Id`, the remote listener with `Get-NetTCPConnection -LocalPort <port> -State Listen`, and the CDP page comes through the tunnel instead of the local port; the `lsof` port-owner check and the `apps/desktop/out/` build-freshness check are skipped (the mac build is irrelevant to the installed Windows app). The shared checks — notes root equals the remote home (compared case- and separator-insensitively) and app version against `apps/desktop/package.json` — run the same way.
 
@@ -199,19 +227,31 @@ Stable handles in this repo:
 | Navigation | `[data-testid=nav-library]`, `nav-glossary`, `nav-settings`, `app-version` (sidebar brand version badge `v<version>`, r44) |
 | Video workspace tabs | accessible names `字幕`, `主题`, `笔记` (via `click-text`) |
 | Library | `[data-testid=dropzone]`, `video-card`, `video-title`, `video-status`, `card-open-notes`, `card-continue`, `card-confirm-topics` (pending-confirm card, 确认主题), `video-resolution`, `video-cover` (the generated cover `<img>`, `naturalWidth > 0` when decoded), `video-audio-only` (the 纯音频 badge on a pure-audio source card, r42), `video-card-foot` (the bottom-pinned action row) |
-| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-dock` (the layout slot below `.vn-content`, r43) |
+| Job banner | `job-banner`, `job-state`, `job-cancel`, `job-close`, `job-toggle-log`（右下角 `fixed` 浮层卡片上的日志折叠按钮，`aria-expanded`；折叠时 `job-log-tail` 整个节点从 DOM 消失，进度行/状态/操作按钮保留。r43 的块级停靠槽位已废弃，r45 起不存在） |
+| Player | `player-unsupported-format`（MPEG-TS 源：`<video>` error 时出现的不可预览提示，文案「当前源容器（MPEG-TS）不支持在内置播放器直接预览，主题切片（MP4）与笔记提取不受影响」） |
 | Topics | `topics-generate`, `topics-merge-start`, `topics-merge-confirm`, `topics-merge-cancel`, `topic-card-<topicId>`, `topic-view-<topicId>`, `topic-delete-seg-<index>`, `topic-seg-<i>` (clickable segment-label buttons on the selected topic; `i` is the segment index), `player-resize` (bottom-right resize handle, aria-label 调整播放器高度); checkboxes are labelled `生成笔记：<title>` and `选入合并：<title>` |
 | Transcript | `subtitle-list`, `subtitle-delete-<index>`, `transcript-to-topics`; speaker rename buttons are labelled `重命名说话人 <name>` |
 | Notes | `note-row`, `note-open`, `clip-block`, `clip-player` (one `<video>` per topic, the concatenated `topic.mp4`), `clip-seg-<i>` (clickable segment-label chips, seek to `segmentOffsets[i]`), `clip-sub` (clickable subtitle rows), `player` (the 主题-page player; not the notes clip-player) |
 | Glossary | `glossary-add`, `glossary-row`, `glossary-wrong`, `glossary-right`, `glossary-remove` (per row, use `--index`) |
 | Settings | `settings-page`, `settings-asr-provider-fixed`, `settings-llm-base-url`, `settings-llm-model` (combobox input, role=combobox), `settings-llm-model-listbox` (role=listbox), `settings-llm-model-option-<i>` (role=option, `data-value` is the model id), `settings-llm-key-input` (password input; already holds the saved key, masked — r32), `settings-llm-key-reveal` (eye toggle, aria-label 显示密钥 / 隐藏密钥; shows the plaintext), explicit clear `settings-llm-key-clear` (shown while a key is stored or the input has text), key hints `settings-llm-key-saved` / `settings-llm-key-env` / `settings-llm-key-none`, `settings-llm-fetch-models`, `settings-test-llm`, single save `settings-llm-save` (disabled while the draft equals the saved values), `settings-llm-save-error`, `settings-llm-models-error`, `settings-llm-discovered`, the four ASR key fields follow the `<prefix>-input` / `-save` / `-reveal` / `-saved` / `-clear` pattern with prefixes `settings-asr-key`, `settings-asr-volc-api-key`, `settings-asr-volc-app-key`, `settings-asr-volc-access-key`, `settings-clear-cache`, `settings-about`, `model-dir-path` (the model directory display row), `model-open-dir` (打开模型目录), `model-verify` (检测本地模型: re-checks file presence), `model-download` (下载模型: every missing bundle), `model-download-<id>` (per-model 下载 on a missing card), `model-cancel` (取消; enabled only while a download runs), `model-download-progress` / `model-download-message` / `model-download-log` (progress bar, state text, log), `model-required-<id>` (one `.vn-model` card per required model, `id` ∈ asr / diarization / speaker-embedding / punctuation; left: label + monospace relative paths + missing paths, right: one `.vn-tag` reading 就绪 / 缺失 / 下载中) |
 | Logs and diagnostics (settings) | `settings-logs` (日志与诊断 card), `settings-logs-dir` (read-only log folder row), `settings-logs-open` (打开日志文件夹), `settings-diagnostics-copy` (复制诊断信息), `settings-diagnostics-status` (已复制 N 字符) |
-| Video glossary (in library card) | `video-title`, `video-glossary-add`, `video-glossary-wrong`, `video-glossary-right`, `video-glossary-remove` |
+| Video glossary (字幕 page; r45b removed the card entry) | `video-title`（卡片标题，不再可展开）, `video-glossary-add`, `video-glossary-wrong`, `video-glossary-right`, `video-glossary-remove`, `rerun-scope-open`, `rerun-confirm` |
 
 Read state through the same preload bridge the UI uses: `window.vnote.listLibrary()`, `getVideo(id)`, `activeJob()`, `settings()`, `listGlossary()`. These are observations, not test-only setters; actions must go through clicks, typing and drops. The preload API does expose mutations such as `startExtract` and `saveGlossary` directly — using them as the *action* under test bypasses the UI and does not count as proof.
 
 Background refreshing: the library and detail views refresh on job events. After a job finishes, allow one event tick before reading the DOM; `wait` on the expected DOM state instead of assuming it.
 
+## Visual design gates (r45)
+
+### `verify.ts detect`
+
+硬门禁：`impeccable detect --json` 静态扫 `apps/desktop/src/renderer/src`（绝不用仓库根或 `tmp/`），加上对运行中 Electron 的实时 CDP 扫描（`detect --cdp <port>`，端口取自 `state.json`；实时扫描不是业务校验——存在运行实例却扫不到时门禁失败，不静默通过）。`--source-only` 跳过实时扫描；`--target win-gamepc` 时报告另写 `<run>/win/impeccable-report.json`。合并去重后的报告落盘 `<run>/impeccable-report.json`（无 `--run` 时写 `tmp/verify/latest-impeccable-report.json`）。`primary`（severity error/warning/high）必须为 0，`advisory` 只报告不阻塞；存在 `primary` 或扫描失败时退出码 1。
+
+### `verify.ts prototype`
+
+多轮设计原型闭环，别名 `bun run design:prototype`。Round 模式五步（`--round <N>`，可附 `--seed` / `--confirmed` / `--rejected` / `--open`）：1) `PRODUCT.md` 缺失时 scaffold 结构化模板；2) 把 `--seed` 追加进 `PRODUCT.md`；3) 跑 `impeccable concept-seed`（无位置参数、无 `--json`；工作目录没有 `PRODUCT.md` 时会拒绝运行）存到 `.impeccable/concept-seed.txt`；4) 创建/更新 `.impeccable/rounds/round-<N>-decision-card.md` 及其镜像 `.impeccable/briefs/round-<N>-decisions.md`（四节：Confirmed / Rejected / Open Questions / Key Selectors）；5) `--open "None"`/`"无"`/`"clear"` 重置 Open Questions 节。
+
+`--freeze` 是 QA 基线门禁，四项检查：`PRODUCT.md` 与 `DESIGN.md` 及本轮决策卡存在、Open Questions 为空、`impeccable detect` 报告 0 `primary`、运行中 Electron（CDP）暴露必需的 `[data-testid]` 选择器（`app-version`、`nav-library`、`breadcrumb`）；全部通过后把基线导出到 `.impeccable/baseline/`（`baseline.png`、`selectors.json`、`impeccable-report.json`、`freeze-manifest.json`）。任一检查失败退出码 1。
 ## Evidence
 
 Every proof goes under the run directory printed by `up` (`tmp/verify/<run>/`). Names are yours; keep them stable per feature:

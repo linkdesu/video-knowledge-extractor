@@ -59,6 +59,6 @@ describe("release-version", () => {
       map[rel] = pkg.version;
     }
     const ver = assertWorkspaceVersionsMatch(map);
-    expect(compareSemver(ver, "0.1.1")).toBeGreaterThanOrEqual(0);
+    expect(compareSemver(ver, "0.1.2")).toBeGreaterThanOrEqual(0);
   });
 });

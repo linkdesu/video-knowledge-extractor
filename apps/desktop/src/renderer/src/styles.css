@@ -38,7 +38,7 @@
   --vn-line2: rgba(255, 255, 255, 0.14);
   --vn-fg: #eef0f6;
   --vn-muted: #9aa3b8;
-  --vn-dim: #6f7890;
+  --vn-dim: #7d87a0;
   --vn-violet: #8b5cf6;
   --vn-cyan: #22d3ee;
   --vn-pink: #f472b6;
@@ -55,20 +55,6 @@ body,
   margin: 0;
 }
 
-/* 任务浮层停靠在内容区下方（r43）：占布局高度，不覆盖卡片操作按钮。 */
-#root {
-  display: flex;
-  flex-direction: column;
-}
-
-.vn-job-dock {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 16px 16px;
-  position: relative;
-  z-index: 40;
-}
 
 body {
   background-color: var(--vn-bg);
@@ -135,11 +121,11 @@ textarea {
   z-index: 1;
   display: grid;
   grid-template-columns: 236px 1fr;
-  /* 显式 minmax(0,1fr)：窗口比侧栏最小内容还矮时，行也跟着缩，内容不会溢到下方停靠区 */
+  /* r45：显式 minmax(0,1fr) 将内容约束在 100vh 网格内，浮层不改变主窗口高度。 */
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
-  flex: 1;
-  min-height: 0;
+  width: 100%;
+  height: 100vh;
 }
 
 .vn-aside {
@@ -258,6 +244,9 @@ textarea {
   padding: 26px 28px 40px;
   scrollbar-width: thin;
 }
+
+/* r45：右下角 fixed 浮层只增加内容区底部安全留白，不挤压 .vn-shell 100vh。 */
+.vn-shell[data-has-job="true"] .vn-content { padding-bottom: var(--vn-job-inset, 360px); }
 .vn-wrap {
   max-width: 1160px;
   margin: 0 auto;
@@ -404,7 +393,7 @@ textarea {
   border-color: rgba(139, 92, 246, 0.55);
   background: radial-gradient(600px 200px at 50% 0, rgba(139, 92, 246, 0.18), transparent);
 }
-.vn-drop h3 {
+.vn-drop h2 {
   margin: 10px 0 4px;
   font-size: 16px;
   color: var(--vn-fg);
@@ -648,6 +637,15 @@ textarea {
   font-size: 11px;
   line-height: 1.5;
 }
+
+.vn-card .vn-model-log.flat {
+  border: 0;
+  border-top: 1px solid var(--vn-line);
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 0 0;
+  margin-top: 10px;
+}
 .vn-model-log-empty {
   color: var(--vn-dim);
 }
@@ -724,7 +722,7 @@ textarea {
   box-shadow: 0 30px 100px rgba(0, 0, 0, 0.6);
   padding: 22px;
 }
-.vn-modal h3 {
+.vn-modal h2 {
   margin: 0 0 4px;
   font-size: 17px;
   color: var(--vn-fg);

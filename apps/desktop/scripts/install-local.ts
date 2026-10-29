@@ -16,10 +16,16 @@ import {
   assertVersionBumped,
   assertWorkspaceVersionsMatch,
 } from "../src/main/release-version";
+import {
+  assertLlmConfigPreserved,
+  readLlmConfigFingerprint,
+} from "../src/main/settings-fingerprint";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
 const macSystemAppPath = "/Applications/Video Notes.app";
+/** 已安装 mac 应用的真实 userData：升级前后各读一次 LLM 配置指纹（r45c）。 */
+const macUserDataDir = resolve(process.env.HOME ?? ".", "Library/Application Support/Video Notes");
 const macReleaseAppPath = resolve(
   desktopRoot,
   `release/Video Notes-darwin-${process.arch}/Video Notes.app`,
@@ -170,6 +176,8 @@ function readMacPlistVersion(appPath: string): string | null {
 
 function installMacApp(version: string, skipMacBuild: boolean) {
   const previousInstalledVersion = readMacPlistVersion(macSystemAppPath);
+  // 升级前配置指纹：安装不得把已配齐的 LLM 设置弄丢
+  const llmBefore = readLlmConfigFingerprint(macUserDataDir);
   if (!skipMacBuild) {
     console.log(`[mac] 正在打包 macOS 应用 (v${version})...`);
     runCmd("bun", ["run", "--cwd", "apps/desktop", "package:mac"], {
@@ -202,11 +210,24 @@ function installMacApp(version: string, skipMacBuild: boolean) {
       `macOS 安装后版本校验失败：期望 ${version}，实际 ${String(installedVersion)}`,
     );
   }
+  const llmAfter = readLlmConfigFingerprint(macUserDataDir);
+  const llm = assertLlmConfigPreserved(llmBefore, llmAfter, "macOS");
+  console.log(
+    `[mac] LLM 配置：升级前 ${fmtFingerprint(llmBefore)} → 升级后 ${fmtFingerprint(llmAfter)}${llm.checked ? "（已校验保留）" : "（升级前未配置，跳过校验）"}`,
+  );
   return {
     appPath: macSystemAppPath,
     previousInstalledVersion,
     installedVersion,
+    llmBefore,
+    llmAfter,
+    llm,
   };
+}
+
+/** 只打印布尔与模型名；baseUrl 与 key 永不输出。 */
+function fmtFingerprint(f: { configured: boolean; model: string | null }): string {
+  return `configured=${String(f.configured)} model=${f.model ?? "(null)"}`;
 }
 
 function ghEnv(): NodeJS.ProcessEnv {
@@ -344,6 +365,31 @@ $prevReg = Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion
   Select-Object -First 1
 $previousVersion = if ($null -ne $prevReg) { $prevReg.DisplayVersion } else { $null }
 
+# 升级前后各读一次 LLM 配置指纹（只回 configured/model，绝不出 baseUrl/key）
+function Get-LlmFingerprint {
+  $d = Join-Path $env:APPDATA 'Video Notes'
+  $base = $false
+  $model = $null
+  $sp = Join-Path $d 'settings.json'
+  if (Test-Path -LiteralPath $sp) {
+    try {
+      $s = Get-Content -LiteralPath $sp -Raw | ConvertFrom-Json
+      if ($null -ne $s.llm -and [bool]$s.llm.baseUrl) { $base = $true }
+      if ($null -ne $s.llm -and $s.llm.model) { $model = [string]$s.llm.model }
+    } catch {}
+  }
+  $hasKey = $false
+  $kp = Join-Path $d 'secrets.bin'
+  if (Test-Path -LiteralPath $kp) {
+    try {
+      $sec = Get-Content -LiteralPath $kp -Raw | ConvertFrom-Json
+      if ($null -ne $sec.llm -and [bool]$sec.llm) { $hasKey = $true }
+    } catch {}
+  }
+  [pscustomobject]@{ configured = [bool]($base -and $hasKey); model = $model }
+}
+$llmBefore = Get-LlmFingerprint
+
 # 停止所有正在运行的 Video Notes 进程，避免锁死 app.asar 与 Video Notes.exe
 Get-Process -Name 'Video Notes' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 $deadline = (Get-Date).AddSeconds(15)
@@ -427,6 +473,7 @@ if ([string]$asarPkg.version -ne $expectedVersion) {
   throw "app.asar 内 package.json 的 version ($($asarPkg.version)) 未匹配 $expectedVersion"
 }
 
+$llmAfter = Get-LlmFingerprint
 [pscustomobject]@{
   exePath = $targetExe
   previousInstalledVersion = $previousVersion
@@ -434,6 +481,8 @@ if ([string]$asarPkg.version -ne $expectedVersion) {
   uninstallerVersion = $uninstVer
   desktopShortcutTarget = $wsh.CreateShortcut($shortcuts[0]).TargetPath
   startMenuShortcutTarget = $wsh.CreateShortcut($shortcuts[1]).TargetPath
+  llmBefore = $llmBefore
+  llmAfter = $llmAfter
 } | ConvertTo-Json -Compress
 `;
   const rawJson = runWinPwsh(sshHost, installAndVerifyPs);
@@ -445,14 +494,19 @@ if ([string]$asarPkg.version -ne $expectedVersion) {
   if (!lastLine) {
     throw new Error(`Windows 安装校验未返回有效 JSON: ${rawJson}`);
   }
-  return JSON.parse(lastLine) as {
+  const parsed = JSON.parse(lastLine) as {
     exePath: string;
     previousInstalledVersion: string | null;
     installedVersion: string;
     uninstallerVersion: string;
     desktopShortcutTarget: string;
     startMenuShortcutTarget: string;
+    llmBefore: { configured: boolean; model: string | null };
+    llmAfter: { configured: boolean; model: string | null };
   };
+  const llm = assertLlmConfigPreserved(parsed.llmBefore, parsed.llmAfter, "Windows");
+  console.log(`[win] LLM 配置：升级前 ${fmtFingerprint(parsed.llmBefore)} → 升级后 ${fmtFingerprint(parsed.llmAfter)}${llm.checked ? "（已校验保留）" : "（升级前未配置，跳过校验）"}`);
+  return { ...parsed, llm };
 }
 
 async function main() {

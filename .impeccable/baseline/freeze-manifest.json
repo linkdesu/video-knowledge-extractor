@@ -1,0 +1,30 @@
+{
+  "run_id": "r45-freeze",
+  "round": 1,
+  "frozen_at": "2026-10-28T17:55:19.558Z",
+  "baseline_commit": "660f053ad3e8d8091d598cf09e5aec3b5f414e1e",
+  "open_questions": 0,
+  "detect": {
+    "targets": [
+      "apps/desktop/src/renderer/src"
+    ],
+    "findings": 0,
+    "primary": 0,
+    "advisory": 0,
+    "report": ".impeccable/baseline/impeccable-report.json"
+  },
+  "baseline": {
+    "baseline": {
+      "file": ".impeccable/baseline/baseline.png",
+      "sha256": "4c17ba1c1ce75e0045f7b165f50fbbca9befeb27906c94e34602619c7ab639e7"
+    },
+    "selectors": {
+      "file": ".impeccable/baseline/selectors.json",
+      "sha256": "17b08cc99f09a401dee6e8d170d07e11e0c5499489892d8e6c15a83c0b47f39f"
+    },
+    "impeccable_report": {
+      "file": ".impeccable/baseline/impeccable-report.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    }
+  }
+}

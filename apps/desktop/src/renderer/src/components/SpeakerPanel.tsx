@@ -203,7 +203,7 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
       {confirming ? createPortal(
         <div className="vn-mask" role="dialog" aria-modal="true" aria-label="合并说话人">
           <div className="vn-modal" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-            <h3 style={{ margin: 0 }}>合并说话人</h3>
+            <h2 style={{ margin: 0 }}>合并说话人</h2>
             <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "var(--vn-muted)" }}>
               合并后的名字
               <input

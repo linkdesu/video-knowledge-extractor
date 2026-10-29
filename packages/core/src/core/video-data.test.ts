@@ -8,6 +8,7 @@ import {
   clearVideoFailure,
   emptyVideoData,
   loadVideoData,
+  mediaAbsolutePath,
   migrateVideoData,
   projectRunState,
   readVideoData,
@@ -85,6 +86,43 @@ describe("video.json 文档", () => {
   test("文件缺失返回 undefined", () => {
     const dir = mkdtemp();
     expect(readVideoData(dir)).toBeUndefined();
+  });
+
+  test("规范化字段往返：originalPath / mediaPath / normalized，旧文档缺失为 null", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    const written = writeVideoData(dir, {
+      ...emptyVideoData(video),
+      originalPath: "/tmp/原文件.ts",
+      mediaPath: "media.mp4",
+      normalized: "remux",
+    });
+    expect(written.mediaPath).toBe("media.mp4");
+    const read = readVideoData(dir);
+    expect(read!.originalPath).toBe("/tmp/原文件.ts");
+    expect(read!.mediaPath).toBe("media.mp4");
+    expect(read!.normalized).toBe("remux");
+    // 旧文档没有这三个字段：读回 null，回退原文件
+    const legacyDoc = { ...emptyVideoData(video) } as Record<string, unknown>;
+    delete legacyDoc.originalPath;
+    delete legacyDoc.mediaPath;
+    delete legacyDoc.normalized;
+    writeFileSync(join(dir, "video.json"), JSON.stringify(legacyDoc));
+    const legacy = readVideoData(dir);
+    expect(legacy!.originalPath).toBeNull();
+    expect(legacy!.mediaPath).toBeNull();
+    expect(legacy!.normalized).toBeNull();
+    expect(mediaAbsolutePath(legacy!)).toBe(video.sourcePath);
+    expect(mediaAbsolutePath(read!)).toBe(join(dir, "media.mp4"));
+  });
+
+  test("mediaPath 只接受数据目录内的 mp4/mp3，越界或别的扩展名拒绝", () => {
+    const dir = mkdtemp();
+    const video = makeVideo(dir);
+    for (const bad of ["../x.mp4", "/abs/media.mp4", "sub/media.mp4", "media.mkv"]) {
+      writeVideoData(dir, { ...emptyVideoData(video), mediaPath: bad });
+      expect(() => readVideoData(dir)).toThrow(/mediaPath/);
+    }
   });
 
   test("版本不符抛出指明文件与版本的错误", () => {

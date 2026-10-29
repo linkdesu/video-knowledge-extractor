@@ -1,0 +1,20 @@
+{
+  "url": "vnote-app://bundle/index.html",
+  "title": "VideoNotes",
+  "captured_at": "2026-10-28T17:55:19.558Z",
+  "run_id": "r45-freeze",
+  "round": 1,
+  "required": {
+    "app_version": true,
+    "nav_library": true,
+    "breadcrumb": true
+  },
+  "testids": [
+    "app-version",
+    "breadcrumb",
+    "dropzone",
+    "nav-glossary",
+    "nav-library",
+    "nav-settings"
+  ]
+}

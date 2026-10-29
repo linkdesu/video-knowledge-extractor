@@ -19,6 +19,8 @@ export type PlayerHandle = {
 type Props = {
   /** 源视频 media url；null 时直接显示占位。 */
   mediaUrl: string | null;
+  /** 源视频路径；用于识别内置播放器不支持的容器格式。 */
+  sourcePath?: string | null;
   onTime?: (t: number) => void;
   /** 当前主题的时间段；占位与角标显示用。 */
   ranges?: SegmentInfo[];
@@ -28,7 +30,7 @@ type Props = {
 
 // 源视频播放器：格式不可播（error）或没有 mediaUrl 时回退到占位。
 export const Player = forwardRef<PlayerHandle, Props>(function Player(
-  { mediaUrl, onTime, ranges, height },
+  { mediaUrl, sourcePath, onTime, ranges, height },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -36,6 +38,7 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
   const [t, setT] = useState(0);
 
   const showPlaceholder = mediaUrl === null || error;
+  const mpegTs = /\.(ts|mts|m2ts)$/i.test(sourcePath ?? "");
 
   const seek = useCallback(
     (seconds: number) => {
@@ -69,14 +72,18 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
         borderRadius: 16,
         overflow: "hidden",
         border: "1px solid var(--vn-line)",
-        display: "grid",
-        placeItems: "center",
-        // 占位态保留渐变与 16/10；视频态让容器跟随视频真实尺寸居中。
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // 占位态使用可随内容增高的纵向流，避免错误文案在矮容器被裁切。
         ...(showPlaceholder
           ? {
+              flexDirection: "column",
+              gap: 12,
+              padding: 24,
+              minHeight: 220,
               background:
                 "radial-gradient(200px 160px at 70% 20%, rgba(139,92,246,0.35), transparent 70%), linear-gradient(160deg,#101322,#07080d)",
-              aspectRatio: "16 / 10",
             }
           : { background: "#07080d", ...(height !== null && height !== undefined ? { height } : { minHeight: 240 }) }),
       }}
@@ -99,17 +106,35 @@ export const Player = forwardRef<PlayerHandle, Props>(function Player(
           >
             ▶
           </div>
-          <span
-            style={{
-              position: "absolute",
-              left: 14,
-              bottom: 12,
-              fontSize: 11,
-              color: "var(--vn-muted)",
-            }}
-          >
-            播放器 · 视频预览
-          </span>
+          {error && mpegTs ? (
+            <p
+              data-testid="player-unsupported-format"
+              role="status"
+              style={{
+                maxWidth: 360,
+                margin: 0,
+                color: "var(--vn-muted)",
+                fontSize: 14,
+                fontWeight: 500,
+                lineHeight: 1.7,
+                textAlign: "center",
+              }}
+            >
+              当前源容器（MPEG-TS）不支持在内置播放器直接预览，主题切片（MP4）与笔记提取不受影响
+            </p>
+          ) : (
+            <span
+              style={{
+                position: "absolute",
+                left: 14,
+                bottom: 12,
+                fontSize: 11,
+                color: "var(--vn-muted)",
+              }}
+            >
+              播放器 · 视频预览
+            </span>
+          )}
         </>
       ) : (
         <video

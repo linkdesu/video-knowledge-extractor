@@ -1,0 +1,67 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`normalizeArgs 快照 换封装 mp4：流拷贝 + faststart 1`] = `
+[
+  "-y",
+  "-i",
+  "/in/source.ts",
+  "-map",
+  "0:v:0",
+  "-map",
+  "0:a:0",
+  "-c",
+  "copy",
+  "-movflags",
+  "+faststart",
+  "-f",
+  "mp4",
+  "/out/media.mp4.part-1",
+]
+`;
+
+exports[`normalizeArgs 快照 转码 mp4：libx264 + aac + faststart 1`] = `
+[
+  "-y",
+  "-i",
+  "/in/source.mkv",
+  "-map",
+  "0:v:0",
+  "-map",
+  "0:a:0",
+  "-c:v",
+  "libx264",
+  "-preset",
+  "veryfast",
+  "-crf",
+  "20",
+  "-pix_fmt",
+  "yuv420p",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "192k",
+  "-movflags",
+  "+faststart",
+  "-f",
+  "mp4",
+  "/out/media.mp4.part-1",
+]
+`;
+
+exports[`normalizeArgs 快照 纯音频转 mp3：libmp3lame VBR q2 1`] = `
+[
+  "-y",
+  "-i",
+  "/in/source.flac",
+  "-vn",
+  "-map",
+  "0:a:0",
+  "-c:a",
+  "libmp3lame",
+  "-q:a",
+  "2",
+  "-f",
+  "mp3",
+  "/out/media.mp3.part-1",
+]
+`;
