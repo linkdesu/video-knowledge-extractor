@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { run, killActiveChildren, summarizeFfmpegArgs } from "./exec";
-import { configureLogging, homePathRedactions, redactHomePaths } from "./logger";
+import { configureLogging, homePathPrefixes, redactHomePaths } from "./logger";
 
 // 用 process.execPath 跑 -e 脚本，Windows 上也能跑
 const NODE = process.execPath;
 // 日志会把 home 前缀换成 ~（r46），Windows 的 execPath 在 USERPROFILE 下，断言要用脱敏后的形态
-const LOGGED_NODE = redactHomePaths(NODE, homePathRedactions());
+const LOGGED_NODE = redactHomePaths(NODE, homePathPrefixes());
 
 describe("summarizeFfmpegArgs", () => {
   test("remux：-c copy 记 copy，output 取最后一个非选项参数", () => {

@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { cacheKey, cachePath, hashJson } from "../core/cache";
+import { cacheKey, cachePath, hashJson, sha256 } from "../core/cache";
+import { configureLogging } from "../core/logger";
 import { OUTPUT_MANIFEST } from "../core/outputs";
 import type { LlmClient } from "../core/steps";
 import type { CorrectionList, SpeakerId, Transcript, Topic, Utterance, Video } from "../core/types";
@@ -707,5 +708,102 @@ describe("generateNotes 模型输出格式错误", () => {
     expect(body).toContain("## 要点");
     expect(body).toContain("## 正文");
     expect(r2.notes[0]!.markdown).toContain("## 要点");
+  });
+});
+
+describe("generateNotes 轨迹请求与请求日志（r46）", () => {
+  const speakers = [
+    { id: "s1" as SpeakerId, name: "张三", color: "#000" },
+    { id: "s2" as SpeakerId, name: "李四", color: "#111" },
+  ];
+
+  function withHostsFixture(input: Parameters<typeof generateNotes>[0], apiKey?: string) {
+    return {
+      ...input,
+      endpoint: apiKey === undefined ? input.endpoint : { ...input.endpoint, apiKey },
+      transcript: { speakers, utterances: input.transcript.utterances },
+      // 顺序即文档顺序：日志与轨迹里必须是名字，不是说话人 id
+      hosts: ["s2" as SpeakerId, "s1" as SpeakerId],
+    };
+  }
+
+  function readTrajectory(dir: string): { history: Array<{ request: Record<string, unknown> }> } {
+    return JSON.parse(readFileSync(join(dir, "trajectory.json"), "utf8")) as {
+      history: Array<{ request: Record<string, unknown> }>;
+    };
+  }
+
+  test("request 只记提示词指纹、主播名与字符数：没有 messages，也没有提示词正文", async () => {
+    const { input, topic, utterances } = makeGenerateNotesFixture();
+    const withHosts = withHostsFixture(input);
+    // 切片对不存在的源文件必然失败；失败路径写的是同一形状的轨迹
+    await expect(generateNotes({ ...withHosts, client: makeClient(["要点一"], []) })).rejects.toThrow();
+    const prompt = noteSystemPrompt(topic, utterances, withHosts);
+    const file = readTrajectory(join(input.video.outputDir, "主题A"));
+    expect(file.history).toHaveLength(1);
+    const request = file.history[0]!.request;
+    expect(request["prompt"]).toEqual({
+      id: "note-key-points",
+      source: "default",
+      sha256: sha256(prompt),
+      hosts: ["李四", "张三"],
+      chars: prompt.length,
+    });
+    expect(request["baseUrl"]).toBe(endpoint.baseUrl);
+    expect(request["model"]).toBe(endpoint.model);
+    expect(request["glossaryCount"]).toBe(1);
+    expect(request).not.toHaveProperty("messages");
+    const raw = readFileSync(join(input.video.outputDir, "主题A", "trajectory.json"), "utf8");
+    expect(raw).not.toContain("根据主题与字幕抽取");
+    expect(raw).not.toContain("第一句");
+    expect(raw).not.toContain("以主播的观点为主要内容");
+  });
+
+  test("自定义提示词在轨迹里标 custom，sha 与默认模板不同", async () => {
+    const { input, topic, utterances } = makeGenerateNotesFixture();
+    const prompts = { "note-key-points": "OVERRIDE-MARKER {{UTTERANCES}}" };
+    const withHosts = { ...withHostsFixture(input), prompts };
+    await expect(generateNotes({ ...withHosts, client: makeClient(["要点一"], []) })).rejects.toThrow();
+    const prompt = noteSystemPrompt(topic, utterances, withHosts);
+    const request = readTrajectory(join(input.video.outputDir, "主题A")).history[0]!.request;
+    const recorded = request["prompt"] as { source: string; sha256: string; chars: number };
+    expect(recorded.source).toBe("custom");
+    expect(recorded.sha256).toBe(sha256(prompt));
+    expect(recorded.sha256).not.toBe(sha256(noteSystemPrompt(topic, utterances, withHostsFixture(input))));
+    expect(recorded.chars).toBe(prompt.length);
+  });
+
+  test("提示词版本 行带 promptId/promptSource/promptSha256/model/kind/hosts，不含提示词正文与密钥", async () => {
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    const { input } = makeGenerateNotesFixture();
+    const secret = "sk-note-request-secret";
+    const withHosts = withHostsFixture(input, secret);
+    await expect(generateNotes({ ...withHosts, client: makeClient(["要点一"], []) })).rejects.toThrow();
+    const requests = lines.filter((l) => l.includes("提示词版本"));
+    expect(requests).toHaveLength(1);
+    const line = requests[0]!;
+    expect(line).toContain(" llm ");
+    expect(line).toContain('promptId="note-key-points"');
+    expect(line).toContain('promptSource="default"');
+    expect(line).toMatch(/promptSha256="[0-9a-f]{64}"/);
+    expect(line).toContain('model="test-model"');
+    expect(line).toContain('kind="note-key-points"');
+    expect(line).toContain('hosts=["李四","张三"]');
+    expect(line).not.toContain("根据主题与字幕抽取");
+    expect(line).not.toContain("第一句");
+    expect(line).not.toContain(secret);
+  });
+
+  test("要点缓存命中不发模型请求，也不再有 提示词版本 行", async () => {
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    const { input } = makeGenerateNotesFixture();
+    await expect(generateNotes({ ...input, client: makeClient(["要点一"], []) })).rejects.toThrow();
+    const calls: number[] = [];
+    await expect(generateNotes({ ...input, client: makeClient(["要点一"], calls) })).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+    expect(lines.filter((l) => l.includes("提示词版本"))).toHaveLength(1);
+    expect(lines.join("\n")).toContain("要点缓存命中");
   });
 });

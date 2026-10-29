@@ -12,6 +12,8 @@ export {
   MAX_LOG_FILE_BYTES,
   KEEP_FILES,
   redactSecrets,
+  homePathPrefixes,
+  redactHomePaths,
   formatLogLine,
   pruneOldLogs,
   readTaskLog,
@@ -186,8 +188,17 @@ export {
   validatePromptTemplate,
   effectiveTemplate,
   renderPrompt,
+  promptFingerprint,
 } from "./core/prompts";
-export type { PromptId, PromptSpec, PromptVariable, PromptOverrides, PromptValidation } from "./core/prompts";
+export type {
+  PromptId,
+  PromptSpec,
+  PromptVariable,
+  PromptOverrides,
+  PromptValidation,
+  PromptSource,
+  PromptFingerprint,
+} from "./core/prompts";
 export {
   PROMPTS_FILE,
   PROMPTS_VERSION,

@@ -5,6 +5,7 @@
  * 但散落在 pipeline 各处的字符串拼接既没法在界面上列出来，也没法校验用户改坏的占位符。
  * 因此把「模板」与「取值」分开：pipeline 只负责算出变量，模板正文集中放这里。
  */
+import { sha256 } from "./cache";
 
 export type PromptId = "segment-chunk" | "segment-merge" | "note-key-points" | "host-detect";
 
@@ -22,6 +23,12 @@ export type PromptSpec = {
 export type PromptOverrides = Partial<Record<PromptId, string>>;
 
 export type PromptValidation = { ok: true } | { ok: false; error: string };
+
+/** Which template produced the text that was actually sent to the model. */
+export type PromptSource = "default" | "custom";
+
+/** Identifies one LLM request's prompt without carrying any of its text. */
+export type PromptFingerprint = { id: PromptId; source: PromptSource; sha256: string };
 
 /** 占位符只认大写标识符，免得把 JSON 样例里的单个花括号当成占位符。 */
 const PLACEHOLDER_RE = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
@@ -179,4 +186,19 @@ export function renderPrompt(id: PromptId, vars: Record<string, string>, overrid
     if (!validation.ok) throw new Error(validation.error);
   }
   return effectiveTemplate(id, overrides).replace(PLACEHOLDER_RE, (_match, name: string) => vars[name] ?? "");
+}
+
+/**
+ * Fingerprint the prompt that was actually rendered, for logs and the trajectory record.
+ *
+ * `source` reports which template the text came from, not what the user typed: an override only
+ * counts as `"custom"` when it is a non-empty string that passes validation. An empty/whitespace
+ * override, or an invalid one that `effectiveTemplate`/`renderPrompt` fell back on, is reported as
+ * `"default"` because the default text is what the model actually received. `sha256` is the full
+ * 64-hex digest of `rendered`, so it is stable for identical text across runs.
+ */
+export function promptFingerprint(id: PromptId, rendered: string, overrides?: PromptOverrides): PromptFingerprint {
+  const override = overrides?.[id];
+  const custom = override !== undefined && override.trim() !== "" && validatePromptTemplate(id, override).ok;
+  return { id, source: custom ? "custom" : "default", sha256: sha256(rendered) };
 }

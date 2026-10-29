@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { sha256 } from "./cache";
 import {
   PROMPT_SPECS,
   effectiveTemplate,
+  promptFingerprint,
   promptSpec,
   promptVariableNames,
   renderPrompt,
@@ -197,5 +199,44 @@ describe("override 与回退", () => {
     expect(effectiveTemplate("segment-merge")).toBe(fallback);
     expect(effectiveTemplate("segment-merge", { "segment-merge": "坏的 {{NOPE}}" })).toBe(fallback);
     expect(effectiveTemplate("segment-merge", { "segment-merge": "{{GLOSSARY}}" })).toBe("{{GLOSSARY}}");
+  });
+});
+
+describe("promptFingerprint", () => {
+  const HEX64 = /^[0-9a-f]{64}$/;
+
+  test("default template: source is default and sha256 is the full digest of the rendered text", () => {
+    const rendered = renderPrompt("segment-chunk", { GLOSSARY: GLOSSARY_LITERAL });
+    const fingerprint = promptFingerprint("segment-chunk", rendered);
+    expect(fingerprint).toEqual({ id: "segment-chunk", source: "default", sha256: sha256(rendered) });
+    expect(fingerprint.sha256).toMatch(HEX64);
+    // same text, same digest: the fingerprint is stable across runs
+    expect(promptFingerprint("segment-chunk", rendered).sha256).toBe(fingerprint.sha256);
+  });
+
+  test("custom override: source is custom and the sha differs from the default render", () => {
+    const overrides = { "note-key-points": "只输出 JSON。" };
+    const rendered = renderPrompt("note-key-points", {}, overrides);
+    const custom = promptFingerprint("note-key-points", rendered, overrides);
+    const fallback = promptFingerprint("note-key-points", renderPrompt("note-key-points", {}));
+    expect(custom.id).toBe("note-key-points");
+    expect(custom.source).toBe("custom");
+    expect(custom.sha256).toBe(sha256(rendered));
+    expect(custom.sha256).toMatch(HEX64);
+    expect(custom.sha256).not.toBe(fallback.sha256);
+  });
+
+  test("invalid override that fell back to the default reports default with the default sha", () => {
+    const rendered = renderPrompt("segment-merge", { GLOSSARY: "" });
+    const fellBack = promptFingerprint("segment-merge", rendered, { "segment-merge": "坏的 {{NOPE}}" });
+    expect(fellBack.source).toBe("default");
+    expect(fellBack.sha256).toBe(promptFingerprint("segment-merge", rendered).sha256);
+  });
+
+  test("blank override is not custom", () => {
+    const rendered = renderPrompt("segment-chunk", {});
+    expect(promptFingerprint("segment-chunk", rendered, { "segment-chunk": "   \n" }).source).toBe("default");
+    // an override for a different id does not make this one custom
+    expect(promptFingerprint("segment-chunk", rendered, { "host-detect": "别的模板" }).source).toBe("default");
   });
 });

@@ -215,4 +215,26 @@ describe("detectHosts", () => {
     expect(joined).not.toContain("你是播客转写分析器");
     expect(joined).not.toContain("sk-secret-test");
   });
+
+  test("提示词版本 行带 promptId 与 64 位 sha，缓存命中时不再多一条", async () => {
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    const cacheDir = tempCacheDir();
+    const rec = recorder(() => JSON.stringify({ hosts: ["spk-2"] }));
+    await detectHosts({ transcript: interview, endpoint, cacheDir, client: rec.client });
+    await detectHosts({ transcript: interview, endpoint, cacheDir, client: rec.client });
+    expect(rec.calls).toBe(1);
+    const requests = lines.filter((l) => l.includes("提示词版本"));
+    expect(requests).toHaveLength(1);
+    const line = requests[0]!;
+    expect(line).toContain(" llm ");
+    expect(line).toContain('promptId="host-detect"');
+    expect(line).toContain('promptSource="default"');
+    expect(line).toMatch(/promptSha256="[0-9a-f]{64}"/);
+    expect(line).toContain('model="m-test"');
+    expect(line).toContain('kind="host-detect"');
+    expect(line).not.toContain("hosts=");
+    expect(line).not.toContain("你是播客转写分析器");
+    expect(line).not.toContain("sk-secret-test");
+  });
 });

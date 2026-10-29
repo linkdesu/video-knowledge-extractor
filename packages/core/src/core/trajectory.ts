@@ -1,11 +1,28 @@
 import { join } from "node:path";
 import { readJsonFile, writeJsonAtomic } from "./paths";
-import type { ChatMessage, TrajectoryTrigger } from "./steps";
+import type { PromptSource } from "./prompts";
+import type { TrajectoryTrigger } from "./steps";
 
 export const TRAJECTORY_FILE = "trajectory.json";
 
-/** 轨迹里记录的请求形状：刻意不含 apiKey，写盘前也没有可泄露凭据的字段。 */
-export type TrajectoryRequest = { baseUrl: string; model: string; messages: ChatMessage[]; glossaryCount: number };
+/**
+ * 轨迹里记录的请求形状：刻意不含 apiKey，也不含提示词正文（只有指纹），写盘前没有可泄露凭据的字段。
+ */
+export type TrajectoryRequestPrompt = {
+  id: string;
+  source: PromptSource;
+  sha256: string;
+  /** 解析后的主播名字（文档顺序）；非要点步骤留空数组。 */
+  hosts: string[];
+  /** 渲染后的提示词字符数；正文不落盘。 */
+  chars: number;
+};
+export type TrajectoryRequest = {
+  baseUrl: string;
+  model: string;
+  prompt: TrajectoryRequestPrompt;
+  glossaryCount: number;
+};
 export type TrajectoryResponse = { status: "succeeded" | "failed"; rawText: string | null; parsedSummary: string[] | null; error: string | null };
 export type TrajectoryClip = { clipFile: string | null; segments: { start: number; end: number }[]; status: "ready" | "failed" };
 /** 一次主题运行的完整记录：请求、响应、切片三元组。 */

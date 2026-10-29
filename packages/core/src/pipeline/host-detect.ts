@@ -1,7 +1,7 @@
 import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
 import { logger } from "../core/logger";
 import { resolveSpeaker } from "../core/speaker-map";
-import { renderPrompt } from "../core/prompts";
+import { promptFingerprint, renderPrompt } from "../core/prompts";
 import type { PromptOverrides } from "../core/prompts";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
@@ -216,6 +216,14 @@ export async function detectHosts(input: {
       cacheHit = true;
       ids = hostIdsOf(cached);
     } else {
+      const fingerprint = promptFingerprint("host-detect", rendered, input.prompts);
+      logger().info("llm", "提示词版本", {
+        promptId: fingerprint.id,
+        promptSource: fingerprint.source,
+        promptSha256: fingerprint.sha256,
+        model: client.model,
+        kind: "host-detect",
+      });
       const text = await client.chat(
         [
           { role: "system", content: rendered },

@@ -89,35 +89,44 @@ export function redactSecrets(text: string, secrets: Iterable<string>): string {
     .replace(/\b(api[_]?key|token)=([A-Za-z0-9\-_~+/=.]+)/gi, "$1=[redacted]");
 }
 
+/** 一条 home 前缀与它替换成的占位符：macOS/Linux 用 `~`，Windows 用 `%USERPROFILE%`。 */
+export type HomePrefix = { prefix: string; token: string };
+
 /**
- * Home prefixes worth hiding: HOME, USERPROFILE and os.homedir(), skipping empty values and "/"
- * (a bare root would rewrite every absolute path). Longest first, de-duplicated, so nested roots
- * resolve to the most specific one. The log path calls this per write, never at import time.
+ * 需要隐藏的 home 前缀：HOME、USERPROFILE、HOMEDRIVE+HOMEPATH 与 os.homedir()。
+ * 占位符按前缀形状决定：盘符路径（`C:\...`）是 Windows，用 `%USERPROFILE%`；其余用 `~`。
+ * 跳过空值与 `/`（裸根会把每个绝对路径都重写）；长前缀在前，嵌套目录取最具体的一个。
+ * 日志每次写入时现取，不在模块加载时快照。
  */
-export function homePathRedactions(env: NodeJS.ProcessEnv = process.env): string[] {
+export function homePathPrefixes(env: NodeJS.ProcessEnv = process.env): HomePrefix[] {
   const homes = new Set<string>();
-  for (const raw of [env.HOME, env.USERPROFILE, homedir()]) {
+  const driveHome = env.HOMEDRIVE?.trim() !== undefined && env.HOMEPATH?.trim() !== undefined
+    ? `${env.HOMEDRIVE?.trim()}${env.HOMEPATH?.trim()}`
+    : undefined;
+  for (const raw of [env.HOME, env.USERPROFILE, driveHome, homedir()]) {
     const home = raw?.trim();
     if (home === undefined || home === "" || home === "/") continue;
     homes.add(home);
   }
-  return [...homes].sort((a, b) => b.length - a.length);
+  return [...homes]
+    .sort((a, b) => b.length - a.length)
+    .map((prefix) => ({ prefix, token: /^[A-Za-z]:[\\/]/.test(prefix) ? "%USERPROFILE%" : "~" }));
 }
 
 /**
- * Replaces each home prefix with `~`. Matching is a literal substring replacement rather than a
- * path-boundary check: paths reach the log quoted inside JSON, argv arrays and URLs where no
- * leading delimiter exists. The trade-off is that a sibling like `/Users/linko` also collapses to
- * `~o`, which is harmless for a log line and keeps every real `$HOME/...` occurrence covered.
+ * 把每个 home 前缀替换成对应占位符（`~` 或 `%USERPROFILE%`），再兜底抹掉 Windows 上
+ * `C:\Users\<用户名>` 形态的真实用户名（USERPROFILE 缺失/不一致时也不能泄露）。
+ * 用字面量替换而不是路径边界判断：路径会以 JSON 字符串、argv 数组元素、URL 的形态进日志，
+ * 前面没有分隔符。代价是 `/Users/linko` 会变成 `~o`，对日志无害且能覆盖所有真实 `$HOME/...`。
  */
-export function redactHomePaths(text: string, homes: Iterable<string>): string {
+export function redactHomePaths(text: string, homes: Iterable<HomePrefix>): string {
   let out = text;
-  for (const home of homes) {
-    // never let a stray "/" or a single character eat the whole line
-    if (home.length < 2) continue;
-    out = out.split(home).join("~");
+  for (const { prefix, token } of homes) {
+    // 不能让裸 `/` 或单个字符吃掉整行
+    if (prefix.length < 2) continue;
+    out = out.split(prefix).join(token);
   }
-  return out;
+  return out.replace(/[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+/g, "%USERPROFILE%");
 }
 
 function fmtValue(v: unknown): string | null {
@@ -130,7 +139,7 @@ function fmtValue(v: unknown): string | null {
 }
 
 // String field values (and array elements, e.g. argv URLs) are redacted: secrets first, then homes
-function redactValue(v: unknown, secrets: Set<string>, homes: string[]): unknown {
+function redactValue(v: unknown, secrets: Set<string>, homes: HomePrefix[]): unknown {
   if (typeof v === "string") return redactHomePaths(redactSecrets(v, secrets), homes);
   if (Array.isArray(v)) return v.map((e) => (typeof e === "string" ? redactHomePaths(redactSecrets(e, secrets), homes) : e));
   return v;
@@ -242,7 +251,7 @@ export function createLogger(opts?: LoggerOptions): Logger {
         pruneIfPossible(dir);
       }
       // Homes are read on every write (never snapshotted at import): env changes take effect immediately
-      const homes = homePathRedactions();
+      const homes = homePathPrefixes();
       const redacted: LogFields = {};
       for (const [k, v] of Object.entries(fields ?? {})) {
         if (v === undefined) continue;

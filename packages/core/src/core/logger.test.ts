@@ -6,7 +6,7 @@ import {
   configureLogging,
   createLogger,
   formatLogLine,
-  homePathRedactions,
+  homePathPrefixes,
   KEEP_FILES,
   logger,
   logFileName,
@@ -184,29 +184,39 @@ describe("redactSecrets", () => {
   });
 });
 
-describe("homePathRedactions / redactHomePaths", () => {
+describe("homePathPrefixes / redactHomePaths", () => {
   test("前缀去重、更长者在前、跳过空值与 /", () => {
-    const homes = homePathRedactions({ HOME: "/Users/a/deep", USERPROFILE: "/Users/a/deep", HOMEDRIVE: "C:" });
-    expect(homes.filter((h) => h === "/Users/a/deep")).toHaveLength(1);
-    expect(homes).not.toContain("/");
-    expect(homes).not.toContain("");
+    const homes = homePathPrefixes({ HOME: "/Users/a/deep", USERPROFILE: "/Users/a/deep", HOMEDRIVE: "C:" });
+    expect(homes.filter((h) => h.prefix === "/Users/a/deep")).toHaveLength(1);
+    expect(homes.some((h) => h.prefix === "/")).toBe(false);
+    expect(homes.some((h) => h.prefix === "")).toBe(false);
     for (let i = 1; i < homes.length; i++) {
-      expect(homes[i - 1]!.length).toBeGreaterThanOrEqual(homes[i]!.length);
+      expect(homes[i - 1]!.prefix.length).toBeGreaterThanOrEqual(homes[i]!.prefix.length);
     }
   });
 
   test("HOME=/ 时不把根当作前缀", () => {
-    expect(homePathRedactions({ HOME: "/" })).not.toContain("/");
+    expect(homePathPrefixes({ HOME: "/" }).some((h) => h.prefix === "/")).toBe(false);
   });
 
-  test("替换所有出现；无关文本原样保留", () => {
-    expect(redactHomePaths("/Users/link/a/b.mp4", ["/Users/link"])).toBe("~/a/b.mp4");
+  test("替换所有出现；无关文本原样保留；mac 用 ~", () => {
+    const mac = homePathPrefixes({ HOME: "/Users/link" });
+    expect(redactHomePaths("/Users/link/a/b.mp4", mac)).toBe("~/a/b.mp4");
     // 路径嵌在 JSON / URL 里也命中
-    expect(redactHomePaths('path="/Users/link/a.mp4" url=file:///Users/link/a.mp4', ["/Users/link"])).toBe('path="~/a.mp4" url=file://~/a.mp4');
+    expect(redactHomePaths('path="/Users/link/a.mp4" url=file:///Users/link/a.mp4', mac)).toBe('path="~/a.mp4" url=file://~/a.mp4');
     // 无关文本不动
-    expect(redactHomePaths("nothing here to see", ["/Users/link"])).toBe("nothing here to see");
-    // 空列表不动
+    expect(redactHomePaths("nothing here to see", mac)).toBe("nothing here to see");
+    // 空列表不动（Windows 兜底规则除外）
     expect(redactHomePaths("/Users/link/a.mp4", [])).toBe("/Users/link/a.mp4");
+  });
+
+  test("Windows 的 C:\\Users\\<user> 替换成 %USERPROFILE%，真实用户名不再出现", () => {
+    const win = homePathPrefixes({ USERPROFILE: "C:\\Users\\alice" });
+    const line = redactHomePaths("input=C:\\Users\\alice\\Documents\\a.mp4 output=C:/Users/alice/out", win);
+    expect(line).toContain("%USERPROFILE%\\Documents\\a.mp4");
+    expect(line).not.toContain("alice");
+    // USERPROFILE 缺失时也覆盖盘符用户名形态
+    expect(redactHomePaths("C:\\Users\\bob\\x.mp4", [])).toBe("%USERPROFILE%\\x.mp4");
   });
 });
 

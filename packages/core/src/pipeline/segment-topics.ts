@@ -1,7 +1,7 @@
 import { cacheKey, hashJson, readCache, writeCache } from "../core/cache";
 import { resolveCorrections } from "../core/corrections";
 import { logger } from "../core/logger";
-import { renderPrompt } from "../core/prompts";
+import { promptFingerprint, renderPrompt } from "../core/prompts";
 import { createLlmClient, parseJsonLoose } from "../llm/openai";
 import type { SegmentTopicsInput, SegmentTopicsResult } from "../core/steps";
 import type { Segment, Topic, TopicId } from "../core/types";
@@ -93,6 +93,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   const glossary = glossarySection(input.corrections);
   // 提示词来自 core 的注册表（r46）：用户覆盖优先，没有覆盖时与旧字符串逐字一致，旧缓存继续命中
   const chunkPrompt = renderPrompt("segment-chunk", { GLOSSARY: glossary }, input.prompts);
+  const chunkFingerprint = promptFingerprint("segment-chunk", chunkPrompt, input.prompts);
   const chunkPromptHash = hashJson(chunkPrompt);
   const startedAt = performance.now();
 
@@ -114,6 +115,14 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
       let topics = topicsOf(readCache<RawResponse>(input.cacheDir, key));
       cacheHit = topics !== undefined;
       if (topics === undefined) {
+        // fingerprint only: the prompt body never reaches the log
+        logger().info("llm", "提示词版本", {
+          promptId: chunkFingerprint.id,
+          promptSource: chunkFingerprint.source,
+          promptSha256: chunkFingerprint.sha256,
+          model: client.model,
+          kind: "chunk",
+        });
         const text = await client.chat([
           { role: "system", content: chunkPrompt },
           { role: "user", content: `该块范围 [${chunk.start}-${chunk.end}]：\n${lines.join("\n")}` },
@@ -133,6 +142,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   }
 
   const mergePrompt = renderPrompt("segment-merge", { GLOSSARY: glossary }, input.prompts);
+  const mergeFingerprint = promptFingerprint("segment-merge", mergePrompt, input.prompts);
   const mergeKey = cacheKey("topic-candidates", {
     kind: "merge",
     candidates: hashJson(candidates),
@@ -143,6 +153,13 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
   let merged = topicsOf(readCache<RawResponse>(input.cacheDir, mergeKey));
   const mergeCacheHit = merged !== undefined;
   if (merged === undefined) {
+    logger().info("llm", "提示词版本", {
+      promptId: mergeFingerprint.id,
+      promptSource: mergeFingerprint.source,
+      promptSha256: mergeFingerprint.sha256,
+      model: client.model,
+      kind: "merge",
+    });
     const compact = candidates.map((t) => ({
       title: typeof t.title === "string" ? t.title : "",
       summary: typeof t.summary === "string" ? t.summary : "",
