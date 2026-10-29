@@ -22,6 +22,7 @@ const job = {
   runToken: "tok-1",
   endpoint: { baseUrl: "https://llm.test", apiKey: "k", model: "m" },
   asr: { provider: "local", modelDir: "/models" },
+  prompts: {},
 } as const;
 
 function makeQueue(handles: JobHandle[]) {
