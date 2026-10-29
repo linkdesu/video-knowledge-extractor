@@ -12,6 +12,7 @@ import type {
   ModelDownloadEvent,
   ModelsCheck,
   ModelsStatus,
+  PromptStatus,
   SettingsPatch,
   SettingsStatus,
   TestAsrResult,
@@ -28,6 +29,7 @@ const api: VnoteApi = {
   listLibrary: () => ipcRenderer.invoke(IPC.listLibrary) as Promise<VnoteApi["listLibrary"] extends () => Promise<infer R> ? R : never>,
   getVideo: (videoId: string) => ipcRenderer.invoke(IPC.getVideo, videoId) as Promise<VnoteApi["getVideo"] extends (id: string) => Promise<infer R> ? R : never>,
   renameSpeaker: (videoId, speakerId, name) => ipcRenderer.invoke(IPC.renameSpeaker, videoId, speakerId, name) as Promise<VnoteApi["renameSpeaker"] extends (a: string, b: string, c: string) => Promise<infer R> ? R : never>,
+  setHosts: (videoId, speakerIds) => ipcRenderer.invoke(IPC.setHosts, videoId, speakerIds) as Promise<VnoteApi["setHosts"] extends (a: string, b: string[]) => Promise<infer R> ? R : never>,
   deleteUtterance: (videoId, index) => ipcRenderer.invoke(IPC.deleteUtterance, videoId, index) as Promise<VnoteApi["deleteUtterance"] extends (a: string, b: number) => Promise<infer R> ? R : never>,
   deleteTopicSegment: (videoId, topicId, segmentIndex) => ipcRenderer.invoke(IPC.deleteTopicSegment, videoId, topicId, segmentIndex) as Promise<VnoteApi["deleteTopicSegment"] extends (a: string, b: string, c: number) => Promise<infer R> ? R : never>,
   mergeTopics: (videoId, topicIds) => ipcRenderer.invoke(IPC.mergeTopics, videoId, topicIds) as Promise<VnoteApi["mergeTopics"] extends (a: string, b: string[]) => Promise<infer R> ? R : never>,
@@ -99,6 +101,9 @@ const api: VnoteApi = {
   reveal: (outputDir) => ipcRenderer.invoke(IPC.reveal, outputDir) as Promise<void>,
   openLogs: () => ipcRenderer.invoke(IPC.logsOpen) as Promise<void>,
   copyDiagnostics: () => ipcRenderer.invoke(IPC.diagnosticsCopy) as Promise<{ chars: number }>,
+  prompts: () => ipcRenderer.invoke(IPC.prompts) as Promise<PromptStatus[]>,
+  savePrompt: (id: string, text: string) => ipcRenderer.invoke(IPC.savePrompt, id, text) as Promise<PromptStatus[]>,
+  resetPrompt: (id: string) => ipcRenderer.invoke(IPC.resetPrompt, id) as Promise<PromptStatus[]>,
 };
 
 contextBridge.exposeInMainWorld("vnote", api);

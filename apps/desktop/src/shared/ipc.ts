@@ -119,6 +119,21 @@ export type VideoDetail = {
   corrections: CorrectionEntry[];
   /** 主题生成后说话人发生过合并/撤销/改名（r35），界面据此提示可重新生成。 */
   speakersChanged: boolean;
+  /** 主播（r46）：说话人 id 列表，可以多个；空数组表示未识别/未设置。 */
+  hosts: string[];
+};
+
+/** 一个可编辑的 LLM 提示词步骤（r46）：默认模板来自 core，覆盖文本存 userData。 */
+export type PromptStatus = {
+  id: string;
+  title: string;
+  description: string;
+  /** 模板里允许的变量名，界面逐条列出。 */
+  variables: Array<{ name: string; description: string }>;
+  default: string;
+  /** 生效中的文本：用户版本，没有覆盖时等于 default。 */
+  value: string;
+  customized: boolean;
 };
 
 /** 密钥来源：环境变量/种子（仅 dev 模式的 ASR 字段与 LLM 种子）、系统密钥库、没有。 */
@@ -340,6 +355,8 @@ export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
   getVideo(videoId: VideoId): Promise<VideoDetail>;
   renameSpeaker(videoId: VideoId, speakerId: string, name: string): Promise<VideoDetail>;
+  /** 设置主播列表（r46）：立即落盘，返回最新详情。 */
+  setHosts(videoId: VideoId, speakerIds: string[]): Promise<VideoDetail>;
   deleteUtterance(videoId: VideoId, index: number): Promise<VideoDetail>;
   deleteTopicSegment(videoId: VideoId, topicId: string, segmentIndex: number): Promise<VideoDetail>;
   mergeTopics(videoId: VideoId, topicIds: string[]): Promise<VideoDetail>;
@@ -395,6 +412,12 @@ export type VnoteApi = {
   openLogs(): Promise<void>;
   /** 复制诊断信息（r34）：返回写进剪贴板的字符数。 */
   copyDiagnostics(): Promise<{ chars: number }>;
+  /** LLM 提示词（r46）：每个步骤的默认值、生效值与变量。 */
+  prompts(): Promise<PromptStatus[]>;
+  /** 保存一个步骤的用户版本；模板非法时以可读错误拒绝。 */
+  savePrompt(id: string, text: string): Promise<PromptStatus[]>;
+  /** 恢复默认：删除该步骤的覆盖。 */
+  resetPrompt(id: string): Promise<PromptStatus[]>;
 };
 
 export const IPC = {
@@ -440,4 +463,8 @@ export const IPC = {
   reveal: "shell:reveal",
   logsOpen: "logs:open",
   diagnosticsCopy: "diagnostics:copy",
+  setHosts: "video:set-hosts",
+  prompts: "prompts:list",
+  savePrompt: "prompts:save",
+  resetPrompt: "prompts:reset",
 } as const;

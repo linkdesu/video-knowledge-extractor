@@ -368,7 +368,7 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                       {rows.length > 0 ? (
                         <SubtitleList
                           rows={rows}
-                          maxHeight={gi === 0 ? 260 : 180}
+                          maxHeight={gi === 0 ? "clamp(320px, 42vh, 520px)" : "clamp(240px, 30vh, 400px)"}
                           onDelete={deleteCue}
                           onSeek={seekCue(gi)}
                         />
