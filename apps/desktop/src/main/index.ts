@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { basename, join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, join, normalize, resolve, sep } from "node:path";
 import {
   BrowserWindow,
   clipboard,
@@ -120,6 +120,8 @@ import {
   type VideoDetail,
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
+import { createLabRuntime, devLabEnabled } from "./dev-lab/register";
+import { LAB_IPC, type LabProgress } from "../shared/lab";
 import { createModelDownloader } from "./models-downloader";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
 import { createMediaHandler, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, MEDIA_SCHEME } from "./media";
@@ -147,6 +149,10 @@ if (devHome !== null) {
   }
   prepareDevHome(devHome, process.env);
 }
+// r48 开发模式验收台：样本只落仓库 tmp/verify/lab（打包版没有这个变量，Lab 也不注册）。
+const labRoot = devLabEnabled(app.isPackaged)
+  ? (devHome === null ? join(app.getPath("userData"), "lab") : join(dirname(devHome.root), "verify", "lab"))
+  : undefined;
 // 测试隔离（ADR-0015 §12）：验收夹具用 VNOTE_USER_DATA 隔离 userData，避免改写真实
 // ~/Library/Application Support/@video-notes 的 settings.json/secrets.bin；必须在任何 getPath("userData") 之前
 if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !== "") {
@@ -1671,6 +1677,7 @@ void app.whenReady().then(async () => {
         return v === undefined ? undefined : v.mediaPath === "" ? v.sourcePath : v.mediaPath;
       },
       resolveOutputDir: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.outputDir,
+      ...(labRoot === undefined ? {} : { labRoot: () => labRoot }),
     }),
   );
   // file:// 下 Chromium 拒绝执行 ES module；生产环境走自定义 standard scheme
@@ -1839,6 +1846,20 @@ void app.whenReady().then(async () => {
       return promptDtoList();
     }),
   );
+
+  // r48：Lab 的 IPC 只在开发模式注册；打包版连通道都不存在。
+  if (labRoot !== undefined) {
+    const lab = createLabRuntime({
+      root: labRoot,
+      modelDir: modelDirOfCurrentSettings,
+      isBusy: () => queue.active() !== null,
+      send: (progress: LabProgress) => {
+        for (const w of BrowserWindow.getAllWindows()) w.webContents.send(LAB_IPC.progress, progress);
+      },
+    });
+    lab.register();
+    logger().info("app", "Diarization Lab 已启用", { root: labRoot });
+  }
 
   const win = new BrowserWindow({
     width: 1280,

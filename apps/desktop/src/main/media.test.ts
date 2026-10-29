@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeSourceUrl, parseRangeHeader } from "./media";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeLabUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeLabUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
 // 路径断言走 resolve，Windows 上才会得到同一套盘符与分隔符
 const FIXTURE = resolve(process.cwd(), "media-fixture");
@@ -260,5 +261,28 @@ describe("Range 解析", () => {
   test("无 Range 头返回 undefined（200 全量）", () => {
     expect(parseRangeHeader(undefined, 100)).toBeUndefined();
     expect(parseRangeHeader("", 100)).toBeUndefined();
+  });
+});
+
+describe("Lab 样本音频 url（r48，只在开发模式注册的 handler 使用）", () => {
+  test("合法 id 解析到 <labRoot>/<id>/audio.wav", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vn-lab-audio-"));
+    try {
+      mkdirSync(join(dir, "abc123"), { recursive: true });
+      writeFileSync(join(dir, "abc123", "audio.wav"), "RIFF");
+      const loc = decodeLabUrl("vnote-media://lab/abc123", dir);
+      expect("code" in loc).toBe(false);
+      if ("code" in loc) return;
+      expect(loc.absolutePath).toBe(join(dir, "abc123", "audio.wav"));
+      expect(loc.contentType).toBe("audio/wav");
+      expect(encodeLabUrl("abc123")).toBe("vnote-media://lab/abc123");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("非法 id / 不存在 / 越界一律拒绝", () => {
+    expect(decodeLabUrl("vnote-media://lab/../etc", "/tmp/lab")).toMatchObject({ code: "bad-url" });
+    expect(decodeLabUrl("vnote-media://lab/abc", "/tmp/does-not-exist-lab")).toMatchObject({ code: "not-found" });
   });
 });

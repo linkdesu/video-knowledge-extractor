@@ -29,6 +29,7 @@ export default defineConfig({
         input: {
           index: resolve(import.meta.dirname, "src/main/index.ts"),
           "extract-worker": resolve(import.meta.dirname, "src/main/extract-worker.ts"),
+          "lab-worker": resolve(import.meta.dirname, "src/main/dev-lab/worker.ts"),
         },
       },
     },
