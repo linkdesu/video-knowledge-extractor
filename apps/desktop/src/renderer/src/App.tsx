@@ -10,6 +10,7 @@ import { VideoWorkspace } from "./pages/VideoWorkspace";
 import { LibraryPage } from "./pages/LibraryPage";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { DiarizationLabPage } from "./pages/DiarizationLabPage";
 import { ToastHost, showToast } from "./lib/toast";
 import { errMessage } from "./lib/format";
 
@@ -18,7 +19,9 @@ type Route =
   | { name: "library" }
   | { name: "video"; videoId: string; page: "transcript" | "topics" | "notes" }
   | { name: "glossary" }
-  | { name: "settings" };
+  | { name: "settings" }
+  /** 开发模式验收台（r48）：打包版 lab 不存在，入口与路由都不出现。 */
+  | { name: "dev-diarization"; sourcePath?: string };
 
 const PAGE_LABEL: Record<"transcript" | "topics" | "notes", string> = {
   transcript: "字幕",
@@ -241,12 +244,15 @@ export function App() {
 
   // ADR-0014 §2：面包屑只按路由层级推导。顶级页面（视频库 / 术语表 / 设置）只有自身一段；
   // 视频内三页是「视频库 / 标题 / 页名」，首段可点返回视频库。
+  const labAvailable = window.vnote.lab !== undefined;
   const navKey =
     route.name === "glossary"
       ? "glossary"
       : route.name === "settings"
         ? "settings"
-        : "library";
+        : route.name === "dev-diarization"
+          ? "lab"
+          : "library";
   const activeVideo =
     route.name === "video" ? (videos?.find((v) => v.id === route.videoId) ?? null) : null;
   const videoTitle =
@@ -263,10 +269,12 @@ export function App() {
         ? { parts: ["术语表"] }
         : route.name === "settings"
           ? { parts: ["设置"] }
-          : {
-              parts: ["视频库", videoTitle, PAGE_LABEL[route.page]],
-              onBack: toLibrary,
-            };
+          : route.name === "dev-diarization"
+            ? { parts: ["Diarization Lab"] }
+            : {
+                parts: ["视频库", videoTitle, PAGE_LABEL[route.page]],
+                onBack: toLibrary,
+              };
 
   return (
     <>
@@ -279,9 +287,11 @@ export function App() {
         active={navKey}
         appVersion={appVersion}
         hasActiveJob={job !== null}
+        lab={labAvailable}
         onNavigate={(key) => {
           if (key === "glossary") setRoute({ name: "glossary" });
           else if (key === "settings") setRoute({ name: "settings" });
+          else if (key === "lab") setRoute({ name: "dev-diarization" });
           else toLibrary();
         }}
         crumb={crumb}
@@ -300,7 +310,14 @@ export function App() {
             onStartNotes={startNotes}
             onRebuildTopics={() => rebuild(route.videoId)}
             onRerunVideo={rerunVideo}
+            onOpenLab={
+              labAvailable
+                ? (sourcePath: string) => setRoute({ name: "dev-diarization", sourcePath })
+                : undefined
+            }
           />
+        ) : route.name === "dev-diarization" ? (
+          <DiarizationLabPage sourcePath={route.sourcePath} />
         ) : route.name === "library" ? (
           <LibraryPage
             videos={videos ?? []}

@@ -1054,3 +1054,312 @@ textarea {
   outline: 2px solid rgba(139, 92, 246, 0.6);
   outline-offset: 1px;
 }
+
+/* r48：开发模式验收台（Diarization Lab）。只在未打包的 dev 里出现，沿用既有面板语言。 */
+.vn-lab {
+  display: grid;
+  gap: 16px;
+}
+.vn-lab-bar {
+  display: grid;
+  gap: 10px;
+  border-style: dashed;
+  border-color: var(--vn-line2);
+  transition: border-color 0.18s, background 0.18s;
+}
+.vn-lab-bar.dragging {
+  border-color: rgba(139, 92, 246, 0.7);
+  background: rgba(139, 92, 246, 0.06);
+}
+.vn-lab-bar-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(160px, 1.15fr) minmax(144px, 0.9fr) minmax(144px, 0.9fr) minmax(136px, 0.75fr);
+  align-items: end;
+  gap: 16px;
+}
+.vn-lab-drop-hint {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  align-self: center;
+}
+.vn-lab-drop-hint b {
+  font-size: 13px;
+  color: var(--vn-fg);
+}
+.vn-lab-drop-hint span {
+  font-size: 12px;
+  color: var(--vn-dim);
+}
+.vn-lab-control {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--vn-dim);
+  min-width: 0;
+}
+.vn-lab-threshold {
+  min-width: 0;
+  padding-bottom: 2px;
+}
+.vn-lab-threshold input[type="range"] {
+  width: 100%;
+  accent-color: var(--vn-violet);
+}
+.vn-lab-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vn-muted);
+  font-variant-numeric: tabular-nums;
+}
+.vn-lab-progress {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vn-cyan);
+}
+.vn-lab-timeline-card {
+  display: grid;
+  gap: 8px;
+}
+.vn-lab-zoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--vn-dim);
+}
+.vn-lab-timeline-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  cursor: grab;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vn-line2) transparent;
+}
+.vn-lab-timeline-track {
+  position: relative;
+  min-width: 100%;
+  display: grid;
+  gap: 6px;
+  padding: 16px 0 6px;
+}
+.vn-lab-band {
+  position: relative;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+}
+.vn-lab-band-label {
+  position: sticky;
+  left: 4px;
+  top: 5px;
+  float: left;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  margin: 5px 0 0 4px;
+  border-radius: 6px;
+  background: rgba(7, 8, 13, 0.72);
+  color: var(--vn-fg);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+}
+.vn-lab-seg {
+  all: unset;
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 6px;
+  opacity: 0.85;
+  cursor: pointer;
+}
+.vn-lab-seg:focus-visible {
+  outline: 2px solid var(--vn-fg);
+  outline-offset: 1px;
+}
+.vn-lab-seg:hover {
+  opacity: 1;
+  outline: 1px solid rgba(255, 255, 255, 0.5);
+}
+.vn-lab-seg.on {
+  outline: 2px solid var(--vn-fg);
+  z-index: 2;
+}
+.vn-lab-seg.filtered {
+  background: repeating-linear-gradient(135deg, rgba(154, 163, 184, 0.65) 0 3px, rgba(154, 163, 184, 0.18) 3px 6px);
+}
+.vn-lab-diff-layer {
+  position: relative;
+  height: 10px;
+}
+.vn-lab-diff-layer i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--vn-pink);
+  transform: translateX(-1px);
+}
+.vn-lab-playhead {
+  position: absolute;
+  top: 12px;
+  bottom: 0;
+  width: 1px;
+  background: var(--vn-fg);
+  opacity: 0.8;
+  pointer-events: none;
+}
+.vn-lab-axis {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 11px;
+  color: var(--vn-dim);
+  font-variant-numeric: tabular-nums;
+}
+.vn-lab-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .vn-lab-split {
+    grid-template-columns: 1fr;
+  }
+}
+.vn-lab-list {
+  min-width: 0;
+}
+.vn-lab-tools {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.vn-lab-tools .vn-input {
+  flex: 1 1 150px;
+  width: auto;
+  min-width: 0;
+}
+.vn-lab-filters {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+}
+.vn-lab-rows {
+  max-height: 460px;
+  overflow: auto;
+  display: grid;
+  gap: 2px;
+}
+.vn-lab-row {
+  display: grid;
+  grid-template-columns: 46px 72px 72px minmax(80px, 1fr) 54px 34px 148px;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.vn-lab-row:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.6);
+  outline-offset: -2px;
+}
+.vn-lab-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.vn-lab-row.on {
+  border-radius: 0;
+  background: rgba(139, 92, 246, 0.14);
+}
+.vn-lab-row.on .vn-lab-time {
+  color: var(--vn-muted);
+}
+.vn-lab-row.filtered .vn-lab-text {
+  color: var(--vn-dim);
+  text-decoration: line-through;
+}
+.vn-lab-time {
+  color: var(--vn-dim);
+  font-variant-numeric: tabular-nums;
+}
+.vn-lab-sp {
+  overflow: hidden;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vn-lab-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vn-lab-marks {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.vn-lab-marks .vn-btn.sm {
+  padding: 6px;
+}
+.vn-lab-row > .vn-btn.sm {
+  width: 34px;
+  padding-right: 0;
+  padding-left: 0;
+}
+.vn-lab-speakers {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.vn-lab-speaker {
+  display: grid;
+  grid-template-columns: 10px 68px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+.vn-lab-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.vn-lab-sp-name {
+  color: var(--vn-fg);
+}
+.vn-lab-sp-meta {
+  color: var(--vn-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vn-lab-open {
+  justify-content: flex-end;
+  margin: 6px 0 10px;
+}
+.vn-nav-lab {
+  margin-top: 4px;
+  opacity: 0.7;
+}
+.vn-nav-lab:hover,
+.vn-nav-lab.on {
+  opacity: 1;
+}
+.vn-lab .vn-hint {
+  font-size: 12px;
+}
+@media (max-width: 1100px) {
+  .vn-lab-bar-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vn-lab-drop-hint {
+    grid-column: 1 / -1;
+  }
+}

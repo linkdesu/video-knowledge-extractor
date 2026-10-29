@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 // app-shell-1 改造：AppFrame = 侧栏导航（视频库/术语表/设置）+ 面包屑顶栏 + 内容槽。
 // 原型没有统计块、导入按钮、状态胶囊与头像，全部移除。
 
-type NavKey = "library" | "glossary" | "settings";
+type NavKey = "library" | "glossary" | "settings" | "lab";
 
 const NAV_ITEMS: Array<{ key: NavKey; icon: string; label: string }> = [
   { key: "library", icon: "▦", label: "视频库" },
@@ -21,6 +21,7 @@ export function AppFrame({
   crumb,
   appVersion,
   hasActiveJob,
+  lab,
   children,
 }: {
   active: NavKey;
@@ -28,6 +29,8 @@ export function AppFrame({
   crumb: Crumb;
   appVersion?: string | null;
   hasActiveJob?: boolean;
+  /** 开发模式验收台（r48）：只有未打包时由 App 传入 true。 */
+  lab?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -64,6 +67,17 @@ export function AppFrame({
               {item.label}
             </button>
           ))}
+          {lab === true ? (
+            <button
+              type="button"
+              data-testid="nav-lab"
+              className={`vn-nav-btn vn-nav-lab${active === "lab" ? " on" : ""}`}
+              onClick={() => onNavigate("lab")}
+            >
+              <span className="vn-ico" aria-hidden="true">🧪</span>
+              Lab
+            </button>
+          ) : null}
         </nav>
       </aside>
       <div className="vn-main">

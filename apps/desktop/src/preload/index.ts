@@ -20,6 +20,31 @@ import type {
   VnoteApi,
 } from "../shared/ipc";
 import { IPC } from "../shared/ipc";
+import { LAB_IPC, type LabApi, type LabProgress } from "../shared/lab";
+
+/**
+ * r48：Lab 只在开发模式可用。主进程未注册 `dev:lab:available` 时 sendSync 抛错，
+ * 打包版因此既不暴露 `vnote.lab`，也不持有任何 Lab 通道。
+ */
+function labApi(): LabApi | undefined {
+  try {
+    if (ipcRenderer.sendSync(LAB_IPC.available) !== true) return undefined;
+  } catch {
+    return undefined;
+  }
+  return {
+    list: () => ipcRenderer.invoke(LAB_IPC.list) as ReturnType<LabApi["list"]>,
+    load: (sampleId) => ipcRenderer.invoke(LAB_IPC.load, sampleId) as ReturnType<LabApi["load"]>,
+    importPath: (sourcePath) => ipcRenderer.invoke(LAB_IPC.importPath, sourcePath) as ReturnType<LabApi["importPath"]>,
+    marks: (sampleId) => ipcRenderer.invoke(LAB_IPC.marksGet, sampleId) as ReturnType<LabApi["marks"]>,
+    saveMarks: (sampleId, marks) => ipcRenderer.invoke(LAB_IPC.marksSet, sampleId, marks) as ReturnType<LabApi["saveMarks"]>,
+    onProgress: (listener: (progress: LabProgress) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, progress: LabProgress) => listener(progress);
+      ipcRenderer.on(LAB_IPC.progress, handler);
+      return () => ipcRenderer.removeListener(LAB_IPC.progress, handler);
+    },
+  };
+}
 
 /**
  * sandbox: true 下 preload 只能 import electron 与 Node 内建。
@@ -105,5 +130,10 @@ const api: VnoteApi = {
   savePrompt: (id: string, text: string) => ipcRenderer.invoke(IPC.savePrompt, id, text) as Promise<PromptStatus[]>,
   resetPrompt: (id: string) => ipcRenderer.invoke(IPC.resetPrompt, id) as Promise<PromptStatus[]>,
 };
+
+const lab = labApi();
+if (lab !== undefined) {
+  (api as VnoteApi & { lab?: LabApi }).lab = lab;
+}
 
 contextBridge.exposeInMainWorld("vnote", api);

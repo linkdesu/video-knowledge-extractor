@@ -14,6 +14,27 @@ export function encodeSourceUrl(videoId: string): string {
   return `${MEDIA_SCHEME}://source/${videoId}`;
 }
 
+/**
+ * 开发模式 Lab 的样本音频（r48）：`vnote-media://lab/<sampleId>` → `<labRoot>/<id>/audio.wav`。
+ * handler 只在未打包时注册，打包版这个 url 一律 404。
+ */
+export function encodeLabUrl(sampleId: string): string {
+  return `${MEDIA_SCHEME}://lab/${sampleId}`;
+}
+
+/** 解码 Lab 音频：id 只认 `[a-z0-9]+`，路径固定 `<labRoot>/<id>/audio.wav`。 */
+export function decodeLabUrl(url: string, labRoot: string): MediaLocation | UrlError {
+  const m = url.match(`^${MEDIA_SCHEME}://lab/([a-z0-9]+)$`);
+  if (m === null || m[1] === undefined) return { code: "bad-url", message: "非法的媒体 url" };
+  const path = resolve(labRoot, m[1], "audio.wav");
+  try {
+    if (!statSync(path).isFile()) return { code: "not-found", message: "样本音频不存在" };
+  } catch {
+    return { code: "not-found", message: "样本音频不存在" };
+  }
+  return { absolutePath: path, contentType: "audio/wav" };
+}
+
 /** 封面地址：只编码 videoId，路径由 handler 按库记录解析；文件固定是 `<outputDir>/cover.jpg`。 */
 export function encodeCoverUrl(videoId: string): string {
   return `${MEDIA_SCHEME}://cover/${videoId}`;
@@ -259,6 +280,8 @@ export function createMediaHandler(opts: {
   root: () => string;
   resolveSource: (videoId: string) => string | undefined;
   resolveOutputDir: (videoId: string) => string | undefined;
+  /** 开发模式 Lab 的样本根；打包版不传，`vnote-media://lab/...` 一律 404。 */
+  labRoot?: () => string | undefined;
 }): (request: Request) => Promise<Response> {
   return async (request: Request) => {
     // 封面不走 Range 语义：无 Range 头也直接 200 全量，忽略任何 Range 请求
@@ -283,6 +306,29 @@ export function createMediaHandler(opts: {
       return new Response(new Uint8Array(body), {
         headers: { "Content-Type": loc.contentType, "Content-Length": String(body.length) },
       });
+    }
+    if (request.url.startsWith(`${MEDIA_SCHEME}://lab/`)) {
+      const labRoot = opts.labRoot?.();
+      if (labRoot === undefined) {
+        return new Response("Lab 音频只在开发模式可用", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      }
+      const decision = decideMediaRequest(request.url, {
+        header: request.headers.get("range") ?? undefined,
+        resolvePath: (u) => decodeLabUrl(u, labRoot),
+        stat: (p) => {
+          try {
+            return statSync(p).size;
+          } catch {
+            return 0;
+          }
+        },
+      });
+      return mediaResponse(decision, (path, range) =>
+        createReadStream(path, {
+          start: range === undefined ? undefined : range.start,
+          end: range === undefined ? undefined : range.end,
+        }),
+      );
     }
     const rangeHeader = request.headers.get("range");
     const isSource = request.url.startsWith(`${MEDIA_SCHEME}://source/`);
