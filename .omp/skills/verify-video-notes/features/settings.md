@@ -1,4 +1,4 @@
-# Settings
+# Settings (requires: empty-settings)
 
 Settings shows what the app will actually use: local ASR model bundles and their readiness, the LLM endpoint and model, storage directories, cache size and the app/ffmpeg versions. The LLM panel is a single-card form (baseUrl, key, model) saved atomically by one 保存 button; no LLM field is ever locked by environment variables (r30), and the trial build exposes only local ASR.
 
@@ -26,6 +26,7 @@ Settings shows what the app will actually use: local ASR model bundles and their
 
 Preconditions:
 
+- `requires: empty-settings` — start the run with `verify.ts up --empty-settings`: the default run seeds a saved LLM endpoint/key from the private config (config-seed.md), and these journeys assert the virgin settings page (`settings-llm-key-none`, drafts, save flow).
 - A running instance; `doctor` reports the app version and ffmpeg.
 - For network-free verification, do not click 测试连接, 拉取模型 or 下载模型 (the download controls exist since r38, but a full set is ~1.1 GB).
 

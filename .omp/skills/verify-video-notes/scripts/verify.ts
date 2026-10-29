@@ -18,6 +18,17 @@ import { createHash } from "node:crypto";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
 import {
+  assertPrivateMode,
+  extractPrivateConfig,
+  loadPrivateConfig,
+  buildSecretsJson,
+  buildSettingsJson,
+  parsePrivateConfig,
+  seedUserData,
+  writePrivateConfig,
+  type LlmPrivateConfig,
+} from "./lib/config-seed";
+import {
   appendSeeds,
   cardTemplate,
   countOpenQuestions,
@@ -69,6 +80,8 @@ type RunState = {
   sshTunnelPid?: number;
   /** Task Scheduler entry that starts the app in interactive Session 1. */
   scheduledTask?: string;
+  /** r45c: the run's userData was seeded from the private LLM config before launch. */
+  configSeeded?: boolean;
 };
 
 type Target = { type: string; url: string; title: string; webSocketDebuggerUrl: string };
@@ -76,13 +89,18 @@ type Target = { type: string; url: string; title: string; webSocketDebuggerUrl: 
 const HELP = `usage: verify.ts <command>
 
   up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build]
-     [--app PATH] [--min-path]
+     [--app PATH] [--min-path] [--empty-settings]
       Build apps/desktop, start Electron with isolated VNOTE_HOME / VNOTE_USER_DATA,
       wait until the renderer answers, write tmp/verify/<run>/state.json.
       --app drives an already packaged .app (or its executable) instead of apps/desktop,
       and implies --no-build. --min-path replaces the child PATH with launchd's
       /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
+      Every run is seeded with the private LLM config (mac
+      ~/.config/video-notes-verify/llm.json, win %USERPROFILE%\\.config\\video-notes-verify\\llm.json,
+      both 0600 and outside the repo); a feature that asserts a virgin settings page
+      (requires: empty-settings) passes --empty-settings instead.
   up --target win-gamepc [--installer PATH | --app WINPATH] [--install-dir WINPATH] [--ssh-host NAME]
+     [--empty-settings]
       Drive a Windows machine over ssh instead of this Mac (see Targets below).
       --installer runs the NSIS installer silently into --install-dir (default
       D:\\code\\video-notes\\app), --app drives an exe that is already installed; the two
@@ -120,6 +138,14 @@ const HELP = `usage: verify.ts <command>
       A win-gamepc run also stops the ssh tunnel, kills the remote process, deletes the
       scheduled task, prunes the remote caches and pulls app.log, home\\logs and every
       video.json / topic.md / trajectory.json / status.json into <run>/win/.
+
+  seed-config [--run ID] [--target mac|win-gamepc]
+      Write the private LLM config into an existing run's userData (settings.json + secrets.bin).
+      Restart the run afterwards; \`up\` does this automatically unless --empty-settings.
+
+  export-private-config [--target mac|win-gamepc] [--ssh-host NAME]
+      One-off: copy the installed app's LLM baseUrl/model/key into the private config file
+      (0600 on mac, current-user ACL on Windows). Never prints any value.
 
   runs
       List runs and whether each process is still alive.
@@ -472,6 +498,20 @@ const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
 const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
 const WIN_SSH_HOST = "gamepc";
 
+// --------------------------------------------------------- private verify config
+
+/**
+ * LLM config for every new run. Deliberately outside the repo, 0600, one file per machine:
+ *   mac      ~/.config/video-notes-verify/llm.json
+ *   windows  %USERPROFILE%\.config\video-notes-verify\llm.json
+ * The repo only carries `.omp/skills/verify-video-notes/config/llm.example.json`.
+ * A feature that needs a virgin settings page starts its run with `up --empty-settings`.
+ */
+const PRIVATE_CONFIG_EXAMPLE = join(REPO, ".omp/skills/verify-video-notes/config/llm.example.json");
+const PRIVATE_CONFIG_MAC = join(process.env.HOME ?? ".", ".config/video-notes-verify/llm.json");
+/** Real userData of the installed mac app; export-private-config reads it once. */
+const MAC_INSTALLED_USER_DATA = join(process.env.HOME ?? ".", "Library/Application Support/Video Notes");
+
 type Platform = "mac" | "win-gamepc";
 
 type SshResult = { code: number; stdout: string; stderr: string };
@@ -597,6 +637,159 @@ function pullRemoteFile(host: string, remotePath: string, localPath: string): bo
   return true;
 }
 
+// ------------------------------------------------------- private config (r45c)
+
+function configMissingMessage(path: string): string {
+  return [
+    `缺少私有 LLM 配置：${path}`,
+    `  1) 复制模板：${PRIVATE_CONFIG_EXAMPLE}`,
+    `  2) 填入真实 baseUrl / apiKey / model`,
+    `  3) 收紧权限：chmod 600 ${path}（Windows 用 icacls /inheritance:r /grant:r "$env:USERNAME:(F)"）`,
+    "  也可以先跑 `verify.ts export-private-config` 从已安装应用导出。",
+  ].join("\n");
+}
+
+/**
+ * The run's LLM config comes only from the seeded files: an ambient VNOTE_LLM_* / IDEALSOFT_*
+ * (dev seed contract) would silently win over them and make --empty-settings non-empty.
+ */
+function withoutLlmEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("VNOTE_LLM_") || key.startsWith("IDEALSOFT_")) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/** Seed one local (mac) run userData before the app starts. */
+function seedLocalRunConfig(userData: string): void {
+  if (existsSync(PRIVATE_CONFIG_MAC)) assertPrivateMode(statSync(PRIVATE_CONFIG_MAC).mode, PRIVATE_CONFIG_MAC);
+  const cfg = loadPrivateConfig(PRIVATE_CONFIG_MAC, { repoRoot: REPO, examplePath: PRIVATE_CONFIG_EXAMPLE });
+  seedUserData(userData, cfg);
+}
+
+/** Read one file out of a remote directory expression; null when absent. */
+function remoteUserDataFile(host: string, dirExpr: string, name: string): string | null {
+  const script = `$p = Join-Path ${dirExpr} '${name}'; if (Test-Path -LiteralPath $p) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($p)) } else { 'MISSING' }`;
+  const out = sshRun(host, winPsEncoded(script)).stdout.trim();
+  if (out === "MISSING" || out === "") return null;
+  return Buffer.from(out, "base64").toString("utf8");
+}
+
+function writeRemoteTextFile(host: string, path: string, text: string): void {
+  const b64 = Buffer.from(text, "utf8").toString("base64");
+  sshRun(
+    host,
+    winPsEncoded(
+      `[IO.File]::WriteAllText('${path}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')), (New-Object Text.UTF8Encoding $false)); 'ok'`,
+    ),
+  );
+}
+
+/** The Windows private file, fetched over ssh; permission check is ACL-based (no broad ACEs). */
+function remotePrivateConfig(host: string): LlmPrivateConfig {
+  const script = [
+    `$p = Join-Path $env:USERPROFILE '.config\\video-notes-verify\\llm.json'`,
+    `if (-not (Test-Path -LiteralPath $p)) { Write-Output 'MISSING'; exit 0 }`,
+    `$acl = Get-Acl -LiteralPath $p`,
+    `$broad = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.IdentityReference.Value -match 'Everyone|Users|Authenticated') }).Count`,
+    `[pscustomobject]@{ b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($p)); broad = $broad } | ConvertTo-Json -Compress`,
+  ].join("; ");
+  const out = sshRun(host, winPsEncoded(script)).stdout.trim();
+  if (out === "MISSING") throw new RemoteError(configMissingMessage("%USERPROFILE%\\.config\\video-notes-verify\\llm.json"));
+  const line = out.split(/\r?\n/).filter((l) => l.trim().startsWith("{")).pop();
+  if (line === undefined) throw new RemoteError(`unexpected reply while reading the private config on ${host}: ${out}`);
+  const parsed = JSON.parse(line) as { b64?: unknown; broad?: unknown };
+  if (parsed.broad !== 0) {
+    throw new RemoteError(
+      `私有 LLM 配置权限过宽（存在 Everyone/Users 访问项）：在 Windows 上运行 icacls "$env:USERPROFILE\\.config\\video-notes-verify\\llm.json" /inheritance:r /grant:r "$env:USERNAME:(F)"`,
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(String(parsed.b64 ?? ""), "base64").toString("utf8"));
+  } catch {
+    throw new RemoteError("私有 LLM 配置不是合法 JSON");
+  }
+  return parsePrivateConfig(raw);
+}
+
+/** Write the private file on the Windows box and lock its ACL to the current user. */
+function writeRemotePrivateConfig(host: string, cfg: LlmPrivateConfig): void {
+  const body = `${JSON.stringify({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, ...(cfg.model === null ? {} : { model: cfg.model }) }, null, 2)}\n`;
+  const b64 = Buffer.from(body, "utf8").toString("base64");
+  const script = [
+    `$dir = Join-Path $env:USERPROFILE '.config\\video-notes-verify'`,
+    `New-Item -ItemType Directory -Force -Path $dir | Out-Null`,
+    `$p = Join-Path $dir 'llm.json'`,
+    `[IO.File]::WriteAllText($p, [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')), (New-Object Text.UTF8Encoding $false))`,
+    `icacls $p /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null`,
+    `'ok'`,
+  ].join("; ");
+  sshRun(host, winPsEncoded(script));
+}
+
+/** Seed a remote (win-gamepc) run userData: same two files the app reads, key file ACL-restricted. */
+function seedRemoteRunConfig(host: string, remoteUserData: string): void {
+  const cfg = remotePrivateConfig(host);
+  const dir = `'${remoteUserData}'`;
+  const settings = buildSettingsJson(remoteUserDataFile(host, dir, "settings.json"), cfg);
+  const secrets = buildSecretsJson(remoteUserDataFile(host, dir, "secrets.bin"), cfg);
+  writeRemoteTextFile(host, `${remoteUserData}\\settings.json`, settings);
+  writeRemoteTextFile(host, `${remoteUserData}\\secrets.bin`, secrets);
+  sshRun(
+    host,
+    winPsEncoded(`icacls '${remoteUserData}\\secrets.bin' /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null; 'ok'`),
+  );
+}
+
+function readLocalFileOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** One-off export from the installed app into the private file (prints no values). */
+async function exportPrivateConfig(args: string[]): Promise<void> {
+  const target = resolveTarget(takeFlag(args, "--target"));
+  const host = takeFlag(args, "--ssh-host") ?? WIN_SSH_HOST;
+  if (target === "win-gamepc") {
+    const winDir = "(Join-Path $env:APPDATA 'Video Notes')";
+    const settings = remoteUserDataFile(host, winDir, "settings.json");
+    if (settings === null) fail(`已安装应用没有 settings.json：%APPDATA%\\Video Notes；请先在应用的设置页填写一次 LLM`);
+    const secrets = remoteUserDataFile(host, winDir, "secrets.bin");
+    const cfg = extractPrivateConfig(settings, secrets);
+    writeRemotePrivateConfig(host, cfg);
+    console.log("wrote %USERPROFILE%\\.config\\video-notes-verify\\llm.json (ACL: 当前用户); baseUrl/model/key 未回显");
+    return;
+  }
+  const settings = readLocalFileOrNull(join(MAC_INSTALLED_USER_DATA, "settings.json"));
+  if (settings === null) fail(`已安装应用没有 settings.json：${MAC_INSTALLED_USER_DATA}/settings.json；请先在应用的设置页填写一次 LLM`);
+  const secrets = readLocalFileOrNull(join(MAC_INSTALLED_USER_DATA, "secrets.bin"));
+  const cfg = extractPrivateConfig(settings, secrets);
+  writePrivateConfig(PRIVATE_CONFIG_MAC, cfg);
+  console.log(`wrote ${PRIVATE_CONFIG_MAC} (0600); baseUrl/model/key 未回显`);
+}
+
+/** seed-config: write the private config into an existing run's userData (restart needed). */
+async function seedConfig(args: string[]): Promise<void> {
+  const state = readState(takeFlag(args, "--run"));
+  const target = resolveTarget(takeFlag(args, "--target"), state);
+  if (target === "win-gamepc") {
+    const remoteUserData = state.remoteUserData;
+    if (remoteUserData === undefined) fail("this run has no remoteUserData");
+    seedRemoteRunConfig(state.sshHost ?? WIN_SSH_HOST, remoteUserData);
+    console.log(`seeded ${remoteUserData}\\settings.json + secrets.bin (ACL: 当前用户)`);
+  } else {
+    seedLocalRunConfig(state.userData);
+    console.log(`seeded ${state.userData}/settings.json + secrets.bin (0600)`);
+  }
+  console.log("restart the run (`verify.ts down` then `verify.ts up`) for the app to read the seeded settings");
+}
+
 /** Windows runs live on another machine: ask it instead of the local process table. */
 function remoteAlive(state: RunState): boolean {
   const host = state.sshHost ?? WIN_SSH_HOST;
@@ -628,6 +821,8 @@ async function up(args: string[]): Promise<void> {
   // --app drives an already packaged bundle: building apps/desktop cannot change what it runs
   const skipBuild = hasFlag(args, "--no-build") || appArg !== undefined;
   const minPath = hasFlag(args, "--min-path");
+  // features that assert a virgin settings page start with `up --empty-settings`
+  const emptySettings = hasFlag(args, "--empty-settings");
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
   mkdirSync(runDir, { recursive: true });
@@ -637,6 +832,10 @@ async function up(args: string[]): Promise<void> {
   const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? join(process.env.HOME ?? ".", ".cache/video-notes/models"));
   mkdirSync(home, { recursive: true });
   mkdirSync(userData, { recursive: true });
+  if (!emptySettings) {
+    seedLocalRunConfig(userData);
+    console.log(`config:   seeded ${PRIVATE_CONFIG_MAC} -> ${userData}/settings.json + secrets.bin (0600)`);
+  }
 
   const buildLog = join(runDir, "build.log");
   if (!skipBuild) {
@@ -675,7 +874,7 @@ async function up(args: string[]): Promise<void> {
   const child = Bun.spawn([electron, ...appArgs], {
     cwd: REPO,
     env: {
-      ...process.env,
+      ...withoutLlmEnv(process.env),
       ...(minPath ? { PATH: LAUNCHD_PATH } : {}),
       VNOTE_HOME: home,
       VNOTE_USER_DATA: userData,
@@ -700,6 +899,7 @@ async function up(args: string[]): Promise<void> {
     commit: revParse(),
     startedAt: new Date().toISOString(),
     electron,
+    ...(emptySettings ? {} : { configSeeded: true }),
   };
 
   try {
@@ -758,6 +958,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const remoteRunDir = `${WIN_RUNS}\\${runId}`;
   const remoteHome = takeFlag(args, "--home") ?? `${remoteRunDir}\\home`;
   const remoteUserData = takeFlag(args, "--user-data") ?? `${remoteRunDir}\\user-data`;
+  const emptySettings = hasFlag(args, "--empty-settings");
   const remoteAppLog = `${remoteRunDir}\\app.log`;
   const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
   const task = `VNoteVerify_${runId}`;
@@ -766,6 +967,10 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
 
   try {
     sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
+    if (!emptySettings) {
+      seedRemoteRunConfig(sshHost, remoteUserData);
+      console.log(`config:   seeded %USERPROFILE%\\.config\\video-notes-verify\\llm.json -> ${remoteUserData}\\settings.json + secrets.bin (ACL: 当前用户)`);
+    }
 
     let remoteApp: string;
     let stateInstallDir: string | undefined;
@@ -802,6 +1007,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     // garbled in a .cmd read by cmd.exe's OEM code page; the scheduled-task action below is
     // pure ASCII, so only the script carries the non-ASCII path.
     const script = [
+      `Get-ChildItem env: | Where-Object { $_.Name -like 'VNOTE_LLM_*' -or $_.Name -like 'IDEALSOFT_*' } | Remove-Item`,
       `$env:NO_PROXY='*'`,
       `$env:no_proxy='*'`,
       `$env:HTTP_PROXY=''`,
@@ -908,6 +1114,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
       ...(stateInstallDir !== undefined ? { installDir: stateInstallDir } : {}),
       sshTunnelPid: tunnelPid,
       scheduledTask: task,
+      ...(emptySettings ? {} : { configSeeded: true }),
     };
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
     writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
@@ -1915,6 +2122,12 @@ switch (command) {
     break;
   case "detect":
     await detect(rest);
+    break;
+  case "seed-config":
+    await seedConfig(rest);
+    break;
+  case "export-private-config":
+    await exportPrivateConfig(rest);
     break;
   case "prototype":
     await prototype(rest);

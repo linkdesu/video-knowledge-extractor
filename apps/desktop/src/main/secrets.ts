@@ -1,4 +1,5 @@
 import { openSync, readFileSync, chmodSync, renameSync, writeSync, closeSync } from "node:fs";
+import { logger } from "@video-notes/core";
 
 /**
  * 密钥只存在于主进程（ADR-0015 §3）。r44 起不再使用 Electron safeStorage：
@@ -39,11 +40,14 @@ export const plainFileCodec: SecretCodec = {
 
 /** 把无法读取的旧文件挪到旁边（不删除，便于排查），返回是否成功。 */
 export function setAsideLegacy(path: string): void {
+  const target = `${path}.legacy-${Date.now()}`;
   try {
-    renameSync(path, `${path}.legacy-${Date.now()}`);
+    renameSync(path, target);
   } catch {
     // 挪不动也不阻塞：下次 set 会覆盖
   }
+  // r45c：旧版 safeStorage 密文只能丢弃，但不能静默——日志里留下备份路径，排查“重装后 key 没了”时有据可查
+  logger().warn("app", "旧版系统加密密钥已失效，已备份并重置", { backup: target });
 }
 
 /** 二进制原子写：临时文件 0o600 → 写 → rename → 0o600；rename 前的权限窗口不暴露目标名。 */

@@ -1,0 +1,5 @@
+{
+  "baseUrl": "https://your-endpoint.example/v1",
+  "apiKey": "<在此填入真实 API key>",
+  "model": "your-model-id"
+}

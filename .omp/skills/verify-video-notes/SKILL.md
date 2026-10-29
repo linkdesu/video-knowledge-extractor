@@ -29,7 +29,9 @@ ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, req
 
 **Test video rule (per platform, absolute).** Mac runs use only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); Windows runs use only videos under `C:\Users\xieal\Documents\video-notes\` (for example `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, `C:\Users\xieal\Documents\video-notes\测试视频 1.mp4`). Never a video from another directory.
 
-The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root. The desktop app does not persist env config: the packaged app never reads `.env` at all; a dev (unpacked) app takes `VNOTE_LLM_*` from its **process environment** (or `.env`) as a seed for fields with no saved value, and a saved value always wins. Exporting `VNOTE_LLM_BASE_URL` / `VNOTE_LLM_MODEL` / `VNOTE_LLM_API_KEY` in front of `verify.ts up` is therefore the way to hand a real endpoint to a dev run without ever typing the key into a shell-visible `fill` argument.
+The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root.
+
+The desktop app is configured from **files**, not the environment (r45c): `verify.ts up` seeds every run's isolated userData with the private LLM config before the app starts — mac `~/.config/video-notes-verify/llm.json`, Windows `%USERPROFILE%\.config\video-notes-verify\llm.json`, both `0600` and outside the repo (details: [features/config-seed.md](./features/config-seed.md)). An ambient `VNOTE_LLM_*` / `IDEALSOFT_*` is stripped from the child process, so the seeded files are the only source and `--empty-settings` really means empty. A feature that asserts a virgin settings page marks itself `requires: empty-settings` and starts with `up --empty-settings`. Never type a key into a shell-visible `fill` argument.
 
 Start an isolated instance:
 
@@ -40,10 +42,11 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up
 What `up` does:
 
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
-2. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411`.
-3. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache.
-4. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
-5. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run.
+2. Seeds the run userData from the private LLM config (`settings.json` version 3 + `secrets.bin` version 2, both `0600`; `state.json` records `configSeeded: true`). `--empty-settings` skips this for feature journeys that assert a virgin settings page.
+3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment.
+4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=<run>/user-data`, `VNOTE_MODEL_DIR` = the real model cache.
+5. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
+6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run.
 
 Isolation limits:
 
@@ -54,6 +57,30 @@ Isolation limits:
 - A fresh process verifies the local models in the background; `ensurePipelineReady` awaits that check, so the first import can take a few extra seconds, not fail.
 - Storage root (r28): notes are the root itself (`VNOTE_HOME` / `VNOTE_DATA_ROOT`), with `.cache` and `models` as subdirectories. An unpacked (dev) process launched from inside the repo puts everything under the repo's `tmp/dev-home` (`user-data` for settings and secrets, `data` as the unified root); the helper's explicit `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR` always win, so verify runs are unaffected.
 - Logs sit in the visible `<notesRoot>/logs` directory (r39). One active `vnote-YYYY-MM-DD.log` per day: a write that would push it past 8 MB rolls it to `vnote-YYYY-MM-DD.<n>.log`, and the directory always keeps at most 7 files, the oldest deleted at roll time.
+
+### Private LLM config (r45c)
+
+Every run gets a real LLM configuration without touching the key in a shell:
+
+```bash
+# once per machine: export the installed app's config into the private file (prints no values)
+bun .omp/skills/verify-video-notes/scripts/verify.ts export-private-config
+bun .omp/skills/verify-video-notes/scripts/verify.ts export-private-config --target win-gamepc
+
+# normal runs: `up` seeds automatically
+bun .omp/skills/verify-video-notes/scripts/verify.ts up
+
+# write the config into an existing run's userData (restart the run afterwards)
+bun .omp/skills/verify-video-notes/scripts/verify.ts seed-config --run <run>
+
+# a feature that asserts a virgin settings page (requires: empty-settings)
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --empty-settings
+```
+
+- Private file: mac `~/.config/video-notes-verify/llm.json`, Windows `%USERPROFILE%\.config\video-notes-verify\llm.json`; shape `{ "baseUrl", "apiKey", "model"? }`. It must be mode `0600` (on Windows: only the current-user ACE) and outside the repo. The repo carries only the template [config/llm.example.json](./config/llm.example.json).
+- A missing file fails the run with the template path, a copy command and the `chmod 600` line; a `0644` file fails with the same `chmod 600` instruction. The key is never echoed.
+- `up` writes the same shapes the app itself reads: `<userData>/settings.json` (`version: 3`, `llm.baseUrl`/`llm.model`) and `<userData>/secrets.bin` (`version: 2`, `llm`). Existing other fields/keys are preserved.
+- Windows runs fetch the private file over ssh and write it with `icacls /inheritance:r` for the current user only.
 
 ### Mandatory version bump & dual-machine local install (r44)
 
