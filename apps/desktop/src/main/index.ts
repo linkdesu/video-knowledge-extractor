@@ -11,6 +11,7 @@ import {
   ipcMain,
   net,
   protocol,
+  safeStorage,
   shell,
   utilityProcess,
   type UtilityProcess,
@@ -1594,7 +1595,17 @@ app.on("window-all-closed", () => {
 
 void app.whenReady().then(async () => {
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 本地模型检测（r37）
-  secretStore = createSecretStore({ file: join(app.getPath("userData"), "secrets.bin"), codec: electronCodec });
+  // r45c：Windows 上旧版 safeStorage 密文是 DPAPI（随用户、不随签名），升级后仍能解；
+  // macOS 的钥匙串绑定 cdhash，重装后只会弹授权框，保持 r44 的“备份 + 重置”。
+  const legacyDecrypt =
+    process.platform === "win32" && safeStorage.isEncryptionAvailable()
+      ? (cipher: Buffer) => safeStorage.decryptString(cipher)
+      : undefined;
+  secretStore = createSecretStore({
+    file: join(app.getPath("userData"), "secrets.bin"),
+    codec: electronCodec,
+    ...(legacyDecrypt !== undefined ? { legacyDecrypt } : {}),
+  });
   registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),

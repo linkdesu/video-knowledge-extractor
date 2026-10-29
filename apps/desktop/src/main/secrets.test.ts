@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecretStore, plainFileCodec, type SecretCodec } from "./secrets";
+import { createSecretStore, LegacyCipherError, plainFileCodec, type SecretCodec } from "./secrets";
 
 /** 假 codec：base64「加密」，可注入解密失败，覆盖往返、坏密文、权限、clear，不依赖 Electron。 */
 function fakeCodec(decryptError: string | null = null): SecretCodec {
@@ -198,5 +198,68 @@ describe("createSecretStore", () => {
     const reloaded = createSecretStore({ file, codec: plainFileCodec });
     expect(reloaded.error()).toBe(null);
     expect(reloaded.get("llm")).toBe("sk-plain-123");
+  });
+});
+
+describe("旧版 safeStorage 密文迁移（r45c）", () => {
+  function legacyCodec(): SecretCodec {
+    return {
+      available: () => true,
+      encrypt: (plain: string) => Buffer.from(`enc:${plain}`, "utf8"),
+      decrypt: (cipher: Buffer) => {
+        if (cipher.subarray(0, 3).toString("utf8") === "v10") throw new LegacyCipherError();
+        const text = cipher.toString("utf8");
+        if (!text.startsWith("enc:")) throw new Error("bad cipher");
+        return text.slice(4);
+      },
+    };
+  }
+
+  function legacyFile(): string {
+    const file = tempFile();
+    writeFileSync(file, Buffer.from([0x76, 0x31, 0x30, 0x89, 0xfe, 0x00, 0x42]));
+    return file;
+  }
+
+  function backups(file: string): string[] {
+    return readdirSync(join(file, "..")).filter((name) => name.includes(".legacy-"));
+  }
+
+  test("legacyDecrypt 成功：密钥迁回内存并重写为本地 JSON，旧文件留备份", () => {
+    const file = legacyFile();
+    const store = createSecretStore({
+      file,
+      codec: legacyCodec(),
+      legacyDecrypt: () => JSON.stringify({ version: 2, llm: "old-dpapi-key" }),
+    });
+    expect(store.get("llm")).toBe("old-dpapi-key");
+    expect(store.error()).toBe(null);
+    expect(backups(file)).toHaveLength(1);
+    const rewritten = readFileSync(file, "utf8");
+    expect(rewritten.startsWith("enc:")).toBe(true);
+    expect(JSON.parse(rewritten.slice(4))).toEqual({ version: 2, llm: "old-dpapi-key" });
+  });
+
+  test("legacyDecrypt 失败：保持空表、不抛错、备份仍在", () => {
+    const file = legacyFile();
+    const store = createSecretStore({
+      file,
+      codec: legacyCodec(),
+      legacyDecrypt: () => {
+        throw new Error("DPAPI 解不开");
+      },
+    });
+    expect(store.has("llm")).toBe(false);
+    expect(store.error()).toBe(null);
+    expect(backups(file)).toHaveLength(1);
+  });
+
+  test("legacyDecrypt 返回坏 JSON：不覆盖、不抛错", () => {
+    const file = legacyFile();
+    const store = createSecretStore({ file, codec: legacyCodec(), legacyDecrypt: () => "not json" });
+    expect(store.has("llm")).toBe(false);
+    const [backup] = backups(file);
+    expect(backup).toBeDefined();
+    expect(readFileSync(join(file, "..", backup!)).subarray(0, 3).toString("utf8")).toBe("v10");
   });
 });

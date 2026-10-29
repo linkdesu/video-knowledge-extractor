@@ -92,12 +92,44 @@ type StoreImpl = {
   codec: SecretCodec;
   values: Partial<Record<SecretId, string>>;
   loadError: string | null;
+  /** r45c：读到的旧版 safeStorage 密文（已挪到 .legacy-* 备份），供 Windows DPAPI 迁移再试一次。 */
+  legacy: Buffer | null;
 };
 
 function failLoad(s: StoreImpl, message: string): void {
   // 保留原文件不覆盖；只有显式 set/clear 才重写
   s.values = {};
   s.loadError = message;
+}
+
+/** 解析已解密的密钥 JSON；形状不对抛错（调用方转成 failLoad / 迁移失败）。 */
+function parseSecretPlain(plain: string): Partial<Record<SecretId, string>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plain);
+  } catch {
+    throw new Error("密钥文件内容不是合法 JSON（原文件已保留）");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("密钥文件内容不是对象（原文件已保留）");
+  }
+  const obj = parsed as Record<string, unknown>;
+  const version = obj.version;
+  if (version !== 1 && version !== 2) {
+    throw new Error(`密钥文件版本不支持（原文件已保留）：${JSON.stringify(version)}`);
+  }
+  // v1 只有 llm/asr；v2 五个字段都接受。两边都只接受非空字符串，坏形状整份视为没有已存 key。
+  const ids = version === 1 ? (["llm", "asr"] as const) : SECRET_IDS;
+  const next: Partial<Record<SecretId, string>> = {};
+  for (const id of ids) {
+    const value = obj[id];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value === "") {
+      throw new Error(`密钥文件字段 ${id} 不是非空字符串（原文件已保留）`);
+    }
+    next[id] = value;
+  }
+  return next;
 }
 
 function readStored(s: StoreImpl): void {
@@ -116,44 +148,20 @@ function readStored(s: StoreImpl): void {
     plain = s.codec.decrypt(cipher);
   } catch (err) {
     if (err instanceof LegacyCipherError) {
-      // 旧版 safeStorage 密文：静默重置为空，用户在设置页重新填写一次 key 即可
+      // 旧版 safeStorage 密文：先留备份；Windows 的 DPAPI 仍可解，createSecretStore 会再试一次迁移
       setAsideLegacy(s.file);
+      s.legacy = cipher;
       s.values = {};
       return;
     }
     failLoad(s, `密钥文件解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}`);
     return;
   }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(plain);
-  } catch {
-    failLoad(s, "密钥文件内容不是合法 JSON（原文件已保留）");
-    return;
+    s.values = parseSecretPlain(plain);
+  } catch (err) {
+    failLoad(s, err instanceof Error ? err.message : String(err));
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    failLoad(s, "密钥文件内容不是对象（原文件已保留）");
-    return;
-  }
-  const obj = parsed as Record<string, unknown>;
-  const version = obj.version;
-  if (version !== 1 && version !== 2) {
-    failLoad(s, `密钥文件版本不支持（原文件已保留）：${JSON.stringify(version)}`);
-    return;
-  }
-  // v1 只有 llm/asr；v2 五个字段都接受。两边都只接受非空字符串，坏形状整份视为没有已存 key。
-  const ids = version === 1 ? (["llm", "asr"] as const) : SECRET_IDS;
-  const next: Partial<Record<SecretId, string>> = {};
-  for (const id of ids) {
-    const value = obj[id];
-    if (value === undefined) continue;
-    if (typeof value !== "string" || value === "") {
-      failLoad(s, `密钥文件字段 ${id} 不是非空字符串（原文件已保留）`);
-      return;
-    }
-    next[id] = value;
-  }
-  s.values = next;
 }
 
 function persist(s: StoreImpl): void {
@@ -170,9 +178,31 @@ function persist(s: StoreImpl): void {
   }
 }
 
-export function createSecretStore(input: { file: string; codec: SecretCodec }): SecretStore {
-  const store: StoreImpl = { file: input.file, codec: input.codec, values: {}, loadError: null };
+export function createSecretStore(input: {
+  file: string;
+  codec: SecretCodec;
+  /**
+   * r45c：旧版 safeStorage 密文的一次性迁移钩子。macOS 上 safeStorage 绑 cdhash 并会弹钥匙串授权，
+   * 生产只在 Windows（DPAPI，换签名仍可解）提供；失败保持“备份 + 重置”的旧行为。
+   */
+  legacyDecrypt?: (cipher: Buffer) => string;
+}): SecretStore {
+  const store: StoreImpl = { file: input.file, codec: input.codec, values: {}, loadError: null, legacy: null };
   readStored(store);
+  if (store.legacy !== null && input.legacyDecrypt !== undefined) {
+    try {
+      const migrated = parseSecretPlain(input.legacyDecrypt(store.legacy));
+      store.values = migrated;
+      persist(store);
+      store.legacy = null;
+      logger().info("app", "旧版系统加密密钥已迁移到本地密钥文件", { keys: Object.keys(migrated) });
+    } catch (err) {
+      // 旧密文解不开：备份文件已在 .legacy-*，用户在设置页重新填写一次即可；日志里留下原因
+      logger().warn("app", "旧版系统加密密钥无法迁移，已保留备份并重置", {
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   return {
     available() {
       return store.codec.available();

@@ -104,8 +104,11 @@ describe("seedUserData", () => {
     const secrets = JSON.parse(readFileSync(out.secretsPath, "utf8"));
     expect(secrets.version).toBe(2);
     expect(secrets.llm).toBe(GOOD.apiKey);
-    expect(statSync(out.settingsPath).mode & 0o777).toBe(0o600);
-    expect(statSync(out.secretsPath).mode & 0o777).toBe(0o600);
+    // Windows 不实现 POSIX 位；权限检查在 mac/linux 上断言，Windows 用 ACL（verify.ts 里校验）
+    if (process.platform !== "win32") {
+      expect(statSync(out.settingsPath).mode & 0o777).toBe(0o600);
+      expect(statSync(out.secretsPath).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("保留既有其他字段与密钥位，只覆盖 llm", () => {
@@ -147,7 +150,7 @@ describe("权限与私有文件", () => {
     const dir = mkdtemp();
     const path = join(dir, ".config/video-notes-verify/llm.json");
     writePrivateConfig(path, GOOD);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     chmodSync(path, 0o600);
     expect(loadPrivateConfig(path, { repoRoot: REPO, examplePath: EXAMPLE })).toEqual(GOOD);
   });
