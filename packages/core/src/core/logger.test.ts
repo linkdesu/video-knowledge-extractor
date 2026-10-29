@@ -381,4 +381,44 @@ describe("formatLogLine", () => {
     expect(formatLogLine({ date: d, level: "warn", module: "app", message: "有警告", fields: {}, taskId: null })).toBe("[14:03:07] 警告 有警告");
     expect(formatLogLine({ date: d, level: "info", module: "app", message: "普通信息", fields: {}, taskId: null })).toBe("[14:03:07] 普通信息");
   });
+
+  test("r47：字段一并渲染，ffmpeg 摘要的输入/输出/模式/编码器都能在浮层看到", () => {
+    const d = new Date(2026, 9, 24, 14, 3, 7);
+    const line = formatLogLine({
+      date: d,
+      level: "info",
+      module: "ffmpeg",
+      message: "命令摘要",
+      taskId: "t1",
+      fields: {
+        input: "~/Documents/a.mkv",
+        output: "~/out/media.mp4",
+        mode: "transcode",
+        videoCodec: "libx264",
+        audioCodec: "aac",
+        label: "格式转换（转码）",
+        skip: undefined,
+      },
+    });
+    expect(line).toBe(
+      '[14:03:07] 命令摘要 input="~/Documents/a.mkv" output="~/out/media.mp4" mode="transcode" videoCodec="libx264" audioCodec="aac" label="格式转换（转码）"',
+    );
+  });
+
+  test("r47：档位字段（数字/布尔/数组）都渲染，超长值截断", () => {
+    const d = new Date(2026, 9, 24, 14, 3, 7);
+    const line = formatLogLine({
+      date: d,
+      level: "info",
+      module: "app",
+      message: "任务完成",
+      taskId: null,
+      fields: { durationMs: 12, cacheHit: true, cmd: ["ffmpeg", "x".repeat(400)] },
+    });
+    expect(line).toContain("durationMs=12");
+    expect(line).toContain("cacheHit=true");
+    expect(line).toContain("cmd=[");
+    expect(line.length).toBeLessThanOrEqual(701);
+    expect(line.endsWith("…")).toBe(true);
+  });
 });

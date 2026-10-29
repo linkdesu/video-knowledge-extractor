@@ -52,12 +52,27 @@ export type LogEntry = {
   taskId: string | null;
 };
 
-// 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记
+/** 浮层单行里一个字段值的上限：argv 这类长数组截断，保证一行仍可读。 */
+const BANNER_FIELD_CHARS = 160;
+/** 浮层单行总长上限（含时间、级别标记与消息）。 */
+const BANNER_LINE_CHARS = 700;
+
+// 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记。
+// r47：字段（input/output/mode/编码器等）一并渲染——浮层只拿到这一行，丢掉字段就等于没有信息。
 export function formatLogLine(entry: LogEntry): string {
   const d = entry.date;
   const ts = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
   const mark = entry.level === "error" ? "错误 " : entry.level === "warn" ? "警告 " : "";
-  return `[${ts}] ${mark}${entry.message}`;
+  let line = `[${ts}] ${mark}${entry.message}`;
+  for (const [key, value] of Object.entries(entry.fields ?? {})) {
+    if (value === undefined) continue;
+    const rendered = fmtValue(value);
+    if (rendered === null) continue;
+    const shown = rendered.length > BANNER_FIELD_CHARS ? `${rendered.slice(0, BANNER_FIELD_CHARS)}…` : rendered;
+    line += ` ${key}=${shown}`;
+    if (line.length > BANNER_LINE_CHARS) return `${line.slice(0, BANNER_LINE_CHARS)}…`;
+  }
+  return line;
 }
 
 // 未 configure 前丢弃所有日志；processTask 仅由 runWithTask 临时设置
