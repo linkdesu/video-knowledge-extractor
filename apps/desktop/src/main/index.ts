@@ -247,6 +247,15 @@ function configureAppLogging(): void {
   logger().info("app", "日志初始化", { level: "info", dir: logDirFor(settings.notesRoot), version: app.getVersion(), commit: __APP_COMMIT__, notesRoot: settings.notesRoot, modelDir: settings.modelDir, cacheRoot: settings.cacheRoot });
 }
 configureAppLogging();
+
+// r49 诊断（临时）：启动时间线。t = 距进程启动毫秒数（用 uptime 回推基准，模块加载点即基准）。
+const STARTUP_T0 = Date.now() - Math.round(process.uptime() * 1000);
+/** r49 诊断：启动阶段统一走 module=startup，字段 t 为距进程启动毫秒。 */
+function startup(message: string, fields?: Record<string, unknown>): void {
+  logger().info("startup", message, { t: Date.now() - STARTUP_T0, ...fields });
+}
+startup("模块加载完成", { packaged: app.isPackaged, userData: app.getPath("userData"), pid: process.pid, argv: process.argv.slice(1) });
+
 const locked = resolved.locked;
 let settingsFileError: string | null = settingsRead.error;
 // 存储布局迁移（r28）：旧模型目录 rename 到统一根；失败继续用旧目录，只 warn 一次不弹 UI。
@@ -1616,6 +1625,7 @@ app.on("window-all-closed", () => {
 });
 
 void app.whenReady().then(async () => {
+  startup("whenReady 进入");
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 本地模型检测（r37）
   // r45c：Windows 上旧版 safeStorage 密文是 DPAPI（随用户、不随签名），升级后仍能解；
   // macOS 的钥匙串绑定 cdhash，重装后只会弹授权框，保持 r44 的“备份 + 重置”。
@@ -1628,6 +1638,7 @@ void app.whenReady().then(async () => {
     codec: electronCodec,
     ...(legacyDecrypt !== undefined ? { legacyDecrypt } : {}),
   });
+  startup("secretStore 创建完成", { legacyDecrypt: legacyDecrypt !== undefined });
   registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
@@ -1635,15 +1646,23 @@ void app.whenReady().then(async () => {
     codec: electronCodec,
     secretStore,
   });
+  startup("replayCredentialTransaction 完成", { error: credentialTxError });
   if (credentialTxError !== null) console.warn(sanitizeError(new Error(credentialTxError)));
+  const recomputeStart = Date.now();
   recomputeRuntimes();
+  startup("recomputeRuntimes 完成", { ms: Date.now() - recomputeStart });
   // 启动检测（r37）：跑一次 checkModels，把就绪标志与缺失相对路径进日志，供排查
+  const checkStart = Date.now();
+  startup("checkModels 开始", { modelDir: modelDirOfCurrentSettings() });
   const startupCheck = checkModels(modelDirOfCurrentSettings());
+  startup("checkModels 完成", { ms: Date.now() - checkStart, ready: startupCheck.ready, missingCount: startupCheck.models.flatMap((m) => m.missing).length });
   logger().info("app", "本地模型检测", { ready: startupCheck.ready, missing: startupCheck.models.flatMap((m) => m.missing) });
 
   // 启动日志（r34）：版本/commit/打包标志/userData + 完整环境快照，先于窗口显示
   let gpuModel: string | null = null;
   // getGPUInfo 返回 unknown：逐层窄化后取型号；任何失败都是 null
+  const gpuStart = Date.now();
+  startup("getGPUInfo 开始");
   try {
     const gpu = await app.getGPUInfo("basic");
     if (typeof gpu === "object" && gpu !== null && "gpuDevice" in gpu) {
@@ -1657,6 +1676,7 @@ void app.whenReady().then(async () => {
   } catch {
     gpuModel = null;
   }
+  startup("getGPUInfo 完成", { ms: Date.now() - gpuStart, model: gpuModel });
   logger().info("app", "app 启动", {
     version: app.getVersion(),
     commit: __APP_COMMIT__,
@@ -1680,6 +1700,7 @@ void app.whenReady().then(async () => {
       ...(labRoot === undefined ? {} : { labRoot: () => labRoot }),
     }),
   );
+  startup("protocol.handle 注册完成", { scheme: MEDIA_SCHEME });
   // file:// 下 Chromium 拒绝执行 ES module；生产环境走自定义 standard scheme
   protocol.handle(APP_SCHEME, (request) => {
     const pathname = new URL(request.url).pathname;
@@ -1690,6 +1711,7 @@ void app.whenReady().then(async () => {
     }
     return net.fetch(pathToFileURL(target).toString());
   });
+  startup("protocol.handle 注册完成", { scheme: APP_SCHEME });
 
   ipcMain.handle(
     IPC.listLibrary,
@@ -1847,7 +1869,15 @@ void app.whenReady().then(async () => {
     }),
   );
 
+  // r49：`LAB_IPC.available` 必须无条件注册。preload 在页面加载前用 sendSync 询问 Lab 是否可用；
+  // 打包版没有监听者时 sendSync 不抛错而是阻塞 renderer 主线程约 30 s（首启白屏）。
+  // 打包版 labRoot 恒为 undefined，回答 false；dev 回答 true。dev-lab 不再重复注册。
+  ipcMain.on(LAB_IPC.available, (event) => {
+    event.returnValue = labRoot !== undefined;
+  });
+
   // r48：Lab 的 IPC 只在开发模式注册；打包版连通道都不存在。
+  startup("ipc 注册完成", { labEnabled: labRoot !== undefined });
   if (labRoot !== undefined) {
     const lab = createLabRuntime({
       root: labRoot,
@@ -1861,6 +1891,7 @@ void app.whenReady().then(async () => {
     logger().info("app", "Diarization Lab 已启用", { root: labRoot });
   }
 
+  startup("BrowserWindow 创建");
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -1871,7 +1902,24 @@ void app.whenReady().then(async () => {
       sandbox: true,
     },
   });
+  startup("BrowserWindow 已创建", { id: win.id, visible: win.isVisible() });
+  // r49：只留失败/卡死类事件，正常加载路径不刷日志。
+  const wc = win.webContents;
+  wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) =>
+    startup("webContents did-fail-load", { errorCode, errorDescription, url: validatedURL, isMainFrame }),
+  );
+  wc.on("render-process-gone", (_event, details) => startup("webContents render-process-gone", { reason: details.reason, exitCode: details.exitCode }));
+  wc.on("unresponsive", () => startup("webContents unresponsive", { url: wc.getURL() }));
+  wc.on("responsive", () => startup("webContents responsive", { url: wc.getURL() }));
   const devUrl = process.env.ELECTRON_RENDERER_URL;
-  if (devUrl) await win.loadURL(devUrl);
-  else await win.loadURL(`${APP_SCHEME}://bundle/index.html`);
+  const loadUrl = devUrl ?? `${APP_SCHEME}://bundle/index.html`;
+  const loadStart = Date.now();
+  startup("loadURL 调用", { url: loadUrl, dev: devUrl !== undefined });
+  try {
+    await win.loadURL(loadUrl);
+    startup("loadURL resolve", { ms: Date.now() - loadStart, url: win.webContents.getURL() });
+  } catch (err) {
+    startup("loadURL reject", { ms: Date.now() - loadStart, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) });
+    throw err;
+  }
 });

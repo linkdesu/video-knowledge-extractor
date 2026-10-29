@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
 import { defaultModelDir } from "./lib/model-dir";
@@ -84,8 +85,6 @@ type RunState = {
   /** r45c: the run's userData was seeded from the private LLM config before launch. */
   configSeeded?: boolean;
 };
-
-type Target = { type: string; url: string; title: string; webSocketDebuggerUrl: string };
 
 const HELP = `usage: verify.ts <command>
 
@@ -269,65 +268,6 @@ function processName(pid: number): string {
   return r.exitCode === 0 ? r.stdout.toString().trim() : "";
 }
 
-async function listTargets(port: number): Promise<Target[]> {
-  const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(1500) });
-  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
-  return (await res.json()) as Target[];
-}
-
-class Cdp {
-  private seq = 0;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-  private constructor(private readonly ws: WebSocket) {
-    ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data)) as { id?: number; result?: unknown; error?: { message: string } };
-      if (msg.id === undefined) return;
-      const entry = this.pending.get(msg.id);
-      if (entry === undefined) return;
-      this.pending.delete(msg.id);
-      if (msg.error !== undefined) entry.reject(new Error(msg.error.message));
-      else entry.resolve(msg.result);
-    });
-  }
-
-  static async open(port: number): Promise<Cdp> {
-    const targets = await listTargets(port);
-    const page =
-      targets.find((t) => t.type === "page" && t.url.startsWith("vnote-app://")) ??
-      targets.find((t) => t.type === "page");
-    if (page === undefined) throw new Error("no page target on CDP port");
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
-    const opened = Promise.withResolvers<void>();
-    ws.addEventListener("open", () => opened.resolve(), { once: true });
-    ws.addEventListener("error", () => opened.reject(new Error("CDP websocket failed")), { once: true });
-    await opened.promise;
-    return new Cdp(ws);
-  }
-
-  send<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    const id = ++this.seq;
-    const d = Promise.withResolvers<T>();
-    this.pending.set(id, { resolve: (v) => d.resolve(v as T), reject: d.reject });
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return d.promise;
-  }
-
-  async eval<T = unknown>(expression: string): Promise<T> {
-    const res = await this.send<{ result: { value?: unknown }; exceptionDetails?: { exception?: { description?: string }; text?: string } }>(
-      "Runtime.evaluate",
-      { expression, awaitPromise: true, returnByValue: true },
-    );
-    if (res.exceptionDetails !== undefined) {
-      throw new Error(res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "evaluate failed");
-    }
-    return res.result.value as T;
-  }
-
-  close(): void {
-    this.ws.close();
-  }
-}
 
 /** launchd hands GUI apps this PATH; a packaged run must not borrow the shell's. */
 const LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -434,38 +374,6 @@ async function drag(cdp: Cdp, selector: string, index: number, dx: number, dy: n
   console.log(`dragged ${selector}[${index}] (${x}, ${y}) -> (${end.x}, ${end.y}) in ${steps} steps`);
 }
 
-async function snapshot(cdp: Cdp, file: string): Promise<number> {
-  await cdp.send("Accessibility.enable");
-  const { nodes } = await cdp.send<{ nodes: Array<{ nodeId: string; parentId?: string; ignored?: boolean; role?: { value?: string }; name?: { value?: string }; value?: { value?: string } }> }>(
-    "Accessibility.getFullAXTree",
-  );
-  const byParent = new Map<string, typeof nodes>();
-  for (const node of nodes) {
-    const key = node.parentId ?? "root";
-    const list = byParent.get(key) ?? [];
-    list.push(node);
-    byParent.set(key, list);
-  }
-  const lines: string[] = [];
-  const walk = (parentId: string, depth: number) => {
-    for (const node of byParent.get(parentId) ?? []) {
-      if (node.ignored !== true) {
-        const role = node.role?.value ?? "?";
-        const name = node.name?.value ?? "";
-        const value = node.value?.value;
-        const text = name === "" ? role : `${role} ${JSON.stringify(name)}`;
-        lines.push(`${"  ".repeat(depth)}${text}${value === undefined || value === "" ? "" : ` value=${JSON.stringify(value)}`}`);
-        walk(node.nodeId, depth + 1);
-      } else {
-        walk(node.nodeId, depth);
-      }
-    }
-  };
-  const root = nodes.find((n) => n.parentId === undefined);
-  if (root !== undefined) walk(root.nodeId, 0);
-  writeFileSync(file, `${lines.join("\n")}\n`);
-  return lines.length;
-}
 
 function newestSourceMtime(): number {
   let newest = 0;
@@ -1472,7 +1380,7 @@ async function drive(args: string[]): Promise<void> {
       case "snapshot": {
         const name = args[0] ?? `snapshot-${stamp()}`;
         const file = join(win ? winLocal(state) : state.runDir, `${name}.aria.txt`);
-        const lines = await snapshot(cdp, file);
+        const lines = await writeAxTree(cdp, file);
         console.log(`accessibility snapshot: ${file} (${lines} lines)`);
         break;
       }
