@@ -207,9 +207,8 @@ export function createLabRuntime(options: LabRuntimeOptions) {
   };
 
   const register = (): void => {
-    ipcMain.on(LAB_IPC.available, (event) => {
-      event.returnValue = true;
-    });
+    // r49：`LAB_IPC.available` 由 main/index.ts 无条件注册（回答 labRoot !== undefined），
+    // 这里不重复注册，否则同通道双监听。
     ipcMain.handle(LAB_IPC.list, () => listSamples(root));
     ipcMain.handle(LAB_IPC.load, (_e: IpcMainInvokeEvent, sampleId: string) => {
       if (!isLabSampleId(sampleId)) throw new Error("非法的样本 id");

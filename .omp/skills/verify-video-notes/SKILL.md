@@ -116,6 +116,21 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r26-install/V
 The packaged app never reads `.env` (r30): its LLM configuration comes from 设置 only — base url and model into `settings.json`, the key into the local 0600 key file (`secrets.bin`), one atomic save. A dev (unpacked) app loads `.env` only as a seed for fields without a saved value; the key hint then reads `key 由 dev 模式的 .env 种子提供；在这里输入并保存会覆盖已存 key`. On a machine without any saved value, 设置 is the only credential path, and it is the path a real user takes.
 A packaged run must complete at least one write-operation closed loop (features/settings.md 「LLM 保存闭环」), one restart, and a `doctor`; launch plus screenshots is not acceptance.
 
+### Packaged first launch (r49)
+
+A packaged run proves the app *works*; it does not prove the app *starts*. r48 shipped an installer that white-screened on first launch (`bun run dev` unaffected) while every `up --app` run passed: the preload's `ipcRenderer.sendSync(LAB_IPC.available)` had no `ipcMain.on` listener in a packaged build, and a listener-less `sendSync` blocks the renderer main thread for ~30 s instead of throwing. The dedicated gate is `packaged-launch.ts`:
+
+```bash
+bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts --runs 10 \
+  --app "apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app" --run r49-fixed-coldstart
+bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts --target win-gamepc \
+  --app "D:\code\video-notes\app\Video Notes.exe" --run r49-win-coldstart
+```
+
+It launches the bundle N times, each with a fresh `VNOTE_HOME`/`VNOTE_USER_DATA` under `tmp/verify-state/<run>/launch-<i>/` (never inside the evidence tree), and requires every launch to reach `readyState === "complete"`, a non-empty `#root`, `[data-testid=nav-library]`, and `settings().appVersion` equal to `apps/desktop/package.json#version`. Per-launch `launch-<i>.png` / `.aria.txt` / `.json` plus `summary.json` land in `tmp/verify/<run>/`; exit code 1 if any launch is blank. Run it after `bun run package:mac` and again after `bun run install:local`. Recipe and gotchas: [features/packaged-launch.md](./features/packaged-launch.md).
+
+The CDP client (`listTargets`, `Cdp`, `writeAxTree`) lives in `scripts/lib/cdp.ts` and is shared by `verify.ts` and `packaged-launch.ts`.
+
 Teardown (always, including after a failed journey):
 
 ```bash

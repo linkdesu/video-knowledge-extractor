@@ -23,8 +23,9 @@ import { IPC } from "../shared/ipc";
 import { LAB_IPC, type LabApi, type LabProgress } from "../shared/lab";
 
 /**
- * r48：Lab 只在开发模式可用。主进程未注册 `dev:lab:available` 时 sendSync 抛错，
- * 打包版因此既不暴露 `vnote.lab`，也不持有任何 Lab 通道。
+ * r48：Lab 只在开发模式可用。`LAB_IPC.available` 由主进程无条件注册（打包版恒答 false），
+ * 所以这里 sendSync 一定有应答、不会阻塞 renderer；回答 false 时既不暴露 `vnote.lab`，
+ * 也不持有任何 Lab 通道。
  */
 function labApi(): LabApi | undefined {
   try {

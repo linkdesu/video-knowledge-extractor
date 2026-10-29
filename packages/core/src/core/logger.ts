@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
-export type LogModule = "import" | "ffmpeg" | "asr" | "diarization" | "llm" | "fs" | "app" | "env" | "ipc";
+export type LogModule = "import" | "ffmpeg" | "asr" | "diarization" | "llm" | "fs" | "app" | "env" | "ipc" | "startup";
 export type LogFields = Record<string, unknown>;
 
 export type Logger = {
