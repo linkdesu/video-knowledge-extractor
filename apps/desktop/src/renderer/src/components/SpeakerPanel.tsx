@@ -9,12 +9,16 @@ import { errMessage } from "@/lib/format";
 type SpeakerPanelProps = {
   /** 说话人列表；只渲染顶层说话人（`mergedInto` 为空），id 用于 rename/merge 调用，界面只显示姓名。 */
   speakers: SpeakerInfo[];
+  /** 已标记为主播的顶层说话人 id。 */
+  hosts: string[];
   /** 改名落盘；返回 false 表示失败，输入框回滚。 */
   onRename: (speakerId: string, name: string) => Promise<boolean>;
   /** 合并选中的顶层说话人（第一个为目标）；返回 false 表示失败。 */
   onMerge: (speakerIds: string[], targetName: string) => Promise<boolean>;
   /** 撤销一次合并；返回 false 表示失败。 */
   onUnmerge: (speakerId: string) => Promise<boolean>;
+  /** 保存完整主播 id 列表；返回 false 表示失败。 */
+  onSetHosts: (speakerIds: string[]) => Promise<boolean>;
 };
 
 function Row({
@@ -24,6 +28,8 @@ function Row({
   onChecked,
   hasMembers,
   onUnmerge,
+  isHost,
+  onToggleHost,
 }: {
   speaker: SpeakerInfo;
   onRename: SpeakerPanelProps["onRename"];
@@ -31,6 +37,8 @@ function Row({
   onChecked: (v: boolean) => void;
   hasMembers: boolean;
   onUnmerge: SpeakerPanelProps["onUnmerge"];
+  isHost: boolean;
+  onToggleHost: () => void;
 }) {
   const [draft, setDraft] = useState(speaker.name);
   const focused = useRef(false);
@@ -54,6 +62,10 @@ function Row({
     void onUnmerge(speaker.id).then((ok) => {
       if (!ok) showToast("撤销合并失败");
     });
+  };
+
+  const toggleHost = () => {
+    void onToggleHost();
   };
 
   return (
@@ -102,9 +114,26 @@ function Row({
             color: "var(--vn-fg)",
             fontSize: 12,
             width: "100%",
+            minWidth: 0,
             outline: "none",
           }}
         />
+        {isHost ? (
+          <span className="vn-tag accent" data-testid={`speaker-host-tag-${speaker.id}`} style={{ flexShrink: 0 }}>
+            主播
+          </span>
+        ) : null}
+        <button
+          type="button"
+          className="vn-btn sm"
+          data-testid={`speaker-host-toggle-${speaker.id}`}
+          aria-label={`${isHost ? "取消主播" : "设为主播"} ${speaker.name}`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggleHost}
+          style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+        >
+          {isHost ? "取消主播" : "设为主播"}
+        </button>
         {hasMembers ? (
           <button type="button" className="vn-btn" data-testid="speaker-unmerge" onClick={unmerge}>
             撤销合并
@@ -117,7 +146,7 @@ function Row({
 
 // 说话人面板：顶层说话人列表（每行一个勾选框），≥2 个选中时启用「合并说话人」；
 // 合并后成员行保留原名/原色，存活者行出现「撤销合并」。
-export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: SpeakerPanelProps) {
+export function SpeakerPanel({ speakers, hosts, onRename, onMerge, onUnmerge, onSetHosts }: SpeakerPanelProps) {
   const [pickedOrder, setPickedOrder] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [targetName, setTargetName] = useState("");
@@ -155,6 +184,15 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
     }
   };
 
+  const toggleHost = (speakerId: string) => {
+    const next = hosts.includes(speakerId)
+      ? hosts.filter((id) => id !== speakerId)
+      : [...hosts, speakerId];
+    void onSetHosts(next).then((ok) => {
+      if (!ok) showToast("设置主播失败");
+    });
+  };
+
   return (
     <div className="vn-card" data-testid="speaker-panel">
       <div
@@ -180,6 +218,8 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
             合并说话人
           </button>
           <span className="vn-hint">改名即时同步字幕</span>
+          <span className="vn-hint">主播即时保存（可多选）</span>
+          {hosts.length === 0 ? <span className="vn-hint">未识别主播</span> : null}
         </div>
       </div>
       {top.map((s) => (
@@ -198,6 +238,8 @@ export function SpeakerPanel({ speakers, onRename, onMerge, onUnmerge }: Speaker
           }
           hasMembers={membersOf(s.id)}
           onUnmerge={onUnmerge}
+          isHost={hosts.includes(s.id)}
+          onToggleHost={() => toggleHost(s.id)}
         />
       ))}
       {confirming ? createPortal(

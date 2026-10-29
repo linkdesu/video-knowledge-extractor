@@ -93,6 +93,20 @@ export function TranscriptPage({ detail, onRefresh, onPage, onRebuildTopics, onR
     [detail.video.id, onRefresh],
   );
 
+  const setHosts = useCallback(
+    async (speakerIds: string[]) => {
+      try {
+        await window.vnote.setHosts(detail.video.id, speakerIds);
+        await onRefresh();
+        return true;
+      } catch (err) {
+        showToast(`设置主播失败：${errMessage(err)}`);
+        return false;
+      }
+    },
+    [detail.video.id, onRefresh],
+  );
+
   const rows = useMemo(
     () =>
       utterances.map((u) => {
@@ -173,7 +187,14 @@ export function TranscriptPage({ detail, onRefresh, onPage, onRebuildTopics, onR
         }
         aside={
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <SpeakerPanel speakers={speakers} onRename={rename} onMerge={merge} onUnmerge={unmerge} />
+            <SpeakerPanel
+              speakers={speakers}
+              hosts={detail.hosts}
+              onRename={rename}
+              onMerge={merge}
+              onUnmerge={unmerge}
+              onSetHosts={setHosts}
+            />
             <VideoGlossaryPanel videoId={detail.video.id} entries={detail.corrections} onSaved={onRefresh} />
             <button
               type="button"

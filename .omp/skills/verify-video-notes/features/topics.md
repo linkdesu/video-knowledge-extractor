@@ -209,6 +209,23 @@ $V shot topics-generate-count
 
 Unchecking that topic returns the button to the disabled 所选主题笔记已生成 state. With nothing selected the label is 生成笔记（0 个新主题） and a click only shows the toast 先勾选要生成的主题.
 
+### Recipe: 字幕区加高 + 1440×900 首屏字幕条数（r46/r47）
+
+Each per-segment `subtitle-list` sizes by viewport: the first segment is `clamp(320px, 42vh, 520px)` and later segments `clamp(240px, 30vh, 400px)`. Since r47 the stack above the list is compressed so the extra height lands **inside** the first screen: `.vn-content` padding-top 14px, step-bar gap 12px, subtitle margin 12px, subtitle-card margin 10px / header padding 6px 14px, and a pure-audio player default of 180px (portrait/landscape and the 240px drag clamp unchanged). At 1440×900 the list starts at y≈481 for a pure-audio source and its bottom is ≈846, inside the 868px viewport.
+
+```bash
+# 1440×900 window, content and list scrolled to the top
+$V eval "window.resizeTo(1440,900); new Promise(r => setTimeout(() => r({ w: innerWidth, h: innerHeight }), 400))"
+$V eval "(() => { const c=document.querySelector('.vn-content'); c.scrollTop=0; const l=document.querySelector('[data-testid=subtitle-list]'); l.scrollTop=0; return new Promise(r=>setTimeout(()=>{ const lr=l.getBoundingClientRect(); const rows=[...l.querySelectorAll('[role=button]')]; const visible=rows.filter(x=>{const b=x.getBoundingClientRect(); return b.top>=lr.top-0.5 && b.bottom<=Math.min(lr.bottom, innerHeight)+0.5;}).length; r({ innerH: innerHeight, contentScroll: c.scrollTop, listTop: Math.round(lr.top), listH: Math.round(lr.height), listBottom: Math.round(lr.bottom), rows: rows.length, fullyVisible: visible, shell: Math.round(document.querySelector('.vn-shell').getBoundingClientRect().height), aside: Math.round(document.querySelector('.vn-aside').getBoundingClientRect().height), hScroll: document.documentElement.scrollWidth-document.documentElement.clientWidth }); }, 300)); })()"
+# expected at 1440×900 with the r46-luffy-interview-6min fixture and its 34-row topic:
+#   innerH 868, listTop ≈ 481, listBottom ≈ 846 (<= innerH), fullyVisible >= 8, shell === aside === 868, hScroll 0
+# baseline 0.1.4 showed 6 fully visible rows on the same data/window -> >= +30%
+$V shot topics-a4-1440x900
+bun .omp/skills/verify-video-notes/scripts/verify.ts doctor   # layout invariant is a hard gate
+```
+
+Literal assertions: at a 1440×900 window with `scrollTop === 0`, the number of subtitle rows whose full rect lies inside both the list and the viewport is **≥ 8** (0.1.4: 6, so ≥ +30%), `listBottom <= innerHeight`, `.vn-shell` and `.vn-aside` still equal `innerHeight`, there is no horizontal scrollbar, and `doctor` passes. The list itself keeps `overflow-y: auto` and the delete buttons stay inside the card.
+
 ## Gotchas
 
 - The step tabs have no test ids. Their accessible names are `1 字幕`, `2 主题`, `3 笔记`; pass `主题` to `click-text`, which strips the leading number. Do not click by position — the tab order is a UI detail.

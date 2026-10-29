@@ -11,6 +11,7 @@ import { setTopicProgress, settleRunWhileLocked } from "../core/edits";
 import { renderIndexMarkdown } from "../core/render";
 import type { CorrectionList, Note, Topic, TopicId, VideoId } from "../core/types";
 import type { LlmClient, LlmEndpoint, Progress, TrajectoryTrigger } from "../core/steps";
+import type { PromptOverrides } from "../core/prompts";
 import { createLlmClient } from "../llm/openai";
 import { segmentTopics } from "./segment-topics";
 import { generateNotes } from "./generate-notes";
@@ -90,6 +91,7 @@ export function notesTrigger(data: Pick<VideoData, "speakerChangedAt">, force: b
  * 对一批主题生成笔记:逐个记 `generating`+`startedAt`、跑 `generateNotes`、回写
  * `keyPoints`/`clips`(带 `segmentIndexes`)/`elapsedSeconds`,`done` 或 `failed`+`error` 后抛出。
  * 调用方必须已持有运行锁(进度写入走 `setTopicProgress`,非结构编辑对本进程放行)。
+ * 主播取文档的 `hosts`,`prompts` 由调用方传入(r46):两者随每个主题的要点提示词一起生效。
  */
 export async function generateAll(
   data: VideoData,
@@ -101,6 +103,7 @@ export async function generateAll(
   client: LlmClient,
   trigger: TrajectoryTrigger,
   onProgress?: (p: Progress) => void,
+  prompts?: PromptOverrides,
 ): Promise<GenerateAllResult> {
   const outputDir = data.video.outputDir;
   // 切片读规范化产物（r45b）；旧数据没有 mediaPath 时回退原文件
@@ -126,6 +129,9 @@ export async function generateAll(
         cacheDir,
         client,
         trigger,
+        // 主播与提示词覆盖取文档与本次运行输入（r46）：一次运行内每个主题都一样
+        hosts: data.hosts ?? [],
+        prompts,
         batch: { index, total: topicIds.length },
         onProgress,
       });
@@ -176,6 +182,8 @@ export async function runNotes(input: {
   runToken?: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
+  /** 用户对提示词的覆盖（r46）：整批主题共用。 */
+  prompts?: PromptOverrides;
   /** true 时连 `done` 主题也重新生成（默认跳过 `done`）。 */
   force?: boolean;
 }): Promise<{ noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
@@ -209,7 +217,7 @@ export async function runNotes(input: {
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return topic.dirName;
       };
-      const r = await generateAll(projected, ids, dirNameOf, correctionsFor(input.outputDir, "notes"), input.endpoint, cacheDir, client, notesTrigger(projected, input.force), input.onProgress);
+      const r = await generateAll(projected, ids, dirNameOf, correctionsFor(input.outputDir, "notes"), input.endpoint, cacheDir, client, notesTrigger(projected, input.force), input.onProgress, input.prompts);
       timings.notes = t();
       timings.total = t();
       // 重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）
@@ -240,6 +248,8 @@ export async function runTopics(input: {
   runToken?: string;
   client?: LlmClient;
   onProgress?: (p: Progress) => void;
+  /** 用户对提示词的覆盖（r46）：划主题与要点两步共用。 */
+  prompts?: PromptOverrides;
 }): Promise<{ topicCount: number; noteCount: number; cacheHits: string[]; timings: Record<string, number> }> {
   const taskId = input.runToken ?? randomUUID();
   return runWithTask(taskId, async () => {
@@ -266,6 +276,8 @@ export async function runTopics(input: {
         cacheDir,
         client,
         corrections,
+        hosts: data.hosts,
+        prompts: input.prompts,
         ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
       });
       timings["segment-topics"] = t();
@@ -301,7 +313,7 @@ export async function runTopics(input: {
         if (topic === undefined) throw new Error(`主题 ${id} 不存在`);
         return topic.dirName;
       };
-      const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, notesTrigger(data, undefined), input.onProgress);
+      const r = await generateAll(data, records.map((x) => x.id) as TopicId[], dirNameOf, corrections, input.endpoint, cacheDir, client, notesTrigger(data, undefined), input.onProgress, input.prompts);
       timings.notes = t();
       timings.total = t();
       // 全部主题重新生成成功后清「说话人已变更」标记（持锁后重读原始文档，保住 runToken）

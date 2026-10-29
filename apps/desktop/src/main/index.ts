@@ -61,11 +61,16 @@ import {
   saveGlobalCorrections,
   saveVideoCorrections,
   setTopicSelected,
+  setHosts,
   videoIdFor,
   listLibrary,
   readLibraryVideo,
   mediaAbsolutePath,
   readGlobalCorrections,
+  readPromptOverrides,
+  promptStatuses,
+  savePromptOverride,
+  resetPromptOverride,
   logDirFor,
   migrateLegacyLogDir,
   saveSettings,
@@ -107,6 +112,7 @@ import {
   type ModelLogEntry,
   type ModelsStatus,
   type NotesStartOptions,
+  type PromptStatus,
   type SettingsPatch,
   type SettingsStatus,
   type TestAsrResult,
@@ -654,6 +660,7 @@ function launchWorker(jobId: string, job: JobRequest): JobHandle {
     // 启动 handler 已保证配置齐全；空值兜底让 worker 自己报脱敏错误
     endpoint: job.endpoint ?? { baseUrl: "", apiKey: "", model: "" },
     asr: job.asr,
+    prompts: job.prompts,
     logDir: logDirFor(settings.notesRoot),
   });
   return state.handle;
@@ -834,6 +841,8 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
       updatedAt: e.updatedAt ?? mtimeIso,
     })),
     speakersChanged: raw.speakerChangedAt !== null,
+    // 主播（r46）：文档里是唯一事实源；旧文档没有该字段，parse 时已归一为空数组
+    hosts: [...raw.hosts],
   };
 }
 
@@ -922,6 +931,8 @@ async function buildJobRequest(kind: JobKind, videoId: string, sourcePath: strin
     endpoint: await requireLlmEndpoint(),
     asr: asrConfig,
     config: { notesRoot: settings.notesRoot, cacheRoot: settings.cacheRoot, modelDir: settings.modelDir },
+    // 提示词覆盖在入队时冻结：任务中途改提示词不影响正在跑的这一轮
+    prompts: readPromptOverrides(app.getPath("userData")),
     ...(topicIds !== undefined ? { topicIds } : {}),
     ...(force === true ? { force } : {}),
   };
@@ -1052,6 +1063,11 @@ function copyDiagnostics(): { chars: number } {
   const text = buildDiagnostics({ logDir: logDirFor(settings.notesRoot), environment: envLines, taskId, taskLabel: label });
   clipboard.writeText(text);
   return { chars: text.length };
+}
+
+// LLM 提示词（r46）：默认模板来自 core，用户覆盖存 userData/prompts.json；没有覆盖就用默认
+function promptDtoList(): PromptStatus[] {
+  return promptStatuses(readPromptOverrides(app.getPath("userData")));
 }
 
 function ffmpegProbe(): { ok: boolean; version: string | null } {
@@ -1694,6 +1710,16 @@ void app.whenReady().then(async () => {
     }),
   );
   ipcMain.handle(
+    IPC.setHosts,
+    guard(IPC.setHosts, (_e, videoId: string, speakerIds: string[]) => {
+      const entry = resolveVideo(videoId);
+      setHosts(entry.outputDir, speakerIds);
+      // 只记人数：说话人 id 是内部标识，日志里不需要逐条列出
+      logger().info("app", "设置主播", { videoId, hostCount: speakerIds.length });
+      return detailDto(videoId);
+    }),
+  );
+  ipcMain.handle(
     IPC.deleteUtterance,
     guard(IPC.deleteUtterance, (_e, videoId: string, index: number) => {
       const entry = resolveVideo(videoId);
@@ -1796,6 +1822,23 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.reveal, guard(IPC.reveal, (_e, outputDir: string) => reveal(outputDir)));
   ipcMain.handle(IPC.logsOpen, guard(IPC.logsOpen, () => openLogs()));
   ipcMain.handle(IPC.diagnosticsCopy, guard(IPC.diagnosticsCopy, () => copyDiagnostics()));
+  ipcMain.handle(IPC.prompts, guard(IPC.prompts, () => promptDtoList()));
+  ipcMain.handle(
+    IPC.savePrompt,
+    guard(IPC.savePrompt, (_e, id: string, text: string) => {
+      savePromptOverride(app.getPath("userData"), id, text);
+      logger().info("app", "提示词已保存", { id, chars: text.length });
+      return promptDtoList();
+    }),
+  );
+  ipcMain.handle(
+    IPC.resetPrompt,
+    guard(IPC.resetPrompt, (_e, id: string) => {
+      resetPromptOverride(app.getPath("userData"), id);
+      logger().info("app", "提示词已恢复默认", { id });
+      return promptDtoList();
+    }),
+  );
 
   const win = new BrowserWindow({
     width: 1280,

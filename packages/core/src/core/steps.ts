@@ -1,4 +1,5 @@
-import type { Chunk, CorrectionList, Note, Topic, TopicId, Transcript, Video } from "./types";
+import type { Chunk, CorrectionList, Note, SpeakerId, Topic, TopicId, Transcript, Video } from "./types";
+import type { PromptOverrides } from "./prompts";
 
 export type StepName = "normalize" | "transcribe" | "segment-topics" | "generate-notes";
 
@@ -62,8 +63,12 @@ export type SegmentTopicsInput = {
   cacheDir: string;
   /** 合并后的术语表（全局 + 本视频），随提示词注入正确写法；不传视为空表。 */
   corrections?: CorrectionList;
+  /** 主播（r47）：划分/合并时只声明谁是主播，不做加权；缺省视为未识别。 */
+  hosts?: ReadonlyArray<SpeakerId>;
   /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
   client?: LlmClient;
+  /** 用户对提示词的覆盖（r46）：没有覆盖的步骤用代码里的默认模板。 */
+  prompts?: PromptOverrides;
   onProgress?: (p: Progress) => void;
 };
 
@@ -88,6 +93,10 @@ export type GenerateNotesInput = {
   cacheDir: string;
   /** 测试注入的假端点；不传就按 endpoint 建真实客户端。 */
   client?: LlmClient;
+  /** 主播（r46）：说话人 id 列表，可以多个；缺省视为未识别，提示词里不出现主播段。 */
+  hosts?: ReadonlyArray<SpeakerId>;
+  /** 用户对提示词的覆盖（r46）：没有覆盖的步骤用代码里的默认模板。 */
+  prompts?: PromptOverrides;
   onProgress?: (p: Progress) => void;
   /** 单主题内部进度(开始/切完片段),供调用方记回 `video.json` 的 startedAt 等字段。 */
   onTopicProgress?: (p: { topicId: TopicId; percent: number; phase: "start" | "clips-done" }) => void;

@@ -13,11 +13,13 @@ import { emptyVideoData, mediaAbsolutePath, readVideoData, writeVideoData, type 
 import { settleRunWhileLocked } from "../core/edits";
 import { ensureCoverFrame } from "../core/cover";
 import type { LlmClient, LlmEndpoint, LlmUsage, Progress } from "../core/steps";
+import type { PromptOverrides } from "../core/prompts";
 import type { CorrectionList, Note, Topic, Video } from "../core/types";
 import { createLlmClient, emptyUsage } from "../llm/openai";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { logger, runWithTask } from "../core/logger";
 import { correctionsFor } from "./notes-run";
+import { detectHosts } from "./host-detect";
 import { segmentTopics } from "./segment-topics";
 
 export type ExtractInput = {
@@ -37,6 +39,8 @@ export type ExtractInput = {
   asrEngine?: AsrEngine;
   /** 本次运行的 token；缺省 core 生成 randomUUID。 */
   runToken?: string;
+  /** 用户对提示词的覆盖（r46）：没有覆盖的步骤用代码里的默认模板。 */
+  prompts?: PromptOverrides;
   /** 新视频拿得到目录后的接收屏障：async，等 main 的 ACK 才继续。 */
   onPrepared?: (info: { videoId: Video["id"]; outputDir: string; runToken: string }) => Promise<void>;
   onProgress?: (p: Progress) => void;
@@ -193,6 +197,27 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       logger().info("app", "字幕纠错应用", { stage: "extract", utterances: corrected.length, changed: countCorrectionsHits(corrections, run.transcript.utterances) });
       const transcript = { speakers: run.transcript.speakers, utterances: corrected };
 
+      // 主播识别（r46）：只看说话人统计与示例发言，不依赖主题；失败或答非所问只记 warn，不影响导入
+      const hostStarted = performance.now();
+      try {
+        const detected = await detectHosts({
+          transcript,
+          endpoint: input.endpoint,
+          cacheDir,
+          client,
+          ...(input.prompts !== undefined ? { prompts: input.prompts } : {}),
+        });
+        data.hosts = detected.hosts;
+        data.hostSource = detected.hosts.length > 0 ? "auto" : null;
+      } catch (err) {
+        logger().warn("llm", "主播识别失败", { error: err instanceof Error ? err.message : String(err) });
+        data.hosts = [];
+        data.hostSource = null;
+      }
+      writeVideoData(video.outputDir, data);
+      timings["host-detect"] = Math.round((performance.now() - hostStarted) / 10) / 100;
+
+
       const topicsStarted = performance.now();
       const { topics } = await logger().step("llm", "划主题", () =>
         segmentTopics({
@@ -202,6 +227,8 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
           cacheDir,
           client,
           corrections,
+          hosts: data.hosts,
+          ...(input.prompts !== undefined ? { prompts: input.prompts } : {}),
           ...(input.onProgress !== undefined ? { onProgress: input.onProgress } : {}),
         }),
       );

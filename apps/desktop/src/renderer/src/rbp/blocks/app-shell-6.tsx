@@ -51,7 +51,7 @@ export function StepBar({
   return (
     <nav
       aria-label="步骤"
-      style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 22px", flexWrap: "wrap" }}
+      style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 12px", flexWrap: "wrap" }}
     >
       {STEPS.map((s, i) => {
         const state = i === cur ? "cur" : i < cur ? "done" : "todo";
@@ -115,7 +115,7 @@ export function Workspace({
         <div style={{ minWidth: 0 }}>
           <h1 className="vn-h1">{title}</h1>
           {subtitle !== undefined && subtitle !== null ? (
-            <p className="vn-sub" style={{ margin: "0 0 22px" }}>
+            <p className="vn-sub" style={{ margin: "0 0 12px" }}>
               {subtitle}
             </p>
           ) : null}

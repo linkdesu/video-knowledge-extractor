@@ -11,7 +11,7 @@ This directory is the maintained source for proving user-facing behavior of vide
 - The run gets an empty notes root (`VNOTE_HOME`) and an isolated `userData`; the real `~/Documents/video-notes` is never touched.
 - `doctor` passes and reports ffmpeg, models and the LLM endpoint as ready before any extraction journey.
 - Extraction journeys use a real speech video. The local fixture is `tmp/r26-e2e/short-30s.mp4` (30 s, 886×1920, 2 speakers, Chinese speech). `tmp/` is gitignored: a fresh clone does not have it. If it is missing, the journey reports a failure with the missing path — do not substitute a synthetic tone video, because ASR will produce no usable speech and the journal becomes a false pass.
-- The app never downloads models by itself (r28); local models must already exist at `~/.cache/video-notes/models` (or `--model-dir`), and on Windows (r41) at `C:\Users\xieal\Documents\video-notes\models`.
+- The app never downloads models by itself (r28); local models must already exist at `/Users/link/Documents/video-notes/models` — the r47 helper default, resolved as "`~/Documents/video-notes/models` if present, else the legacy `~/.cache/video-notes/models`"; `--model-dir` overrides both. On Windows (r41) they live at `C:\Users\xieal\Documents\video-notes\models`.
 - Never drive an instance that this run did not start. Never start a second instance on the same `VNOTE_USER_DATA`.
 
 ## Driving conventions
@@ -42,6 +42,7 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Library and import](./library.md) — drop a video, watch the job, read the card, rerun, per-video glossary.
 - [Private verify config (r45c)](./config-seed.md) — every run is seeded with the private LLM config (`0600`, outside the repo); `seed-config`, `export-private-config`, `--empty-settings`.
 - [Topics workspace](./topics.md) — inspect topics, select them for notes, merge, delete segments and subtitle lines.
+- [Speakers and hosts (r46)](./speakers-hosts.md) — auto-detected 主播, 设为主播 / 取消主播 (multi-select, immediate save, survives restart), hosts in the key-points prompt.
 - [Notes and clips](./notes.md) — read generated notes, inspect clips, play a clip, reveal the output directory.
 - [Glossary](./glossary.md) — global correction entries, inline edit, immediate save, delete.
 - [Settings](./settings.md) — ASR provider, model bundles, LLM fields, storage paths, cache, about.

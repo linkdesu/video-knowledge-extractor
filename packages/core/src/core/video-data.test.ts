@@ -649,3 +649,71 @@ describe("失败记录（r35）", () => {
     clearVideoFailure(dir);
   });
 });
+
+describe("主播字段（r46）", () => {
+  const SPK2 = { id: "spk-2" as SpeakerId, name: "说话人2", color: "#0f0" };
+
+  test("旧文档没有 hosts / hostSource：读回 [] 与 null，不报错", () => {
+    const dir = mkdtemp();
+    writeFileSync(
+      join(dir, "video.json"),
+      JSON.stringify({
+        version: 1,
+        video: { id: "vid-1", title: "t", sourcePath: "s", durationSeconds: 10, outputDir: dir },
+        transcript: { speakers: [SPK2], utterances: [] },
+        chunks: [],
+        topics: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    const d = readVideoData(dir);
+    expect(d!.hosts).toEqual([]);
+    expect(d!.hostSource).toBeNull();
+  });
+
+  test("hosts / hostSource 写后读回一致（auto 与 manual）", () => {
+    const dir = mkdtemp();
+    for (const source of ["auto", "manual"] as const) {
+      const data = emptyVideoData(makeVideo(dir));
+      data.transcript = { speakers: [SPK2], utterances: [] };
+      data.hosts = [SPK2.id];
+      data.hostSource = source;
+      writeVideoData(dir, data);
+      expect(readVideoData(dir)!.hosts).toEqual([SPK2.id]);
+      expect(readVideoData(dir)!.hostSource).toBe(source);
+    }
+  });
+
+  test("坏形状宽容：非数组读回 []，未知 id 与重复项丢弃，未知来源读回 null", () => {
+    const dir = mkdtemp();
+    const data = emptyVideoData(makeVideo(dir));
+    data.transcript = { speakers: [SPK2], utterances: [] };
+    writeVideoData(dir, data);
+    const base = readFileSync(join(dir, "video.json"), "utf8");
+    const cases: { hosts: unknown; hostSource: unknown; expected: SpeakerId[]; source: "auto" | "manual" | null }[] = [
+      { hosts: "spk-2", hostSource: "auto", expected: [], source: null },
+      { hosts: ["spk-999", "spk-2", 7, "spk-2"], hostSource: "manual", expected: [SPK2.id], source: "manual" },
+      { hosts: [SPK2.id], hostSource: "robot", expected: [SPK2.id], source: null },
+      { hosts: [], hostSource: "auto", expected: [], source: null },
+    ];
+    for (const c of cases) {
+      const doc = JSON.parse(base);
+      doc.hosts = c.hosts;
+      doc.hostSource = c.hostSource;
+      writeFileSync(join(dir, "video.json"), JSON.stringify(doc));
+      expect(readVideoData(dir)!.hosts).toEqual(c.expected);
+      expect(readVideoData(dir)!.hostSource).toBe(c.source);
+    }
+  });
+
+  test("emptyVideoData 与迁移文档默认 [] / null", () => {
+    expect(emptyVideoData(makeVideo(mkdtemp())).hosts).toEqual([]);
+    expect(emptyVideoData(makeVideo(mkdtemp())).hostSource).toBeNull();
+    const dir = mkdtemp();
+    mkdirSync(join(dir, "前段"), { recursive: true });
+    writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
+    const migrated = migrateVideoData(dir, makeVideo(dir));
+    expect(migrated.hosts).toEqual([]);
+    expect(migrated.hostSource).toBeNull();
+  });
+});

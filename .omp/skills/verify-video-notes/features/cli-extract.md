@@ -23,7 +23,7 @@
 Preconditions:
 
 - `bun install` has run at the repo root.
-- `.env` in the repo root (or the shell) provides the LLM endpoint; local models are under `~/.cache/video-notes/models` or `VNOTE_MODEL_DIR`.
+- `.env` in the repo root (or the shell) provides the LLM endpoint; local models are under `~/Documents/video-notes/models` (or the legacy `~/.cache/video-notes/models`, or `VNOTE_MODEL_DIR`).
 - A run directory exists from `verify.ts up` (only to borrow an isolated path and evidence location; the CLI does not need the Electron instance).
 - `tmp/r26-e2e/short-30s.mp4` exists (see the map README).
 

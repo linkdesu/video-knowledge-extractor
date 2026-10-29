@@ -722,12 +722,26 @@ describe("runTopics 术语表接线", () => {
         return JSON.stringify({ keyPoints: ["要点"] });
       },
     };
-    await runTopics({ outputDir: out, endpoint, cacheRoot: join(out, ".cache"), client });
+    await runTopics({
+      outputDir: out,
+      endpoint,
+      cacheRoot: join(out, ".cache"),
+      client,
+      // 覆盖模板同时验 runTopics 把 prompts 传给划主题与要点两步（r46）
+      prompts: {
+        "segment-chunk": 'CHUNK-MARKER{"topics":[]}{{HOSTS}}{{GLOSSARY}}',
+        "note-key-points": 'NOTE-MARKER{"keyPoints":[string]}{{HOSTS}}{{UTTERANCES}}',
+      },
+    });
 
     // 分块提示词带合并术语表，冲突项用本视频写法
+    expect(systems[0]).toContain("CHUNK-MARKER");
     expect(systems[0]).toContain("- zephyr → Zephyr");
     expect(systems[0]).toContain("- clash → 本视频");
     expect(systems[0]).not.toContain("clash → 全局");
+    // 要点提示词也吃到覆盖；文档没有主播时不渲染主播行
+    expect(systems.some((s) => s.includes("NOTE-MARKER"))).toBe(true);
+    expect(systems.some((s) => s.includes("主播："))).toBe(false);
     // 字幕已替换，分块与合并提示词都用替换后的文本
     expect(users[0]).toContain("Zephyr 本视频");
     expect(users[0]).not.toContain("zephyr clash");
@@ -737,6 +751,48 @@ describe("runTopics 术语表接线", () => {
     expect(log).toContain("video=1");
     expect(log).toContain("merged=2");
   });
+});
+
+
+describe("主播与提示词接线（r46）", () => {
+  test("runNotes 把文档主播与提示词覆盖一起传进要点提示词", async () => {
+    const out = mkdtempSync(join(tmpdir(), "rn-hosts-"));
+    makeVideo(out, (d) => {
+      d.transcript = {
+        speakers: [
+          { id: "s1", name: "主播甲", color: "#000" },
+          { id: "s2", name: "嘉宾乙", color: "#111" },
+        ],
+        utterances: [{ start: 0, end: 30, speakerId: "s1", text: "内容" }],
+      };
+      d.hosts = ["s1"];
+      d.topics = [topicRecord({ id: "topicA", title: "A", segments: [{ start: 0, end: 30 }], dirName: "a", status: "queued" })];
+    });
+
+    const systems: string[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages) => {
+        systems.push(messages.find((m) => m.role === "system")?.content ?? "");
+        return JSON.stringify({ keyPoints: ["要点"] });
+      },
+    };
+    await runNotes({
+      outputDir: out,
+      topicIds: ["topicA"],
+      endpoint,
+      cacheRoot: join(out, ".cache"),
+      client,
+      prompts: { "note-key-points": 'OVERRIDE-MARKER {"keyPoints":[string]}{{HOSTS}}{{UTTERANCES}}' },
+    });
+
+    const system = systems.join("\n");
+    // 覆盖模板生效
+    expect(system).toContain("OVERRIDE-MARKER");
+    // 文档里的主播 id 解析成名字，非主播不出现在主播行
+    expect(system).toContain("主播：主播甲。");
+    expect(system).not.toContain("嘉宾乙");
+  }, 30000);
 });
 
 

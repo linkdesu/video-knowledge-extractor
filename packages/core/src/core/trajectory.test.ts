@@ -13,7 +13,12 @@ function entry(runId: string, n: number): TrajectoryEntry {
     finishedAt: `2026-10-24T00:01:${String(n).padStart(2, "0")}.000Z`,
     durationMs: 60000,
     trigger: n === 1 ? "initial" : "regenerate",
-    request: { baseUrl: "http://127.0.0.1:1", model: "test-model", messages: [{ role: "system", content: `s${n}` }], glossaryCount: 1 },
+    request: {
+      baseUrl: "http://127.0.0.1:1",
+      model: "test-model",
+      prompt: { id: "note-key-points", source: "default", sha256: "0".repeat(64), hosts: [], chars: 42 },
+      glossaryCount: 1,
+    },
     response: { status: "succeeded", rawText: `raw${n}`, parsedSummary: [`要点${n}`], error: null },
     clip: { clipFile: "topic.mp4", segments: [{ start: 0, end: 30 }], status: "ready" },
   };

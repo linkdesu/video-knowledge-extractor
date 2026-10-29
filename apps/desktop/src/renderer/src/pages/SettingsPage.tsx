@@ -9,11 +9,13 @@ import type {
   ModelLogEntry,
   ModelsCheck,
   ModelsStatus,
+  PromptStatus,
   SettingsStatus,
   VolcengineAuthMode,
   VolcengineMode,
 } from "../../../shared/ipc";
 import { ModelPanel } from "../components/ModelPanel";
+import { PromptEditorPanel } from "../components/PromptEditorPanel";
 import { errMessage, fmtBytes } from "../lib/format";
 import {
   draftFrom,
@@ -81,6 +83,8 @@ type KeyFieldId = (typeof KEY_FIELDS)[number];
 export function SettingsPage() {
   const [status, setStatus] = useState<SettingsStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [prompts, setPrompts] = useState<PromptStatus[] | null>(null);
+  const [promptsError, setPromptsError] = useState<string | null>(null);
   const [testingLlm, setTestingLlm] = useState(false);
   const [testingAsr, setTestingAsr] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -174,6 +178,12 @@ export function SettingsPage() {
   }, []);
 
   useEffect(reload, [reload]);
+  useEffect(() => {
+    window.vnote
+      .prompts()
+      .then(setPrompts)
+      .catch((err) => setPromptsError(errMessage(err)));
+  }, []);
 
   const reloadModels = useCallback(() => {
     window.vnote
@@ -844,6 +854,18 @@ export function SettingsPage() {
               {llmCard.saveError}
             </p>
           ) : null}
+        </SettingsPanel>
+
+        <SettingsPanel title="LLM 提示词" testId="settings-prompts">
+          {promptsError !== null ? (
+            <p className="vn-hint" data-testid="settings-prompts-error">
+              加载提示词失败：{promptsError}
+            </p>
+          ) : prompts === null ? (
+            <p className="vn-hint">加载提示词中…</p>
+          ) : (
+            <PromptEditorPanel statuses={prompts} onStatusesChange={setPrompts} />
+          )}
         </SettingsPanel>
 
 

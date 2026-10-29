@@ -1,5 +1,5 @@
 import { configureLogging, formatLogLine, killActiveChildren, logger, runExtract, runNotes, runTopics, runWithTask } from "@video-notes/core";
-import type { AsrConfig, LogEntry, Progress } from "@video-notes/core";
+import type { AsrConfig, LogEntry, Progress, PromptOverrides } from "@video-notes/core";
 
 type StartMessage = {
   type: "start";
@@ -15,6 +15,8 @@ type StartMessage = {
   runToken: string;
   endpoint: { baseUrl: string; apiKey: string; model?: string };
   asr: AsrConfig;
+  /** 入队时冻结的提示词覆盖（r46）；缺省空对象，全部用默认模板 */
+  prompts: PromptOverrides;
   /** main 传入的日志目录；缺省时 worker 不 configureLogging（测试路径保持无日志） */
   logDir?: string;
 };
@@ -132,6 +134,14 @@ export function parseStart(raw: unknown): ParsedStartResult {
   if (!asrResult.ok) return { kind: "error", message: asrResult.error };
   const rawTopicIds = "topicIds" in raw ? raw.topicIds : undefined;
   const topicIds = Array.isArray(rawTopicIds) ? rawTopicIds.filter((v: unknown): v is string => typeof v === "string") : [];
+  // 提示词覆盖只收「步骤 id → 非空字符串」的形状；坏值丢弃，worker 退回默认模板
+  const rawPrompts = "prompts" in raw ? raw.prompts : undefined;
+  const prompts: PromptOverrides = {};
+  if (typeof rawPrompts === "object" && rawPrompts !== null) {
+    for (const [id, text] of Object.entries(rawPrompts)) {
+      if (typeof text === "string" && text.trim() !== "") prompts[id as keyof PromptOverrides] = text;
+    }
+  }
   return {
     kind: "ok",
     start: {
@@ -148,6 +158,7 @@ export function parseStart(raw: unknown): ParsedStartResult {
       ...("force" in raw && typeof raw.force === "boolean" ? { force: raw.force } : {}),
       endpoint: { baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, ...(model === undefined ? {} : { model }) },
       asr: asrResult.config,
+      prompts,
       ...("logDir" in raw && typeof raw.logDir === "string" && raw.logDir !== "" ? { logDir: raw.logDir } : {}),
     },
   };
@@ -262,6 +273,7 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
           cacheRoot: start.cacheRoot,
           asr: start.asr,
           runToken: start.runToken,
+          prompts: start.prompts,
           // 接收屏障：发 prepared 后等 main 的 ACK；main 在取消过滤之前处理
           onPrepared: (info) => {
             parent.postMessage({ type: "prepared", ...info });
@@ -285,6 +297,7 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
           cacheRoot: start.cacheRoot,
           ...(start.force === true ? { force: true } : {}),
           runToken: start.runToken,
+          prompts: start.prompts,
           onProgress: progress,
         });
         result = {
@@ -301,6 +314,7 @@ async function run(start: StartMessage, parent: ParentPort): Promise<void> {
           endpoint: { baseUrl, apiKey, model },
           cacheRoot: start.cacheRoot,
           runToken: start.runToken,
+          prompts: start.prompts,
           onProgress: progress,
         });
         result = {

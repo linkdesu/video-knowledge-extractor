@@ -135,7 +135,7 @@ export function LibraryPage({
             const cls = running !== null ? "vn-tag warn" : STATUS_TAG[v.status].cls;
             return (
               <div key={v.id} className="vn-card vn-vcard" data-testid="video-card">
-                <div className="vn-thumb">
+                <div className={`vn-thumb${v.hasVideo === false ? " audio-only" : ""}`}>
                   {v.coverUrl !== null ? (
                     <img
                       data-testid="video-cover"
@@ -143,6 +143,22 @@ export function LibraryPage({
                       src={v.coverUrl}
                       alt=""
                     />
+                  ) : v.hasVideo === false ? (
+                    <svg
+                      className="vn-audio-icon"
+                      data-testid="video-audio-only-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M9 18V5l11-2v13" />
+                      <circle cx="6" cy="18" r="3" />
+                      <circle cx="17" cy="16" r="3" />
+                    </svg>
                   ) : null}
                   <span className="vn-dur">
                     {v.durationSeconds !== null ? fmtClock(v.durationSeconds) : "—"}

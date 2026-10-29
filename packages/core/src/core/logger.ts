@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -51,12 +52,27 @@ export type LogEntry = {
   taskId: string | null;
 };
 
-// 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记
+/** 浮层单行里一个字段值的上限：argv 这类长数组截断，保证一行仍可读。 */
+const BANNER_FIELD_CHARS = 160;
+/** 浮层单行总长上限（含时间、级别标记与消息）。 */
+const BANNER_LINE_CHARS = 700;
+
+// 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记。
+// r47：字段（input/output/mode/编码器等）一并渲染——浮层只拿到这一行，丢掉字段就等于没有信息。
 export function formatLogLine(entry: LogEntry): string {
   const d = entry.date;
   const ts = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
   const mark = entry.level === "error" ? "错误 " : entry.level === "warn" ? "警告 " : "";
-  return `[${ts}] ${mark}${entry.message}`;
+  let line = `[${ts}] ${mark}${entry.message}`;
+  for (const [key, value] of Object.entries(entry.fields ?? {})) {
+    if (value === undefined) continue;
+    const rendered = fmtValue(value);
+    if (rendered === null) continue;
+    const shown = rendered.length > BANNER_FIELD_CHARS ? `${rendered.slice(0, BANNER_FIELD_CHARS)}…` : rendered;
+    line += ` ${key}=${shown}`;
+    if (line.length > BANNER_LINE_CHARS) return `${line.slice(0, BANNER_LINE_CHARS)}…`;
+  }
+  return line;
 }
 
 // 未 configure 前丢弃所有日志；processTask 仅由 runWithTask 临时设置
@@ -88,6 +104,46 @@ export function redactSecrets(text: string, secrets: Iterable<string>): string {
     .replace(/\b(api[_]?key|token)=([A-Za-z0-9\-_~+/=.]+)/gi, "$1=[redacted]");
 }
 
+/** 一条 home 前缀与它替换成的占位符：macOS/Linux 用 `~`，Windows 用 `%USERPROFILE%`。 */
+export type HomePrefix = { prefix: string; token: string };
+
+/**
+ * 需要隐藏的 home 前缀：HOME、USERPROFILE、HOMEDRIVE+HOMEPATH 与 os.homedir()。
+ * 占位符按前缀形状决定：盘符路径（`C:\...`）是 Windows，用 `%USERPROFILE%`；其余用 `~`。
+ * 跳过空值与 `/`（裸根会把每个绝对路径都重写）；长前缀在前，嵌套目录取最具体的一个。
+ * 日志每次写入时现取，不在模块加载时快照。
+ */
+export function homePathPrefixes(env: NodeJS.ProcessEnv = process.env): HomePrefix[] {
+  const homes = new Set<string>();
+  const driveHome = env.HOMEDRIVE?.trim() !== undefined && env.HOMEPATH?.trim() !== undefined
+    ? `${env.HOMEDRIVE?.trim()}${env.HOMEPATH?.trim()}`
+    : undefined;
+  for (const raw of [env.HOME, env.USERPROFILE, driveHome, homedir()]) {
+    const home = raw?.trim();
+    if (home === undefined || home === "" || home === "/") continue;
+    homes.add(home);
+  }
+  return [...homes]
+    .sort((a, b) => b.length - a.length)
+    .map((prefix) => ({ prefix, token: /^[A-Za-z]:[\\/]/.test(prefix) ? "%USERPROFILE%" : "~" }));
+}
+
+/**
+ * 把每个 home 前缀替换成对应占位符（`~` 或 `%USERPROFILE%`），再兜底抹掉 Windows 上
+ * `C:\Users\<用户名>` 形态的真实用户名（USERPROFILE 缺失/不一致时也不能泄露）。
+ * 用字面量替换而不是路径边界判断：路径会以 JSON 字符串、argv 数组元素、URL 的形态进日志，
+ * 前面没有分隔符。代价是 `/Users/linko` 会变成 `~o`，对日志无害且能覆盖所有真实 `$HOME/...`。
+ */
+export function redactHomePaths(text: string, homes: Iterable<HomePrefix>): string {
+  let out = text;
+  for (const { prefix, token } of homes) {
+    // 不能让裸 `/` 或单个字符吃掉整行
+    if (prefix.length < 2) continue;
+    out = out.split(prefix).join(token);
+  }
+  return out.replace(/[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+/g, "%USERPROFILE%");
+}
+
 function fmtValue(v: unknown): string | null {
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   try {
@@ -97,10 +153,10 @@ function fmtValue(v: unknown): string | null {
   }
 }
 
-// 字段值里的字符串（含数组元素，argv 的 URL 也走这里）统一 redact
-function redactValue(v: unknown, secrets: Set<string>): unknown {
-  if (typeof v === "string") return redactSecrets(v, secrets);
-  if (Array.isArray(v)) return v.map((e) => (typeof e === "string" ? redactSecrets(e, secrets) : e));
+// String field values (and array elements, e.g. argv URLs) are redacted: secrets first, then homes
+function redactValue(v: unknown, secrets: Set<string>, homes: HomePrefix[]): unknown {
+  if (typeof v === "string") return redactHomePaths(redactSecrets(v, secrets), homes);
+  if (Array.isArray(v)) return v.map((e) => (typeof e === "string" ? redactHomePaths(redactSecrets(e, secrets), homes) : e));
   return v;
 }
 
@@ -209,12 +265,15 @@ export function createLogger(opts?: LoggerOptions): Logger {
         dateKey = date.toDateString();
         pruneIfPossible(dir);
       }
+      // Homes are read on every write (never snapshotted at import): env changes take effect immediately
+      const homes = homePathPrefixes();
       const redacted: LogFields = {};
       for (const [k, v] of Object.entries(fields ?? {})) {
         if (v === undefined) continue;
-        redacted[k] = redactValue(v, secrets);
+        redacted[k] = redactValue(v, secrets, homes);
       }
-      const safeMessage = redactSecrets(message, secrets);
+      // Secrets first, then homes: a key can never leak through a truncated home prefix
+      const safeMessage = redactHomePaths(redactSecrets(message, secrets), homes);
       const taskId = moduleTask ?? processTask;
       const line = renderLine(date, lvl, module, safeMessage, redacted, taskId);
       writeLogLine(date, line);

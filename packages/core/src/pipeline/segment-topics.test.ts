@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { afterAll, describe, expect, test } from "bun:test";
 import type { Server } from "bun";
 import type { ChatMessage, LlmEndpoint, Progress, SegmentTopicsInput } from "../core/steps";
+import { configureLogging } from "../core/logger";
 import { segmentTopics } from "./segment-topics";
 import type { SpeakerId, Transcript, Utterance } from "../core/types";
 
@@ -194,6 +195,65 @@ describe("segmentTopics", () => {
     await segmentTopics(input);
     expect(received.filter(isChunkReq).length).toBe(1);
     expect(received.filter(isMergeReq).length).toBe(1);
+  });
+});
+
+describe("segmentTopics 主播段注入（r47）", () => {
+  const twoSpeakerInput = (cacheDir: string): SegmentTopicsInput => {
+    const transcript: Transcript = {
+      speakers: [
+        { id: "s1" as SpeakerId, name: "主播甲", color: "#fff" },
+        { id: "s2" as SpeakerId, name: "嘉宾乙", color: "#000" },
+      ],
+      utterances: [
+        utt(10, 12, "第一块的话"),
+        { start: 20, end: 22, speakerId: "s2" as SpeakerId, text: "第二块的话" },
+      ],
+    };
+    return { ...makeInput(cacheDir), transcript };
+  };
+  const systemPrompts = () =>
+    received.map((r) => (r.body["messages"] as ChatMessage[]).find((m) => m.role === "system")?.content ?? "");
+
+  test("分块与合并提示词都带主播名单，且只声明归属、不做加权", async () => {
+    startServer();
+    received = [];
+    await segmentTopics({ ...twoSpeakerInput(tempCacheDir()), hosts: ["s1" as SpeakerId] });
+    const systems = systemPrompts();
+    expect(systems.length).toBe(3);
+    for (const system of systems) {
+      expect(system.startsWith("主播：主播甲。划分主题时以主播发起或回答的话题为主线")).toBe(true);
+      expect(system).not.toContain("嘉宾乙");
+      // 只声明主播，不引入任何权重口径（要点提示词的「以主播观点为主」不在这里）
+      expect(system).not.toContain("以主播的观点为主要内容");
+      expect(system).not.toContain("不做加权");
+    }
+  });
+
+  test("没有主播时提示词与旧文本逐字一致（不出现空主播行）", async () => {
+    startServer();
+    received = [];
+    await segmentTopics(twoSpeakerInput(tempCacheDir()));
+    for (const system of systemPrompts()) expect(system).not.toContain("主播：");
+  });
+
+  test("主播名单变化使分块/合并缓存失效，并在「提示词版本」行里带 hosts", async () => {
+    const lines: string[] = [];
+    configureLogging({ level: "info", sink: (l) => lines.push(l) });
+    startServer();
+    const cacheDir = tempCacheDir();
+    received = [];
+    await segmentTopics({ ...twoSpeakerInput(cacheDir), hosts: ["s1" as SpeakerId] });
+    expect(received.length).toBe(3);
+    const chunkLog = lines.find((l) => l.includes("提示词版本") && l.includes('kind="chunk"'));
+    const mergeLog = lines.find((l) => l.includes("提示词版本") && l.includes('kind="merge"'));
+    expect(chunkLog).toContain('hosts=["主播甲"]');
+    expect(mergeLog).toContain('hosts=["主播甲"]');
+    expect(chunkLog).not.toContain("你是视频主题分析器");
+    // 同一段字幕、不同主播：提示词哈希变了，两次都走真实请求
+    received = [];
+    await segmentTopics({ ...twoSpeakerInput(cacheDir), hosts: ["s2" as SpeakerId] });
+    expect(received.length).toBe(3);
   });
 });
 

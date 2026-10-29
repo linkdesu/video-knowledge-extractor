@@ -6,11 +6,13 @@ import {
   configureLogging,
   createLogger,
   formatLogLine,
+  homePathPrefixes,
   KEEP_FILES,
   logger,
   logFileName,
   pruneOldLogs,
   readTaskLog,
+  redactHomePaths,
   redactSecrets,
   rollLogFileName,
   runWithTask,
@@ -182,6 +184,90 @@ describe("redactSecrets", () => {
   });
 });
 
+describe("homePathPrefixes / redactHomePaths", () => {
+  test("前缀去重、更长者在前、跳过空值与 /", () => {
+    const homes = homePathPrefixes({ HOME: "/Users/a/deep", USERPROFILE: "/Users/a/deep", HOMEDRIVE: "C:" });
+    expect(homes.filter((h) => h.prefix === "/Users/a/deep")).toHaveLength(1);
+    expect(homes.some((h) => h.prefix === "/")).toBe(false);
+    expect(homes.some((h) => h.prefix === "")).toBe(false);
+    for (let i = 1; i < homes.length; i++) {
+      expect(homes[i - 1]!.prefix.length).toBeGreaterThanOrEqual(homes[i]!.prefix.length);
+    }
+  });
+
+  test("HOME=/ 时不把根当作前缀", () => {
+    expect(homePathPrefixes({ HOME: "/" }).some((h) => h.prefix === "/")).toBe(false);
+  });
+
+  test("替换所有出现；无关文本原样保留；mac 用 ~", () => {
+    const mac = homePathPrefixes({ HOME: "/Users/link" });
+    expect(redactHomePaths("/Users/link/a/b.mp4", mac)).toBe("~/a/b.mp4");
+    // 路径嵌在 JSON / URL 里也命中
+    expect(redactHomePaths('path="/Users/link/a.mp4" url=file:///Users/link/a.mp4', mac)).toBe('path="~/a.mp4" url=file://~/a.mp4');
+    // 无关文本不动
+    expect(redactHomePaths("nothing here to see", mac)).toBe("nothing here to see");
+    // 空列表不动（Windows 兜底规则除外）
+    expect(redactHomePaths("/Users/link/a.mp4", [])).toBe("/Users/link/a.mp4");
+  });
+
+  test("Windows 的 C:\\Users\\<user> 替换成 %USERPROFILE%，真实用户名不再出现", () => {
+    const win = homePathPrefixes({ USERPROFILE: "C:\\Users\\alice" });
+    const line = redactHomePaths("input=C:\\Users\\alice\\Documents\\a.mp4 output=C:/Users/alice/out", win);
+    expect(line).toContain("%USERPROFILE%\\Documents\\a.mp4");
+    expect(line).not.toContain("alice");
+    // USERPROFILE 缺失时也覆盖盘符用户名形态
+    expect(redactHomePaths("C:\\Users\\bob\\x.mp4", [])).toBe("%USERPROFILE%\\x.mp4");
+  });
+});
+
+describe("日志里的 home 替换", () => {
+  const FIXTURE_HOME = "/tmp/r46-home-fixture";
+
+  function withHome(home: string, fn: () => void): void {
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.HOME;
+      else process.env.HOME = prev;
+    }
+  }
+
+  test("消息与数组字段里的 home 变成 ~；原始 home 不出现；secret 仍是 [redacted]", () => {
+    // logger 在改 env 之前创建：证明 homes 是写入时惰性读取
+    const { l, lines } = makeSinkLogger();
+    withHome(FIXTURE_HOME, () => {
+      const input = `${FIXTURE_HOME}/Videos/a b.mp4`;
+      const output = `${FIXTURE_HOME}/out/a.mp4`;
+      l.info("ffmpeg", `打开 ${input}`, {
+        cmd: ["ffmpeg", "-i", input, "-c", "copy", output],
+        auth: "Bearer sk-live-987654321",
+      });
+    });
+    const line = lines.at(-1)!;
+    expect(line).toContain("打开 ~/Videos/a b.mp4");
+    expect(line).toContain('"~/Videos/a b.mp4"');
+    expect(line).toContain('"~/out/a.mp4"');
+    expect(line).not.toContain(FIXTURE_HOME);
+    expect(line).toContain('auth="Bearer [redacted]"');
+    expect(line).not.toContain("sk-live-987654321");
+  });
+
+  test("secret 先替换再替换 home：密钥不会因 home 截断而漏出", () => {
+    const { l, lines } = makeSinkLogger();
+    const secret = `{{SECRET_${Date.now()}}}`;
+    l.addSecret(secret);
+    withHome(FIXTURE_HOME, () => {
+      l.info("app", `key=${secret} dir=${FIXTURE_HOME}/keys`);
+    });
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(secret);
+    expect(line).toContain("[redacted]");
+    expect(line).toContain("dir=~/keys");
+  });
+});
+
 describe("进程级 logger", () => {
   test("未 configure 时丢弃所有日志；configure 后生效", () => {
     expect(() => logger().info("app", "hello")).not.toThrow();
@@ -294,5 +380,45 @@ describe("formatLogLine", () => {
     expect(formatLogLine({ date: d, level: "error", module: "app", message: "出错了", fields: {}, taskId: null })).toBe("[14:03:07] 错误 出错了");
     expect(formatLogLine({ date: d, level: "warn", module: "app", message: "有警告", fields: {}, taskId: null })).toBe("[14:03:07] 警告 有警告");
     expect(formatLogLine({ date: d, level: "info", module: "app", message: "普通信息", fields: {}, taskId: null })).toBe("[14:03:07] 普通信息");
+  });
+
+  test("r47：字段一并渲染，ffmpeg 摘要的输入/输出/模式/编码器都能在浮层看到", () => {
+    const d = new Date(2026, 9, 24, 14, 3, 7);
+    const line = formatLogLine({
+      date: d,
+      level: "info",
+      module: "ffmpeg",
+      message: "命令摘要",
+      taskId: "t1",
+      fields: {
+        input: "~/Documents/a.mkv",
+        output: "~/out/media.mp4",
+        mode: "transcode",
+        videoCodec: "libx264",
+        audioCodec: "aac",
+        label: "格式转换（转码）",
+        skip: undefined,
+      },
+    });
+    expect(line).toBe(
+      '[14:03:07] 命令摘要 input="~/Documents/a.mkv" output="~/out/media.mp4" mode="transcode" videoCodec="libx264" audioCodec="aac" label="格式转换（转码）"',
+    );
+  });
+
+  test("r47：档位字段（数字/布尔/数组）都渲染，超长值截断", () => {
+    const d = new Date(2026, 9, 24, 14, 3, 7);
+    const line = formatLogLine({
+      date: d,
+      level: "info",
+      module: "app",
+      message: "任务完成",
+      taskId: null,
+      fields: { durationMs: 12, cacheHit: true, cmd: ["ffmpeg", "x".repeat(400)] },
+    });
+    expect(line).toContain("durationMs=12");
+    expect(line).toContain("cacheHit=true");
+    expect(line).toContain("cmd=[");
+    expect(line.length).toBeLessThanOrEqual(701);
+    expect(line.endsWith("…")).toBe(true);
   });
 });

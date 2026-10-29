@@ -8,12 +8,15 @@ import { cacheKey, readCache, writeCache, hashJson } from "../core/cache";
 import { logger } from "../core/logger";
 import { ensureDir, writeFileAtomic } from "../core/paths";
 import { resolveCorrections } from "../core/corrections";
-import type { ChatMessage, GenerateNotesInput, GenerateNotesResult, LlmClient, TrajectoryTrigger } from "../core/steps";
+import { promptFingerprint, renderPrompt } from "../core/prompts";
+import type { PromptFingerprint } from "../core/prompts";
+import type { GenerateNotesInput, GenerateNotesResult, LlmClient, TrajectoryTrigger } from "../core/steps";
 import type { Clip, Note, SpeakerId, Topic, TopicId, Utterance, Video } from "../core/types";
 import { createLlmClient, tryParseJson } from "../llm/openai";
 import { renderIndexMarkdown, renderTopicMarkdown } from "../core/render";
-import { speakerNameMap } from "../core/speaker-map";
+import { hostNames as resolveHostNames, speakerNameMap } from "../core/speaker-map";
 import { appendTrajectory } from "../core/trajectory";
+import type { TrajectoryRequest } from "../core/trajectory";
 
 export { renderIndexMarkdown, renderTopicMarkdown };
 
@@ -39,17 +42,42 @@ function correctionLines(input: GenerateNotesInput): string {
     .join("\n");
 }
 
-/** 要点提示词全文；测试用它复算缓存键里的提示词哈希。 */
+/**
+ * 要点提示词的主播段：没有主播、或 id 都解析不到说话人时返回空串（不渲染空 `主播：` 行）；
+ * 否则一行说明主播观点是主要内容，其余发言只是问题或上下文。
+ */
+function hostLine(hosts: readonly string[]): string {
+  if (hosts.length === 0) return "";
+  return `主播：${hosts.join("、")}。以主播的观点为主要内容，其他人的发言只作为问题或上下文。\n`;
+}
+
+/** 要点提示词全文（r46 起走提示词注册表）；测试用它复算缓存键里的提示词哈希。 */
 export function noteSystemPrompt(topic: Topic, utterances: Utterance[], input: GenerateNotesInput): string {
   const lines = utterances.map((u) => `[${hms(u.start)} - ${hms(u.end)}] ${u.text}`).join("\n");
-  return (
-    `根据主题与字幕抽取 3-6 条要点，只输出 JSON {"keyPoints":[string]}。\n` +
-    `术语按下表正确写法：\n${correctionLines(input) || "（无）"}\n\n` +
-    `主题：${topic.title}\n摘要：${topic.summary}\n\n字幕：\n${lines}`
+  return renderPrompt(
+    "note-key-points",
+    {
+      HOSTS: hostLine(resolveHostNames(input.transcript.speakers, input.hosts)),
+      GLOSSARY: correctionLines(input) || "（无）",
+      TOPIC_TITLE: topic.title,
+      TOPIC_SUMMARY: topic.summary,
+      UTTERANCES: lines,
+    },
+    input.prompts,
   );
 }
 
 type KeyPoints = { keyPoints: string[] };
+
+/** One topic's rendered prompt plus what the log line and trajectory record may carry (never the body). */
+type NotePrompt = { text: string; fingerprint: PromptFingerprint; hosts: string[] };
+
+function notePrompt(topic: Topic, utterances: Utterance[], input: GenerateNotesInput): NotePrompt {
+  const text = noteSystemPrompt(topic, utterances, input);
+  // 主播名只用于日志与轨迹：解析不到/已合并的 id 丢掉，按文档顺序去重
+  const hosts = resolveHostNames(input.transcript.speakers, input.hosts);
+  return { text, fingerprint: promptFingerprint("note-key-points", text, input.prompts), hosts };
+}
 
 /** 取要点：缓存命中时 `rawText` 为 null（没调用模型）；模型输出不是合法要点 JSON 时报错（失败不落缓存）。 */
 async function keyPointsFor(
@@ -57,13 +85,13 @@ async function keyPointsFor(
   client: LlmClient,
   topic: Topic,
   utterances: Utterance[],
+  prompt: NotePrompt,
   usedCacheKeys: Set<string>,
 ): Promise<{ points: string[]; rawText: string | null; keyHash: string; cached: boolean }> {
-  const system = noteSystemPrompt(topic, utterances, input);
   const key = cacheKey("note", {
     topic: hashJson(topic),
     transcript: hashJson(utterances.map((u) => [u.start, u.end, u.speakerId, u.text])),
-    prompt: hashJson(system),
+    prompt: hashJson(prompt.text),
     model: input.endpoint.model,
     // 端点也是输入：切 baseUrl（模型名不变）不能复用旧端点的答案；去尾斜杠避免同一端点两种写法
     baseUrl: input.endpoint.baseUrl.trim().replace(/\/+$/, ""),
@@ -80,7 +108,15 @@ async function keyPointsFor(
   if (hit !== undefined) {
     points = hit.keyPoints;
   } else {
-    const raw = await client.chat([{ role: "system", content: system }], { json: true });
+    logger().info("llm", "提示词版本", {
+      promptId: prompt.fingerprint.id,
+      promptSource: prompt.fingerprint.source,
+      promptSha256: prompt.fingerprint.sha256,
+      model: client.model,
+      kind: "note-key-points",
+      hosts: prompt.hosts,
+    });
+    const raw = await client.chat([{ role: "system", content: prompt.text }], { json: true });
     const parsed = tryParseJson<{ keyPoints?: unknown }>(raw);
     if (parsed === undefined || !Array.isArray(parsed.keyPoints)) throw new Error("LLM 返回格式错误：无法解析要点 JSON");
     points = parsed.keyPoints.filter((p): p is string => typeof p === "string" && p.length > 0);
@@ -112,15 +148,19 @@ export async function generateNotes(input: GenerateNotesInput): Promise<Generate
     const topicDir = ensureDir(resolve(input.video.outputDir, dir));
     const utterances = topicUtterances(topic, input.transcript.utterances);
     // 请求形状提到循环体里：缓存命中与 LLM 调用两条路径都能写进轨迹
-    const system = noteSystemPrompt(topic, utterances, input);
-    const messages: ChatMessage[] = [{ role: "system", content: system }];
-    // 请求只记录 baseUrl 与 model，端点里的凭据不进轨迹
-    const request = { baseUrl: input.endpoint.baseUrl, model: input.endpoint.model, messages, glossaryCount: resolveCorrections(input.corrections).length };
+    const prompt = notePrompt(topic, utterances, input);
+    // 请求只记录端点的 baseUrl/model 与提示词指纹：凭据与提示词正文都不进轨迹
+    const request: TrajectoryRequest = {
+      baseUrl: input.endpoint.baseUrl,
+      model: input.endpoint.model,
+      prompt: { ...prompt.fingerprint, hosts: prompt.hosts, chars: prompt.text.length },
+      glossaryCount: resolveCorrections(input.corrections).length,
+    };
     const trigger = input.trigger ?? "initial";
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
     try {
-      const { points, rawText, keyHash, cached } = await keyPointsFor(input, client, topic, utterances, usedCacheKeys);
+      const { points, rawText, keyHash, cached } = await keyPointsFor(input, client, topic, utterances, prompt, usedCacheKeys);
       if (cached) cacheHits.push(keyHash);
       const clips: Clip[] = [];
       // 单文件主题切片（r33）：每个 union 切到系统临时目录，concat 成 topic.mp4（流拷贝）

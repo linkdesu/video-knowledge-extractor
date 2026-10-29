@@ -16,7 +16,7 @@ type SubtitleListProps = {
   activeIndex?: number | null;
   /** 点行定位播放器；传 null 表示纯展示。 */
   onSeek?: (seconds: number) => void;
-  maxHeight?: number;
+  maxHeight?: number | string;
   /** 可编辑模式：每行多一个删除按钮。 */
   onDelete?: (index: number) => void;
 };
@@ -55,13 +55,7 @@ export function SubtitleList({
         suppressUntil.current = window.performance.now() + 2500;
         setAutoScroll(false);
       }}
-      style={{
-        maxHeight,
-        overflow: "auto",
-        borderRadius: 14,
-        border: "1px solid var(--vn-line)",
-        background: "rgba(9,11,18,0.5)",
-      }}
+      style={{ maxHeight, overflow: "auto" }}
     >
       {rows.map((r, i) => {
         const active = activeIndex !== null && activeIndex !== undefined && activeIndex === i;

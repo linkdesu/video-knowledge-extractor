@@ -161,6 +161,16 @@ $V shot notes-trajectory
 
 The literal assertions: `len(history)` grows by exactly one per regeneration run (repeat the click to prove there is no cap), the top level is `{ topicId, topicTitle, updatedAt, latest, history[] }`, and the LLM key appears nowhere in the file.
 
+Since r46 each history entry's `request` is a **prompt fingerprint**, not the prompt body:
+`{ baseUrl, model, prompt: { id, source: "default" | "custom", sha256, hosts: string[], chars }, glossaryCount }`.
+There is no `messages` key and no prompt text — assert both:
+
+```bash
+python3 -c "import json,sys; r=json.load(open(sys.argv[1]))['history'][-1]['request']; assert 'messages' not in r; p=r['prompt']; assert p['id']=='note-key-points' and p['source'] in ('default','custom') and len(p['sha256'])==64 and isinstance(p['hosts'], list) and p['chars']>0; print(p['source'], p['sha256'], p['hosts'])" "$OUTDIR/<topicDir>/trajectory.json"
+rg -c "根据主题与字幕抽取" "$OUTDIR/<topicDir>/trajectory.json"
+# expected: 0 — the prompt body is never written to evidence
+```
+
 ## Gotchas
 - The note cache key includes the transcript fingerprint, the topic, the prompt text, the model **and the normalized `baseUrl`** (r38): switching endpoints with the same model name never reuses the old endpoint's answer. Only `trigger: "regenerate"` bypasses the read; `initial` and `speaker-changed` still reuse a hit and write `rawText: null` for that entry.
 - The per-topic 重新生成 (`topic-regenerate-<topicId>`) sits on every right-side topic card and is the only single-topic regenerate entry (r37): the left-column 单独重新生成 button is gone. It is disabled and labelled 生成中… only while that topic generates, and may be clicked on any status, unlimited times; each run appends one `trajectory.json` history entry with no cap.

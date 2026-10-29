@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AsrConfig, LlmEndpoint } from "@video-notes/core";
+import type { AsrConfig, LlmEndpoint, PromptOverrides } from "@video-notes/core";
 import type { JobKind, JobSnapshot, JobStep } from "../shared/ipc";
 
 /**
@@ -30,6 +30,8 @@ export type JobRequest = {
   /** 冻结解析好的 ASR 引擎配置；含 key，只在 main/worker 私有消息里。 */
   asr: AsrConfig;
   config: { notesRoot: string; cacheRoot: string; modelDir: string };
+  /** 入队时冻结的提示词覆盖（r46）：用户版本，没有就空对象（worker 用默认模板）。 */
+  prompts: PromptOverrides;
   topicIds?: string[];
   /** 连 `done` 主题也重新生成（notes 任务；缺省跳过 `done`）。 */
   force?: boolean;

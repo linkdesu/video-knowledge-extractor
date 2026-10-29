@@ -36,6 +36,32 @@ Preconditions:
 - Failure journeys 1 and 3 need no LLM at all; journey 2 uses a local mock; journey 4 is a real extraction (real endpoint, real token spend). Say so in the report.
 - Read the on-disk log with `tail tmp/verify/<run>/home/logs/vnote-$(date +%F).log`; the task id in its `task=` fields is the job `runToken`.
 
+### Recipe: ffmpeg 关键参数摘要（日志 + 进度浮层）、路径脱敏与提示词版本（r46/r47）
+
+Every ffmpeg/ffprobe call writes two lines: the unchanged full argv (`INFO ffmpeg <binary> cmd=[...]`) and one `命令摘要` line with `input`, `output`, `mode` (`copy` = 换封装, `transcode` = 转码), `videoCodec`, `audioCodec`, `label`. Since r47 the **job banner renders the log fields too** (`formatLogLine` appends `key=value`, each value truncated at 160 chars, the whole line at 700) — so the banner shows `命令摘要 input=… output=… mode="copy|transcode" videoCodec=… audioCodec=… label="格式转换（换封装|转码）"` while the job runs, not just the bare message. After secret redaction the logger rewrites the home prefix: macOS/Linux `$HOME` → `~`, Windows `C:\Users\<user>` → `%USERPROFILE%` (a drive-letter profile path is also caught when `USERPROFILE` is unset). Every real model call also writes one `提示词版本` line with `promptId`, `promptSource` (`default`/`custom`), `promptSha256` (64 hex), `model`, `kind`, and `hosts` (resolved names; now on chunk/merge/note steps) — never the prompt body, never a key.
+
+```bash
+# import (or rerun) anything that runs ffmpeg; a .mkv source exercises 换封装/转码 and shows the banner
+$V drop '/Users/link/Documents/video-notes/r42-fixtures/r46-transcode-20s.mkv'
+$V wait "document.querySelector('[data-testid=job-log-tail]') && [...document.querySelectorAll('[data-testid=job-log-line]')].some(l => l.innerText.includes('mode='))" --timeout 60000
+$V shot a3-overlay-summary
+$V eval "[...document.querySelectorAll('[data-testid=job-log-line]')].map(x=>x.innerText).filter(t=>t.includes('命令摘要'))"
+# expected: at least one line like
+#   [10:11:12] 命令摘要 input="~/…/x.mkv" output="~/…/media.mp4.part-1" mode="transcode" videoCodec="libx264" audioCodec="aac" label="格式转换（转码）"
+# and for a remuxable source: mode="copy" label="格式转换（换封装）"
+$V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
+LOG="tmp/verify/<run>/home/logs/vnote-$(date +%F).log"
+rg -c "命令摘要" "$LOG"          # expected: > 0
+rg "命令摘要" "$LOG" | tail -5   # expected: input=… output=… mode=copy|transcode … label=…
+rg "cmd=\[" "$LOG" | tail -3     # expected: the full argv is still there
+rg -c "/Users/link" "$LOG"       # expected: 0 — mac home prefix rewritten to ~
+rg -c 'C:\\Users\\[A-Za-z0-9._-]+' "$LOG"   # expected: 0 on a Windows run — rewritten to %USERPROFILE%
+rg "提示词版本" "$LOG" | tail -4  # expected: promptId=… promptSource="default|custom" promptSha256="<64 hex>" … hosts=[…]
+rg -c "你是播客转写分析器|你是视频主题分析器|根据主题与字幕抽取" "$LOG"   # expected: 0 — no prompt body
+```
+
+The literal assertions: at least one banner `job-log-line` contains `命令摘要` **and** `input=`/`output=`/`mode=`/`videoCodec=`/`audioCodec=` (a bare `命令摘要` is the r46 regression this recipe guards); the on-disk summary line has the same five fields; `rg -c "<HOME>" "$LOG"` returns 0 (and on Windows `rg -c 'C:\\Users\\<user>'` returns 0); a `提示词版本` line exists per real model call with a 64-hex sha, the default/custom source and host names where applicable; no prompt body appears anywhere in the log.
+
 ### Recipe: missing models (gate error, no task id)
 
 ```bash
@@ -118,4 +144,4 @@ Pass: the `## 环境` section marks the notesRoot line `非 ASCII` and `含空�
 - **r41: a green 错误摘要 must carry both the task's ERROR and the day's global ERROR.** The summary merges the requested task's ERROR records with the same-day global ERROR records from the log tail; an `ERROR ipc IPC 调用失败` line present in `vnote-$(date +%F).log` but absent from 错误摘要 while a task is active means the task-only filter is back.
 - **Logs live under the notes root, not user-data.** The directory is `<notesRoot>/logs` (`logDirFor`); a verify run sets `VNOTE_HOME=tmp/verify/<run>/home`, so logs land in `tmp/verify/<run>/home/logs`. A dev run launched inside the repo writes under `tmp/dev-home/data/logs`. A legacy `<notesRoot>/.logs` directory is migrated into `logs/` at startup when present (its files move in when the name is free, and the emptied directory is removed). The run dir's `app.log` is the process stdout, a different file from the structured `vnote-*.log` files.
 - **A gate failure has no task id.** `ensurePipelineReady` throws before the job is enqueued, so `copyDiagnostics` falls back to the recent log tail (最近任务 reads `（无任务，以下为最近日志）`); the gate's ERROR line reaches 错误摘要 through that fallback, not through a task filter.
-- **The model dir is shared read-only.** Never mutate `~/.cache/video-notes/models` (or the shared dir) to simulate missing models; point `--model-dir` at a fresh empty directory you created (`tmp/verify/empty-models`).
+- **The model dir is shared read-only.** Never mutate the real model directory (`~/Documents/video-notes/models` on mac, `C:\Users\xieal\Documents\video-notes\models` on Windows; the legacy `~/.cache/video-notes/models` only when it is the one that exists) to simulate missing models; point `--model-dir` at a fresh empty directory you created (`tmp/verify/empty-models`).
