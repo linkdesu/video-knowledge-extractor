@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { run, killActiveChildren, summarizeFfmpegArgs } from "./exec";
-import { configureLogging } from "./logger";
+import { configureLogging, homePathRedactions, redactHomePaths } from "./logger";
 
 // 用 process.execPath 跑 -e 脚本，Windows 上也能跑
 const NODE = process.execPath;
+// 日志会把 home 前缀换成 ~（r46），Windows 的 execPath 在 USERPROFILE 下，断言要用脱敏后的形态
+const LOGGED_NODE = redactHomePaths(NODE, homePathRedactions());
 
 describe("summarizeFfmpegArgs", () => {
   test("remux：-c copy 记 copy，output 取最后一个非选项参数", () => {
@@ -129,7 +131,7 @@ describe("run", () => {
     const stderrScript = Array.from({ length: 30 }, (_, i) => `process.stderr.write('sline-${i}\\n')`).join("; ");
     await run([NODE, "-e", `${stderrScript}; process.exit(3)`], { label: "日志失败", allowFail: true });
     const cmdLine = lines.find((l) => l.includes("INFO") && l.includes("cmd=")) ?? "";
-    expect(cmdLine).toContain(NODE);
+    expect(cmdLine).toContain(LOGGED_NODE);
     const errLine = lines.find((l) => l.includes("ERROR") && l.includes("命令失败")) ?? "";
     expect(errLine).toContain("code=3");
     expect(errLine).toContain("stderrTail=");
@@ -152,7 +154,7 @@ describe("run", () => {
     expect(summary).toContain('label="版本命令"');
     // 原有整条 argv 行不受影响
     const cmdLine = lines.find((l) => l.includes("cmd=")) ?? "";
-    expect(cmdLine).toContain(NODE);
+    expect(cmdLine).toContain(LOGGED_NODE);
     expect(cmdLine).not.toContain("命令摘要");
   });
 
