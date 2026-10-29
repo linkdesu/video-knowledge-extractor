@@ -9,6 +9,7 @@ On the 字幕 page the speaker panel lists every top-level speaker (说话人1, 
 - `host-empty-hint` shows `未识别主播` in the panel header when the document has no hosts, so a failed detection is visible instead of silently absent.
 - `host-merged-guard` keeps merged speakers (成员行) out of host marking: they have no toggle and the core rejects their ids (`说话人 <id> 已被合并，不能单独设为主播`). Rename and merge stay independent of host marking.
 - `host-prompt` feeds the host names into the `note-key-points` prompt as one line before the glossary: `主播：<names>。以主播的观点为主要内容，其他人的发言只作为问题或上下文。` With no hosts the line is absent and the prompt is byte-identical to the pre-r46 text (so old note caches still hit). Changing hosts or the prompt changes the prompt hash, so the next generation is a cache miss.
+- `host-topic-prompt` (r47) also feeds the hosts into the topic passes — `segment-chunk` and `segment-merge` take the same `{{HOSTS}}` variable as one leading line: `主播：<names>。划分主题时以主播发起或回答的话题为主线，其他人的发言作为提问或上下文。` It only declares who the hosts are (no weighting); with no hosts the rendered prompt is byte-identical to r46, and a host change invalidates the chunk/merge caches. The `提示词版本` lines for `kind="chunk"`/`"merge"` carry the same `hosts=[…]` field as the note request.
 
 ## How to get to it (user POV)
 
@@ -60,6 +61,9 @@ $V shot speakers-host-restart
 
 # 4) the next note generation records the host list in both log and evidence
 $V click '[data-testid=topic-view-<topicId>]'   # select a topic, then generate from 主题 → 生成笔记
+# r47: the topic passes carry the same host list
+rg "提示词版本" "$VDIR/logs/vnote-$(date +%F).log" | rg '"chunk"|"merge"' | tail -2
+# expected: kind="chunk" and kind="merge" lines, each with hosts=["<names>"] and a 64-hex promptSha256
 rg "提示词版本" "$VDIR/logs/vnote-$(date +%F).log" | rg "note-key-points" | tail -1
 # expected: … promptId="note-key-points" promptSource="default|custom" promptSha256="<64 hex>" … hosts=["<names>"]
 python3 -c "import json,sys; p=json.load(open(sys.argv[1]))['history'][-1]['request']['prompt']; assert p['id']=='note-key-points' and len(p['sha256'])==64 and p['hosts']; print(p['hosts'])" "$VDIR"/<topicDir>/trajectory.json
