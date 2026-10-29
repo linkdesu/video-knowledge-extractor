@@ -1,6 +1,6 @@
 import type { Chunk, CorrectionList, Note, Topic, TopicId, Transcript, Video } from "./types";
 
-export type StepName = "transcribe" | "segment-topics" | "generate-notes";
+export type StepName = "normalize" | "transcribe" | "segment-topics" | "generate-notes";
 
 export type Progress = {
   step: StepName;

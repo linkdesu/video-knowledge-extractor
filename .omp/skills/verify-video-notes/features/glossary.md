@@ -9,6 +9,7 @@ The 术语表 page edits the global correction list used before topic analysis: 
 - `glossary-edit` saves after typing pauses; rows still missing a column stay local and are not sent.
 - `glossary-remove` deletes the row (操作 column) and persists the remaining list immediately.
 - `glossary-persist` writes the list to `<notesRoot>/corrections.json`.
+- `per-video-glossary` (r36, relocated r45b) the per-video list lives only on the 字幕 page (`video-glossary` panel, below the speaker panel): 本视频专属术语表 with 新增 / 两列输入 / 删除. The library card no longer expands and has no glossary block; the 修改后选择重跑范围 dialog moved to the same spot (rerun scope: topics only vs. re-transcribe).
 - `glossary-merge-scope` (r36): the pipeline loads `<notesRoot>/corrections.json` and `<outputDir>/corrections.json` together; on the same `wrong` the per-video entry wins, otherwise both apply.
 - `glossary-live-subtitles` (r36): the video detail returned to the renderer applies the merged list to every utterance, so the 字幕 page, the 主题 page's subtitle column and the 笔记 page's clip subtitles show the replaced text as soon as the detail is reloaded. `video.json` keeps the raw recognised text.
 - `glossary-prompt-injection` (r36): the merged list is inserted into the topic chunk/merge system prompts and the note key-point prompt; changing either list changes the prompt hash and therefore misses the topic/note cache.
@@ -16,8 +17,9 @@ The 术语表 page edits the global correction list used before topic analysis: 
 
 ## How to get to it (user POV)
 
-- Click 术语表 in the sidebar (`nav-glossary`).
-- The page is available with an empty library; it does not require a video.
+- Click 术语表 in the sidebar (`nav-glossary`) for the global list.
+- Open a video → 字幕 (`transcript-to-topics` page) for the per-video list (本视频专属术语表) and the 修改后选择重跑范围 dialog.
+- The global page is available with an empty library; it does not require a video.
 
 ## Driving it with verify.ts
 
@@ -113,7 +115,7 @@ python3 -c "import json;d=json.load(open('<outputDir>/video.json'));print([u['te
 $V shot glossary-merge-proof
 ```
 
-After adding or editing either list, rerunning 修改后选择重跑范围 (topics) must **not** hit the topic/note cache: the prompt hash includes the merged list. Evidence: `glossary-merge-proof.png`, the mock `*.ndjson`, `<home>/corrections.json`, `<outputDir>/corrections.json`, the log lines, and `video.json`.
+After adding or editing either list, rerunning 修改后选择重跑范围 (on the 字幕 page, under the per-video glossary) must **not** hit the topic/note cache: the prompt hash includes the merged list. Evidence: `glossary-merge-proof.png`, the mock `*.ndjson`, `<home>/corrections.json`, `<outputDir>/corrections.json`, the log lines, and `video.json`.
 
 ## Gotchas
 
@@ -122,6 +124,6 @@ After adding or editing either list, rerunning 修改后选择重跑范围 (topi
 - Only a genuine write failure (permissions, disk) shows 保存失败, once per attempt. There is no success toast any more; a clean save is silent.
 - `fill` must be used instead of assigning `input.value`: React's value tracker ignores direct DOM assignment, so the save never fires.
 - Empty `wrong` or `right` is invalid at the IPC boundary too (the main process rejects the whole list). Clearing an existing row's text removes it from the next save.
-- `corrections.json` at `<notesRoot>/corrections.json` is the **global** list. Per-video entries live in `<outputDir>/corrections.json` and are edited from the library card, not here. Video-specific entries win on conflicting `wrong` values.
+- `corrections.json` at `<notesRoot>/corrections.json` is the **global** list. Per-video entries live in `<outputDir>/corrections.json` and are edited from the 字幕 page's 本视频专属术语表 (never from the library card — that entry was removed in r45b), not here. Video-specific entries win on conflicting `wrong` values.
 - Replacement is literal: case, spacing and punctuation must match the transcript exactly. Do not expect fuzzy matching.
 - Removing the last row writes an empty array file, not a deleted file.

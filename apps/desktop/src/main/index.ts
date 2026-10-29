@@ -63,6 +63,7 @@ import {
   videoIdFor,
   listLibrary,
   readLibraryVideo,
+  mediaAbsolutePath,
   readGlobalCorrections,
   logDirFor,
   migrateLegacyLogDir,
@@ -690,6 +691,7 @@ function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
     sizeBytes: v.sizeBytes,
     resolution: v.resolution,
     hasVideo: v.hasVideo,
+    mediaPath: v.mediaPath,
     topicCount: v.topicCount,
     clipCount: v.clipCount,
     updatedAt: v.updatedAt,
@@ -707,27 +709,29 @@ function toVideoDto(v: CoreLibraryVideo): LibraryVideo {
 const coverBackfillInflight = new Set<string>();
 let coverBackfillChain: Promise<void> = Promise.resolve();
 function backfillCovers(dtos: LibraryVideo[]): void {
-  const targets = dtos.filter((v): v is LibraryVideo & { sourcePath: string } => v.coverUrl === null && v.sourcePath !== null && v.hasVideo !== false && !coverBackfillInflight.has(v.id));
+  const targets = dtos.filter((v) => v.coverUrl === null && v.mediaPath !== "" && v.hasVideo !== false && !coverBackfillInflight.has(v.id));
   if (targets.length === 0) return;
   for (const v of targets) coverBackfillInflight.add(v.id);
   coverBackfillChain = coverBackfillChain.then(async () => {
     const succeeded: string[] = [];
     for (const v of targets) {
       coverBackfillInflight.delete(v.id);
+      // 媒体路径优先用规范化产物（r45b），旧数据回退源文件
+      const sourcePath = v.mediaPath !== "" ? v.mediaPath : (v.sourcePath ?? "");
       // 用户可能在资源管理器里改名/移动了源文件：不探不抽，只记一条可读的跳过日志
-      if (!existsSync(v.sourcePath)) {
-        logger().warn("app", "跳过封面补齐：源视频文件不存在", { videoId: v.id, sourcePath: v.sourcePath });
+      if (sourcePath === "" || !existsSync(sourcePath)) {
+        logger().warn("app", "跳过封面补齐：源视频文件不存在", { videoId: v.id, sourcePath });
         continue;
       }
       try {
-        const durationSeconds = v.durationSeconds ?? (await probeVideo(v.sourcePath)).duration;
-        const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath: v.sourcePath, durationSeconds, hasVideo: v.hasVideo ?? true });
+        const durationSeconds = v.durationSeconds ?? (await probeVideo(sourcePath)).duration;
+        const ok = await ensureCoverFrame({ outputDir: v.outputDir, sourcePath, durationSeconds, hasVideo: v.hasVideo ?? true });
         if (ok) succeeded.push(v.id);
       } catch (err) {
         // 失败不阻断：个别封面补齐失败不影响其余视频，但要能在日志里还原是哪个视频、为什么
         logger().warn("app", "封面后台补齐失败", {
           videoId: v.id,
-          sourcePath: v.sourcePath,
+          sourcePath,
           error: sanitizeError(err instanceof Error ? err : new Error(String(err))),
         });
       }
@@ -774,9 +778,12 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
     // 坏词表留给术语表页面报错，详情页按空表展示
   }
   const utterances = applyDetailCorrections(globalEntries, d.corrections, raw.transcript.utterances);
+  // 播放读规范化产物（r45b）；旧数据没有 mediaPath 时回退原文件
+  const playbackPath = mediaAbsolutePath(raw) === "" ? null : mediaAbsolutePath(raw);
   return {
     video: toVideoDto(video),
-    mediaUrl: video.sourcePath === undefined || video.sourcePath === "" ? null : encodeSourceUrl(video.id),
+    mediaUrl: playbackPath === null ? null : encodeSourceUrl(video.id),
+    playbackPath,
     asrModel: "asrModel" in raw ? (raw.asrModel ?? null) : null,
     asrEngine: "asrEngine" in raw ? (raw.asrEngine ?? null) : null,
     transcript:
@@ -997,7 +1004,7 @@ function runModelCheckWithLog(): ModelsCheck {
 async function pickVideo(): Promise<string | null> {
   const res = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [{ name: "媒体", extensions: ["mp4", "mov", "m4v", "webm", "m4a", "mp3", "wav", "flac", "ts"] }],
+    filters: [{ name: "媒体", extensions: ["mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "mts", "m2ts", "m4a", "mp3", "wav", "flac", "wma"] }],
   });
   const path = res.canceled ? null : (res.filePaths[0] ?? null);
   logger().info("app", "选择视频文件", { path });
@@ -1631,7 +1638,11 @@ void app.whenReady().then(async () => {
     MEDIA_SCHEME,
     createMediaHandler({
       root: () => settings.notesRoot,
-      resolveSource: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.sourcePath,
+      resolveSource: (videoId) => {
+        const v = listLibrary(settings.notesRoot).find((x) => x.id === videoId);
+        // 预览读规范化产物（r45b）；旧数据回退原文件
+        return v === undefined ? undefined : v.mediaPath === "" ? v.sourcePath : v.mediaPath;
+      },
       resolveOutputDir: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.outputDir,
     }),
   );

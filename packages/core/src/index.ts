@@ -105,8 +105,19 @@ export {
   projectRunState,
   recordVideoFailure,
   clearVideoFailure,
+  mediaAbsolutePath,
 } from "./core/video-data";
 export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
+export {
+  decideNormalization,
+  normalizeArgs,
+  normalizeMedia,
+  parseFfmpegTime,
+  targetFileName,
+  NORMALIZED_MP4,
+  NORMALIZED_MP3,
+} from "./core/media-normalize";
+export type { NormalizeDecision, NormalizeMode, NormalizeResult, MediaProbe } from "./core/media-normalize";
 export {
   videoNeedsRerun,
   renameSpeaker,

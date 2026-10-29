@@ -22,7 +22,7 @@ export function killActiveChildren(): void {
 
 export async function run(
   cmd: string[],
-  opts: { label?: string; allowFail?: boolean; logModule?: LogModule } = {},
+  opts: { label?: string; allowFail?: boolean; logModule?: LogModule; onStderrLine?: (line: string) => void } = {},
 ): Promise<ProcResult> {
   const [file, ...args] = cmd;
   if (file === undefined) throw new Error("run 至少需要一个命令");
@@ -37,6 +37,8 @@ export async function run(
 
   let stdout = "";
   let stderr = "";
+  // ffmpeg 用 \r 刷新进度行：按 \r 与 \n 切行，逐行回调（转码进度解析 time=）
+  let pendingLine = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
@@ -44,6 +46,15 @@ export async function run(
   });
   child.stderr.on("data", (chunk: string) => {
     stderr += chunk;
+    if (opts.onStderrLine === undefined) return;
+    pendingLine += chunk;
+    let at = pendingLine.search(/[\r\n]/);
+    while (at !== -1) {
+      const line = pendingLine.slice(0, at);
+      pendingLine = pendingLine.slice(at + 1);
+      if (line !== "") opts.onStderrLine(line);
+      at = pendingLine.search(/[\r\n]/);
+    }
   });
 
   activeChildren.add(child);

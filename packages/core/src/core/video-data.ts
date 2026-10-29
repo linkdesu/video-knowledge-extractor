@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { parseClipFileName } from "./clips";
 import { isVideoLocked } from "./lock";
 import { writeJsonAtomic } from "./paths";
+import type { NormalizeMode } from "./media-normalize";
 import type { AsrProvider } from "./settings";
 import type { Chunk, Segment, SpeakerId, TopicId, Transcript, Utterance, Video, VideoId } from "./types";
 
@@ -57,6 +58,12 @@ export type VideoData = {
   speakerChangedAt: string | null;
   /** 上一次运行的失败（短原因，r35）；界面卡片据此显示「失败 + 原因」，重跑启动时清空 */
   failure: { message: string; at: string } | null;
+  /** 导入时的源文件绝对路径（r45b，ADR-0033）；旧文档缺失为 null，回退 `video.sourcePath` */
+  originalPath: string | null;
+  /** 规范化产物相对数据目录的文件名（`media.mp4` / `media.mp3`）；null 表示直接用原文件 */
+  mediaPath: string | null;
+  /** 规范化方式：none（原文件直读）/ remux（换封装）/ transcode（转码）；旧文档缺失为 null */
+  normalized: NormalizeMode | null;
   updatedAt: string;
 };
 
@@ -203,6 +210,30 @@ function parseFailure(v: unknown): { message: string; at: string } | null {
   return { message: v.message, at: v.at };
 }
 
+/**
+ * 规范化产物文件名（r45b）：只收数据目录里的单段 mp4/mp3，防止坏文档把播放路径指到目录外。
+ */
+function parseMediaPath(v: unknown, where: string): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || v === "") throw new Error(`${where} 不是非空字符串`);
+  if (v.includes("/") || v.includes("\\") || v === "." || v === "..") throw new Error(`${where} 必须是数据目录内的文件名`);
+  if (!v.endsWith(".mp4") && !v.endsWith(".mp3")) throw new Error(`${where} 只支持 .mp4 或 .mp3`);
+  return v;
+}
+
+const NORMALIZE_MODES: Record<string, true> = { none: true, remux: true, transcode: true };
+
+function parseNormalized(v: unknown, where: string): NormalizeMode | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || NORMALIZE_MODES[v] !== true) throw new Error(`${where} 只能是 none / remux / transcode`);
+  return v as NormalizeMode;
+}
+
+/** 播放、抽音、切片、封面用的绝对路径：有规范化产物用产物，否则原文件（旧数据兼容）。 */
+export function mediaAbsolutePath(data: Pick<VideoData, "mediaPath" | "video">): string {
+  return data.mediaPath === null ? data.video.sourcePath : resolve(data.video.outputDir, data.mediaPath);
+}
+
 /** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
 export function readVideoData(outputDir: string): VideoData | undefined {
   let raw: string;
@@ -268,6 +299,9 @@ export function readVideoData(outputDir: string): VideoData | undefined {
     runToken: parsed.runToken === undefined ? null : parseNullableString(parsed.runToken, `${p}.runToken`),
     speakerChangedAt: parsed.speakerChangedAt === undefined ? null : parseNullableString(parsed.speakerChangedAt, `${p}.speakerChangedAt`),
     failure: parseFailure(parsed.failure),
+    originalPath: parsed.originalPath === undefined ? null : parseNullableString(parsed.originalPath, `${p}.originalPath`),
+    mediaPath: parseMediaPath(parsed.mediaPath, `${p}.mediaPath`),
+    normalized: parseNormalized(parsed.normalized, `${p}.normalized`),
     updatedAt: readString(parsed.updatedAt, `${p}.updatedAt`),
   };
 }
@@ -317,6 +351,9 @@ export function emptyVideoData(video: Video): VideoData {
     runToken: null,
     speakerChangedAt: null,
     failure: null,
+    originalPath: video.sourcePath,
+    mediaPath: null,
+    normalized: null,
     updatedAt: "1970-01-01T00:00:00.000Z",
   };
 }
@@ -420,6 +457,9 @@ export function migrateVideoData(outputDir: string, video: Video): VideoData {
     runToken: null,
     speakerChangedAt: null,
     failure: null,
+    originalPath: video.sourcePath === "" ? null : video.sourcePath,
+    mediaPath: null,
+    normalized: null,
     updatedAt: new Date().toISOString(),
   };
 }

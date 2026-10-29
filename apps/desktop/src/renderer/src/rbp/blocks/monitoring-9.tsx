@@ -34,6 +34,7 @@ const JOB_TITLES: Record<JobKind, string> = {
 
 const STEP_LABELS: Record<JobStep, string> = {
   prepare: "准备",
+  normalize: "格式转换",
   transcribe: "转写",
   "segment-topics": "主题分析",
   "generate-notes": "生成笔记",

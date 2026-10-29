@@ -6,7 +6,7 @@ export type { ModelsCheck };
 
 export type VideoId = string;
 
-export type CoreStep = "transcribe" | "segment-topics" | "generate-notes";
+export type CoreStep = "transcribe" | "normalize" | "segment-topics" | "generate-notes";
 export type JobStep = CoreStep | "prepare" | "cleanup";
 
 /** 三类任务共用一条串行队列；界面按 kind 决定刷新什么。 */
@@ -88,6 +88,8 @@ export type LibraryVideo = {
   resolution: VideoResolution | null;
   /** 源文件是否含视频轨；旧目录没有记录时为 null，卡片省略该项。 */
   hasVideo: boolean | null;
+  /** 播放/切片/封面实际读取的绝对路径（r45b）：规范化产物或原文件；未知为空串。 */
+  mediaPath: string;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
@@ -100,8 +102,13 @@ export type LibraryVideo = {
 
 export type VideoDetail = {
   video: LibraryVideo;
-  /** 源视频的 media url；没有源文件记录时为 null。 */
+  /** 源视频的 media url；没有可播放文件时为 null。 */
   mediaUrl: string | null;
+  /**
+   * 播放器实际读取的绝对路径（r45b）：规范化产物 `media.mp4/.mp3`，旧数据回退原文件。
+   * 播放器只用它判断「源容器是 MPEG-TS 且无法预览」的旧数据场景。
+   */
+  playbackPath: string | null;
   /** 旧目录没有结构化字幕时为 null。 */
   transcript: TranscriptInfo | null;
   /** 生成这份字幕时用的 ASR 模型；旧目录为 null。 */

@@ -10,12 +10,26 @@ import { logger } from "./logger";
 /** 一段语音停顿区间。 */
 export type Silence = { start: number; end: number };
 
-/** 读视频时长与独立视频轨的分辨率；无视频流（纯音频）宽高为 null。 */
-export type ProbeResult = { duration: number; width: number | null; height: number | null; hasVideo: boolean };
+/**
+ * 读视频时长与独立视频轨的分辨率；无视频流（纯音频）宽高为 null。
+ * r45b：同时给出容器（ffprobe `format_name`）与首条视频/音频轨编码，导入时据此决定是否规范化。
+ */
+export type ProbeResult = {
+  duration: number;
+  width: number | null;
+  height: number | null;
+  hasVideo: boolean;
+  /** ffprobe `format_name`，如 `mov,mp4,m4a,3gp,3g2,mj2`；旧测试夹具缺省为空串。 */
+  formatName: string;
+  /** 首条非封面视频轨的 `codec_name`；无视频轨为 null。 */
+  videoCodec: string | null;
+  /** 首条音频轨的 `codec_name`；无音频轨为 null。 */
+  audioCodec: string | null;
+};
 
 export async function probeVideo(path: string): Promise<ProbeResult> {
   const { stdout } = await run(
-    ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:stream_disposition=attached_pic:format=duration", "-of", "json", path],
+    ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height:stream_disposition=attached_pic:format=duration,format_name", "-of", "json", path],
     { label: `ffprobe ${path}` },
   );
   return parseProbeJson(stdout);
@@ -39,6 +53,13 @@ export function parseProbeJson(stdout: string): ProbeResult {
   let width: number | null = null;
   let height: number | null = null;
   let hasVideo = false;
+  let videoCodec: string | null = null;
+  let audioCodec: string | null = null;
+  let formatName = "";
+  if (typeof format === "object" && format !== null && "format_name" in format) {
+    const name = (format as Record<string, unknown>).format_name;
+    if (typeof name === "string") formatName = name;
+  }
   const streams = rec.streams;
   if (Array.isArray(streams)) {
     // 按结构选视频流（真实文件里音频流在前，第 0 条不可靠）；attached_pic 是封面（如 mp3 内嵌图），不算视频轨
@@ -51,10 +72,17 @@ export function parseProbeJson(stdout: string): ProbeResult {
       const h = Number("height" in s ? (s as Record<string, unknown>).height : undefined);
       if (Number.isInteger(w) && w > 0) width = w;
       if (Number.isInteger(h) && h > 0) height = h;
+      if (typeof s.codec_name === "string" && s.codec_name !== "") videoCodec = s.codec_name;
+      break;
+    }
+    for (const s of streams) {
+      if (typeof s !== "object" || s === null) continue;
+      if (s.codec_type !== "audio") continue;
+      if (typeof s.codec_name === "string" && s.codec_name !== "") audioCodec = s.codec_name;
       break;
     }
   }
-  return { duration, width, height, hasVideo };
+  return { duration, width, height, hasVideo, formatName, videoCodec, audioCodec };
 }
 
 /** 抽单声道 16k 采样率 pcm_s16 wav；`limitSeconds` 只取前 N 秒（开发期冒烟用）。 */

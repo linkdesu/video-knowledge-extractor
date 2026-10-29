@@ -47,4 +47,4 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Logging and diagnostics](./logging.md) - log folder, copied diagnostics, the three failure journeys.
 - [CLI extraction](./cli-extract.md) — `vnote --help/--version/extract`, `--limit`, failure modes, the r42 audio matrix.
 - [Windows build and run](./windows-build.md) — `--install-dir`, the Chinese-plus-space install gate, the BOM'd PowerShell launcher, r42 evidence in `win/`.
-- [Media formats (r42)](./media-formats.md) — the format matrix, the fixture recipe, the pure-audio journey and the `.ts` playback caveat.
+- [Media formats (r42, r45b normalized imports)](./media-formats.md) — the direct-play matrix, import-time normalization (`media.mp4`/`media.mp3`), the fixture recipe, the pure-audio journey and the `.ts` legacy playback notice.

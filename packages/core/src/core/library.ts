@@ -8,7 +8,7 @@ import { logger } from "./logger";
 import type { CorrectionFileEntry } from "./corrections-io";
 import type { VideoId } from "./types";
 import { isVideoLocked } from "./lock";
-import { loadVideoData, projectRunState, readVideoData } from "./video-data";
+import { loadVideoData, mediaAbsolutePath, projectRunState, readVideoData } from "./video-data";
 import { projectTopicArtifacts } from "./topic-artifacts";
 import type { VideoData } from "./video-data";
 
@@ -29,6 +29,8 @@ export type LibraryVideo = {
   resolution: { width: number; height: number } | null;
   /** 源文件有无独立视频轨（r42）；无文档为 null */
   hasVideo: boolean | null;
+  /** 播放/切片/封面实际读取的绝对路径：规范化产物（media.mp4/.mp3）或原文件（r45b）。 */
+  mediaPath: string;
   topicCount: number;
   clipCount: number;
   updatedAt: string | null;
@@ -238,6 +240,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       sizeBytes: null,
       resolution: null,
       hasVideo: null,
+      mediaPath: entry.sourcePath ?? "",
       topicCount: 0,
       clipCount: 0,
       updatedAt: null,
@@ -256,6 +259,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
       sizeBytes: data.sourceBytes,
       resolution: data.resolution,
       hasVideo: data.hasVideo,
+      mediaPath: mediaAbsolutePath(data),
       topicCount: data.topics.length,
       clipCount: data.topics.reduce((n, t) => n + t.clips.length, 0),
       updatedAt: data.updatedAt,
@@ -294,6 +298,7 @@ function videoSummary(root: string, entry: Entry, propagateParseError: boolean):
     sizeBytes: null,
     resolution: null,
     hasVideo: null,
+    mediaPath: entry.sourcePath ?? "",
     topicCount,
     clipCount,
     updatedAt: latest === undefined ? null : new Date(latest).toISOString(),

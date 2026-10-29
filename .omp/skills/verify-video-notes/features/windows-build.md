@@ -52,7 +52,7 @@ For the official r42 report, the run id is `r42-<slug>` and every artifact is re
 - The script launches the app in the foreground with output to `app.log`; the tunnel pid is the only local process `down` kills (the app is `taskkill /PID <remote pid> /T /F` over ssh). The scheduled task is deleted on failure and on `down`, as before r42.
 - A failed `up` cleans the same set: tunnel, task, remote run dir, local run dir. `installDir` never leaves a half-written state.json behind.
 - The `新建文件夹` gate is the acceptance bar for r42 Windows evidence: a run that only uses `D:\code\video-notes\app` does not count, because the launcher and the install path are exactly what r42 changed.
-- Chromium source playback of a `.ts` (mpegts) on Windows is the same unproven caveat as on mac: extraction, topics and notes pass, the source-player result is recorded, not asserted (media-formats.md 「.ts source」).
+- Source playback of a `.ts` (mpegts) on Windows is proven by normalization (r45b): the import writes `media.mp4` and the source player reads it, so assert `video.readyState >= 2 && video.error === null` on the 字幕 page (media-formats.md 「.ts source」). The legacy fallback (a `video.json` without `mediaPath`) is the only case where the MPEG-TS notice may appear.
 
 ## Dual-machine release installation gate (r44)
 

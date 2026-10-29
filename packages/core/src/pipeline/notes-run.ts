@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { acquireVideoLock } from "../core/lock";
 import { cacheDirFor, slugify } from "../core/paths";
-import { loadVideoData, readVideoData, writeVideoData } from "../core/video-data";
+import { loadVideoData, mediaAbsolutePath, readVideoData, writeVideoData } from "../core/video-data";
 import type { TopicClip, TopicRecord, VideoData, VideoRef } from "../core/video-data";
 import { loadCorrections } from "../core/corrections-io";
 import { applyCorrections, countCorrectionsHits, resolveCorrections } from "../core/corrections";
@@ -103,6 +103,8 @@ export async function generateAll(
   onProgress?: (p: Progress) => void,
 ): Promise<GenerateAllResult> {
   const outputDir = data.video.outputDir;
+  // 切片读规范化产物（r45b）；旧数据没有 mediaPath 时回退原文件
+  const mediaVideo = { ...data.video, sourcePath: mediaAbsolutePath(data) };
   let noteCount = 0;
   const notes: Note[] = [];
   const cacheHits: string[] = [];
@@ -114,7 +116,7 @@ export async function generateAll(
     data = setTopicProgress(outputDir, id, { status: "generating", startedAt: new Date().toISOString() });
     try {
       const result = await generateNotes({
-        video: data.video,
+        video: mediaVideo,
         hasVideo: data.hasVideo ?? true,
         transcript: { ...data.transcript, utterances: applyCorrections(corrections, data.transcript.utterances) },
         topics: [{ id: topic.id, title: topic.title, summary: topic.summary, segments: topic.segments }],
