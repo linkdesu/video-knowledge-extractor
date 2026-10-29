@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { run } from "../core/exec";
 import { probeVideo } from "../core/audio";
 import { buildDiagnostics } from "../core/diagnostics";
-import { configureLogging, runWithTask } from "../core/logger";
+import { configureLogging, homePathPrefixes, redactHomePaths, runWithTask } from "../core/logger";
 import { createLocalEngine } from "../asr/local";
 import { createLlmClient } from "../llm/openai";
 import type { Video } from "../core/types";
@@ -40,6 +40,11 @@ function firstModelPath(modelDir: string): string {
   return join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
 }
 
+/** 日志里的路径形态：JSON 转义 + home 前缀脱敏（mac ~ / Windows %USERPROFILE%）。 */
+function loggedPath(path: string): string {
+  return redactHomePaths(JSON.stringify(path).slice(1, -1), homePathPrefixes());
+}
+
 describe("三种失败都能从诊断文本里看出来", () => {
   test("坏视频：ffprobe 失败的日志行带 module、输入路径、退出码与真实 stderr 尾部", async () => {
     const mp4 = join(dir, "corrupt.mp4");
@@ -55,12 +60,12 @@ describe("三种失败都能从诊断文本里看出来", () => {
       // 产品日志分两行：info 行记整条 argv（含 ffprobe 与输入路径），
       // error 行记 code 与 50 行 stderrTail；合起来才能诊断出 ffprobe 失败
       const infoLine = lines.find((l) => l.includes("INFO") && l.includes(" ffmpeg ") && l.includes("ffprobe")) ?? "";
-      // 日志字段是 JSON.stringify，Windows 的 \\ 会被转义成 \\\\
-      expect(infoLine).toContain(JSON.stringify(mp4).slice(1, -1));
+      // 日志字段是 JSON.stringify，Windows 的 \\ 会被转义成 \\\\；logger 还会把 home 前缀替换成 ~ / %USERPROFILE%
+      expect(infoLine).toContain(loggedPath(mp4));
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" ffmpeg ") && l.includes("命令失败")) ?? "";
       expect(errLine).toContain("stderrTail=");
       expect(errLine).toContain("code=1");
-      expect(errLine).toContain(JSON.stringify(mp4).slice(1, -1)); // stderr 里带输入文件名
+      expect(errLine).toContain(loggedPath(mp4)); // stderr 里带输入文件名
       // stderrTail 是真实 ffmpeg 输出（非空、非占位）
       expect(errLine).toContain("stderrTail=\"");
       expect(errLine.length).toBeGreaterThan("stderrTail=\"".length + 20);
@@ -139,7 +144,7 @@ describe("三种失败都能从诊断文本里看出来", () => {
       expect(err.message).toContain(missingPath);
       // step 的 error 行（module asr）带同一缺失路径
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" asr ") && l.includes("失败")) ?? "";
-      expect(errLine).toContain(JSON.stringify(missingPath).slice(1, -1));
+      expect(errLine).toContain(loggedPath(missingPath));
       expect(errLine).toContain("缺少模型文件");
     });
   });
