@@ -18,6 +18,8 @@ export function VideoWorkspace(props: {
   onStartNotes: (topicIds: string[], options?: { force?: boolean }) => void | Promise<unknown>;
   onRebuildTopics: () => void | Promise<void>;
   onRerunVideo: () => void | Promise<void>;
+  /** 开发模式验收台入口（r48）：打包版不传。 */
+  onOpenLab?: (sourcePath: string) => void;
 }) {
   const { detail, page, job } = props;
   if (detail === null) {
@@ -39,6 +41,17 @@ export function VideoWorkspace(props: {
   return (
     <>
       <StepBar page={page} onPage={props.onPage} notesReady={hasReadyNote(detail.topics)} />
+      {props.onOpenLab === undefined ? null : (
+        <div className="vn-row vn-lab-open">
+          <button
+            className="vn-btn sm"
+            data-testid="lab-open-video"
+            onClick={() => props.onOpenLab?.(detail.video.sourcePath ?? detail.video.mediaPath)}
+          >
+            在 Lab 中打开
+          </button>
+        </div>
+      )}
       {page === "transcript" ? (
         <TranscriptPage {...ctx} />
       ) : page === "topics" ? (
