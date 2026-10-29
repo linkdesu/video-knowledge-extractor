@@ -16,3 +16,11 @@ declare module "sherpa-onnx-node" {
   }
   export function readWave(path: string): { samples: Float32Array; sampleRate: number };
 }
+declare module "sherpa-onnx-node" {
+  export class SpeakerEmbeddingExtractor {
+    constructor(config: unknown);
+    createStream(): { acceptWaveform(input: { samples: Float32Array; sampleRate: number }): void };
+    isReady(stream: unknown): boolean;
+    compute(stream: unknown): Float32Array;
+  }
+}

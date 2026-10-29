@@ -1,5 +1,6 @@
 /** renderer 与 main 之间的线上契约。core 内部类型不直接穿过 IPC（ADR-0012、ADR-0014、ADR-0015）。 */
 import type { ModelsCheck } from "@video-notes/core";
+import type { LabApi } from "./lab";
 
 /** 模型检测结果直接沿用 core 的形状（单一事实源，不在 IPC 层复制一份）。 */
 export type { ModelsCheck };
@@ -418,6 +419,8 @@ export type VnoteApi = {
   savePrompt(id: string, text: string): Promise<PromptStatus[]>;
   /** 恢复默认：删除该步骤的覆盖。 */
   resetPrompt(id: string): Promise<PromptStatus[]>;
+  /** 开发模式「说话人分离验收台」（r48）：打包版不存在这个字段。 */
+  lab?: LabApi;
 };
 
 export const IPC = {
