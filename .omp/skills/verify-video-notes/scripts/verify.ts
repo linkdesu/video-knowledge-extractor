@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
+import { defaultModelDir } from "./lib/model-dir";
 import {
   assertPrivateMode,
   extractPrivateConfig,
@@ -829,7 +830,7 @@ async function up(args: string[]): Promise<void> {
 
   const home = resolve(takeFlag(args, "--home") ?? join(runDir, "home"));
   const userData = resolve(takeFlag(args, "--user-data") ?? join(runDir, "user-data"));
-  const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? join(process.env.HOME ?? ".", ".cache/video-notes/models"));
+  const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? defaultModelDir(process.env.HOME ?? "."));
   mkdirSync(home, { recursive: true });
   mkdirSync(userData, { recursive: true });
   if (!emptySettings) {
