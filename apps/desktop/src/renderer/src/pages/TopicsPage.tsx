@@ -59,7 +59,8 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
     const stored = Number(window.localStorage.getItem(HEIGHT_STORAGE_KEY));
     if (Number.isFinite(stored) && stored >= 240 && stored <= 900) return stored;
     const r = detail.video.resolution;
-    return r !== null && r.height > r.width
+    if (r === null) return 180;
+    return r.height > r.width
       ? Math.min(420, Math.round(window.innerHeight * 0.6))
       : null;
   });
@@ -285,13 +286,13 @@ export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext
                 ⇕
               </button>
             </div>
-            <div className="vn-card" style={{ marginTop: 14 }}>
+            <div className="vn-card" style={{ marginTop: 10 }}>
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  padding: "11px 14px",
+                  padding: "6px 14px",
                   borderBottom: "1px solid var(--vn-line)",
                   fontSize: 12,
                   color: "var(--vn-muted)",

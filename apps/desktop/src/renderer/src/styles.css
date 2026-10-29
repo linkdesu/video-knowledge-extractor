@@ -241,7 +241,7 @@ textarea {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 26px 28px 40px;
+  padding: 14px 28px 40px;
   scrollbar-width: thin;
 }
 
@@ -267,7 +267,7 @@ textarea {
 .vn-sub {
   color: var(--vn-muted);
   font-size: 13px;
-  margin: 0 0 22px;
+  margin: 0 0 12px;
 }
 
 .vn-card {
