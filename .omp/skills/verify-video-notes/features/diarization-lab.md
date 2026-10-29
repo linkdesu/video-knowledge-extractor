@@ -41,13 +41,15 @@ $V snapshot r48-lab-dev
 - `lab-progress` 显示导入阶段（抽音频 / 分离 / 嵌入 / 段级解码）；导入期间不要另开 Lab 导入，也不要同时跑生成任务（本机模型严格串行，主进程会拒绝）。
 - 阈值验证：`$V eval "performance.now()"` 前后各读一次过滤行数，或直接断言 `lab-summary` 文本在两个阈值下不同。
 - 标记持久化：打完 `lab-mark-B` 后 `down` + 新 run id 复用同一 `--home`/`--user-data`，重开页面断言按钮仍高亮。
-- 打包版证明：`verify.ts up --app "tmp/<install>/Video Notes.app" --no-build`，断言 `nav-lab` 不存在、`window.vnote.lab === undefined`、`vnote-media://lab/<id>` 返回 404。
+- 打包版证明：`verify.ts up --app "/Applications/Video Notes.app" --no-build`，断言 `nav-lab` 不存在、`window.vnote.lab === undefined`、`vnote-media://lab/<id>` 的 fetch 直接失败（协议 handler 未注册，返回 ERR_FAILED 而不是 404）。
 
 ## Gotchas
 
 - **Lab 的音频协议只读 `audio.wav`**：`vnote-media://lab/<id>` 固定映射 `<labRoot>/<id>/audio.wav`，样本没有音频时页面禁用播放。
 - **实验目录必须带 `segtext-*.json`**：只有 `labels-*.json` 的目录会被拒绝（缺段级文本无法判语气词）。
 - **`refine` 与语气词规则只存在于 Lab**：`apps/desktop/src/main/dev-lab/` 与 `shared/lab-*.ts`，不进入 `packages/core` 正式管线；不要在视频页断言同样的聚类数。
+- **打包版首帧可能超过 20s**：`up --app` 的就绪等待写死 20s，实测安装包首次启动约 16s、冷启更久；超时后可用 CDP 直连同一个安装包补证据（r48 实测 `nav-lab=false`、`vnote.lab=undefined`）。
 - **`refine` 是自适应 k**：`cut 0.65` 只是种子 < 8 时的回退值；30 分钟样本上是 BIC + silhouette 选出 7 簇，不能拿固定切点解释。
 - **主播簇数依赖样本自带锚点**：只有实验目录里带 `gt-anchors*.json` 时摘要才显示 `主播簇 A→B`，否则是 `—`。
+- **播放不用 media fragment**：自定义 scheme 上 `<audio src="…#t=start,end">` 实测 error 4，改为 seek 到行首 + `timeupdate` 自动停。
 - **样本目录在仓库 `tmp/verify/lab/`**：不进笔记库、不受 `VNOTE_HOME` 隔离；清理由人工删除。
