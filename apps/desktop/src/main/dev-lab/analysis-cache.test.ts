@@ -11,6 +11,7 @@ import {
   hashSourcePath,
   labAnalysisKey,
   labAnalysisParams,
+  labProbeDecision,
   newEntryDir,
   probeLabEntry,
   publishEntry,
@@ -287,5 +288,20 @@ describe("Lab 条目自检与原子发布", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("命中判定开关（r55：强制重新生成）", () => {
+  test("默认查缓存", () => {
+    expect(labProbeDecision({ reads: true })).toEqual({ probe: true });
+  });
+
+  test("cold 模式不读，理由 cold", () => {
+    expect(labProbeDecision({ reads: false })).toEqual({ probe: false, reason: "cold" });
+  });
+
+  test("强制重新生成不读，理由 forced（优先于 cold）", () => {
+    expect(labProbeDecision({ reads: true, force: true })).toEqual({ probe: false, reason: "forced" });
+    expect(labProbeDecision({ reads: false, force: true })).toEqual({ probe: false, reason: "forced" });
   });
 });

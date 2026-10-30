@@ -36,7 +36,8 @@ function labApi(): LabApi | undefined {
   return {
     list: () => ipcRenderer.invoke(LAB_IPC.list) as ReturnType<LabApi["list"]>,
     load: (sampleId) => ipcRenderer.invoke(LAB_IPC.load, sampleId) as ReturnType<LabApi["load"]>,
-    importPath: (sourcePath) => ipcRenderer.invoke(LAB_IPC.importPath, sourcePath) as ReturnType<LabApi["importPath"]>,
+    importPath: (sourcePath, options) =>
+      ipcRenderer.invoke(LAB_IPC.importPath, sourcePath, options) as ReturnType<LabApi["importPath"]>,
     marks: (sampleId) => ipcRenderer.invoke(LAB_IPC.marksGet, sampleId) as ReturnType<LabApi["marks"]>,
     saveMarks: (sampleId, marks) => ipcRenderer.invoke(LAB_IPC.marksSet, sampleId, marks) as ReturnType<LabApi["saveMarks"]>,
     onProgress: (listener: (progress: LabProgress) => void) => {

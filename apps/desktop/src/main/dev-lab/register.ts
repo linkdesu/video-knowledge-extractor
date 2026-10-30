@@ -14,6 +14,8 @@ import {
   type LabConfig,
   type LabConfigMeta,
   type LabConfigName,
+  type LabImportOptions,
+  type LabImportResult,
   type LabPayload,
   type LabProgress,
   type LabSampleMeta,
@@ -25,12 +27,14 @@ import {
   hashSourcePath,
   labAnalysisKey,
   labAnalysisParams,
+  labProbeDecision,
   newEntryDir,
   probeLabEntry,
   publishEntry,
   sweepTempEntries,
   type LabAnalysisStamp,
 } from "./analysis-cache";
+import { evictLabCache, labCacheLimits, removeDuplicateSources, type LabCacheLimits } from "./cache-maintenance";
 import type { LabCachePlan } from "./cache-mode";
 import { createLabWorkerHost, type LabRunMessage, type LabWorkerProcess } from "./lab-worker-host";
 import { migrateLegacyEntries } from "./legacy-migrate";
@@ -53,6 +57,8 @@ export type LabRuntimeOptions = {
   isPackaged?: boolean;
   /** 测试注入：默认 `utilityProcess.fork(lab-worker.js)`。 */
   fork?: () => LabWorkerProcess;
+  /** 缓存上限（r55）；默认读 `VNOTE_LAB_CACHE_MAX_*` 环境变量，再退回 LAB_CACHE_LIMITS。 */
+  limits?: LabCacheLimits;
 };
 
 type RunningImport = {
@@ -72,8 +78,24 @@ export function createLabRuntime(options: LabRuntimeOptions) {
   // 崩溃残留的半成品目录（.tmp 下超过一天）在启动时回收；键路径上的条目永远只可能是完整的。
   const swept = sweepTempEntries(root);
   if (swept.length > 0) logger().info("app", "Lab 缓存：回收残留临时目录", { count: swept.length, names: swept });
+  const limits = options.limits ?? labCacheLimits(process.env);
   // 启动时就打印模式与目录（不打印任何密钥）：判断「为什么没命中」第一步看这里。
-  logger().info("app", "Lab 缓存就绪", { mode, root, sharedRoot, reads });
+  logger().info("app", "Lab 缓存就绪", { mode, root, sharedRoot, reads, limits });
+  // r55：共享目录被所有 worktree 共用，启动时先按上限淘汰一轮（isolated 是每次新建的空目录，没必要）。
+  if (sharedRoot !== null) {
+    const evicted = evictLabCache(root, limits, Date.now());
+    if (evicted.evict.length > 0 || evicted.failed.length > 0) {
+      logger().info("app", "Lab 缓存：按上限淘汰旧条目", {
+        root,
+        removed: evicted.evict.length,
+        removedBytes: evicted.evict.reduce((sum, entry) => sum + entry.bytes, 0),
+        reasons: evicted.evict.map((entry) => entry.reason),
+        kept: evicted.kept,
+        keptBytes: evicted.keptBytes,
+        failed: evicted.failed,
+      });
+    }
+  }
   if (reads && options.legacyRoot !== undefined && existsSync(options.legacyRoot)) {
     // 搬运放在下一个宏任务：条目可能几十上百 MB，不能挡首帧。只复制、不删旧目录。
     setImmediate(() => {
@@ -172,7 +194,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
     };
   };
 
-  const startImport = async (sourcePath: string): Promise<{ sampleId: string }> => {
+  const startImport = async (sourcePath: string, force: boolean): Promise<LabImportResult> => {
     if (options.isBusy()) throw new Error("生成任务正在跑；本机模型要串行，Lab 导入等任务结束再试");
     const started = Date.now();
     // 大文件的内容指纹要读全片：先给页面一条「读取」进度，避免看起来卡死（命中后由 save 清掉）。
@@ -184,21 +206,25 @@ export function createLabRuntime(options: LabRuntimeOptions) {
     const params = labAnalysisParams({ mode: source.mode, modelDir });
     const key = labAnalysisKey(params, source.hash);
     const hashMs = Date.now() - started;
-    // cold：不读任何已有条目（全部重算），但仍写回共享目录；isolated/shared 正常查。
-    const probe = reads ? probeLabEntry(root, key, source.mode) : { hit: null, reason: "cold" };
+    // cold / 强制重新生成：都不读已有条目，区别只在日志里的 reason；结果仍写回 root（覆盖旧条目）。
+    const decision = labProbeDecision({ reads, force });
+    const probe = decision.probe ? probeLabEntry(root, key, source.mode) : { hit: null, reason: decision.reason };
     if (probe.hit !== null) {
-      // 命中：只有哈希与一次目录自检，没有 worker、没有模型加载、没有解码。
-      logger().info("app", "Lab 分析缓存命中", {
+      const elapsedMs = Date.now() - started;
+      // 命中：只有哈希与一次目录自检 —— 未加载模型、未解码音频（r55 起文案直说，不再只靠 0 计数）。
+      logger().info("app", "Lab 分析缓存命中：未加载模型、未解码音频", {
         key,
         cacheMode: mode,
         root,
         sourceMode: source.mode,
         reason: probe.reason,
+        modelLoads: 0,
+        decodedSegments: 0,
         hashMs,
-        elapsedMs: Date.now() - started,
+        elapsedMs,
       });
       options.send({ sampleId: key, step: "save", done: 1, total: 1, detail: null });
-      return { sampleId: key };
+      return { sampleId: key, hit: true, reason: probe.reason, hashMs, elapsedMs, sourceHash: source.hash };
     }
     logger().info("app", "Lab 分析缓存未命中", {
       key,
@@ -206,6 +232,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
       root,
       sourceMode: source.mode,
       reason: probe.reason,
+      forced: force,
       hashMs,
       sourceHash: source.hash,
     });
@@ -222,7 +249,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
       name: name.replace(/\.[^.]+$/, ""),
       analysis,
     };
-    // 键做样本 id：参数或内容一变就是另一个条目，旧条目原样留着（后续切片再做清理/共享）。
+    // 键做样本 id：参数或内容一变就是另一个键（r55：发布后同内容的旧键会被去重删掉）。
     const sampleId = key;
     const state: RunningImport = { sampleId };
     running = state;
@@ -232,15 +259,35 @@ export function createLabRuntime(options: LabRuntimeOptions) {
       await host.run({ message, onProgress: options.send });
       // 整个目录 rename 到键路径：中途失败/取消的目录永远不会被当成命中。
       publishEntry(root, key, dir);
+      const elapsedMs = Date.now() - started;
       logger().info("app", "Lab 分析缓存已写入", {
         key,
         cacheMode: mode,
         root,
         sourceMode: source.mode,
-        analysisMs: Date.now() - started - hashMs,
-        elapsedMs: Date.now() - started,
+        forced: force,
+        analysisMs: elapsedMs - hashMs,
+        elapsedMs,
       });
-      return { sampleId };
+      if (sharedRoot !== null) {
+        // r55：同一份内容只留一份（旧键是模型 mtime/schema 变了留下的重复），再按上限淘汰。
+        const duplicates = removeDuplicateSources(root, source.hash, key);
+        if (duplicates.length > 0) {
+          logger().info("app", "Lab 缓存：同内容旧条目已删除", { root, sourceHash: source.hash, keep: key, removed: duplicates });
+        }
+        const evicted = evictLabCache(root, limits, Date.now(), [key]);
+        if (evicted.evict.length > 0 || evicted.failed.length > 0) {
+          logger().info("app", "Lab 缓存：按上限淘汰旧条目", {
+            root,
+            removed: evicted.evict.length,
+            reasons: evicted.evict.map((entry) => entry.reason),
+            kept: evicted.kept,
+            keptBytes: evicted.keptBytes,
+            failed: evicted.failed,
+          });
+        }
+      }
+      return { sampleId, hit: false, reason: probe.reason, hashMs, elapsedMs, sourceHash: source.hash };
     } catch (err) {
       discardEntryDir(dir);
       logger().warn("app", "Lab 分析失败，丢弃半成品", { key, cacheMode: mode, elapsedMs: Date.now() - started });
@@ -251,12 +298,12 @@ export function createLabRuntime(options: LabRuntimeOptions) {
   };
 
   /** 导入入口：同步占位再进 startImport —— 槽位为空才允许开始，第二个并发请求直接拒绝。 */
-  const importPath = async (sourcePath: string): Promise<{ sampleId: string }> => {
+  const importPath = async (sourcePath: string, importOptions: LabImportOptions = {}): Promise<LabImportResult> => {
     if (!existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`);
     if (running !== null || starting !== null) throw new Error("Lab 已有导入在跑，等它结束");
     starting = sourcePath;
     try {
-      return await startImport(sourcePath);
+      return await startImport(sourcePath, importOptions.force === true);
     } finally {
       starting = null;
     }
@@ -270,7 +317,9 @@ export function createLabRuntime(options: LabRuntimeOptions) {
       if (!isLabSampleId(sampleId)) throw new Error("非法的样本 id");
       return load(sampleId);
     });
-    ipcMain.handle(LAB_IPC.importPath, (_e: IpcMainInvokeEvent, sourcePath: string) => importPath(sourcePath));
+    ipcMain.handle(LAB_IPC.importPath, (_e: IpcMainInvokeEvent, sourcePath: string, importOptions?: LabImportOptions) =>
+      importPath(sourcePath, importOptions ?? {}),
+    );
     ipcMain.handle(LAB_IPC.marksGet, (_e: IpcMainInvokeEvent, sampleId: string) => {
       if (!isLabSampleId(sampleId)) throw new Error("非法的样本 id");
       return readMarks(root, sampleId);
@@ -295,7 +344,7 @@ export type LabRuntime = {
   register(): void;
   dispose(): void;
   load(sampleId: string): LabPayload;
-  importPath(sourcePath: string): Promise<{ sampleId: string }>;
+  importPath(sourcePath: string, options?: LabImportOptions): Promise<LabImportResult>;
   /** 当前活着的 worker 数（验收：连续未命中后必须回到 0）。 */
   liveWorkers(): number;
   marksPath(sampleId: string): string;

@@ -70,6 +70,26 @@ export type LabProgress = {
 export type LabMark = "A" | "B" | "both";
 export type LabMarks = Record<string, LabMark>;
 
+/** 一次导入的缓存结果（r55）：界面据此显示「命中 / 未命中」与耗时。 */
+export type LabImportResult = {
+  sampleId: string;
+  /** true = 只读了条目里的 JSON：未加载模型、未解码音频。 */
+  hit: boolean;
+  /** `hit` / `missing` / `cold` / `forced` / 各类自检失败原因（`broken: …` 等）。 */
+  reason: string;
+  /** 计算源内容指纹的耗时（ms）。 */
+  hashMs: number;
+  /** 整个导入的耗时（ms）；命中时是毫秒级，未命中含真实分析。 */
+  elapsedMs: number;
+  /** 源内容指纹：同一指纹在缓存里只保留一份条目。 */
+  sourceHash: string;
+};
+
+export type LabImportOptions = {
+  /** 跳过缓存：不读旧条目，重新分析并用新结果覆盖（r55「强制重新生成」）。 */
+  force?: boolean;
+};
+
 export const LAB_IPC = {
   available: "dev:lab:available",
   list: "dev:lab:list",
@@ -83,7 +103,7 @@ export const LAB_IPC = {
 export type LabApi = {
   list(): Promise<LabSampleMeta[]>;
   load(sampleId: string): Promise<LabPayload>;
-  importPath(sourcePath: string): Promise<{ sampleId: string }>;
+  importPath(sourcePath: string, options?: LabImportOptions): Promise<LabImportResult>;
   onProgress(listener: (progress: LabProgress) => void): () => void;
   marks(sampleId: string): Promise<LabMarks>;
   saveMarks(sampleId: string, marks: LabMarks): Promise<LabMarks>;

@@ -149,6 +149,18 @@ function listDirFiles(root: string, rel = ""): { rel: string; path: string; size
 /** 条目自检结果：`hit` 为 null 时 `reason` 说明为什么按 miss 处理。 */
 export type LabCacheProbe = { hit: { key: string; createdAt: string } | null; reason: string };
 
+/**
+ * 这一跑要不要查缓存（r55）：`cold` 模式与「强制重新生成」都不读已有条目，
+ * 区别只在理由 —— 日志里必须能分辨是模式决定还是用户按了按钮。
+ */
+export type LabProbeDecision = { probe: true } | { probe: false; reason: "cold" | "forced" };
+
+export function labProbeDecision(input: { reads: boolean; force?: boolean }): LabProbeDecision {
+  if (input.force === true) return { probe: false, reason: "forced" };
+  if (!input.reads) return { probe: false, reason: "cold" };
+  return { probe: true };
+}
+
 type EntrySample = {
   id?: string;
   mode?: string;
