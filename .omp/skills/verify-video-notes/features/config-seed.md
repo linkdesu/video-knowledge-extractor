@@ -4,7 +4,7 @@ Every isolated verify run starts with a real LLM endpoint, without ever putting 
 
 ## Sub-features
 
-- `seed-config-on-up` `up` reads `~/.config/video-notes-verify/llm.json` (mac) or `%USERPROFILE%\\.config\\video-notes-verify\\llm.json` (Windows) and writes `<run>/user-data/settings.json` (`version: 3`, `llm.baseUrl` + `llm.model`) and `<run>/user-data/secrets.bin` (`version: 2`, `llm` key), both `0600`; `state.json` records `configSeeded: true`. Existing other settings and secret slots are preserved. Windows runs fetch the file over ssh and write the key file with `icacls /inheritance:r /grant:r "$env:USERNAME:(F)"`.
+- `seed-config-on-up` `up` reads `~/.config/video-notes-verify/llm.json` (mac) or `%USERPROFILE%\\.config\\video-notes-verify\\llm.json` (Windows) and writes `<userData>/settings.json` (`version: 3`, `llm.baseUrl` + `llm.model`) and `<userData>/secrets.bin` (`version: 2`, `llm` key), both `0600`; `<userData>` is `tmp/verify-state/<run>/user-data` — outside the evidence tree (r50). `state.json` records `configSeeded: true`. Existing other settings and secret slots are preserved. Windows runs fetch the file over ssh and write the key file with `icacls /inheritance:r /grant:r "$env:USERNAME:(F)"`.
 - `seed-config` (command) writes the same two files into an existing run's userData (`seed-config --run <id>`); the app must be restarted (`down` then a new `up` with the same `--user-data`) to read them.
 - `export-private-config` (command) one-off exports the installed app's real userData (`~/Library/Application Support/Video Notes`, `%APPDATA%\\Video Notes`) into the private file, printing only the path; never any value.
 - `empty-settings-run` `up --empty-settings` skips seeding and strips ambient `VNOTE_LLM_*` / `IDEALSOFT_*` from the child, so `settings().llm` reads `{configured:false, keySource:"none"}`. Feature docs that need it carry `requires: empty-settings`.
@@ -15,7 +15,7 @@ Every isolated verify run starts with a real LLM endpoint, without ever putting 
 ## How to get to it (user POV)
 
 - These are helper commands, not app UI. The app sees a normal settings page: 设置 → LLM shows the seeded endpoint/model and a saved key (`settings-llm-key-saved`).
-- Seeding never touches the user's real app data: it writes only inside `tmp/verify/<run>/user-data`.
+- Seeding never touches the user's real app data: it writes only inside the run's userData, `tmp/verify-state/<run>/user-data` — never inside `tmp/verify` (r50: an explicit `--user-data` there is refused, and the evidence tree is scanned for `secrets.bin`).
 
 ## Driving it with verify.ts
 
@@ -31,8 +31,8 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts export-private-config --tar
 
 # 2) a normal run seeds itself
 bun .omp/skills/verify-video-notes/scripts/verify.ts up --run r45c-seed --model-dir /Users/link/Documents/video-notes/models
-# stdout contains: config:   seeded <private path> -> <run>/user-data/settings.json + secrets.bin (0600)
-ls -l tmp/verify/r45c-seed/user-data/settings.json tmp/verify/r45c-seed/user-data/secrets.bin   # both -rw-------
+# stdout contains: config:   seeded <private path> -> <userData>/settings.json + secrets.bin (0600)
+ls -l tmp/verify-state/r45c-seed/user-data/settings.json tmp/verify-state/r45c-seed/user-data/secrets.bin   # both -rw-------
 python3 -c "import json;print(json.load(open('tmp/verify/r45c-seed/state.json')).get('configSeeded'))"   # True
 $V eval "window.vnote.settings().then(s => ({ configured: s.llm.configured, hasKey: s.llm.hasKey, keySource: s.llm.keySource }))"
 # expected: { configured: true, hasKey: true, keySource: "stored" }
@@ -41,7 +41,7 @@ $V eval "window.vnote.settings().then(s => ({ configured: s.llm.configured, hasK
 bun .omp/skills/verify-video-notes/scripts/verify.ts up --run r45c-empty --empty-settings --port 9412 --model-dir /Users/link/Documents/video-notes/models
 $V eval "window.vnote.settings().then(s => ({ configured: s.llm.configured, hasKey: s.llm.hasKey, keySource: s.llm.keySource, error: s.llm.error }))"
 # expected: { configured: false, hasKey: false, keySource: "none", error: "LLM 未配齐：接口地址、API key" }
-ls tmp/verify/r45c-empty/user-data | grep -E 'settings.json|secrets.bin'   # expected: no output
+ls tmp/verify-state/r45c-empty/user-data | grep -E 'settings.json|secrets.bin'   # expected: no output
 
 # 4) seed an existing run, then restart it
 bun .omp/skills/verify-video-notes/scripts/verify.ts seed-config --run r45c-empty

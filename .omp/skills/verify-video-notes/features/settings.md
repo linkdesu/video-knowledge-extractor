@@ -153,7 +153,7 @@ $V wait "window.vnote.settings().then(s => s.llm.model !== null && s.llm.model =
 # expected: condition met, not a timeout
 $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model, hasKey: s.llm.hasKey }))"
 # expected: { "baseUrl": "<origin>+<pathname of $ENDPOINT>", "model": "<model>", "hasKey": true }
-cat tmp/verify/<run>/user-data/settings.json
+cat tmp/verify-state/<run>/user-data/settings.json
 # expected: "llm" contains "baseUrl": "<same as the settings() readback>" and "model": "<model>"
 # 7) the key landed in the 0600 key file; the input keeps it (masked) and the hint flips
 $V eval "document.querySelector('[data-testid=settings-llm-key-input]').value"
@@ -188,21 +188,21 @@ Note on `settings().llm.baseUrl`: the preload bridge returns the effective base 
 
 ### Recipe: restart persistence
 
-`up` refuses an existing run id, so the restart is a new id plus the old state directories (settings.json and secrets.bin live in the run's `user-data`):
+`up` refuses an existing run id, so the restart is a new id plus the old state directories (settings.json and secrets.bin live in the run's userData, `tmp/verify-state/<run>/user-data` — outside the evidence tree, r50):
 
 ```bash
 R1=$(cat tmp/verify/latest)   # the run that completed the closed loop
 bun .omp/skills/verify-video-notes/scripts/verify.ts down --run $R1
 MODELDIR=$(python3 -c "import json; print(json.load(open('tmp/verify/$R1/state.json'))['modelDir'])")
 bun .omp/skills/verify-video-notes/scripts/verify.ts up --run $R1-restart --port 9412 \
-  --user-data tmp/verify/$R1/user-data --home tmp/verify/$R1/home --model-dir "$MODELDIR"
+  --user-data tmp/verify-state/$R1/user-data --home tmp/verify/$R1/home --model-dir "$MODELDIR"
 ```
 
 `up` already waited for the usable renderer; then assert the values and the process:
 
 ```bash
 $V eval "window.vnote.settings().then(s => ({ baseUrl: s.llm.baseUrl, model: s.llm.model, hasKey: s.llm.hasKey }))"
-# expected: identical to the pre-restart readback; llm.model equals the file's llm.model in tmp/verify/$R1/user-data/settings.json
+# expected: identical to the pre-restart readback; llm.model equals the file's llm.model in tmp/verify-state/$R1/user-data/settings.json
 bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run $R1-restart
 # expected: exit 0 — the first check is that the process from state.json is alive and is the executable recorded in state.json (a packaged app's process name is not Electron)
 ```
@@ -345,7 +345,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --app "tmp/r30-install/V
 2. `$V shot pkg-llm-saved` (settings page with the saved endpoint + model), then run 「restart persistence」 with `$R1=pkg-r30`, adding `--app "tmp/r30-install/Video Notes.app" --min-path` to the second `up`.
 3. `$V shot pkg-restart`, `$V snapshot pkg-restart`, `doctor` exit 0 for both runs.
 
-Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
+Evidence for the run pair: `tmp/verify/pkg-r30/pkg-llm-saved.png`, `pkg-llm-saved.aria.txt`, the shared `tmp/verify-state/pkg-r30/user-data/settings.json`, `pkg-restart.png`, both `app.log`s. Without a saved value, the 设置 form (key field recipe) is the packaged app's only credential path and must be part of the loop.
 
 ### Recipe: LLM 提示词保存 / 恢复默认 / 重启保留（r46/r47，mac + Windows）
 
@@ -363,7 +363,7 @@ $V click '[data-testid=prompt-save-host-detect]'
 $V wait "document.querySelector('[data-testid=prompt-status-host-detect]').innerText === '已保存'" --timeout 5000
 $V eval "window.vnote.prompts().then(p => p.find(x => x.id === 'host-detect').customized)"
 # expected: true
-cat "tmp/verify/<run>/user-data/prompts.json"
+cat "tmp/verify-state/<run>/user-data/prompts.json"
 # expected: {"version":1,"prompts":{"host-detect":"<custom text …>"}}
 # 2) invalid template is rejected and does not persist
 $V fill '[data-testid=prompt-editor-segment-chunk]' 'oops {{NOPE}}'
