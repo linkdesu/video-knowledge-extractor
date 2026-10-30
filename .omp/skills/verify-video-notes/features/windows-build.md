@@ -59,3 +59,27 @@ For the official r42 report, the run id is `r42-<slug>` and every artifact is re
 - Every code update round must increment the workspace version and run `bun run install:local` so both macOS (`/Applications/Video Notes.app`) and Windows `gamepc` (`D:\code\video-notes\app\Video Notes.exe`, pointed to by Desktop and Start Menu shortcuts) are updated to the new version.
 - When `verify.ts up --target win-gamepc --install-dir <custom>` is used for a custom directory gate, `verify.ts down` automatically restores the Desktop and Start Menu `Video Notes.lnk` shortcuts back to `D:\code\video-notes\app\Video Notes.exe`.
 - `windows-build.yml` 的 `push.branches` 同时匹配斜杠与横杠两种命名（`feat/**`、`fix/**`、`feat-*`、`fix-*`，r57）：仓库实际用 `feat-r54-…` / `fix-r57-…`，只写 `feat/**` 时这类分支推送不会跑 Windows 构建。
+
+## Installed-app acceptance (r64)
+
+The release gate now also proves the **installed** app, not only a verify run against `--app`/`apps/desktop/out`: the four journeys below all run against `D:\code\video-notes\app\Video Notes.exe`, the exe a user actually double-clicks.
+
+### exe properties carry the app version
+
+`electron-builder.yml` must keep `win.signAndEditExecutable` at its default (true). With `false` the packaged `Video Notes.exe` kept Electron's own version resource, so 属性 → 详细信息 showed Electron's version instead of the app's. `bun run install:local` gates it: the PowerShell side reads `(Get-Item '<installDir>\Video Notes.exe').VersionInfo.FileVersion` / `ProductVersion`, and `assertExeVersionMatches` (`apps/desktop/src/main/release-version.ts`) compares both against `apps/desktop/package.json#version` — a four-part read-back such as `0.1.23.0` counts as equal. The setup exe's FileVersion is printed for the report but is not a gate.
+
+```bash
+ssh gamepc "pwsh -NoProfile -Command \"(Get-Item 'D:\\code\\video-notes\\app\\Video Notes.exe').VersionInfo | Select-Object FileVersion,ProductVersion | ConvertTo-Json -Compress\""
+# expected: {"FileVersion":"<version>","ProductVersion":"<version>"} (or a four-part form of it)
+```
+
+### The four journeys
+
+Run them in order against the installed exe, one at a time (the local ASR model and the in-app LLM are single-flight):
+
+1. **Import → notes** — `verify.ts up --target win-gamepc --app "D:\code\video-notes\app\Video Notes.exe"`, drop `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, 确认主题, 生成笔记, then assert the 笔记 page and `<home>\<video>\topic.md` + `topic.mp4`.
+2. **Refresh** — `$V eval "location.reload(); true"`, wait for `[data-testid=nav-library]`, reopen the video and assert the notes/主题 survive (`getVideo(id)` still has the topics).
+3. **Close window** — `$V eval "window.close(); true"`; the main process quits (`window-all-closed` → `app.quit()`), so `Get-Process -Id <state.pid>` over ssh throws and `app.log` carries 「所有窗口已关闭，退出应用」. This is the only way a CI-less run proves 关窗 does not leave a zombie process holding the single-instance lock.
+4. **Cold starts** — `packaged-launch.ts --target win-gamepc --app "D:\code\video-notes\app\Video Notes.exe" --runs 5 --run <run>`; every launch must render the library with `settings().appVersion === <version>`.
+
+Evidence lands in `tmp/verify/<run>/win/` (screenshots, aria trees, `app.log`, pulled artifacts) and `tmp/verify/<run>/summary.json` for the cold-start gate. The report cites the exact paths, the exe version read-back and the run ids.

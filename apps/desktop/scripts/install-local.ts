@@ -3,7 +3,7 @@
  * 双机本地安装脚本：
  * 1. 校验 package.json / apps/desktop / apps/cli / packages/core 版本号一致（可选校验相对基准 git ref 已递增）；
  * 2. 构建并重装 macOS 应用到 /Applications/Video Notes.app（清除 quarantine + ad-hoc 签名并校验 CFBundleShortVersionString）；
- * 3. 将对应版本的 Windows NSIS 安装包静默重装到 gamepc 的 D:\code\video-notes\app（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致）。
+ * 3. 将对应版本的 Windows NSIS 安装包静默重装到 gamepc 的 D:\code\video-notes\app（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致，以及 Video Notes.exe 属性页的 FileVersion/ProductVersion 等于 package.json 版本 —— r64）。
  *    CI 产物按「当前提交 + 当前 package 版本」对齐：只下载 headSha === HEAD 的成功 windows-build 运行，
  *    产物版本不符直接失败，等不到就超时报错，绝不回退去装旧提交/旧版本的包（r61 / #81）。
  *
@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  assertExeVersionMatches,
   assertVersionBumped,
   assertWorkspaceVersionsMatch,
 } from "../src/main/release-version";
@@ -603,12 +604,20 @@ if ([string]$asarPkg.version -ne $expectedVersion) {
   throw "app.asar 内 package.json 的 version ($($asarPkg.version)) 未匹配 $expectedVersion"
 }
 
+# 校验 4：exe 属性页版本资源（r64）。FileVersion / ProductVersion 由 electron-builder 写入，
+# 只有 win.signAndEditExecutable 打开（默认）才有；这里只读，判定在 TypeScript 侧统一做。
+$targetVersionInfo = (Get-Item -LiteralPath $targetExe).VersionInfo
+$installerVersionInfo = (Get-Item -LiteralPath $installer).VersionInfo
+
 $llmAfter = Get-LlmFingerprint
 [pscustomobject]@{
   exePath = $targetExe
   previousInstalledVersion = $previousVersion
   installedVersion = $reg.DisplayVersion
   uninstallerVersion = $uninstVer
+  appExeFileVersion = $targetVersionInfo.FileVersion
+  appExeProductVersion = $targetVersionInfo.ProductVersion
+  installerFileVersion = $installerVersionInfo.FileVersion
   desktopShortcutTarget = $wsh.CreateShortcut($shortcuts[0]).TargetPath
   startMenuShortcutTarget = $wsh.CreateShortcut($shortcuts[1]).TargetPath
   llmBefore = $llmBefore
@@ -629,11 +638,22 @@ $llmAfter = Get-LlmFingerprint
     previousInstalledVersion: string | null;
     installedVersion: string;
     uninstallerVersion: string;
+    appExeFileVersion: string | null;
+    appExeProductVersion: string | null;
+    installerFileVersion: string | null;
     desktopShortcutTarget: string;
     startMenuShortcutTarget: string;
     llmBefore: { configured: boolean; model: string | null };
     llmAfter: { configured: boolean; model: string | null };
   };
+  assertExeVersionMatches(
+    { fileVersion: parsed.appExeFileVersion, productVersion: parsed.appExeProductVersion },
+    version,
+  );
+  console.log(
+    `[win] exe 版本资源：FileVersion=${parsed.appExeFileVersion ?? "null"} ProductVersion=${parsed.appExeProductVersion ?? "null"}` +
+      `（安装包 FileVersion=${parsed.installerFileVersion ?? "null"}）`,
+  );
   const llm = assertLlmConfigPreserved(parsed.llmBefore, parsed.llmAfter, "Windows");
   console.log(`[win] LLM 配置：升级前 ${fmtFingerprint(parsed.llmBefore)} → 升级后 ${fmtFingerprint(parsed.llmAfter)}${llm.checked ? "（已校验保留）" : "（升级前未配置，跳过校验）"}`);
   return { ...parsed, llm };

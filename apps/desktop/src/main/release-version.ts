@@ -45,3 +45,36 @@ export function assertVersionBumped(previous: string, current: string): void {
     throw new Error(`版本号未递增：当前版本 ${current} 必须大于上一版本 ${previous}`);
   }
 }
+
+/**
+ * Windows PE 版本资源读回来可能是 `0.1.23` 也可能是四段 `0.1.23.0`，按段比较、末尾零忽略。
+ * 非数字段返回 null（调用方按不匹配处理）。r64：exe 属性页的版本号必须等于 package.json 版本。
+ */
+function windowsVersionParts(value: string): number[] | null {
+  const text = value.trim();
+  if (!/^\d+(?:\.\d+)*$/.test(text)) return null;
+  const parts = text.split(".").map(Number);
+  while (parts.length > 3 && parts[parts.length - 1] === 0) parts.pop();
+  return parts;
+}
+
+export function assertExeVersionMatches(
+  actual: { fileVersion: string | null; productVersion: string | null },
+  expected: string,
+): void {
+  const want = windowsVersionParts(expected);
+  if (want === null) throw new Error(`期望版本号不是数字段格式：${expected}`);
+  const mismatches: string[] = [];
+  for (const [label, value] of [
+    ["FileVersion", actual.fileVersion],
+    ["ProductVersion", actual.productVersion],
+  ] as const) {
+    const got = value === null ? null : windowsVersionParts(value);
+    if (got === null || got.length !== want.length || want.some((part, i) => part !== got[i])) {
+      mismatches.push(`${label}=${value ?? "null"}`);
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(`exe 版本资源与 package.json 不一致：期望 ${expected}，实际 ${mismatches.join("，")}`);
+  }
+}

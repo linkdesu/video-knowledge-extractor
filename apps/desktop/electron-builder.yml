@@ -29,9 +29,9 @@ win:
     - target: nsis
       arch:
         - x64
-  # 仓库暂无图标：icon 键省略；NSIS 签名占位关闭
+  # 仓库暂无图标：icon 键省略。r64：不再关闭 signAndEditExecutable——只有它打开，
+  # 打包器才会把 package.json 的 version 写进 Video Notes.exe 的版本资源（属性页 FileVersion/ProductVersion）。
   artifactName: "${productName}-${version}-setup.${ext}"
-  signAndEditExecutable: false
 
 nsis:
   oneClick: false
