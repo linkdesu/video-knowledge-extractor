@@ -147,7 +147,7 @@ export {
 export type { CorrectionFileEntry } from "./core/corrections-io";
 export { probeVideo, parseProbeJson, planChunks, assertAudioDecodable, AUDIO_UNDECODABLE_ERROR } from "./core/audio";
 export type { ProbeResult, ChunkLimits } from "./core/audio";
-export { detectSilences, extractAudio } from "./core/audio";
+export { detectSilences, extractAudio, SILENCE_DETECTION } from "./core/audio";
 export type { Silence } from "./core/audio";
 export { createAsrEngine } from "./asr/engine";
 export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOptions } from "./asr/engine";
@@ -155,8 +155,8 @@ export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOpti
 export { assignSpeakers, buildSpans, splitSpan } from "./asr/utterances";
 export type { UtteranceSpan } from "./asr/utterances";
 export { ASR_MAX_UTTERANCE_SECONDS, DIARIZATION_MODEL_ID } from "./core/config";
-export { createTranscriber, resolveModelPaths, readWav, DIARIZATION_TUNING } from "./asr/sherpa";
-export type { DiarizationSegment, Transcriber } from "./asr/sherpa";
+export { createTranscriber, resolveModelPaths, readWav, DIARIZATION_TUNING, modelFileSpecs } from "./asr/sherpa";
+export type { DiarizationSegment, Transcriber, ModelRole } from "./asr/sherpa";
 export {
   MODEL_BUNDLES,
   MODEL_LOCK_FILE,

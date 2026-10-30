@@ -49,8 +49,11 @@ export type SherpaPaths = {
   punctuation: string;
 };
 
+/** 本地模型的角色名；模型文件清单与缓存键都按它对齐。 */
+export type ModelRole = "asr-model" | "asr-tokens" | "diarization" | "speaker-embedding" | "punctuation";
+
 // 模型文件清单是单一事实源：环境快照（core/environment）从这里取，不重复维护
-export function modelFileSpecs(modelDir: string): { role: "asr-model" | "asr-tokens" | "diarization" | "speaker-embedding" | "punctuation"; path: string }[] {
+export function modelFileSpecs(modelDir: string): { role: ModelRole; path: string }[] {
   return [
     { role: "asr-model", path: join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx") },
     { role: "asr-tokens", path: join(modelDir, "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "tokens.txt") },

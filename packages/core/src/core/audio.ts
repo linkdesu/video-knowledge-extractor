@@ -138,9 +138,13 @@ export async function assertAudioDecodable(videoPath: string, wavPath: string): 
   }
 }
 
+/** silencedetect 的参数；Lab 分析缓存键取它，改阈值必须换键。 */
+export const SILENCE_DETECTION = { noiseDb: -27, minSilenceSeconds: 0.25 } as const;
+
 /** silencedetect 找出停顿区间。 */
 export async function detectSilences(wavPath: string): Promise<Silence[]> {
-  const { stderr } = await run(["ffmpeg", "-i", wavPath, "-af", "silencedetect=noise=-27dB:d=0.25", "-f", "null", "-"], {
+  const filter = `silencedetect=noise=${SILENCE_DETECTION.noiseDb}dB:d=${SILENCE_DETECTION.minSilenceSeconds}`;
+  const { stderr } = await run(["ffmpeg", "-i", wavPath, "-af", filter, "-f", "null", "-"], {
     label: `silencedetect ${wavPath}`,
   });
   const silences: Silence[] = [];
