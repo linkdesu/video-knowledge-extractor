@@ -120,7 +120,7 @@ describe("ensureElectronBinary", () => {
       message = err instanceof Error ? err.message : String(err);
     }
     expect(message).toContain("bun install");
-    expect(message).toContain("node_modules/electron");
+    expect(message).toContain(join("node_modules", "electron"));
   });
 
   test("install.js 失败：错误里带 stderr 尾巴和手抄命令", () => {
