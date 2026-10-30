@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { latestPointerProblem } from "./lib/latest";
-import { findSecretFiles } from "./lib/secrets-gate";
+import { scanSecretFiles } from "./lib/secrets-gate";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
 const SCRIPT = join(import.meta.dirname, "verify.ts");
@@ -92,7 +92,8 @@ describe("verify.ts --run 的 id 门禁", () => {
     expect(snapshot()).toEqual(before);
     // 干净的证据树（无密钥、latest 不是 run 目录、同名 run 不存在）上，失败点应当是 userData 边界：
     // 这条断言会随本机历史证据降级，因为前面还有两个门禁也会合法地先拒。
-    const clean = findSecretFiles(VERIFY_ROOT).length === 0 && latestPointerProblem(join(VERIFY_ROOT, "latest")) === null && !existsSync(join(VERIFY_ROOT, id));
+    const scan = scanSecretFiles(VERIFY_ROOT);
+    const clean = scan.found.length === 0 && scan.unreadable.length === 0 && latestPointerProblem(join(VERIFY_ROOT, "latest")) === null && !existsSync(join(VERIFY_ROOT, id));
     if (clean) expect(stderr).toContain("userData 不能落在证据目录内");
   });
 
