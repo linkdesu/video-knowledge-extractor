@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { labCacheModeArg, resolveLabCache, sharedLabCacheRoot } from "./cache-mode";
 
 function sandbox(): { root: string; cleanup(): void } {
@@ -87,8 +87,9 @@ describe("Lab 缓存模式解析", () => {
   });
 
   test("共享根随 XDG_CACHE_HOME / HOME 变化", () => {
-    expect(sharedLabCacheRoot({ HOME: "/home/link" })).toBe("/home/link/.cache/video-notes/lab-cache");
-    expect(sharedLabCacheRoot({ HOME: "/home/link", XDG_CACHE_HOME: "/cache" })).toBe("/cache/video-notes/lab-cache");
-    expect(sharedLabCacheRoot({ HOME: "/home/link", VNOTE_LAB_CACHE_DIR: "/explicit/lab" })).toBe("/explicit/lab");
+    // 期望值用 join/resolve 拼：Windows 上路径分隔符不同，写死 POSIX 字符串会在 CI 上挂。
+    expect(sharedLabCacheRoot({ HOME: "/home/link" })).toBe(join("/home/link", ".cache", "video-notes", "lab-cache"));
+    expect(sharedLabCacheRoot({ HOME: "/home/link", XDG_CACHE_HOME: "/cache" })).toBe(join("/cache", "video-notes", "lab-cache"));
+    expect(sharedLabCacheRoot({ HOME: "/home/link", VNOTE_LAB_CACHE_DIR: "/explicit/lab" })).toBe(resolve("/explicit/lab"));
   });
 });
