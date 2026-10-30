@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, sta
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
+import { writeLatestPointer } from "./lib/latest";
 import { findSecretFiles, isInside } from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
@@ -880,7 +881,7 @@ async function up(args: string[]): Promise<void> {
   }
 
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
-  writeFileSync(LATEST, `${runId}\n`);
+  writeLatestPointer(LATEST, runId);
   console.log(`run:      ${runDir}`);
   console.log(`port:     ${port}`);
   console.log(`pid:      ${child.pid}`);
@@ -1075,7 +1076,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     };
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
     writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
-    writeFileSync(LATEST, `${runId}\n`);
+    writeLatestPointer(LATEST, runId);
     console.log(`run:      ${runDir}`);
     console.log(`port:     ${port}`);
     console.log(`pid:      ${pid} (remote ${sshHost})`);
