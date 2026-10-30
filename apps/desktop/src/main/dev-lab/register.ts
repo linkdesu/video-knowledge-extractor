@@ -92,6 +92,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
         reasons: evicted.evict.map((entry) => entry.reason),
         kept: evicted.kept,
         keptBytes: evicted.keptBytes,
+        marks: evicted.marks,
         failed: evicted.failed,
       });
     }
@@ -283,6 +284,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
             reasons: evicted.evict.map((entry) => entry.reason),
             kept: evicted.kept,
             keptBytes: evicted.keptBytes,
+            marks: evicted.marks,
             failed: evicted.failed,
           });
         }

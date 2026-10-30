@@ -5,14 +5,15 @@
  * 不设上限就会一直变大，所以启动时和每次发布后都按「条数 / 总字节 / 存活时间」淘汰旧条目。
  *
  * 三条不变量：
- * 1. `.tmp`、`marks-*.json` 与非条目文件一律不碰（`.tmp` 的清理归 sweepTempEntries）。
+ * 1. 计划阶段不碰 `.tmp`、`marks-*.json` 与非条目文件（`.tmp` 的清理归 sweepTempEntries）；
+ *    执行阶段删条目时连它的 `marks-<id>.json` 一起删（r57），不留孤儿文件。
  * 2. 刚发布的键（protect）永不淘汰 —— 否则自己算完立刻被自己删掉。
  * 3. 同一份内容（`analysis.sourceHash`）只留一份：发布后删掉旧键的重复条目；
  *    没有 `analysis` 戳的 r53 之前条目无法判定指纹，原样保留。
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isLabSampleId } from "./sample-store";
+import { isLabSampleId, marksPath } from "./sample-store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -61,7 +62,8 @@ export type LabEvictionPlan = {
   totalBytes: number;
 };
 
-export type LabEvictionResult = LabEvictionPlan & { failed: string[] };
+/** `marks` 是随淘汰一起删掉的 marks 文件数（r57：条目没了，标注就不可达）。 */
+export type LabEvictionResult = LabEvictionPlan & { failed: string[]; marks: number };
 
 /** 目录树总字节数；读不了的文件按 0 计（淘汰计划不该因为一个坏文件整轮失败）。 */
 function dirBytes(path: string): number {
@@ -163,9 +165,16 @@ export function evictLabCache(
   const plan = planLabEviction(root, limits, now, protect);
   const removed: LabEviction[] = [];
   const failed: string[] = [];
+  let deadMarks = 0;
   for (const entry of plan.evict) {
     try {
       rmSync(join(root, entry.id), { recursive: true, force: true });
+      // r57 / #74：条目删了，它的 `marks-<id>.json` 就是界面上永远读不到的孤儿文件，跟着删。
+      const marks = marksPath(root, entry.id);
+      if (existsSync(marks)) {
+        rmSync(marks, { force: true });
+        deadMarks++;
+      }
       removed.push(entry);
     } catch {
       failed.push(entry.id);
@@ -175,6 +184,7 @@ export function evictLabCache(
   return {
     evict: removed,
     failed,
+    marks: deadMarks,
     kept: plan.kept,
     keptBytes: plan.keptBytes,
     totalBytes: plan.totalBytes - removedBytes,
