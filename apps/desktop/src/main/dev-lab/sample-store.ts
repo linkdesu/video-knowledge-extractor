@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
 import type { LabMarks, LabSampleMeta } from "../../shared/lab";
+import type { LabAnalysisStamp } from "./analysis-cache";
 import type { EmbeddingRow } from "./refine";
 
 export type LabSampleFile = {
@@ -23,6 +24,8 @@ export type LabSampleFile = {
   anchorsFile: string;
   /** 实验目录模式下的现成标签文件相对名（labels.json）；空串表示按嵌入现算。 */
   labelsFile: string;
+  /** r53 分析缓存戳：键/schema/源内容指纹/规范化参数；r53 之前的旧样本没有。 */
+  analysis?: LabAnalysisStamp;
 };
 
 export type LabSampleData = {

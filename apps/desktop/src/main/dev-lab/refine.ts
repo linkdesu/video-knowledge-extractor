@@ -21,9 +21,12 @@ export type RefineResult = {
 
 export type RefineOptions = { seedSeconds?: number; maxK?: number; fallbackCut?: number };
 
-const DEFAULT_SEED_SECONDS = 1.5;
-const DEFAULT_MAX_K = 12;
-const DEFAULT_FALLBACK_CUT = 0.65;
+/** 二次聚类的默认参数；r53 起也是 Lab 分析缓存键的一部分（maxK = 说话人数上限）。 */
+export const REFINE_DEFAULTS: Required<RefineOptions> = { seedSeconds: 1.5, maxK: 12, fallbackCut: 0.65 };
+
+const DEFAULT_SEED_SECONDS = REFINE_DEFAULTS.seedSeconds;
+const DEFAULT_MAX_K = REFINE_DEFAULTS.maxK;
+const DEFAULT_FALLBACK_CUT = REFINE_DEFAULTS.fallbackCut;
 
 function normalizeVectors(rows: number[][]): Float64Array[] {
   return rows.map((v) => {

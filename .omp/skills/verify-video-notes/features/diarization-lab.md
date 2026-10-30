@@ -5,7 +5,8 @@
 ## Sub-features
 
 - 入口与门禁：左侧导航底部 `nav-lab`（灰色），只在开发模式出现；打包版导航、路由、详情页按钮都不存在。
-- 样本导入：整页接收拖拽。音视频文件走「抽 16k wav → sherpa 分离 → CAM++ 逐段嵌入 → 段级 ASR」，样本落仓库 `tmp/verify/lab/<指纹>/`；含 `segtext-*.json` 的实验目录零计算直接加载。同一指纹二次拖入命中缓存。
+- 样本导入：整页接收拖拽。音视频文件走「抽 16k wav → sherpa 分离 → CAM++ 逐段嵌入 → 段级 ASR」，样本落仓库 `tmp/verify/lab/<键>/`；含 `segtext-*.json` 的实验目录零计算直接加载。同一份内容 + 同一套参数的二次拖入命中缓存（r53，见下）。
+- 分析缓存（r53）：键 = schema + 源内容哈希（文件流式 sha256 / 目录逐个文件哈希）+ 规范化分析参数（五个模型文件的名字与大小/mtime、`segmentPaddingSeconds`、`embedMinSeconds`、`DIARIZATION_TUNING`、`SILENCE_DETECTION`、二次聚类 `seedSeconds`/`maxK`/`fallbackCut`、`speakerCount`）。键即样本 id，条目即样本目录；`sample.json` 的 `analysis` 字段记键/schema/源指纹/参数。命中只读 JSON，不 fork worker、不加载模型、不解码；`sample.json` 必填字段、`segments/segtext/silences/embeddings` 的行数与每行形状、`audio.wav` 的 RIFF/WAVE 头、登记的 `labelsFile`/`anchorsFile` 形状任一不对都按 miss 重算。落盘走 `<labRoot>/.tmp/<键>-XXXXXX` 整目录 rename，失败/取消删临时目录，启动清一天前的残留（`docs/adr/0034-lab-analysis-cache.md`）。
 - 样本切换：顶栏「最近样本」下拉。
 - 方案：A/B 各自可选 `baseline`（sherpa 原始簇）/ `refine`（二次聚类）/ `refine + filter`（整行语气词隐藏）；摘要显示双方说话人数、主播锚点簇数、过滤行数与秒数、两方案不同的行数。
 - 对比时间轴：上下两条色带，每色一个说话人；过滤行灰斜纹；两方案说话人不同的区间在两带之间标红；播放头联动，点色带播放该段。
@@ -58,3 +59,6 @@ $V snapshot r48-lab-dev
 - **主播簇数依赖样本自带锚点**：只有实验目录里带 `gt-anchors*.json` 时摘要才显示 `主播簇 A→B`，否则是 `—`。
 - **播放不用 media fragment**：自定义 scheme 上 `<audio src="…#t=start,end">` 实测 error 4，改为 seek 到行首 + `timeupdate` 自动停。
 - **样本目录在仓库 `tmp/verify/lab/`**：不进笔记库、不受 `VNOTE_HOME` 隔离；清理由人工删除。
+- **缓存命中看键路径上的条目，不看 `.tmp`**：`.tmp/<键>-<pid>-<时间>` 是 worker 的落盘目录，rename 到位才算条目；`.tmp` 下超过一天的东西启动时会被回收（r53）。
+- **重复导入同一份内容不会多一条样本**：键相同即同一条目；r53 之前按路径指纹建的旧目录仍在，同一个源会同时出现旧条目与新条目。
+- **证明命中不用猜**：`verify.ts drive log 40` 里找 `Lab 分析缓存命中 … elapsedMs=<小>`，未命中是 `Lab 分析缓存未命中 … reason="missing"`，两者都带 `key` 与 `hashMs`。
