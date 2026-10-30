@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecretStore, LegacyCipherError, plainFileCodec, type SecretCodec } from "./secrets";
+import { configureLogging, type LogEntry } from "@video-notes/core";
+import { createSecretStore, plainFileCodec, type SecretCodec } from "./secrets";
 
 /** 假 codec：base64「加密」，可注入解密失败，覆盖往返、坏密文、权限、clear，不依赖 Electron。 */
 function fakeCodec(decryptError: string | null = null): SecretCodec {
@@ -170,7 +171,7 @@ describe("createSecretStore", () => {
     const unavailable = { available: () => false, encrypt: (p: string) => Buffer.from(p), decrypt: (c: Buffer) => c.toString() };
     const s2 = createSecretStore({ file, codec: unavailable });
     expect(s2.available()).toBe(false);
-    expect(() => s2.set("llm", "y")).toThrow("系统密钥存储不可用");
+    expect(() => s2.set("llm", "y")).toThrow("本机私有密钥文件不可写，无法保存密钥");
   });
 
   test("all 返回全部五个非空值，给脱敏用", () => {
@@ -201,20 +202,7 @@ describe("createSecretStore", () => {
   });
 });
 
-describe("旧版 safeStorage 密文迁移（r45c）", () => {
-  function legacyCodec(): SecretCodec {
-    return {
-      available: () => true,
-      encrypt: (plain: string) => Buffer.from(`enc:${plain}`, "utf8"),
-      decrypt: (cipher: Buffer) => {
-        if (cipher.subarray(0, 3).toString("utf8") === "v10") throw new LegacyCipherError();
-        const text = cipher.toString("utf8");
-        if (!text.startsWith("enc:")) throw new Error("bad cipher");
-        return text.slice(4);
-      },
-    };
-  }
-
+describe("旧版 safeStorage 密文迁移（r64）", () => {
   function legacyFile(): string {
     const file = tempFile();
     writeFileSync(file, Buffer.from([0x76, 0x31, 0x30, 0x89, 0xfe, 0x00, 0x42]));
@@ -225,41 +213,111 @@ describe("旧版 safeStorage 密文迁移（r45c）", () => {
     return readdirSync(join(file, "..")).filter((name) => name.includes(".legacy-"));
   }
 
-  test("legacyDecrypt 成功：密钥迁回内存并重写为本地 JSON，旧文件留备份", () => {
+  /** 每次断言都拿一份独立日志，不跨用例串味。 */
+  function captureLogs(): LogEntry[] {
+    const entries: LogEntry[] = [];
+    configureLogging({ console: false, tap: (e) => entries.push(e) });
+    return entries;
+  }
+
+  afterEach(() => {
+    configureLogging({ console: false });
+  });
+
+  test("迁移成功：只记 INFO，不再先打「已失效」WARN（r45c GAP-1）", async () => {
     const file = legacyFile();
-    const store = createSecretStore({
-      file,
-      codec: legacyCodec(),
-      legacyDecrypt: () => JSON.stringify({ version: 2, llm: "old-dpapi-key" }),
-    });
+    const store = createSecretStore({ file, codec: plainFileCodec });
+    const entries = captureLogs();
+    const result = await store.migrateLegacy(async () => JSON.stringify({ version: 2, llm: "old-dpapi-key" }));
+    expect(result).toBe("migrated");
     expect(store.get("llm")).toBe("old-dpapi-key");
     expect(store.error()).toBe(null);
     expect(backups(file)).toHaveLength(1);
-    const rewritten = readFileSync(file, "utf8");
-    expect(rewritten.startsWith("enc:")).toBe(true);
-    expect(JSON.parse(rewritten.slice(4))).toEqual({ version: 2, llm: "old-dpapi-key" });
+    expect(entries.filter((e) => e.level === "warn")).toEqual([]);
+    expect(entries.filter((e) => e.level === "info").map((e) => e.message)).toEqual([
+      "旧版系统加密密钥已迁移到本地密钥文件",
+    ]);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 2, llm: "old-dpapi-key" });
   });
 
-  test("legacyDecrypt 失败：保持空表、不抛错、备份仍在", () => {
+  test("迁移失败：只记一条 WARN（含备份路径），保持空表、不抛错", async () => {
     const file = legacyFile();
-    const store = createSecretStore({
-      file,
-      codec: legacyCodec(),
-      legacyDecrypt: () => {
-        throw new Error("DPAPI 解不开");
-      },
+    const store = createSecretStore({ file, codec: plainFileCodec });
+    const entries = captureLogs();
+    const result = await store.migrateLegacy(async () => {
+      throw new Error("DPAPI 解不开");
     });
+    expect(result).toBe("failed");
     expect(store.has("llm")).toBe(false);
     expect(store.error()).toBe(null);
     expect(backups(file)).toHaveLength(1);
+    const warns = entries.filter((e) => e.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.message).toContain("无法迁移");
+    expect(String(warns[0]!.fields.backup)).toContain(".legacy-");
+    expect(entries.filter((e) => e.level === "info")).toEqual([]);
   });
 
-  test("legacyDecrypt 返回坏 JSON：不覆盖、不抛错", () => {
+  test("迁移拿到坏 JSON：不覆盖、不抛错，并留下备份", async () => {
     const file = legacyFile();
-    const store = createSecretStore({ file, codec: legacyCodec(), legacyDecrypt: () => "not json" });
+    const store = createSecretStore({ file, codec: plainFileCodec });
+    expect(await store.migrateLegacy(async () => "not json")).toBe("failed");
     expect(store.has("llm")).toBe(false);
     const [backup] = backups(file);
     expect(backup).toBeDefined();
     expect(readFileSync(join(file, "..", backup!)).subarray(0, 3).toString("utf8")).toBe("v10");
+  });
+
+  test("平台没有异步解密（macOS）：不尝试、保留备份、WARN 说无法自动迁移", async () => {
+    const file = legacyFile();
+    const store = createSecretStore({ file, codec: plainFileCodec });
+    const entries = captureLogs();
+    expect(await store.migrateLegacy(null)).toBe("failed");
+    expect(backups(file)).toHaveLength(1);
+    const warns = entries.filter((e) => e.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.message).toContain("无法自动迁移");
+  });
+
+  test("没有旧密钥：不调用解密、不记任何迁移提示（issue #71）", async () => {
+    const file = tempFile();
+    writeFileSync(file, JSON.stringify({ version: 2, llm: "sk-current" }));
+    const store = createSecretStore({ file, codec: plainFileCodec });
+    const entries = captureLogs();
+    let calls = 0;
+    expect(
+      await store.migrateLegacy(async () => {
+        calls += 1;
+        return "";
+      }),
+    ).toBe("none");
+    expect(calls).toBe(0);
+    expect(entries).toEqual([]);
+    expect(store.get("llm")).toBe("sk-current");
+  });
+
+  test("空文件 / 乱码不是旧版密文：按「内容无法识别」备份重置，不发起迁移", async () => {
+    for (const content of [Buffer.alloc(0), Buffer.from("\uFEFF"), Buffer.from("garbage-bytes")]) {
+      const file = tempFile();
+      writeFileSync(file, content);
+      const entries = captureLogs();
+      const store = createSecretStore({ file, codec: plainFileCodec });
+      expect(store.error()).toBe(null);
+      expect(store.all()).toEqual([]);
+      let calls = 0;
+      expect(
+        await store.migrateLegacy(async () => {
+          calls += 1;
+          return "";
+        }),
+      ).toBe("none");
+      expect(calls).toBe(0);
+      const warns = entries.filter((e) => e.level === "warn");
+      expect(warns).toHaveLength(1);
+      expect(warns[0]!.message).toBe("密钥文件内容无法识别，已备份并重置");
+      expect(entries.some((e) => e.message.includes("迁移"))).toBe(false);
+      expect(backups(file)).toHaveLength(1);
+      expect(readFileSync(join(file, "..", backups(file)[0]!))).toEqual(content);
+    }
   });
 });
