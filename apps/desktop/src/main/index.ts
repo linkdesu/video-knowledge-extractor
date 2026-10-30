@@ -1035,7 +1035,7 @@ function runModelCheckWithLog(): ModelsCheck {
 async function pickVideo(): Promise<string | null> {
   const res = await dialog.showOpenDialog({
     properties: ["openFile"],
-    filters: [{ name: "媒体", extensions: ["mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "mts", "m2ts", "m4a", "mp3", "wav", "flac", "wma"] }],
+    filters: [{ name: "媒体", extensions: ["mp4", "mov", "m4v", "webm", "mkv", "avi", "flv", "ts", "mts", "m2ts", "m4a", "mp3", "wav", "flac", "wma", "wmv"] }],
   });
   const path = res.canceled ? null : (res.filePaths[0] ?? null);
   logger().info("app", "选择视频文件", { path });
