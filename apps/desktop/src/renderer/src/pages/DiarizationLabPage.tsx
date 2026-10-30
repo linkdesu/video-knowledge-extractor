@@ -497,13 +497,16 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                 data-testid="lab-cache-status"
                 title={outcome.hit ? undefined : outcome.reason}
               >
-                {outcome.hit
-                  ? `命中缓存 · ${formatElapsed(outcome.elapsedMs)} · 未加载模型、未解码音频`
-                  : outcome.reason === "forced"
-                    ? `强制重新生成 · ${formatElapsed(outcome.elapsedMs)}`
-                    : outcome.reason === "cold"
-                      ? `cold 模式重算 · ${formatElapsed(outcome.elapsedMs)}`
-                      : `重新分析 · ${formatElapsed(outcome.elapsedMs)}`}
+                {outcome.hit ? (
+                  <>
+                    {`命中缓存 · ${formatElapsed(outcome.elapsedMs)} · `}
+                    <span className="vn-lab-cache-note">未加载模型、未解码音频</span>
+                  </>
+                ) : outcome.reason === "forced"
+                  ? `强制重新生成 · ${formatElapsed(outcome.elapsedMs)}`
+                  : outcome.reason === "cold"
+                    ? `cold 模式重算 · ${formatElapsed(outcome.elapsedMs)}`
+                    : `重新分析 · ${formatElapsed(outcome.elapsedMs)}`}
               </p>
             )}
             <button
