@@ -1,4 +1,4 @@
-# ADR-0040: 旧密钥迁移只认 v10/v11、迁移提示后置，exe 版本资源随 package 版本
+# ADR-0041: 旧密钥迁移只认 v10/v11、迁移提示后置，exe 版本资源随 package 版本
 
 - 状态：已接受（r64 / issue #71）
 - 相关：ADR-0015 §3（密钥只在主进程）、r44（弃用 safeStorage 改 0o600 本地 JSON）、r45c（Windows DPAPI 一次性迁移）、r45 QA GAP-1（迁移成功仍打「已失效」WARN）
