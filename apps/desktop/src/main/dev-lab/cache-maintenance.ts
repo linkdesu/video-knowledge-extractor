@@ -155,6 +155,18 @@ export function planLabEviction(
   return { evict, kept, keptBytes, totalBytes };
 }
 
+/**
+ * 删一个条目：目录 + 跟着它的 `marks-<id>.json`（r57 / #74）。条目一没，标注在界面上永远读不到，
+ * 留着只是孤儿文件。返回是否连带删掉了一个 marks 文件。抛错时调用方决定记 `failed` 还是留到下一轮。
+ */
+function removeEntry(root: string, id: string): boolean {
+  rmSync(join(root, id), { recursive: true, force: true });
+  const marks = marksPath(root, id);
+  if (!existsSync(marks)) return false;
+  rmSync(marks, { force: true });
+  return true;
+}
+
 /** 执行淘汰；删不掉的条目留在磁盘上、记进 `failed`，不能因为一次失败中断。 */
 export function evictLabCache(
   root: string,
@@ -168,13 +180,7 @@ export function evictLabCache(
   let deadMarks = 0;
   for (const entry of plan.evict) {
     try {
-      rmSync(join(root, entry.id), { recursive: true, force: true });
-      // r57 / #74：条目删了，它的 `marks-<id>.json` 就是界面上永远读不到的孤儿文件，跟着删。
-      const marks = marksPath(root, entry.id);
-      if (existsSync(marks)) {
-        rmSync(marks, { force: true });
-        deadMarks++;
-      }
+      if (removeEntry(root, entry.id)) deadMarks++;
       removed.push(entry);
     } catch {
       failed.push(entry.id);
@@ -205,7 +211,7 @@ function readSourceHash(dir: string): string | null {
 }
 
 /**
- * 同一份内容只留一份：删掉 `sourceHash` 相同、键不是 `keepKey` 的条目，返回删掉的 id。
+ * 同一份内容只留一份：删掉 `sourceHash` 相同、键不是 `keepKey` 的条目（连 marks），返回删掉的 id。
  * 在发布成功后调用 —— 此刻 keepKey 已是完整条目，旧键（模型 mtime / schema 变了）只是重复存储。
  */
 export function removeDuplicateSources(root: string, sourceHash: string, keepKey: string): string[] {
@@ -215,7 +221,7 @@ export function removeDuplicateSources(root: string, sourceHash: string, keepKey
     if (name === keepKey || !isLabSampleId(name)) continue;
     if (readSourceHash(join(root, name)) !== sourceHash) continue;
     try {
-      rmSync(join(root, name), { recursive: true, force: true });
+      removeEntry(root, name);
       removed.push(name);
     } catch {
       // 删不掉留到下一轮

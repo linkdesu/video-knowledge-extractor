@@ -215,4 +215,16 @@ describe("相同内容指纹只存一份", () => {
     expect(removeDuplicateSources(root, "hash-a", "new2")).toEqual([]);
     expect(ids(root)).toEqual(["legacy", "new2"]);
   });
+
+  test("删掉的旧键条目的 marks 一起删，保留键与其它条目的 marks 不动", () => {
+    const root = tempRoot();
+    writeEntry(root, "old1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
+    writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
+    writeEntry(root, "other", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-b" });
+    writeFileSync(join(root, "marks-old1.json"), JSON.stringify({ "1000": "A" }));
+    writeFileSync(join(root, "marks-new2.json"), JSON.stringify({ "2000": "B" }));
+    writeFileSync(join(root, "marks-other.json"), JSON.stringify({ "3000": "both" }));
+    expect(removeDuplicateSources(root, "hash-a", "new2")).toEqual(["old1"]);
+    expect(ids(root)).toEqual(["marks-new2.json", "marks-other.json", "new2", "other"]);
+  });
 });
