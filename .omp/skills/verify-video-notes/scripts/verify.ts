@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, sta
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
-import { writeLatestPointer } from "./lib/latest";
+import { readLatestPointer, writeLatestPointer } from "./lib/latest";
 import { findSecretFiles, isInside, winPathInside } from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
@@ -261,8 +261,9 @@ function readState(runId?: string): RunState {
   if (runId !== undefined) {
     dir = join(VERIFY_ROOT, runId);
   } else {
-    if (!existsSync(LATEST)) fail("no verification run yet: run `verify.ts up` first");
-    dir = join(VERIFY_ROOT, readFileSync(LATEST, "utf8").trim());
+    const latest = readLatestPointer(LATEST);
+    if (latest === null) fail("no verification run yet: run `verify.ts up` first");
+    dir = join(VERIFY_ROOT, latest);
   }
   const file = join(dir, "state.json");
   if (!existsSync(file)) fail(`no state.json in ${dir}`);
@@ -803,7 +804,6 @@ async function up(args: string[]): Promise<void> {
   const emptySettings = hasFlag(args, "--empty-settings");
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
-  mkdirSync(runDir, { recursive: true });
 
   const home = resolve(takeFlag(args, "--home") ?? join(runDir, "home"));
   const userDataArg = takeFlag(args, "--user-data");
@@ -818,6 +818,8 @@ async function up(args: string[]): Promise<void> {
     );
   }
   const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? defaultModelDir(process.env.HOME ?? "."));
+  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
+  mkdirSync(runDir, { recursive: true });
   mkdirSync(home, { recursive: true });
   mkdirSync(userData, { recursive: true });
   if (!emptySettings) {
@@ -940,7 +942,6 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   if (uploadInstaller && !existsSync(installerFlag)) fail(`installer not found: ${installerFlag}`);
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
-  mkdirSync(runDir, { recursive: true });
   const winDir = winLocal({ runDir });
 
   const remoteRunDir = `${WIN_RUNS}\\${runId}`;
@@ -970,6 +971,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     }
   }
 
+  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
+  mkdirSync(runDir, { recursive: true });
   try {
     sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
     if (!emptySettings) {
@@ -1150,6 +1153,11 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     sshExec(sshHost, winCmd(`schtasks /End /TN "${task}"`));
     sshExec(sshHost, winCmd(`schtasks /Delete /TN "${task}" /F`));
     sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    // 默认远端 userData 是这次 up 自己建的（含 secrets.bin）：失败时一并清掉，
+    // 否则远端留下一份密钥，同名 id 还会被“默认 userData 已存在”挡住
+    if (remoteUserDataArg === undefined) {
+      sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${WIN_STATE_ROOT}\\${runId}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    }
     rmSync(runDir, { recursive: true, force: true });
     fail(err instanceof Error ? err.message : String(err));
   }
@@ -1597,7 +1605,7 @@ function reportKept(runDir: string, purge: boolean, evidenceDir: string = runDir
   if (purge) {
     rmSync(runDir, { recursive: true, force: true });
     // a pointer at a deleted run would make the next bare `drive`/`doctor` read a missing state.json
-    if (existsSync(LATEST) && readFileSync(LATEST, "utf8").trim() === basename(runDir)) rmSync(LATEST, { force: true });
+    if (readLatestPointer(LATEST) === basename(runDir)) rmSync(LATEST, { recursive: true, force: true });
     console.log(`purged ${runDir}; the evidence is gone`);
     return;
   }
@@ -1761,8 +1769,9 @@ function tryReadState(runId?: string): RunState | null {
     const file = join(VERIFY_ROOT, runId, "state.json");
     return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
   }
-  if (!existsSync(LATEST)) return null;
-  const file = join(VERIFY_ROOT, readFileSync(LATEST, "utf8").trim(), "state.json");
+  const latest = readLatestPointer(LATEST);
+  if (latest === null) return null;
+  const file = join(VERIFY_ROOT, latest, "state.json");
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeLatestPointer } from "./latest";
+import { readLatestPointer, writeLatestPointer } from "./latest";
 
 /** 一个临时 verify 根：latest 与若干 run 目录，全部落在 tmp 里。 */
 function withRoot(body: (root: string) => void): void {
@@ -88,6 +88,41 @@ describe("writeLatestPointer", () => {
 
       expect(read(latest)).toBe("r50-mac\n");
       expect(existsSync(join(root, "gone"))).toBe(false);
+    });
+  });
+});
+
+describe("readLatestPointer", () => {
+  test("普通文件指针返回 run id", () => {
+    withRoot((root) => {
+      const latest = join(root, "latest");
+      writeLatestPointer(latest, "r50-mac");
+      expect(readLatestPointer(latest)).toBe("r50-mac");
+    });
+  });
+
+  test("r44 的符号链接指针当作没有指针（readFileSync 会 EISDIR 或读错目标）", () => {
+    withRoot((root) => {
+      const runDir = join(root, "r44-old");
+      mkdirSync(runDir, { recursive: true });
+      const latest = join(root, "latest");
+      symlinkSync(runDir, latest);
+      expect(readLatestPointer(latest)).toBeNull();
+
+      const target = join(root, "latest.bak");
+      writeFileSync(target, "r44-old\n");
+      symlinkSync(target, join(root, "latest-file"));
+      expect(readLatestPointer(join(root, "latest-file"))).toBeNull();
+    });
+  });
+
+  test("同名目录、空文件与不存在的路径都返回 null", () => {
+    withRoot((root) => {
+      mkdirSync(join(root, "latest"), { recursive: true });
+      expect(readLatestPointer(join(root, "latest"))).toBeNull();
+      writeFileSync(join(root, "empty"), "\n");
+      expect(readLatestPointer(join(root, "empty"))).toBeNull();
+      expect(readLatestPointer(join(root, "missing"))).toBeNull();
     });
   });
 });
