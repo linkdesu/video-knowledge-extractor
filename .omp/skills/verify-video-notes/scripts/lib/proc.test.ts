@@ -123,6 +123,39 @@ describe("stopProcessTree", () => {
     expect(sim.alive.has(4006)).toBe(false);
   });
 
+  test("主进程先退出、忽略 TERM 的 helper 被 reparent 后仍要 SIGKILL（r58 评审 #1）", async () => {
+    // 真实时序：父进程收到 SIGTERM 就退了，macOS 把 helper 的 ppid 改成 1；
+    // 再按「以原主 pid 为根」读进程表已经看不到它，必须用初次快照里的后代补刀。
+    const alive = new Set([5001, 5002]);
+    const signals: Array<{ pid: number; signal: string }> = [];
+    let clock = 0;
+    let reads = 0;
+    const deps: ProcessDeps = {
+      alive: (pid) => alive.has(pid),
+      signal: (pid, signal) => {
+        signals.push({ pid, signal });
+        if (pid === 5001 || signal === "SIGKILL") alive.delete(pid);
+      },
+      tree: () => {
+        reads += 1;
+        // 第一次：helper 还是 5001 的子进程；之后父进程已退出，ps 里只剩 reparent 后的孤儿
+        return reads === 1
+          ? [
+              { pid: 5001, ppid: 1 },
+              { pid: 5002, ppid: 5001 },
+            ]
+          : [{ pid: 5002, ppid: 1 }];
+      },
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    };
+    const result = await stopProcessTree(5001, { termMs: 40, killMs: 40, pollMs: 5, deps });
+    expect(result.survivors).toEqual([]);
+    expect(signals.filter((entry) => entry.signal === "SIGKILL").map((entry) => entry.pid)).toEqual([5002]);
+  });
+
   test("SIGKILL 也收不掉时如实报告 survivors，而不是假装成功", async () => {
     // 既不理 SIGTERM 也扛得住 SIGKILL
     const sim = simulator({ tree: [{ pid: 4007, ppid: 1 }], ignoreTerm: [4007], immortal: [4007] });
@@ -153,8 +186,9 @@ describe("stopProcessTree", () => {
   });
 });
 
-describe("stopProcessTree（真进程）", () => {
-  // 真实信号语义只能在真实进程上验证（self-pipe 的 trap 都要内核投递一次信号）。
+// 真实信号语义只能在真实进程上验证（self-pipe 的 trap 都要内核投递一次信号）。
+// `sh` / `ps` / SIGTERM 是 POSIX 的东西：Windows CI 上跳过，mac/linux 上照跑。
+describe.skipIf(process.platform === "win32")("stopProcessTree（真进程）", () => {
   test("忽略 SIGTERM 的 sh 被 SIGKILL 掉，结束后没有存活进程", async () => {
     const proc = Bun.spawn(["sh", "-c", 'trap "" TERM; echo ready; sleep 30 & wait'], {
       stdin: "ignore",

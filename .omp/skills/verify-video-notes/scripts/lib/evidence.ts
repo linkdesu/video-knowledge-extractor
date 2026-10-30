@@ -19,7 +19,8 @@ export function parseRemoteListing(output: string): RemoteFile[] {
     const tab = line.indexOf("\t");
     if (tab <= 0) continue;
     const bytes = Number(line.slice(0, tab).trim());
-    const path = line.slice(tab + 1).trim();
+    // 路径原样保留（首尾空格也是文件名的一部分）：只去掉行尾的 \r
+    const path = line.slice(tab + 1);
     if (!Number.isInteger(bytes) || bytes < 0 || path === "") continue;
     files.push({ path, bytes });
   }
@@ -49,6 +50,33 @@ export function isCacheFile(remotePath: string, runDir: string): boolean {
 
 export function expectedEvidence(files: RemoteFile[], runDir: string): RemoteFile[] {
   return files.filter((file) => !isCacheFile(file.path, runDir));
+}
+
+/** 派生媒体（切好的 topic.mp4、抽出的 wav…）超过这个体积就不算「要拉回来的证据」。 */
+export const EVIDENCE_MEDIA_LIMIT = 8 * 1024 * 1024;
+
+const MEDIA_EXTENSIONS = [".mp4", ".m4v", ".mkv", ".mov", ".webm", ".avi", ".ts", ".m4a", ".mp3", ".wav", ".aac", ".flac", ".opus"];
+
+export type EvidenceInventory = { expected: RemoteFile[]; skipped: RemoteFile[] };
+
+/**
+ * 应拉取清单 = 缓存之外的远端文件；大体积媒体单独列进 skipped。
+ *
+ * 为什么不直接拉媒体：传输走 `ReadAllBytes` → base64 → stdout，捕获上限 64 MiB，
+ * 超过约 48 MiB 的文件必然截断；400 MB 的 topic.mp4 每次 down 都会失败。
+ * 媒体是派生件（源视频 + 参数可复现），列为 skipped 并在日志与 inventory JSON 里点名，
+ * 不是静默漏掉；其余文件逐个核对大小，缺一个就报错。
+ */
+export function evidenceInventory(files: RemoteFile[], runDir: string, mediaLimit: number = EVIDENCE_MEDIA_LIMIT): EvidenceInventory {
+  const expected: RemoteFile[] = [];
+  const skipped: RemoteFile[] = [];
+  for (const file of expectedEvidence(files, runDir)) {
+    const lower = file.path.toLowerCase();
+    const isMedia = MEDIA_EXTENSIONS.some((extension) => lower.endsWith(extension));
+    if (isMedia && file.bytes > mediaLimit) skipped.push(file);
+    else expected.push(file);
+  }
+  return { expected, skipped };
 }
 
 /** 远端清单 vs 本地实际落盘大小；`localBytes(path)` 返回 null 表示本地没有这个文件。 */

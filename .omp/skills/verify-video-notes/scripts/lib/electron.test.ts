@@ -7,12 +7,17 @@
  * 仍然失败时给出可以直接复制执行的命令。
  */
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { electronCandidates, ensureElectronBinary, ElectronBootstrapError, findElectronBinary } from "./electron";
 
-const REPO = "/repo";
-const DESKTOP = "/repo/apps/desktop";
-const DESKTOP_BINARY = "/repo/apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
-const ROOT_BINARY = "/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+// 用 join 拼期望值：CI 的 Windows runner 上 path.join 产出反斜杠，写死 "/" 的断言只在 mac 成立
+const REPO = join("repo");
+const DESKTOP = join(REPO, "apps", "desktop");
+const DESKTOP_PKG = join(DESKTOP, "node_modules", "electron");
+const ROOT_PKG = join(REPO, "node_modules", "electron");
+const ELECTRON_REL = join("dist", "Electron.app", "Contents", "MacOS", "Electron");
+const DESKTOP_BINARY = join(DESKTOP_PKG, ELECTRON_REL);
+const ROOT_BINARY = join(ROOT_PKG, ELECTRON_REL);
 
 function harness(present: string[], scripts: Array<{ on: (cmd: string[]) => void; code?: number; stderr?: string }>) {
   const files = new Set(present);
@@ -37,12 +42,12 @@ function harness(present: string[], scripts: Array<{ on: (cmd: string[]) => void
   };
 }
 
-const installJs = (desktop = true) => `${desktop ? `${DESKTOP}/node_modules/electron` : `${REPO}/node_modules/electron`}/install.js`;
+const installJs = (desktop = true) => join(desktop ? DESKTOP_PKG : ROOT_PKG, "install.js");
 
 describe("electronCandidates", () => {
   test("先看 apps/desktop 自己的 node_modules，再看根 node_modules", () => {
     expect(electronCandidates(REPO, DESKTOP).map((entry) => entry.binary)).toEqual([DESKTOP_BINARY, ROOT_BINARY]);
-    expect(electronCandidates(REPO, DESKTOP)[0]?.pkgDir).toBe(`${DESKTOP}/node_modules/electron`);
+    expect(electronCandidates(REPO, DESKTOP)[0]?.pkgDir).toBe(DESKTOP_PKG);
   });
 });
 
@@ -79,7 +84,7 @@ describe("ensureElectronBinary", () => {
     expect(result.binary).toBe(DESKTOP_BINARY);
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0]?.command.at(-1)).toBe("install.js");
-    expect(h.calls[0]?.cwd).toBe(`${DESKTOP}/node_modules/electron`);
+    expect(h.calls[0]?.cwd).toBe(DESKTOP_PKG);
     // 运行时给出一条可读的进度行，而不是静默几十秒
     expect(h.logs.join("\n")).toContain("Electron");
   });
@@ -128,7 +133,7 @@ describe("ensureElectronBinary", () => {
       expect(err).toBeInstanceOf(ElectronBootstrapError);
     }
     expect(message).toContain("ECONNRESET");
-    expect(message).toContain("node apps/desktop/node_modules/electron/install.js");
+    expect(message).toContain(`node ${join("apps", "desktop", "node_modules", "electron", "install.js")}`);
     expect(message).toContain("HTTPS_PROXY");
   });
 
@@ -141,6 +146,6 @@ describe("ensureElectronBinary", () => {
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
-    expect(message).toContain("dist/Electron.app/Contents/MacOS/Electron");
+    expect(message).toContain(ELECTRON_REL);
   });
 });

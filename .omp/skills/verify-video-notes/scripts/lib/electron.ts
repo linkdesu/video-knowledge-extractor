@@ -79,13 +79,15 @@ export function ensureElectronBinary(repo: string, desktop: string, deps: Electr
   let candidates = electronCandidates(repo, desktop).filter((candidate) => deps.exists(join(candidate.pkgDir, "install.js")));
   if (candidates.length === 0) {
     deps.log("apps/desktop 的 Electron 包还没装（新 worktree）：先跑 bun install");
-    deps.run(["bun", "install"], repo);
+    const bunInstall = deps.run(["bun", "install"], repo);
     steps.push("bun install");
     candidates = electronCandidates(repo, desktop).filter((candidate) => deps.exists(join(candidate.pkgDir, "install.js")));
     if (candidates.length === 0) {
+      const tail = bunInstall.stderr.split("\n").filter((line) => line.trim() !== "").slice(-8).join("\n");
       throw new ElectronBootstrapError(
         "Electron 包仍然不存在，`up` 无法启动 app。\n" +
-          `已执行：bun install（cwd ${repo}）\n` +
+          `已执行：bun install（cwd ${repo}，exit ${bunInstall.code}）\n` +
+          (tail === "" ? "" : `bun install 输出尾巴：\n${tail}\n`) +
           `检查过的路径：${electronCandidates(repo, desktop)
             .map((candidate) => relative(repo, candidate.pkgDir))
             .join(", ")}\n` +
@@ -96,13 +98,14 @@ export function ensureElectronBinary(repo: string, desktop: string, deps: Electr
 
   const candidate = candidates[0]!;
   const relativePkg = relative(repo, candidate.pkgDir);
+  const installScript = join(relativePkg, "install.js");
   deps.log(`Electron 二进制缺失（${relativePkg}）：补跑 install.js 下载 dist/`);
   let install = deps.run(["node", "install.js"], candidate.pkgDir);
-  const nodeCommand = `node ${relativePkg}/install.js`;
+  const nodeCommand = `node ${installScript}`;
   if (install.code !== 0 && looksLikeMissingCommand(install)) {
     // mac 上可能只有 bun 没有 node
     const fallback = deps.run(["bun", "install.js"], candidate.pkgDir);
-    steps.push(`bun ${relativePkg}/install.js`);
+    steps.push(`bun ${installScript}`);
     install = fallback;
   } else {
     steps.push(nodeCommand);
@@ -110,7 +113,7 @@ export function ensureElectronBinary(repo: string, desktop: string, deps: Electr
 
   if (install.code !== 0) {
     throw new ElectronBootstrapError(
-      `Electron 安装脚本失败（exit ${install.code}）：${relativePkg}/install.js\n` +
+      `Electron 安装脚本失败（exit ${install.code}）：${installScript}\n` +
         `stderr 尾巴：\n${install.stderr.split("\n").slice(-8).join("\n")}\n` +
         "手动修复（下载 dist/ 需要网络，代理已在环境变量里）：\n" +
         `  1. cd ${repo} && bun install\n` +

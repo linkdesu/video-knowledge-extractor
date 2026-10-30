@@ -13,7 +13,7 @@
 
 export type Listener = { pid: number; command: string };
 
-export type PortState = { port: number; listeners: Listener[]; tunnels: number[]; forwards?: number[] };
+export type PortState = { port: number; listeners: Listener[]; tunnels: number[] };
 
 export type PortConflict =
   | { kind: "stale-tunnels"; pids: number[] }
@@ -79,11 +79,6 @@ export function isSshCommand(command: string): boolean {
   return first === "ssh" || first.endsWith("/ssh");
 }
 
-/** 这条命令行有没有把本机 `<port>` 转发到远端（远端端口随意）。 */
-export function portForwardMatches(command: string, port: number): boolean {
-  return isSshCommand(command) && tunnelSpecs(command).some((spec) => spec.localPort === port);
-}
-
 /**
  * 整张进程表里所有 `ssh -L` 隧道，带上它占用的本机端口。
  * `cdpShape` = 本机端口与远端端口相同，也就是本 harness 自己开的 CDP 隧道。
@@ -107,12 +102,7 @@ export function inspectPort(port: number, deps: PortProbeDeps = realPortDeps): P
   const pids = listenerPids(port, deps);
   const table = new Map(parsePsTable(deps.ps()).map((entry) => [entry.pid, entry.command]));
   const listeners = pids.map((pid) => ({ pid, command: table.get(pid) ?? "" }));
-  return {
-    port,
-    listeners,
-    tunnels: findTunnels(listeners, port),
-    forwards: listeners.filter((entry) => portForwardMatches(entry.command, port)).map((entry) => entry.pid),
-  };
+  return { port, listeners, tunnels: findTunnels(listeners, port) };
 }
 
 /**

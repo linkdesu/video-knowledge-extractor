@@ -7,7 +7,7 @@
  * 远端递归清单 → 排除缓存 → 逐个比对本地大小。
  */
 import { describe, expect, test } from "bun:test";
-import { evidenceGaps, expectedEvidence, isCacheFile, parseRemoteListing, relativeEvidencePath } from "./evidence";
+import { evidenceGaps, evidenceInventory, expectedEvidence, isCacheFile, parseRemoteListing, relativeEvidencePath } from "./evidence";
 
 const RUN = "D:\\code\\video-notes\\verify\\r58-win";
 
@@ -94,6 +94,45 @@ describe("evidenceGaps", () => {
   test("拉到了但被截断：size（只比存在性会把半个文件当完整）", () => {
     const gaps = evidenceGaps(expected, (path) => (path.endsWith("video.json") ? 2 : expected.find((entry) => entry.path === path)?.bytes ?? null));
     expect(gaps).toEqual([{ path: `${RUN}\\home\\视频1\\video.json`, reason: "size", expectedBytes: 4, localBytes: 2 }]);
+  });
+});
+
+describe("evidenceInventory", () => {
+  const MB = 1024 * 1024;
+
+  test("大体积媒体不拉取，但要在 skipped 清单里列出来（不是静默漏掉）", () => {
+    const inventory = evidenceInventory(
+      [
+        { path: `${RUN}\\app.log`, bytes: 10 },
+        { path: `${RUN}\\home\\视频1\\topic.mp4`, bytes: 40 * MB },
+        { path: `${RUN}\\home\\视频1\\video.json`, bytes: 4 },
+      ],
+      RUN,
+    );
+    expect(inventory.expected.map((entry) => entry.path)).toEqual([`${RUN}\\app.log`, `${RUN}\\home\\视频1\\video.json`]);
+    expect(inventory.skipped).toEqual([{ path: `${RUN}\\home\\视频1\\topic.mp4`, bytes: 40 * MB }]);
+  });
+
+  test("小媒体仍然算证据；非媒体大文件也照拉（日志、JSON）", () => {
+    const inventory = evidenceInventory(
+      [
+        { path: `${RUN}\\home\\a\\clip.MP4`, bytes: 2 * MB },
+        { path: `${RUN}\\home\\logs\\vnote.log`, bytes: 20 * MB },
+      ],
+      RUN,
+    );
+    expect(inventory.expected).toHaveLength(2);
+    expect(inventory.skipped).toEqual([]);
+  });
+
+  test("刚好等于上限的媒体保留（只有超过才跳过）", () => {
+    const inventory = evidenceInventory([{ path: `${RUN}\\home\\a\\audio.wav`, bytes: 8 * MB }], RUN, 8 * MB);
+    expect(inventory.expected).toHaveLength(1);
+  });
+
+  test("缓存既不拉也不进 skipped", () => {
+    const inventory = evidenceInventory([{ path: `${RUN}\\home\\.cache\\big.mp4`, bytes: 99 * MB }], RUN);
+    expect(inventory).toEqual({ expected: [], skipped: [] });
   });
 });
 

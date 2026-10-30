@@ -60,9 +60,15 @@ export function treeOf(pid: number, table: ProcessRow[]): number[] {
 }
 
 export function processTable(): ProcessRow[] {
-  const probe = Bun.spawnSync(["ps", "-Ao", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" });
+  let stdout = "";
+  try {
+    stdout = Bun.spawnSync(["ps", "-Ao", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
+  } catch {
+    // 没有 ps（例如 Windows）：退化成「只有根进程」，收尾仍然发 SIGTERM/SIGKILL
+    return [];
+  }
   const rows: ProcessRow[] = [];
-  for (const line of probe.stdout.toString().split("\n")) {
+  for (const line of stdout.split("\n")) {
     const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
     if (match === null) continue;
     rows.push({ pid: Number(match[1]), ppid: Number(match[2]) });
@@ -123,8 +129,9 @@ export async function stopProcessTree(pid: number, options: ProcessStopOptions =
   const graceDeadline = now() + termMs;
   while (living(initial).length > 0 && now() < graceDeadline) await nap(pollMs);
 
-  // 重读进程表：宽限期里新 fork 的子进程同样不能留
-  const stragglers = living(treeOf(pid, deps.tree()));
+  // 重读进程表收新 fork 的子进程；同时保留初次快照里仍存活的 pid——主进程一退出，
+  // 它的 helper 会被 reparent 到 launchd，按原主 pid 读树就再也看不到它们了。
+  const stragglers = [...new Set([...living(initial), ...living(treeOf(pid, deps.tree()))])];
   if (stragglers.length === 0) return { pid, termSent, killSent, escalated: false, survivors: [] };
   signalAll(stragglers, "SIGKILL", killSent);
   const killDeadline = now() + killMs;
