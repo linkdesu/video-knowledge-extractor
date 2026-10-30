@@ -306,7 +306,14 @@ export function publishEntry(root: string, key: string, tmpDir: string): void {
     if (stale !== null) renameSync(stale, target);
     throw err;
   }
-  if (stale !== null) rmSync(stale, { recursive: true, force: true });
+  if (stale !== null) {
+    // 新条目已经发布到位：旧目录删不掉只是 .tmp 残留，交给启动清扫，不能报成分析失败。
+    try {
+      rmSync(stale, { recursive: true, force: true });
+    } catch {
+      // 留到 sweepTempEntries
+    }
+  }
 }
 
 /** 失败/取消时清掉半成品目录。 */

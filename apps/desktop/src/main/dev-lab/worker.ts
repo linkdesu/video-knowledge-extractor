@@ -9,7 +9,7 @@ import type { DiarizationSegment } from "@video-notes/core";
 import { createTranscriber, detectSilences, extractAudio, readWav, resolveModelPaths } from "@video-notes/core";
 import * as sherpaModule from "sherpa-onnx-node";
 import { importExperimentDir } from "./experiment";
-import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS, type LabAnalysisStamp } from "./analysis-cache";
+import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS, type LabAnalysisStamp, type LabSourceMode } from "./analysis-cache";
 import type { EmbeddingRow } from "./refine";
 import { writeJson, writeSampleFile } from "./sample-store";
 import type { LabSampleFile } from "./sample-store";
@@ -21,7 +21,7 @@ type ParentPort = {
 
 export type LabRunMessage = {
   type: "run";
-  mode: "file" | "dir";
+  mode: LabSourceMode;
   sourcePath: string;
   modelDir: string;
   outDir: string;

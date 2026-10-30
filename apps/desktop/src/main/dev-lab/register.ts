@@ -33,7 +33,7 @@ import {
 } from "./analysis-cache";
 import { assembleLines, hostClusterCount } from "./lines";
 import { refineSegments } from "./refine";
-import { isLabSampleId, listSamples, readMarks, readSample, marksPath, sampleDir, writeMarks, writeJson } from "./sample-store";
+import { isLabSampleId, listSamples, readMarks, readSample, marksPath, writeMarks } from "./sample-store";
 import type { LabRunMessage } from "./worker";
 
 export { devLabEnabled } from "./gate";
@@ -103,11 +103,6 @@ export function createLabRuntime(options: LabRuntimeOptions) {
         bicK: refined.bicK,
         seeds: refined.seeds,
       };
-      writeJson(join(sampleDir(root, sampleId), "labels.json"), {
-        baseline: baselineLabels,
-        refine: refineLabels,
-        refine_filter: filterLabels,
-      });
     }
     const baselineMeta = {
       k: distinctCount(baselineLabels),
