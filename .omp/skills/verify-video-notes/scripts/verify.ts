@@ -92,12 +92,14 @@ type RunState = {
   scheduledTask?: string;
   /** r45c: the run's userData was seeded from the private LLM config before launch. */
   configSeeded?: boolean;
+  /** r54: Lab cache mode the dev app was started with (`--lab-cache=…`). */
+  labCache?: string;
 };
 
 const HELP = `usage: verify.ts <command>
 
   up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build]
-     [--app PATH] [--min-path] [--empty-settings]
+     [--app PATH] [--min-path] [--empty-settings] [--lab-cache shared|isolated|cold]
       Build apps/desktop, start Electron with isolated VNOTE_HOME / VNOTE_USER_DATA,
       wait until the renderer answers, write tmp/verify/<run>/state.json.
       userData defaults to tmp/verify-state/<run>/user-data, outside the evidence tree;
@@ -106,6 +108,11 @@ const HELP = `usage: verify.ts <command>
       --app drives an already packaged .app (or its executable) instead of apps/desktop,
       and implies --no-build. --min-path replaces the child PATH with launchd's
       /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
+      --lab-cache decides where the dev Diarization Lab reads/writes analysis entries
+      (r54): shared = ~/.cache/video-notes/lab-cache shared by every worktree, isolated =
+      a fresh empty temp dir per run, cold = shared dir but every query recomputes.
+      Default isolated, because a QA run must not read or pollute the shared cache
+      (runs are assertions about "first time"; pass --lab-cache=cold for a full recompute).
       Every run is seeded with the private LLM config (mac
       ~/.config/video-notes-verify/llm.json, win %USERPROFILE%\\.config\\video-notes-verify\\llm.json,
       both 0600 and outside the repo); a feature that asserts a virgin settings page
@@ -227,6 +234,14 @@ function fail(message: string): never {
 }
 
 function takeFlag(args: string[], name: string): string | undefined {
+  // `--name=value` 与 `--name value` 都认（docs 里两种写法都出现过，静默忽略等于悄悄用默认值）。
+  const prefixed = args.findIndex((arg) => arg.startsWith(`${name}=`));
+  if (prefixed !== -1) {
+    const value = args[prefixed]?.slice(name.length + 1) ?? "";
+    args.splice(prefixed, 1);
+    if (value === "") fail(`${name} needs a value`);
+    return value;
+  }
   const i = args.indexOf(name);
   if (i === -1) return undefined;
   const value = args[i + 1];
@@ -823,6 +838,11 @@ async function up(args: string[]): Promise<void> {
     );
   }
   const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? defaultModelDir(process.env.HOME ?? "."));
+  // r54：Lab 默认绝不用共享缓存 —— QA 断言的是「第一次」，读别人的条目会让证据失效。
+  const labCache = takeFlag(args, "--lab-cache") ?? "isolated";
+  if (!["shared", "isolated", "cold"].includes(labCache)) {
+    fail(`--lab-cache 只接受 shared|isolated|cold（收到：${labCache}）`);
+  }
   // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
   mkdirSync(runDir, { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -861,7 +881,8 @@ async function up(args: string[]): Promise<void> {
     ].find((path) => existsSync(path));
     if (devElectron === undefined) fail("Electron binary not found; run `bun install` in the repo root");
     electron = devElectron;
-    appArgs = ["apps/desktop", `--remote-debugging-port=${port}`];
+    // Lab 只在开发态存在：把模式显式传进去，绝不依赖「默认值恰好是 isolated」。
+    appArgs = ["apps/desktop", `--remote-debugging-port=${port}`, `--lab-cache=${labCache}`];
   }
 
   const appLog = join(runDir, "app.log");
@@ -895,6 +916,8 @@ async function up(args: string[]): Promise<void> {
     startedAt: new Date().toISOString(),
     electron,
     ...(emptySettings ? {} : { configSeeded: true }),
+    // 打包版没有 Lab，模式没有意义，不写进状态。
+    ...(appArg === undefined ? { labCache } : {}),
   };
 
   try {

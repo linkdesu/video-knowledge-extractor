@@ -128,6 +128,16 @@ _Avoid_: env 覆盖、环境变量配置、dotenv 配置
 桌面端本机私有密钥文件（`0600` 权限，仅当前用户可读），保存 LLM 与远程 ASR 的 API key。key 不进 `settings.json`、不进日志，不进系统钥管/钥匙串；只在用户主动保存时写入。LLM 的已保存 key 会回填设置页输入框（掩码显示，点眼睛看明文，直接编辑即替换，ADR-0024），因此它经 IPC 回程；远程 ASR 的 key 仍不回显，只显示「已保存（本机私有密钥文件 0600）」或「dev 模式种子」提示，输入框可粘贴新 key 覆盖。密钥文件不可写时打包版没有其它 key 来源，设置页显示不可用并禁用保存。
 _Avoid_: 密钥库、safeStorage、token 存储
 
+## 开发验收
+
+**Lab 分析缓存**（`Lab analysis cache`）：
+开发模式验收台（Lab）把一份音视频或实验目录算出的全套产物（`segments`/`embeddings`/`segtext`/`silences`/`audio.wav`）按「源内容指纹 + 规范化分析参数」的键存成一个目录，键即样本 id。命中时只读 JSON 与音频，不加载模型、不 fork worker；条目不自洽（缺文件、坏 JSON、行数不符、没有 RIFF/WAVE 头）就按未命中重算（ADR-0034）。
+_Avoid_: 样本库、模型缓存
+
+**Lab 缓存模式**（`--lab-cache=shared|isolated|cold`）：
+Lab 缓存根的三种用法。`shared`（默认）读写用户级共享目录（`~/.cache/video-notes/lab-cache`，所有 worktree 共用）；`isolated` 每次启动新建一个空临时目录，只读写它，绝不碰共享缓存（QA/verify 默认）；`cold` 仍用共享目录但不读旧条目，强制全量重算并把结果写回。发布走「临时目录 + fsync + 整目录 rename」，两个 worktree 同时写同一个键只会留下某一方的完整条目（ADR-0035）。
+_Avoid_: 缓存开关、缓存开关参数
+
 ## 不使用的词
 
 - **片段**：既被当成时间段又被当成切片用，分不清哪一个。需要时间区间就说“时间段”，需要视频文件就说“切片”。
