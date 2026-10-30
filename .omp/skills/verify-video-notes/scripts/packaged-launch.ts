@@ -160,6 +160,19 @@ async function waitForPort(deadline: number): Promise<void> {
 type Checks = { readyState: boolean; root: boolean; navLibrary: boolean; appVersion: boolean };
 type LaunchOutcome = { ok: boolean; problems: string[]; checks: Checks | null; facts: LaunchFacts | null };
 
+/** 白屏时渲染主线程可能被阻塞：每个 CDP 调用都要有上限，否则门禁自己会挂住。 */
+async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} 超过 ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 白屏的判定标准就是这四条：文档没完成、root 空、没有主界面导航、版本不符。 */
 function verdict(facts: LaunchFacts, expectedVersion: string): { problems: string[]; checks: Checks } {
   const checks: Checks = {
@@ -201,6 +214,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
   let facts: LaunchFacts | null = null;
   let problems: string[] = [];
   let checks: Checks | null = null;
+  const evidenceProblems: string[] = [];
   try {
     await waitForPort(Date.now() + timeoutMs);
     const cdp = await Cdp.open(port);
@@ -208,27 +222,57 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
       await cdp.send("Runtime.enable");
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        const current = await cdp.eval<LaunchFacts>(FACTS_EXPRESSION).catch(() => null);
+        // 渲染主线程被阻塞时 eval 永不返回：单次求值必须带 deadline
+        const current = await withDeadline(cdp.eval<LaunchFacts>(FACTS_EXPRESSION), 5000, "Runtime.evaluate").catch(() => null);
         if (current !== null) {
           facts = current;
           if (current.readyState === "complete" && current.navLibrary) break;
         }
         await Bun.sleep(200);
       }
-      const shot = await cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
-      writeFileSync(join(evidenceDir, `launch-${index}.png`), Buffer.from(shot.data, "base64"));
-      await writeAxTree(cdp, join(evidenceDir, `launch-${index}.aria.txt`));
+      if (facts !== null && verdict(facts, expectedVersion).problems.length > 0) {
+        // 白屏页面不会提交新帧，直接 captureScreenshot 会永久等待；先 abort 加载
+        await withDeadline(cdp.send("Page.stopLoading"), 3000, "Page.stopLoading").catch(() => {});
+      }
+      try {
+        let png: string;
+        try {
+          const shot = await withDeadline(
+            cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png" }),
+            8000,
+            "Page.captureScreenshot",
+          );
+          png = shot.data;
+        } catch {
+          // 白屏时 compositor 不产帧，surface 截图会等不到；退到 view 截图
+          const shot = await withDeadline(
+            cdp.send<{ data: string }>("Page.captureScreenshot", { format: "png", fromSurface: false }),
+            5000,
+            "Page.captureScreenshot(fromSurface=false)",
+          );
+          png = shot.data;
+        }
+        writeFileSync(join(evidenceDir, `launch-${index}.png`), Buffer.from(png, "base64"));
+      } catch (err) {
+        evidenceProblems.push(`截图失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        await withDeadline(writeAxTree(cdp, join(evidenceDir, `launch-${index}.aria.txt`)), 8000, "Accessibility.getFullAXTree");
+      } catch (err) {
+        evidenceProblems.push(`aria 快照失败：${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
       cdp.close();
     }
-    problems = facts === null ? ["CDP 求值全部失败"] : [];
-    if (facts !== null) {
+    if (facts === null) {
+      problems = ["CDP 求值全部失败", ...evidenceProblems];
+    } else {
       const v = verdict(facts, expectedVersion);
-      problems = v.problems;
+      problems = [...v.problems, ...evidenceProblems];
       checks = v.checks;
     }
   } catch (err) {
-    problems = [err instanceof Error ? err.message : String(err)];
+    problems = [err instanceof Error ? err.message : String(err), ...evidenceProblems];
   } finally {
     proc.kill();
     await proc.exited;
@@ -240,20 +284,21 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
 
 /** Windows 侧没有本地打包产物可跑：交给 verify.ts 的安装/计划任务/隧道机制。 */
 async function launchWin(appPath: string, index: number, expectedVersion: string): Promise<LaunchOutcome> {
-  const run = `${runId}-win-${index}`;
+  // verify.ts 的 --run 不允许路径分隔符；证据目录仍用原始 runId
+  const run = `${runId.replace(/[\\/]+/g, "-")}-win-${index}`;
   const verifyScript = join(REPO, ".omp/skills/verify-video-notes/scripts/verify.ts");
   const up = Bun.spawnSync(
     ["bun", verifyScript, "up", "--target", "win-gamepc", "--ssh-host", sshHost, "--app", appPath, "--run", run, "--empty-settings", "--port", String(port)],
-    { cwd: REPO, stdout: "pipe", stderr: "pipe" },
+    { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 120000 },
   );
   writeFileSync(join(evidenceDir, `launch-${index}.up.log`), `${up.stdout.toString()}${up.stderr.toString()}`);
   if (up.exitCode !== 0) {
     return { ok: false, problems: [`verify.ts up 失败（退出码 ${up.exitCode}）`], checks: null, facts: null };
   }
-  const evalResult = Bun.spawnSync(["bun", verifyScript, "drive", "eval", FACTS_EXPRESSION, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+  const evalResult = Bun.spawnSync(["bun", verifyScript, "drive", "eval", FACTS_EXPRESSION, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 30000 });
   // verify.ts 把截图/aria 写进 <run>/win/；复制到本门禁的证据目录，保证两端证据形状一致
-  const shot = Bun.spawnSync(["bun", verifyScript, "drive", "shot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
-  const snapshot = Bun.spawnSync(["bun", verifyScript, "drive", "snapshot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+  const shot = Bun.spawnSync(["bun", verifyScript, "drive", "shot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 30000 });
+  const snapshot = Bun.spawnSync(["bun", verifyScript, "drive", "snapshot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 30000 });
   const winDir = join(EVIDENCE_ROOT, run, "win");
   const captured: string[] = [];
   for (const ext of ["png", "aria.txt"]) {
@@ -263,7 +308,7 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
       captured.push(ext);
     }
   }
-  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 120000 });
   let facts: LaunchFacts | null = null;
   try {
     facts = JSON.parse(evalResult.stdout.toString()) as LaunchFacts;
