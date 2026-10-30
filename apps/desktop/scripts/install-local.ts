@@ -4,13 +4,15 @@
  * 1. 校验 package.json / apps/desktop / apps/cli / packages/core 版本号一致（可选校验相对基准 git ref 已递增）；
  * 2. 构建并重装 macOS 应用到 /Applications/Video Notes.app（清除 quarantine + ad-hoc 签名并校验 CFBundleShortVersionString）；
  * 3. 将对应版本的 Windows NSIS 安装包静默重装到 gamepc 的 D:\code\video-notes\app（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致）。
+ *    CI 产物按「当前提交 + 当前 package 版本」对齐：只下载 headSha === HEAD 的成功 windows-build 运行，
+ *    产物版本不符直接失败，等不到就超时报错，绝不回退去装旧提交/旧版本的包（r61 / #81）。
  *
  * 用法：
- *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--ssh-host <host>]
+ *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--win-ci-wait-seconds <n>] [--ssh-host <host>]
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   assertVersionBumped,
@@ -20,6 +22,13 @@ import {
   assertLlmConfigPreserved,
   readLlmConfigFingerprint,
 } from "../src/main/settings-fingerprint";
+import {
+  assertArtifactVersion,
+  installerName,
+  pickReusableAncestorRun,
+  waitForRunForCommit,
+  type WindowsBuildRun,
+} from "./win-installer-source";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
@@ -39,6 +48,7 @@ interface CliOptions {
   winOnly: boolean;
   skipMacBuild: boolean;
   winInstaller: string | null;
+  winCiWaitSeconds: number;
   sshHost: string;
 }
 
@@ -49,6 +59,7 @@ function parseCliArgs(argv: string[]): CliOptions {
     winOnly: false,
     skipMacBuild: false,
     winInstaller: null,
+    winCiWaitSeconds: 1800,
     sshHost: "gamepc",
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -63,6 +74,13 @@ function parseCliArgs(argv: string[]): CliOptions {
       opts.skipMacBuild = true;
     } else if (arg === "--win-installer") {
       opts.winInstaller = argv[++i] ?? null;
+    } else if (arg === "--win-ci-wait-seconds") {
+      const raw = argv[++i];
+      const parsed = Number(raw);
+      if (raw === undefined || !Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`--win-ci-wait-seconds 需要一个非负秒数，实际: ${String(raw)}`);
+      }
+      opts.winCiWaitSeconds = parsed;
     } else if (arg === "--ssh-host") {
       opts.sshHost = argv[++i] ?? "gamepc";
     } else {
@@ -242,11 +260,47 @@ function ghEnv(): NodeJS.ProcessEnv {
   };
 }
 
+/** git 里某提交的 desktop 版本号；形状不对就报可读错误（不猜字段）。 */
+function commitDesktopVersion(sha: string): string {
+  const parsed: unknown = JSON.parse(
+    runCmd("git", ["show", `${sha}:apps/desktop/package.json`]),
+  );
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("version" in parsed) ||
+    typeof parsed.version !== "string"
+  ) {
+    throw new Error(`提交 ${sha} 的 apps/desktop/package.json 缺少字符串 version`);
+  }
+  return parsed.version;
+}
+
+/** 只取字段够用的运行列表；headSha 用于锁定当前提交，displayTitle 便于报错定位。 */
+function listWindowsBuildRuns(): WindowsBuildRun[] {
+  const runsJson = runCmd(
+    "gh",
+    [
+      "run",
+      "list",
+      "--workflow",
+      "windows-build.yml",
+      "--limit",
+      "40",
+      "--json",
+      "databaseId,status,conclusion,headSha,displayTitle",
+    ],
+    { env: ghEnv() },
+  );
+  return JSON.parse(runsJson) as WindowsBuildRun[];
+}
+
 function resolveOrDownloadWinInstaller(
   version: string,
   explicitPath: string | null,
+  waitSeconds: number,
 ): { localPath: string | null; remotePath: string | null } {
-  const expectedName = `Video Notes-${version}-setup.exe`;
+  const expectedName = installerName(version);
   if (explicitPath !== null) {
     if (/^[A-Za-z]:\\/.test(explicitPath)) {
       return { localPath: null, remotePath: explicitPath };
@@ -268,45 +322,62 @@ function resolveOrDownloadWinInstaller(
     }
   }
 
+  // 只认「当前提交 + 当前版本」的 CI 产物：旧提交的成功运行绝不复用（r61 / #81）
+  const sha = runCmd("git", ["rev-parse", "HEAD"]);
   console.log(
-    `[win] 本地未找到 ${expectedName}，尝试从 GitHub Actions (windows-build.yml) 下载...`,
+    `[win] 本地未找到 ${expectedName}，按提交 ${sha.slice(0, 7)} 查找 windows-build.yml 的 v${version} 产物...`,
   );
-  const runsJson = runCmd(
-    "gh",
-    [
-      "run",
-      "list",
-      "--workflow",
-      "windows-build.yml",
-      "--limit",
-      "10",
-      "--json",
-      "databaseId,status,conclusion,headSha",
-    ],
-    { env: ghEnv() },
-  );
-  const runs = JSON.parse(runsJson) as Array<{
-    databaseId: number;
-    status: string;
-    conclusion: string | null;
-    headSha: string;
-  }>;
-  const successRun = runs.find(
-    (r) => r.status === "completed" && r.conclusion === "success",
-  );
-  if (!successRun) {
+  const initialRuns = listWindowsBuildRuns();
+  // 末尾只改文档时 workflow 因 paths-ignore 不会起构建：仅当构建输入逐字节相同才复用祖先产物
+  const ancestors: Array<{ sha: string; changedPaths: string[] }> = [];
+  if (!initialRuns.some((r) => r.headSha === sha)) {
+    for (const line of runCmd("git", ["rev-list", "--max-count=20", sha]).split("\n")) {
+      const ancestorSha = line.trim();
+      if (ancestorSha === "" || ancestorSha === sha) continue;
+      ancestors.push({
+        sha: ancestorSha,
+        changedPaths: runCmd("git", ["diff", "--name-only", `${ancestorSha}..${sha}`])
+          .split("\n")
+          .map((p) => p.trim())
+          .filter((p) => p !== ""),
+      });
+    }
+  }
+  const reused = pickReusableAncestorRun(initialRuns, sha, ancestors);
+  const run =
+    reused ??
+    waitForRunForCommit({
+      expectedSha: sha,
+      expectedVersion: version,
+      fetchRuns: listWindowsBuildRuns,
+      sleep: (ms) => Bun.sleepSync(ms),
+      timeoutMs: waitSeconds * 1000,
+      pollMs: 15_000,
+      log: (message) => console.log(message),
+    });
+  if (reused !== null) {
+    console.log(
+      `[win] HEAD ${sha.slice(0, 7)} 只改了不触发构建的文档，复用构建输入完全一致的 ${reused.headSha.slice(0, 7)} 产物（run ${reused.databaseId}）`,
+    );
+  }
+  // 构建产物版本 = 该提交的 package.json 版本：先读 git，版本不符就别浪费 174 MB 下载
+  const builtVersion = commitDesktopVersion(run.headSha);
+  if (builtVersion !== version) {
     throw new Error(
-      `未找到成功的 windows-build.yml 运行记录，请先触发或等待 Windows 构建完成，或通过 --win-installer 指定 ${expectedName}`,
+      `CI 产物版本不符：run ${run.databaseId}（${run.headSha.slice(0, 7)}）构建的是 v${builtVersion}，期望 v${version}。` +
+        `请先把四个 package.json 同步到 ${version} 并等该提交的 Windows CI 重新构建完成，本脚本不会退回去装旧版本。`,
     );
   }
   const destDir = resolve(repoRoot, `tmp/installer/v${version}`);
+  // 清空该版本目录，避免上次失败留下的旧产物在这里冒充本版本
+  rmSync(destDir, { recursive: true, force: true });
   mkdirSync(destDir, { recursive: true });
   runCmd(
     "gh",
     [
       "run",
       "download",
-      String(successRun.databaseId),
+      String(run.databaseId),
       "-n",
       "video-notes-windows-installer",
       "-D",
@@ -314,7 +385,15 @@ function resolveOrDownloadWinInstaller(
     ],
     { env: ghEnv(), inherit: true },
   );
-  const downloaded = resolve(destDir, expectedName);
+  const files = readdirSync(destDir, { recursive: true, encoding: "utf8" }).map((f) =>
+    f.split(/[/\\]/).pop()!,
+  );
+  const picked = assertArtifactVersion(files, {
+    version,
+    runId: run.databaseId,
+    headSha: run.headSha,
+  });
+  const downloaded = resolve(destDir, picked);
   if (!existsSync(downloaded)) {
     throw new Error(
       `下载的构建产物中未找到 ${expectedName}（实际目录: ${destDir}），请确认 CI 构建对应的版本号已更新为 ${version}`,
@@ -327,14 +406,16 @@ function installWindowsApp(
   version: string,
   sshHost: string,
   explicitInstaller: string | null,
+  waitSeconds: number,
 ) {
   const { localPath, remotePath } = resolveOrDownloadWinInstaller(
     version,
     explicitInstaller,
+    waitSeconds,
   );
   const remoteInstallerPath =
     remotePath ??
-    `${defaultWinInstallerStageDir}\\Video Notes-${version}-setup.exe`;
+    `${defaultWinInstallerStageDir}\\${installerName(version)}`;
 
   if (localPath !== null) {
     runWinPwsh(
@@ -528,6 +609,7 @@ async function main() {
       version,
       opts.sshHost,
       opts.winInstaller,
+      opts.winCiWaitSeconds,
     );
   }
 
