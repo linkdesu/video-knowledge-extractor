@@ -342,9 +342,9 @@ export function fsyncTree(root: string): void {
  * 时 rename 会失败（POSIX ENOTEMPTY / Windows EPERM），所以竞争表现为：
  *   1. 双方都想把旧条目挪走；
  *   2. 一方 rename 到键路径后，另一方再 rename 就撞上「目录非空」。
- * 处理：撞上「目标已被占」就把当前目标挪到 `.tmp` 再重试（有限次）。重试用尽时，只要对方留下的是
- * 一个带 `sample.json` 的完整条目就接受它（两边算的是同一个键 = 同一份内容），丢掉自己这份；
- * 否则如实报错让调用方重算。任何时刻键路径上只可能是某一方写完整的那份。
+ * 处理：撞上「目标已被占」就把当前目标挪到 `.tmp` 再重试（有限次）。重试用尽时，目标存在即说明对方
+ * 已完成一次原子 rename，接受它（两边算的是同一个键 = 同一份内容），丢掉自己这份；只有目标不存在
+ * 且 rename 仍失败才如实报错。任何时刻键路径上只可能是某一方写完整的那份。
  */
 export function publishEntry(root: string, key: string, tmpDir: string): void {
   mkdirSync(join(root, ".tmp"), { recursive: true });
@@ -360,8 +360,9 @@ export function publishEntry(root: string, key: string, tmpDir: string): void {
       const code = (err as NodeJS.ErrnoException).code ?? "";
       if (!["ENOTEMPTY", "EEXIST", "EPERM", "EACCES", "EBUSY"].includes(code)) throw err;
       if (attempt >= 3) {
-        if (existsSync(join(target, "sample.json"))) {
-          // 对方已经发布到位：结果等价，采用对方那份。
+        // 目标存在就说明对方已经完成一次原子 rename（rename 不会留下半截目录）；
+        // 两边算的是同一个键 = 同一份内容，采用对方那份，绝不因为竞争报分析失败。
+        if (existsSync(target)) {
           discardEntryDir(tmpDir);
           break;
         }
