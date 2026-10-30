@@ -6,7 +6,7 @@
  * 命中路径不碰模型、不解码，只读 JSON 与 wav。
  */
 import { createHash } from "node:crypto";
-import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { closeSync, cpSync, createReadStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { DIARIZATION_TUNING, SILENCE_DETECTION, modelFileSpecs, type ModelRole } from "@video-notes/core";
 import { REFINE_DEFAULTS } from "./refine";
@@ -149,6 +149,18 @@ function listDirFiles(root: string, rel = ""): { rel: string; path: string; size
 /** 条目自检结果：`hit` 为 null 时 `reason` 说明为什么按 miss 处理。 */
 export type LabCacheProbe = { hit: { key: string; createdAt: string } | null; reason: string };
 
+/**
+ * 这一跑要不要查缓存（r55）：`cold` 模式与「强制重新生成」都不读已有条目，
+ * 区别只在理由 —— 日志里必须能分辨是模式决定还是用户按了按钮。
+ */
+export type LabProbeDecision = { probe: true } | { probe: false; reason: "cold" | "forced" };
+
+export function labProbeDecision(input: { reads: boolean; force?: boolean }): LabProbeDecision {
+  if (input.force === true) return { probe: false, reason: "forced" };
+  if (!input.reads) return { probe: false, reason: "cold" };
+  return { probe: true };
+}
+
 type EntrySample = {
   id?: string;
   mode?: string;
@@ -289,30 +301,104 @@ export function newEntryDir(root: string, key: string): string {
 }
 
 /**
- * 原子发布：目录整体 rename 到键路径。已有旧条目（重算同一键）先挪到 `.tmp`，
- * 新目录 rename 失败时把旧条目挪回来，保证键路径永远是完整条目。
+ * 目录级 fsync：rename 之后必须把父目录刷盘，否则掉电后「键路径存在」可能不成立。
+ * Windows 不允许对目录开 fsync（EPERM/EISDIR/EACCES），忽略即可 —— NTFS 的 rename 本身有日志。
+ */
+function fsyncPath(path: string): void {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    fsyncSync(fd);
+  } catch {
+    // 目录 fsync 在 Windows 上不可用；文件 fsync 失败也只是少一层掉电保证，不该把分析判成失败。
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // 已关闭
+      }
+    }
+  }
+}
+
+/** 递归 fsync 一个目录树里的所有文件，再 fsync 目录本身：发布前的落盘保证。 */
+export function fsyncTree(root: string): void {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      fsyncTree(path);
+      continue;
+    }
+    fsyncPath(path);
+  }
+  fsyncPath(root);
+}
+
+/**
+ * 原子发布：目录整体 rename 到键路径。已有旧条目（重算同一键）先挪到 `.tmp`。
+ *
+ * r54：多个 worktree（不同进程）可能同时发布同一个键。整目录 rename 是原子的，但「目标已存在」
+ * 时 rename 会失败（POSIX ENOTEMPTY / Windows EPERM），所以竞争表现为：
+ *   1. 双方都想把旧条目挪走；
+ *   2. 一方 rename 到键路径后，另一方再 rename 就撞上「目录非空」。
+ * 处理：撞上「目标已被占」就把当前目标挪到 `.tmp` 再重试（有限次）。重试用尽时，只要对方留下的是
+ * 一个带 `sample.json` 的完整条目就接受它（两边算的是同一个键 = 同一份内容），丢掉自己这份；
+ * 否则如实报错让调用方重算。任何时刻键路径上只可能是某一方写完整的那份。
  */
 export function publishEntry(root: string, key: string, tmpDir: string): void {
-  mkdirSync(root, { recursive: true });
+  mkdirSync(join(root, ".tmp"), { recursive: true });
   const target = join(root, key);
-  let stale: string | null = null;
-  if (existsSync(target)) {
-    stale = join(root, ".tmp", `${key}-stale-${process.pid}-${Date.now()}`);
-    renameSync(target, stale);
+  // 发布前先把自己这份刷盘：rename 只保证目录项顺序，不保证文件内容落盘。
+  fsyncTree(tmpDir);
+  const stales: string[] = [];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(tmpDir, target);
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (!["ENOTEMPTY", "EEXIST", "EPERM", "EACCES", "EBUSY"].includes(code)) throw err;
+      if (attempt >= 3) {
+        if (existsSync(join(target, "sample.json"))) {
+          // 对方已经发布到位：结果等价，采用对方那份。
+          discardEntryDir(tmpDir);
+          break;
+        }
+        throw err;
+      }
+      const aside = join(root, ".tmp", `${key}-stale-${process.pid}-${Date.now()}-${attempt}`);
+      try {
+        renameSync(target, aside);
+        stales.push(aside);
+      } catch {
+        // 对方刚把目标挪走/替换掉：直接重试即可
+      }
+    }
   }
-  try {
-    renameSync(tmpDir, target);
-  } catch (err) {
-    if (stale !== null) renameSync(stale, target);
-    throw err;
-  }
-  if (stale !== null) {
+  fsyncPath(root);
+  for (const stale of stales) {
     // 新条目已经发布到位：旧目录删不掉只是 .tmp 残留，交给启动清扫，不能报成分析失败。
     try {
       rmSync(stale, { recursive: true, force: true });
     } catch {
       // 留到 sweepTempEntries
     }
+  }
+}
+
+/**
+ * 从别处（旧的分支级目录）搬一个条目到 root：先整目录复制进 `.tmp`，再走 publishEntry。
+ * 目标是共享目录时调用；已存在且自检通过的条目不会被覆盖（先探再搬）。
+ */
+export function copyEntryInto(root: string, key: string, sourceDir: string): void {
+  const staging = newEntryDir(root, key);
+  try {
+    cpSync(sourceDir, staging, { recursive: true, force: true, errorOnExist: false });
+    publishEntry(root, key, staging);
+  } catch (err) {
+    discardEntryDir(staging);
+    throw err;
   }
 }
 

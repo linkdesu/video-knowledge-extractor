@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LabConfig, LabConfigName, LabLine, LabPayload, LabProgress, LabSampleMeta } from "../../../shared/lab";
+import type { LabConfig, LabConfigName, LabImportResult, LabLine, LabPayload, LabProgress, LabSampleMeta } from "../../../shared/lab";
 import { LAB_CONFIG_LABEL, LAB_CONFIGS } from "../../../shared/lab";
 import {
   buildRows,
@@ -20,6 +20,12 @@ import { LAB_THRESHOLD_MAX, LAB_THRESHOLD_MIN, readLabViewState, writeLabViewSta
 import { errMessage } from "@/lib/format";
 import { showToast } from "@/lib/toast";
 import { LabTimeline } from "@/components/lab/LabTimeline";
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  return formatTime(ms / 1000);
+}
 
 const PROGRESS_LABEL: Record<LabProgress["step"], string> = {
   extract: "抽音频",
@@ -74,6 +80,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const [marks, setMarks] = useState<Record<string, "A" | "B" | "both">>({});
   const [progress, setProgress] = useState<LabProgress | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [outcome, setOutcome] = useState<LabImportResult | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
 
@@ -128,10 +136,16 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
           autoImportRef.current = sourcePath;
           const first = list[0];
           if (first !== undefined) await loadSample(first.id);
-          const { sampleId: imported } = await lab.importPath(sourcePath);
-          setProgress(null);
-          await reloadSamples();
-          await loadSample(imported);
+          setImporting(true);
+          try {
+            const result = await lab.importPath(sourcePath);
+            setProgress(null);
+            await reloadSamples();
+            await loadSample(result.sampleId);
+            setOutcome(result);
+          } finally {
+            setImporting(false);
+          }
           return;
         }
         if (target !== undefined) await loadSample(target);
@@ -371,17 +385,37 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const importFile = useCallback(
     async (path: string) => {
       if (lab === undefined) return;
+      setImporting(true);
       try {
-        const { sampleId: id } = await lab.importPath(path);
+        const result = await lab.importPath(path);
         setProgress(null);
         await reloadSamples();
-        await loadSample(id);
+        await loadSample(result.sampleId);
+        setOutcome(result);
       } catch (err) {
         showToast(`导入失败：${errMessage(err)}`);
+      } finally {
+        setImporting(false);
       }
     },
     [lab, reloadSamples, loadSample],
   );
+
+  const forceRegenerate = useCallback(async () => {
+    if (lab === undefined || payload === null || importing) return;
+    setImporting(true);
+    try {
+      const result = await lab.importPath(payload.sample.sourcePath, { force: true });
+      setProgress(null);
+      await reloadSamples();
+      await loadSample(result.sampleId);
+      setOutcome(result);
+    } catch (err) {
+      showToast(`强制重新生成失败：${errMessage(err)}`);
+    } finally {
+      setImporting(false);
+    }
+  }, [lab, payload, importing, reloadSamples, loadSample]);
 
   if (lab === undefined) {
     return (
@@ -420,7 +454,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
         <div className="vn-lab-bar-row">
           <div className="vn-lab-drop-hint" data-testid="lab-dropzone">
             <b>拖入样本</b>
-            <span>音视频文件，或含 segtext-*.json 的实验目录；样本落 tmp/verify/lab/</span>
+            <span>音视频文件，或含 segtext-*.json 的实验目录；样本落 ~/.cache/video-notes/lab-cache/</span>
           </div>
           <label className="vn-lab-control vn-lab-select-control">
             <span>最近样本</span>
@@ -456,6 +490,34 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
               />
             </span>
           </label>
+          <div className="vn-lab-actions">
+            {outcome === null ? null : (
+              <p
+                className={`vn-lab-cache-status${outcome.hit ? " hit" : ""}`}
+                data-testid="lab-cache-status"
+                title={outcome.hit ? undefined : outcome.reason}
+              >
+                {outcome.hit ? (
+                  <>
+                    {`命中缓存 · ${formatElapsed(outcome.elapsedMs)} · `}
+                    <span className="vn-lab-cache-note">未加载模型、未解码音频</span>
+                  </>
+                ) : outcome.reason === "forced"
+                  ? `强制重新生成 · ${formatElapsed(outcome.elapsedMs)}`
+                  : outcome.reason === "cold"
+                    ? `cold 模式重算 · ${formatElapsed(outcome.elapsedMs)}`
+                    : `重新分析 · ${formatElapsed(outcome.elapsedMs)}`}
+              </p>
+            )}
+            <button
+              className="vn-btn sm vn-lab-force"
+              data-testid="lab-force"
+              disabled={payload === null || importing}
+              onClick={() => void forceRegenerate()}
+            >
+              强制重新生成
+            </button>
+          </div>
         </div>
         <p className="vn-lab-summary" data-testid="lab-summary">
           {summary === null
@@ -475,7 +537,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
           <b>还没有可对比的样本</b>
           <p className="vn-hint">
             把任意音视频文件或已有实验目录拖进本页；导入会跑真实分离（30 分钟音频约 5 分钟），结果缓存在
-            <code> tmp/verify/lab/&lt;指纹&gt;/</code>。
+            <code>~/.cache/video-notes/lab-cache/&lt;指纹&gt;/</code>，所有分支/工作目录共用。
           </p>
         </section>
       ) : (

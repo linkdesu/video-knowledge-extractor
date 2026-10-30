@@ -1109,7 +1109,8 @@ textarea {
 }
 .vn-lab-drop-hint {
   display: grid;
-  grid-column: 1 / -1;
+  grid-column: 4;
+  grid-row: 2;
   gap: 2px;
   min-width: 0;
   align-self: center;
@@ -1170,6 +1171,37 @@ textarea {
   min-width: 0;
   margin: 0;
   accent-color: var(--vn-violet);
+}
+.vn-lab-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-column: 1 / 4;
+  grid-row: 2;
+  align-items: center;
+  gap: var(--vn-lab-gap);
+  min-width: 0;
+}
+.vn-lab-cache-status {
+  margin: 0;
+  min-width: 0;
+  color: var(--vn-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.vn-lab-cache-status.hit {
+  color: var(--vn-cyan);
+}
+.vn-lab-cache-note {
+  white-space: nowrap;
+}
+.vn-lab-force {
+  box-sizing: border-box;
+  justify-self: end;
+  min-height: 40px;
+}
+.vn-lab-force:focus-visible {
+  outline: 2px solid var(--vn-violet);
+  outline-offset: 1px;
 }
 .vn-lab-summary {
   margin: 0;
@@ -1425,6 +1457,18 @@ textarea {
   .vn-lab-bar-row {
     grid-template-columns: repeat(2, minmax(var(--vn-lab-control-min), 1fr));
   }
+  .vn-lab-threshold {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .vn-lab-actions {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .vn-lab-drop-hint {
+    grid-column: 2;
+    grid-row: 3;
+  }
 }
 /* 2 列需 2*168+16=352px；桌面窗口最窄档从 760px 起直接切为安全单列。 */
 @media (max-width: 760px) {
@@ -1434,9 +1478,11 @@ textarea {
     align-items: stretch;
   }
   .vn-lab-drop-hint,
+  .vn-lab-actions,
   .vn-lab-select-control,
   .vn-lab-threshold {
-    width: 100%;
+    grid-column: 1;
+    grid-row: auto;
     min-width: 0;
     max-width: 100%;
   }

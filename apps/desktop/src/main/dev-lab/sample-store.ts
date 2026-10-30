@@ -56,25 +56,39 @@ function readJson<T>(path: string): T | undefined {
 
 export function listSamples(root: string): LabSampleMeta[] {
   if (!existsSync(root)) return [];
-  const out: LabSampleMeta[] = [];
+  const out: { meta: LabSampleMeta; sourceHash: string | null }[] = [];
   for (const name of readdirSync(root)) {
     if (!isLabSampleId(name)) continue;
     const file = readJson<LabSampleFile>(join(root, name, "sample.json"));
     if (file === undefined) continue;
     out.push({
-      id: file.id,
-      name: file.name,
-      sourcePath: file.sourcePath,
-      duration: file.duration,
-      createdAt: file.createdAt,
-      segments: file.segments,
-      mode: file.mode,
-      hasAudio: existsSync(join(root, name, "audio.wav")),
-      timings: file.timings,
-      anchors: file.anchors,
+      sourceHash: file.analysis?.sourceHash ?? null,
+      meta: {
+        id: file.id,
+        name: file.name,
+        sourcePath: file.sourcePath,
+        duration: file.duration,
+        createdAt: file.createdAt,
+        segments: file.segments,
+        mode: file.mode,
+        hasAudio: existsSync(join(root, name, "audio.wav")),
+        timings: file.timings,
+        anchors: file.anchors,
+      },
     });
   }
-  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  out.sort((a, b) => (a.meta.createdAt < b.meta.createdAt ? 1 : a.meta.createdAt > b.meta.createdAt ? -1 : 0));
+  // r55：同一份内容只展示一份（最新的那条）。没有分析戳的 r53 之前条目无法判定指纹，全部保留。
+  const seen = new Set<string>();
+  const listed: LabSampleMeta[] = [];
+  for (const { meta, sourceHash } of out) {
+    if (sourceHash !== null) {
+      if (seen.has(sourceHash)) continue;
+      seen.add(sourceHash);
+    }
+    listed.push(meta);
+  }
+  return listed;
 }
 
 export function writeSampleFile(dir: string, file: LabSampleFile): void {

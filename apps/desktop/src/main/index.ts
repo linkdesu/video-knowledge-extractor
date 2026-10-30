@@ -120,7 +120,8 @@ import {
   type VideoDetail,
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
-import { createLabRuntime, devLabEnabled } from "./dev-lab/register";
+import { resolveLabCache } from "./dev-lab/cache-mode";
+import { createLabRuntime, devLabEnabled, type LabRuntime } from "./dev-lab/register";
 import { LAB_IPC, type LabProgress } from "../shared/lab";
 import { createModelDownloader } from "./models-downloader";
 import { JobQueue, type JobHandle, type JobRequest } from "./jobs";
@@ -149,10 +150,13 @@ if (devHome !== null) {
   }
   prepareDevHome(devHome, process.env);
 }
-// r48 开发模式验收台：样本只落仓库 tmp/verify/lab（打包版没有这个变量，Lab 也不注册）。
-const labRoot = devLabEnabled(app.isPackaged)
-  ? (devHome === null ? join(app.getPath("userData"), "lab") : join(dirname(devHome.root), "verify", "lab"))
-  : undefined;
+// r48 开发模式验收台：缓存根由 cache-mode 决定（r54：默认用户级共享目录，所有 worktree 共用；
+// `--lab-cache=isolated|cold` 可覆盖）。打包版不注册 Lab，连目录都不解析。
+const labCache = devLabEnabled(app.isPackaged) ? resolveLabCache({ argv: process.argv, env: process.env }) : undefined;
+/** r48/r53 的旧分支级目录：共享模式下首启把其中缺失的条目复制到共享目录（只复制，不删）。 */
+const labLegacyRoot = devHome === null ? undefined : join(dirname(devHome.root), "verify", "lab");
+/** Lab 运行时（只有开发模式存在）；退出时用它 kill 掉还活着的 worker。 */
+let labRuntime: LabRuntime | undefined;
 // 测试隔离（ADR-0015 §12）：验收夹具用 VNOTE_USER_DATA 隔离 userData，避免改写真实
 // ~/Library/Application Support/@video-notes 的 settings.json/secrets.bin；必须在任何 getPath("userData") 之前
 if (process.env.VNOTE_USER_DATA !== undefined && process.env.VNOTE_USER_DATA !== "") {
@@ -1610,6 +1614,8 @@ app.on("before-quit", (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
+  // Lab worker 持有原生线程，不 kill 就会比 app 活得久（r54）：退出路径无条件终止。
+  labRuntime?.dispose();
   if (queue.busy()) queue.cancelAll();
   const forceQuit = setTimeout(() => {
     for (const w of workers.values()) w.handle.kill();
@@ -1697,7 +1703,7 @@ void app.whenReady().then(async () => {
         return v === undefined ? undefined : v.mediaPath === "" ? v.sourcePath : v.mediaPath;
       },
       resolveOutputDir: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.outputDir,
-      ...(labRoot === undefined ? {} : { labRoot: () => labRoot }),
+      ...(labCache === undefined ? {} : { labRoot: () => labCache.root }),
     }),
   );
   startup("protocol.handle 注册完成", { scheme: MEDIA_SCHEME });
@@ -1871,16 +1877,17 @@ void app.whenReady().then(async () => {
 
   // r49：`LAB_IPC.available` 必须无条件注册。preload 在页面加载前用 sendSync 询问 Lab 是否可用；
   // 打包版没有监听者时 sendSync 不抛错而是阻塞 renderer 主线程约 30 s（首启白屏）。
-  // 打包版 labRoot 恒为 undefined，回答 false；dev 回答 true。dev-lab 不再重复注册。
+  // 打包版 labCache 恒为 undefined，回答 false；dev 回答 true。dev-lab 不再重复注册。
   ipcMain.on(LAB_IPC.available, (event) => {
-    event.returnValue = labRoot !== undefined;
+    event.returnValue = labCache !== undefined;
   });
 
   // r48：Lab 的 IPC 只在开发模式注册；打包版连通道都不存在。
-  startup("ipc 注册完成", { labEnabled: labRoot !== undefined });
-  if (labRoot !== undefined) {
+  startup("ipc 注册完成", { labEnabled: labCache !== undefined });
+  if (labCache !== undefined) {
     const lab = createLabRuntime({
-      root: labRoot,
+      cache: labCache,
+      ...(labLegacyRoot === undefined ? {} : { legacyRoot: labLegacyRoot }),
       modelDir: modelDirOfCurrentSettings,
       isBusy: () => queue.busy(),
       send: (progress: LabProgress) => {
@@ -1888,7 +1895,8 @@ void app.whenReady().then(async () => {
       },
     });
     lab.register();
-    logger().info("app", "Diarization Lab 已启用", { root: labRoot });
+    labRuntime = lab;
+    logger().info("app", "Diarization Lab 已启用", { cacheMode: labCache.mode, root: labCache.root, sharedRoot: labCache.sharedRoot });
   }
 
   startup("BrowserWindow 创建");
