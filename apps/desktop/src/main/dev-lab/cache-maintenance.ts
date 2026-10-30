@@ -5,14 +5,15 @@
  * 不设上限就会一直变大，所以启动时和每次发布后都按「条数 / 总字节 / 存活时间」淘汰旧条目。
  *
  * 三条不变量：
- * 1. `.tmp`、`marks-*.json` 与非条目文件一律不碰（`.tmp` 的清理归 sweepTempEntries）。
+ * 1. 计划阶段不碰 `.tmp`、`marks-*.json` 与非条目文件（`.tmp` 的清理归 sweepTempEntries）；
+ *    执行阶段删条目时连它的 `marks-<id>.json` 一起删（r57），不留孤儿文件。
  * 2. 刚发布的键（protect）永不淘汰 —— 否则自己算完立刻被自己删掉。
  * 3. 同一份内容（`analysis.sourceHash`）只留一份：发布后删掉旧键的重复条目；
  *    没有 `analysis` 戳的 r53 之前条目无法判定指纹，原样保留。
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isLabSampleId } from "./sample-store";
+import { isLabSampleId, marksPath } from "./sample-store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -61,7 +62,8 @@ export type LabEvictionPlan = {
   totalBytes: number;
 };
 
-export type LabEvictionResult = LabEvictionPlan & { failed: string[] };
+/** `marks` 是随淘汰一起删掉的 marks 文件数（r57：条目没了，标注就不可达）。 */
+export type LabEvictionResult = LabEvictionPlan & { failed: string[]; marks: number };
 
 /** 目录树总字节数；读不了的文件按 0 计（淘汰计划不该因为一个坏文件整轮失败）。 */
 function dirBytes(path: string): number {
@@ -153,6 +155,18 @@ export function planLabEviction(
   return { evict, kept, keptBytes, totalBytes };
 }
 
+/**
+ * 删一个条目：目录 + 跟着它的 `marks-<id>.json`（r57 / #74）。条目一没，标注在界面上永远读不到，
+ * 留着只是孤儿文件。返回是否连带删掉了一个 marks 文件。抛错时调用方决定记 `failed` 还是留到下一轮。
+ */
+function removeEntry(root: string, id: string): boolean {
+  rmSync(join(root, id), { recursive: true, force: true });
+  const marks = marksPath(root, id);
+  if (!existsSync(marks)) return false;
+  rmSync(marks, { force: true });
+  return true;
+}
+
 /** 执行淘汰；删不掉的条目留在磁盘上、记进 `failed`，不能因为一次失败中断。 */
 export function evictLabCache(
   root: string,
@@ -163,9 +177,10 @@ export function evictLabCache(
   const plan = planLabEviction(root, limits, now, protect);
   const removed: LabEviction[] = [];
   const failed: string[] = [];
+  let deadMarks = 0;
   for (const entry of plan.evict) {
     try {
-      rmSync(join(root, entry.id), { recursive: true, force: true });
+      if (removeEntry(root, entry.id)) deadMarks++;
       removed.push(entry);
     } catch {
       failed.push(entry.id);
@@ -175,6 +190,7 @@ export function evictLabCache(
   return {
     evict: removed,
     failed,
+    marks: deadMarks,
     kept: plan.kept,
     keptBytes: plan.keptBytes,
     totalBytes: plan.totalBytes - removedBytes,
@@ -195,7 +211,7 @@ function readSourceHash(dir: string): string | null {
 }
 
 /**
- * 同一份内容只留一份：删掉 `sourceHash` 相同、键不是 `keepKey` 的条目，返回删掉的 id。
+ * 同一份内容只留一份：删掉 `sourceHash` 相同、键不是 `keepKey` 的条目（连 marks），返回删掉的 id。
  * 在发布成功后调用 —— 此刻 keepKey 已是完整条目，旧键（模型 mtime / schema 变了）只是重复存储。
  */
 export function removeDuplicateSources(root: string, sourceHash: string, keepKey: string): string[] {
@@ -205,7 +221,7 @@ export function removeDuplicateSources(root: string, sourceHash: string, keepKey
     if (name === keepKey || !isLabSampleId(name)) continue;
     if (readSourceHash(join(root, name)) !== sourceHash) continue;
     try {
-      rmSync(join(root, name), { recursive: true, force: true });
+      removeEntry(root, name);
       removed.push(name);
     } catch {
       // 删不掉留到下一轮

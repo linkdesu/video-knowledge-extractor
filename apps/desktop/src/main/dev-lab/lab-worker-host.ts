@@ -86,11 +86,21 @@ export function createLabWorkerHost(options: LabWorkerHostOptions): LabWorkerHos
       let stderr = "";
       let settled = false;
       let killTimer: NodeJS.Timeout | null = null;
+      /** worker 报回来的结果（done / error）；null 表示还没等到就退出了。 */
+      let outcome: { ok: true } | { ok: false; error: Error } | null = null;
       proc.stderr?.on("data", (chunk) => {
         stderr = `${stderr}${chunk.toString()}`.slice(-4000);
       });
       options.log("info", "Lab worker 启动", { key: message.id, live: live.size });
       const result = new Promise<void>((resolve, reject) => {
+        // r57 / #74：结算点只有一个 —— 进程 exit。done 一到就结算的话，主进程会立刻 fork 下一个
+        // worker，而前一个还在收尾（原生线程让 ack → exit 有肉眼可见的延迟），两个分析 worker 并存。
+        const settle = (): void => {
+          if (settled) return;
+          settled = true;
+          if (outcome !== null && outcome.ok) resolve();
+          else reject(outcome?.error ?? new Error("Lab 导入进程已退出"));
+        };
         proc.on("message", (raw) => {
           const msg = parseInbound(raw);
           if (msg === null) return;
@@ -98,18 +108,16 @@ export function createLabWorkerHost(options: LabWorkerHostOptions): LabWorkerHos
             onProgress({ sampleId: message.id, step: msg.step, done: msg.done, total: msg.total, detail: msg.detail ?? null });
             return;
           }
-          if (settled) return;
-          settled = true;
-          if (msg.type === "error") {
-            reject(new Error(`${msg.message ?? "Lab 导入失败"}${msg.stack === undefined ? "" : `\n${msg.stack}`}`));
-          } else {
-            resolve();
-          }
+          if (outcome !== null) return;
+          outcome =
+            msg.type === "error"
+              ? { ok: false, error: new Error(`${msg.message ?? "Lab 导入失败"}${msg.stack === undefined ? "" : `\n${msg.stack}`}`) }
+              : { ok: true };
           // 回执 + 兜底：worker 收到 ack 自己 exit；万一下不来（原生线程卡住）也在宽限期后 kill。
           try {
             proc.postMessage(JSON.stringify({ type: "ack" } satisfies LabWorkerAck));
           } catch {
-            // worker 已死：下面的计时器兜底
+            // worker 已死：下面的 exit 事件兜底
           }
           killTimer = setTimeout(() => proc.kill(), graceMs);
         });
@@ -120,12 +128,11 @@ export function createLabWorkerHost(options: LabWorkerHostOptions): LabWorkerHos
             killTimer = null;
           }
           const fields = { key: message.id, code, live: live.size };
-          if (settled) {
-            options.log(code === 0 ? "info" : "warn", "Lab worker 退出", fields);
-            return;
+          options.log(outcome !== null && outcome.ok && code === 0 ? "info" : "warn", "Lab worker 退出", fields);
+          if (outcome === null) {
+            outcome = { ok: false, error: new Error(`Lab 导入进程退出（退出码 ${code}）${stderr === "" ? "" : `：${stderr.slice(-500)}`}`) };
           }
-          settled = true;
-          reject(new Error(`Lab 导入进程退出（退出码 ${code}）${stderr === "" ? "" : `：${stderr.slice(-500)}`}`));
+          settle();
         });
       });
       proc.postMessage(message as unknown as string);

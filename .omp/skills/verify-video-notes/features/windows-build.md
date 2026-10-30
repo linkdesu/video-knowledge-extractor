@@ -58,3 +58,4 @@ For the official r42 report, the run id is `r42-<slug>` and every artifact is re
 
 - Every code update round must increment the workspace version and run `bun run install:local` so both macOS (`/Applications/Video Notes.app`) and Windows `gamepc` (`D:\code\video-notes\app\Video Notes.exe`, pointed to by Desktop and Start Menu shortcuts) are updated to the new version.
 - When `verify.ts up --target win-gamepc --install-dir <custom>` is used for a custom directory gate, `verify.ts down` automatically restores the Desktop and Start Menu `Video Notes.lnk` shortcuts back to `D:\code\video-notes\app\Video Notes.exe`.
+- `windows-build.yml` 的 `push.branches` 同时匹配斜杠与横杠两种命名（`feat/**`、`fix/**`、`feat-*`、`fix-*`，r57）：仓库实际用 `feat-r54-…` / `fix-r57-…`，只写 `feat/**` 时这类分支推送不会跑 Windows 构建。

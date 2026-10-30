@@ -159,23 +159,41 @@ describe("Lab 缓存淘汰计划", () => {
 });
 
 describe("Lab 缓存淘汰执行", () => {
-  test("真的删掉被淘汰的目录，保留其余目录与 marks", () => {
+  test("真的删掉被淘汰的目录与它的 marks，保留其余目录与 marks", () => {
     const root = tempRoot();
     writeEntry(root, "aaa1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "bbb2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
-    writeFileSync(join(root, "marks-aaa1.json"), "{}");
+    writeFileSync(join(root, "marks-aaa1.json"), JSON.stringify({ "1000": "B" }));
+    writeFileSync(join(root, "marks-bbb2.json"), JSON.stringify({ "2000": "A" }));
     const result = evictLabCache(root, limits({ maxEntries: 1 }), NOW);
     expect(result.evict.map((e) => e.id)).toEqual(["aaa1"]);
     expect(result.failed).toEqual([]);
-    expect(ids(root)).toEqual(["bbb2", "marks-aaa1.json"]);
+    expect(result.marks).toBe(1);
+    expect(ids(root)).toEqual(["bbb2", "marks-bbb2.json"]);
+  });
+
+  test("淘汰后不留孤儿 marks：每个 marks-*.json 仍指向存在的条目", () => {
+    const root = tempRoot();
+    writeEntry(root, "old1", { createdAt: "2026-08-01T00:00:00.000Z", bytes: 10 });
+    writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
+    writeFileSync(join(root, "marks-old1.json"), JSON.stringify({ "1000": "both" }));
+    writeFileSync(join(root, "marks-new2.json"), JSON.stringify({ "2000": "A" }));
+    // 非条目文件不参与淘汰，也不该被顺手删掉。
+    writeFileSync(join(root, "notes.txt"), "keep");
+    const result = evictLabCache(root, limits({ maxAgeMs: 30 * DAY }), NOW);
+    expect(result.evict.map((e) => e.id)).toEqual(["old1"]);
+    expect(ids(root)).toEqual(["marks-new2.json", "new2", "notes.txt"]);
   });
 
   test("没有任何需要淘汰的条目时不碰磁盘", () => {
     const root = tempRoot();
     writeEntry(root, "aaa1", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
+    writeFileSync(join(root, "marks-aaa1.json"), "{}");
     const result = evictLabCache(root, limits({ maxEntries: 10 }), NOW);
     expect(result.evict).toEqual([]);
+    expect(result.marks).toBe(0);
     expect(existsSync(join(root, "aaa1"))).toBe(true);
+    expect(existsSync(join(root, "marks-aaa1.json"))).toBe(true);
   });
 });
 
@@ -196,5 +214,17 @@ describe("相同内容指纹只存一份", () => {
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     expect(removeDuplicateSources(root, "hash-a", "new2")).toEqual([]);
     expect(ids(root)).toEqual(["legacy", "new2"]);
+  });
+
+  test("删掉的旧键条目的 marks 一起删，保留键与其它条目的 marks 不动", () => {
+    const root = tempRoot();
+    writeEntry(root, "old1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
+    writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
+    writeEntry(root, "other", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-b" });
+    writeFileSync(join(root, "marks-old1.json"), JSON.stringify({ "1000": "A" }));
+    writeFileSync(join(root, "marks-new2.json"), JSON.stringify({ "2000": "B" }));
+    writeFileSync(join(root, "marks-other.json"), JSON.stringify({ "3000": "both" }));
+    expect(removeDuplicateSources(root, "hash-a", "new2")).toEqual(["old1"]);
+    expect(ids(root)).toEqual(["marks-new2.json", "marks-other.json", "new2", "other"]);
   });
 });
