@@ -21,7 +21,16 @@ import { describeGap, evidenceGaps, evidenceInventory, parseRemoteListing, relat
 import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./lib/latest";
 import { describeListeners, inspectPort, portConflict, processList, tunnelsOf } from "./lib/port";
 import { describeStop, stopProcessTree } from "./lib/proc";
-import { findSecretFiles, isInside, winPathInside } from "./lib/secrets-gate";
+import {
+  combineSecretScans,
+  isInside,
+  parseRemoteSecretListing,
+  scanSecretContent,
+  scanSecretFiles,
+  secretScanFailureMessage,
+  winPathInside,
+  type SecretScan,
+} from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
 import { defaultModelDir } from "./lib/model-dir";
@@ -207,8 +216,13 @@ const HELP = `usage: verify.ts <command>
 
   secrets-gate
       Hard gate: scan tmp/verify for secrets.bin / secrets.pending / secrets.bin.legacy-*
-      and exit 1 (printing the paths) when any is found. up, down and doctor run the same
-      assertion, because the harness must never put userData inside the evidence tree.
+      and exit 1 (printing the paths) when any is found. Since r60 the same scan also
+      matches file *contents* against the private apiKey (a renamed copy still leaks the
+      value), treats an unreadable directory as a failure instead of "clean", and never
+      prints any secret value. up, down and doctor run the same assertion, because the
+      harness must never put userData inside the evidence tree; up --target win-gamepc
+      also scans the remote staging root (D:\code\video-notes\verify) for historical
+      leftovers before creating anything, and down never pulls a remote secret file.
 
   detect [--run ID] [--target mac|win-gamepc] [--source-only]
       Hard gate: \`impeccable detect --json\` over apps/desktop/src/renderer/src
@@ -858,20 +872,74 @@ function assertUserDataOutsideEvidence(userData: string): void {
 }
 
 /**
- * 门禁文案。命中时由调用方决定是 fail（无活资源）还是抛给清理路径（远端 app / tunnel 已起）。
+ * 内容扫描的 needle：私有配置里的真实 apiKey（r60 漏洞 2，改名/复制过的副本只能按值认）。
+ * 没有（或读不了）私有配置时返回空数组：门禁退化为文件名判定，而不是崩掉。
  */
-function secretsFailureMessage(context: string, found: string[]): string {
-  return (
-    `${context}：证据目录里有 ${found.length} 个密钥文件（tmp/verify 不允许出现 userData）\n` +
-    `${found.map((path) => `  ${path}`).join("\n")}\n` +
-    `删除后再跑；harness 的 userData 现在落在 ${VERIFY_STATE_ROOT}。`
-  );
+function localSecretNeedles(): string[] {
+  try {
+    if (!existsSync(PRIVATE_CONFIG_MAC)) return [];
+    return [loadPrivateConfig(PRIVATE_CONFIG_MAC, { repoRoot: REPO, examplePath: PRIVATE_CONFIG_EXAMPLE }).apiKey];
+  } catch {
+    return [];
+  }
 }
 
-/** 证据目录密钥门禁：命中即失败，打印路径，由人决定是否删除。 */
-function assertNoSecretsInEvidence(context: string): void {
-  const found = findSecretFiles(VERIFY_ROOT);
-  if (found.length > 0) fail(secretsFailureMessage(context, found));
+/** 远端 apiKey（只喂给内容扫描；读不到就不做内容判定，绝不回显）。 */
+function remoteSecretNeedles(host: string): string[] {
+  const script = [
+    `$p = Join-Path $env:USERPROFILE '.config\\video-notes-verify\\llm.json'`,
+    `if (Test-Path -LiteralPath $p) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($p)) } else { 'MISSING' }`,
+  ].join("; ");
+  const out = sshExec(host, winPsEncoded(script)).stdout.trim();
+  if (out === "MISSING" || out === "") return [];
+  try {
+    const parsed = JSON.parse(Buffer.from(out, "base64").toString("utf8")) as { apiKey?: unknown };
+    return typeof parsed.apiKey === "string" && parsed.apiKey !== "" ? [parsed.apiKey] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 本地证据根的完整门禁：文件名命中 + 内容命中 + 读不了的地方。 */
+function evidenceSecretScan(extraNeedles: string[] = []): SecretScan {
+  const needles = [...localSecretNeedles(), ...extraNeedles];
+  return combineSecretScans(scanSecretFiles(VERIFY_ROOT), scanSecretContent(VERIFY_ROOT, needles));
+}
+
+/**
+ * 证据目录密钥门禁：命中或读不了即失败，打印路径，由人决定是否删除。
+ * 命中时由调用方决定是 fail（无活资源）还是抛给清理路径（远端 app / tunnel 已起）。
+ */
+function assertNoSecretsInEvidence(context: string, extraNeedles: string[] = []): void {
+  const scan = evidenceSecretScan(extraNeedles);
+  if (scan.found.length > 0 || scan.unreadable.length > 0) fail(secretScanFailureMessage(context, scan));
+}
+
+/**
+ * 远端历史残留门禁（r60 漏洞 1）：staging 根里 pre-r50 布局的 user-data 从来没被查过。
+ * 读不了远端目录（ssh 失败 / 列目录报错）同样算失败——「问不到」不等于「没有」。
+ */
+function assertNoRemoteSecrets(host: string, root: string, context: string): void {
+  const listing = sshExec(
+    host,
+    winPsEncoded(
+      `$ErrorActionPreference='Stop'; Get-ChildItem -LiteralPath '${root}' -File -Recurse -Force | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`,
+    ),
+  );
+  if (listing.code !== 0) {
+    fail(
+      `${context}：无法读取远端证据目录 ${root}（ssh 退出 ${listing.code}），不能判定为干净\n` +
+        `${stderrTail(listing)}\n远端密钥门禁先于任何创建动作：请先在 ${host} 上确认该目录可读。`,
+    );
+  }
+  const found = parseRemoteSecretListing(listing.stdout);
+  if (found.length > 0) {
+    fail(
+      `${context}：远端证据目录 ${root} 里有 ${found.length} 个密钥文件（历史残留，从来不进本地证据）\n` +
+        `${found.map((path) => `  ${path}`).join("\n")}\n` +
+        `在 ${host} 上删掉它们再跑：Remove-Item -LiteralPath <path>；新布局的 userData 在 ${WIN_STATE_ROOT}\\<run>。`,
+    );
+  }
 }
 
 /** Seed one local (mac) run userData before the app starts. */
@@ -1080,31 +1148,9 @@ async function up(args: string[]): Promise<void> {
   // 端口先看清占用者（r58）：被别的应用占着就报错，上一轮自己的隧道就清掉。
   // 放在参数与 userData 边界之后、建目录/拉起 app 之前：被拒的 up 不留任何痕迹。
   await reservePort(port);
-  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
-  mkdirSync(runDir, { recursive: true });
-  mkdirSync(home, { recursive: true });
-  mkdirSync(userData, { recursive: true });
-  if (!emptySettings) {
-    seedLocalRunConfig(userData);
-    console.log(`config:   seeded ${PRIVATE_CONFIG_MAC} -> ${userData}/settings.json + secrets.bin (0600)`);
-  }
 
-  const buildLog = join(runDir, "build.log");
-  if (!skipBuild) {
-    process.stderr.write("verify: building apps/desktop …\n");
-    const fd = openSync(buildLog, "w");
-    const build = Bun.spawnSync(["bun", "run", "build"], { cwd: DESKTOP, stdout: fd, stderr: fd });
-    if (build.exitCode !== 0) fail(`build failed (exit ${build.exitCode}); see ${buildLog}`);
-  }
-
-  // 端口占用在 reservePort 里已经判定过（监听者身份，而不只是 CDP 应答）
-  try {
-    await listTargets(port);
-    fail(`port ${port} already has a CDP endpoint; choose another --port`);
-  } catch {
-    // expected: port is free
-  }
-
+  // 二进制先解析（r60 漏洞 7）：--app 不存在、electron 补装失败都在建目录之前拒绝，
+  // 被拒的 up 不留下 run 目录 / userData 目录，同名 id 还能直接重跑。
   let electron: string;
   let appArgs: string[];
   let appPath: string | undefined;
@@ -1129,6 +1175,45 @@ async function up(args: string[]): Promise<void> {
     // Lab 只在开发态存在：把模式显式传进去，绝不依赖「默认值恰好是 isolated」。
     appArgs = ["apps/desktop", `--remote-debugging-port=${port}`, `--lab-cache=${labCache}`];
   }
+
+  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
+  mkdirSync(runDir, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  mkdirSync(userData, { recursive: true });
+  /**
+   * 建目录之后的拒绝（r60 漏洞 7）：把本次创建的 run 目录与默认 userData 目录一起清掉，
+   * 否则同名 id 会被「目录已存在」永久挡住，默认 userData 里还可能留着 secrets.bin。
+   * 显式 --user-data 的目录不动：那是调用方自己的 profile。
+   */
+  const rejectAfterCreate = (message: string): never => {
+    rmSync(runDir, { recursive: true, force: true });
+    if (userDataArg === undefined) rmSync(join(VERIFY_STATE_ROOT, runId), { recursive: true, force: true });
+    fail(message);
+  };
+  if (!emptySettings) {
+    try {
+      seedLocalRunConfig(userData);
+    } catch (err) {
+      rejectAfterCreate(err instanceof Error ? err.message : String(err));
+    }
+    console.log(`config:   seeded ${PRIVATE_CONFIG_MAC} -> ${userData}/settings.json + secrets.bin (0600)`);
+  }
+
+  const buildLog = join(runDir, "build.log");
+  if (!skipBuild) {
+    process.stderr.write("verify: building apps/desktop …\n");
+    const fd = openSync(buildLog, "w");
+    const build = Bun.spawnSync(["bun", "run", "build"], { cwd: DESKTOP, stdout: fd, stderr: fd });
+    if (build.exitCode !== 0) {
+      // 目录会被清掉：日志末尾直接带进失败文案
+      const tail = readFileSync(buildLog, "utf8").split("\n").slice(-20).join("\n");
+      rejectAfterCreate(`build failed (exit ${build.exitCode})\n--- build.log 末尾 ---\n${tail}`);
+    }
+  }
+
+  // 端口占用在 reservePort 里已经判定过（监听者身份，而不只是 CDP 应答）
+  const cdpOnPort = await listTargets(port).catch(() => null);
+  if (cdpOnPort !== null) rejectAfterCreate(`port ${port} already has a CDP endpoint; choose another --port`);
 
   const appLog = join(runDir, "app.log");
   const logFd = openSync(appLog, "w");
@@ -1187,6 +1272,13 @@ async function up(args: string[]): Promise<void> {
   console.log(`ready:    ${readyMs}ms（就绪即继续，未命中 ${readyTimeout}ms 上限）`);
 
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
+  // Mac 的二次扫描（r60 漏洞 3）：应用启动后可能把 userData 复制进证据目录，
+  // 门禁必须在写 latest 指针之前再看一遍，并收掉本次启动的进程树。
+  const postScan = evidenceSecretScan();
+  if (postScan.found.length > 0 || postScan.unreadable.length > 0) {
+    const stopped = await stopProcessTree(child.pid, { termMs: 4000, killMs: 3000 });
+    fail(`${secretScanFailureMessage("up（启动后二次扫描）", postScan)}\n收尾：${describeStop(stopped)}；state.json 在 ${runDir}`);
+  }
   try {
     writeLatestPointer(LATEST, runId);
   } catch (err) {
@@ -1220,7 +1312,6 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   if (uploadInstaller && !existsSync(installerFlag)) fail(`installer not found: ${installerFlag}`);
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
-  const winDir = winLocal({ runDir });
 
   const remoteRunDir = `${WIN_RUNS}\\${runId}`;
   const remoteHome = takeFlag(args, "--home") ?? `${remoteRunDir}\\home`;
@@ -1231,6 +1322,9 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   if (winPathInside(WIN_RUNS, remoteUserData)) {
     fail(`--user-data 不能落在远端证据目录 ${WIN_RUNS} 内；默认位置是 ${WIN_STATE_ROOT}\\<run>\\user-data`);
   }
+  // 远端历史残留（r60 漏洞 1）：pre-r50 的 user-data 就躺在 staging 根里，从来没被查过。
+  // 放在任何远端写操作之前：问不到远端目录也失败（「问不到」不等于「没有」）。
+  assertNoRemoteSecrets(sshHost, WIN_RUNS, "up --target win-gamepc");
   const emptySettings = hasFlag(args, "--empty-settings");
   // Windows 安装版首启（NSIS 后第一次拉起）可能几十秒才开调试端口：默认给 180s，轮询重连
   const readyTimeout = readyTimeoutFlag(args, 180000);
@@ -1241,7 +1335,6 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const remoteAppLog = `${remoteRunDir}\\app.log`;
   const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
   const task = `VNoteVerify_${runId}`;
-  const localAppLog = join(winDir, "app.log");
   let tunnelPid: number | undefined;
   /** 失败收尾要知道远端启动的是哪个 exe：声明在 try 之外，catch 里才用得上。 */
   let remoteApp: string | undefined;
@@ -1261,6 +1354,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   await reservePort(port);
   // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
   mkdirSync(runDir, { recursive: true });
+  const winDir = winLocal({ runDir });
+  const localAppLog = join(winDir, "app.log");
   try {
     sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
     if (!emptySettings) {
@@ -1409,8 +1504,10 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     console.log(`task:     ${task}`);
     // 远端 userData 不在 staging 里，但主动证明一次：拉回本地的东西里没有密钥。
     // 抛给外层 catch：此时远端 app、scheduled task 与 tunnel 都在，fail 会直接 exit 留下它们。
-    const leaked = findSecretFiles(VERIFY_ROOT);
-    if (leaked.length > 0) throw new RemoteError(secretsFailureMessage("up --target win-gamepc", leaked));
+    const leaked = evidenceSecretScan();
+    if (leaked.found.length > 0 || leaked.unreadable.length > 0) {
+      throw new RemoteError(secretScanFailureMessage("up --target win-gamepc", leaked));
+    }
   } catch (err) {
     // no leftovers: the tunnel, the remote app, the task and both run dirs go away
     if (tunnelPid !== undefined) {
@@ -1632,10 +1729,10 @@ async function doctor(args: string[]): Promise<void> {
       : bad(`stale build: ${stale.map((p) => p.replace(`${REPO}/`, "")).join(", ")} older than sources`);
   }
 
-  const secretFiles = findSecretFiles(VERIFY_ROOT);
-  secretFiles.length === 0
+  const secretScan = evidenceSecretScan(win ? remoteSecretNeedles(state.sshHost ?? WIN_SSH_HOST) : []);
+  secretScan.found.length === 0 && secretScan.unreadable.length === 0
     ? ok(`no secrets.* files under ${VERIFY_ROOT}`)
-    : bad(`证据目录里有 ${secretFiles.length} 个密钥文件：${secretFiles.map((path) => path.replace(`${REPO}/`, "")).join(", ")}`);
+    : bad(secretScanFailureMessage("doctor", secretScan));
 
   if (problems.length > 0) {
     console.log(`\ndoctor: ${problems.length} problem(s)`);
@@ -1861,9 +1958,23 @@ async function down(args: string[]): Promise<void> {
   const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
   rejectUnknownArgs(args, "verify.ts down [--run ID] [--purge] [--target mac|win-gamepc]");
+  // 收尾边界（r60 漏洞 4 / 5）：state.json 里的路径不可信，动手之前按真实路径确认
+  // 它们都还在各自的根里；符号链接把 run 目录指到根之外时同样拒绝。两种 target 共用。
+  if (!isInside(VERIFY_ROOT, state.runDir)) {
+    fail(
+      `拒绝收尾：state.json 的 runDir 不在证据根 ${VERIFY_ROOT} 内（真实路径，符号链接也算越界）：${state.runDir}\n` +
+        `没有删除任何东西；先确认这份 state.json（${join(VERIFY_ROOT, state.runId)}）是否被改过。`,
+    );
+  }
   if (resolveTarget(targetFlag, state) === "win-gamepc") {
     await downWin(state, purge);
     return;
+  }
+  if (purge && !isInside(VERIFY_STATE_ROOT, join(VERIFY_STATE_ROOT, state.runId))) {
+    fail(
+      `拒绝 purge：${join(VERIFY_STATE_ROOT, state.runId)} 的真实路径不在状态根 ${VERIFY_STATE_ROOT} 内（符号链接越界）\n` +
+        `没有删除任何东西；手工确认这个链接后重试。`,
+    );
   }
   if (alive(state.pid)) {
     const name = processName(state.pid);
@@ -1891,15 +2002,22 @@ async function down(args: string[]): Promise<void> {
     }
   };
   prune(join(state.runDir, "home/.cache"), "home/.cache");
-  // userData 现在在证据目录之外（r50），缓存要按 state.json 记录的真实路径剪
-  for (const name of ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "Partitions"]) {
-    prune(join(state.userData, name), `userData/${name}`);
-  }
-  // Local Storage is pruned only when it holds no evidence.
-  const localStore = join(state.userData, "Local Storage");
-  if (existsSync(localStore) && readdirSync(localStore).length === 0) {
-    rmSync(localStore, { recursive: true, force: true });
-    console.log(`pruned userData/Local Storage`);
+  // userData 现在在证据目录之外（r50），缓存要按 state.json 记录的真实路径剪。
+  // r60：只剪状态根里的 userData——显式 --user-data 指到别处时那是调用方自己的 profile，
+  // 而且一个符号链接就能让「剪缓存」剪到无关目录去。
+  const userDataInStateRoot = isInside(VERIFY_STATE_ROOT, state.userData);
+  if (userDataInStateRoot) {
+    for (const name of ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "Partitions"]) {
+      prune(join(state.userData, name), `userData/${name}`);
+    }
+    // Local Storage is pruned only when it holds no evidence.
+    const localStore = join(state.userData, "Local Storage");
+    if (existsSync(localStore) && readdirSync(localStore).length === 0) {
+      rmSync(localStore, { recursive: true, force: true });
+      console.log(`pruned userData/Local Storage`);
+    }
+  } else {
+    console.log(`skip:  userData 在状态根之外（${state.userData}），不剪它的缓存`);
   }
 
   reportKept(state.runDir, purge);
@@ -1914,6 +2032,8 @@ async function down(args: string[]): Promise<void> {
 /** The tail every `down` shares: purge the run dir or report what stayed in `evidenceDir`. */
 function reportKept(runDir: string, purge: boolean, evidenceDir: string = runDir): void {
   if (purge) {
+    // 调用方（down / downWin）已经验过 runDir 在证据根内；这里再兜一次，防止新增调用点漏判
+    if (!isInside(VERIFY_ROOT, runDir)) fail(`拒绝删除 ${runDir}：真实路径不在证据根 ${VERIFY_ROOT} 内（符号链接越界）`);
     rmSync(runDir, { recursive: true, force: true });
     // a pointer at a deleted run would make the next bare `drive`/`doctor` read a missing state.json
     if (readLatestPointer(LATEST) === basename(runDir)) rmSync(LATEST, { recursive: true, force: true });
@@ -1930,6 +2050,10 @@ function reportKept(runDir: string, purge: boolean, evidenceDir: string = runDir
 async function downWin(state: RunState, purge: boolean): Promise<void> {
   const host = state.sshHost ?? WIN_SSH_HOST;
   const remoteRunDir = state.remoteRunDir ?? `${WIN_RUNS}\\${state.runId}`;
+  // 收尾动作只作用于远端 staging 根之内（r60 漏洞 4 的 win 侧）：state.json 里的路径不可信
+  if (!winPathInside(WIN_RUNS, remoteRunDir)) {
+    fail(`拒绝收尾：远端 run 目录 ${remoteRunDir} 不在 ${WIN_RUNS} 内（state.json 不可信）`);
+  }
   try {
     if (state.sshTunnelPid !== undefined) {
       // pid 复用保护：只杀确实是 ssh 的那个 pid（state.json 可能早已陈旧）
@@ -2009,13 +2133,20 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
     // 清单即契约（r58 验收 5）：远端 run 目录下除了缓存都是证据，逐个拉、逐个核对大小；
     // 漏的补拉一次，仍然缺就报错，而不是像以前那样只按文件名白名单拉。
     // 用 -EncodedCommand：清单里的插值字符串带双引号，放进 winPs 的 -Command "…" 会破引号边界。
+    // r60：-Force 连隐藏文件一起列；-ErrorAction Stop 让读不了的目录变成失败（问不到 ≠ 没有）。
     const listing = sshRun(
       host,
       winPsEncoded(
-        `Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`,
+        `$ErrorActionPreference='Stop'; Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -Force -ErrorAction Stop | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`,
       ),
     ).stdout;
-    const inventory = evidenceInventory(parseRemoteListing(listing), remoteRunDir);
+    // 远端密钥文件绝不拉进本地证据（r60 漏洞 1）：点名后由人在远端删掉
+    const remoteSecrets = parseRemoteSecretListing(listing);
+    const remoteFiles = parseRemoteListing(listing);
+    const inventory = evidenceInventory(
+      remoteFiles.filter((file) => !remoteSecrets.includes(file.path)),
+      remoteRunDir,
+    );
     const expected = inventory.expected;
     const localPathOf = (remotePath: string) => join(winDir, ...relativeEvidencePath(remotePath, remoteRunDir));
     const pullOne = (remotePath: string): boolean => pullRemoteFile(host, remotePath, localPathOf(remotePath));
@@ -2044,7 +2175,10 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
       );
     }
     console.log(`evidence: ${expected.length} 个远端证据文件全部拉齐并核对大小（缓存已排除）-> ${winDir}`);
-    // 清单本身也是证据：应拉取/已跳过（大媒体）/不拉取（缓存）三份列表都落盘
+    if (remoteSecrets.length > 0) {
+      console.log(`evidence: ${remoteSecrets.length} 个远端密钥文件不拉取（r60）：${remoteSecrets.join(", ")}`);
+    }
+    // 清单本身也是证据：应拉取/已跳过（大媒体）/不拉取（缓存与密钥）三份列表都落盘
     writeFileSync(
       join(winDir, "evidence-inventory.json"),
       `${JSON.stringify(
@@ -2064,23 +2198,35 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
     state.stoppedAt = new Date().toISOString();
     writeFileSync(join(state.runDir, "state.json"), JSON.stringify(state, null, 2));
     writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
+    if (remoteSecrets.length > 0) {
+      // 拉取完成了（证据没被污染），但远端还留着一份密钥：必须报出来，由人在远端删掉
+      throw new RemoteError(
+        `远端 run 目录里有 ${remoteSecrets.length} 个密钥文件（没有拉进本地证据）：\n${remoteSecrets.map((path) => `  ${path}`).join("\n")}\n` +
+          `在 ${host} 上删掉它们再跑 down。`,
+      );
+    }
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   }
   // the remote run dir is staging for the pull: keep it by default, drop it with the local purge
   if (purge) {
+    // 远端删除同样只在 staging / 状态根内（r60 漏洞 4 + 5 的 win 侧；winPathInside 已在上方校验 run 目录）
     const dropped = sshExec(host, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
     console.log(dropped.code === 0 ? `purged ${remoteRunDir} on ${host}` : `could not purge ${remoteRunDir} on ${host}: ${stderrTail(dropped)}`);
     // 默认远端 userData 目录一并清掉：留着会让同名 run 复用旧 settings/secrets
     const defaultState = `${WIN_STATE_ROOT}\\${state.runId}`;
-    if ((state.remoteUserData ?? "").toLowerCase() === `${defaultState}\\user-data`.toLowerCase()) {
+    if (
+      winPathInside(WIN_STATE_ROOT, defaultState) &&
+      (state.remoteUserData ?? "").toLowerCase() === `${defaultState}\\user-data`.toLowerCase()
+    ) {
       const stateDropped = sshExec(host, winPs(`Remove-Item -LiteralPath '${defaultState}' -Recurse -Force -ErrorAction SilentlyContinue`));
       console.log(stateDropped.code === 0 ? `purged ${defaultState} on ${host}` : `could not purge ${defaultState} on ${host}: ${stderrTail(stateDropped)}`);
     }
   }
   // the proof for a win run lives in win/, not next to state.json
   reportKept(state.runDir, purge, purge ? state.runDir : winLocal(state));
-  assertNoSecretsInEvidence("down --target win-gamepc");
+  // 拉回来的远端证据也要按远端 apiKey 做内容扫描：远端的密钥值与本机私有配置不是同一份
+  assertNoSecretsInEvidence("down --target win-gamepc", remoteSecretNeedles(host));
 }
 
 function runs(): void {
@@ -2545,12 +2691,13 @@ async function prototype(args: string[]): Promise<void> {
  * `up`/`down`/`doctor` 都会跑同一条断言；这个命令让 CI 或人手动单独跑。
  */
 function secretsGate(): void {
-  const found = findSecretFiles(VERIFY_ROOT);
-  if (found.length === 0) {
+  const scan = evidenceSecretScan();
+  if (scan.found.length === 0 && scan.unreadable.length === 0) {
     console.log(`secrets-gate: clean (${VERIFY_ROOT})`);
     return;
   }
-  process.stdout.write(`secrets-gate: ${found.length} 个密钥文件在证据目录里\n${found.map((path) => `  ${path}`).join("\n")}\n`);
+  // 只打印路径：命中内容是密钥本身，读不了的目录同样不能算干净（r60）
+  process.stderr.write(`${secretScanFailureMessage("secrets-gate", scan)}\n`);
   process.exit(1);
 }
 
