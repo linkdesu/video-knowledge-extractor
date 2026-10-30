@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -75,9 +76,9 @@ export function formatLogLine(entry: LogEntry): string {
   return line;
 }
 
-// 未 configure 前丢弃所有日志；processTask 仅由 runWithTask 临时设置
+// 未 configure 前丢弃所有日志；当前任务 id 存在 AsyncLocalStorage 里，并发任务之间互不影响
 let installed: Logger | null = null;
-let processTask: string | null = null;
+const taskScope = new AsyncLocalStorage<string>();
 
 export function logFileName(date: Date): string {
   return `vnote-${date.toISOString().slice(0, 10)}.log`;
@@ -274,7 +275,7 @@ export function createLogger(opts?: LoggerOptions): Logger {
       }
       // Secrets first, then homes: a key can never leak through a truncated home prefix
       const safeMessage = redactHomePaths(redactSecrets(message, secrets), homes);
-      const taskId = moduleTask ?? processTask;
+      const taskId = moduleTask ?? taskScope.getStore() ?? null;
       const line = renderLine(date, lvl, module, safeMessage, redacted, taskId);
       writeLogLine(date, line);
       if (opts?.tap) opts.tap({ date, level: lvl, module, message: safeMessage, fields: redacted, taskId });
@@ -353,16 +354,9 @@ export function logger(): Logger {
   return installed ?? noopLogger();
 }
 
-/** Sets the process-wide task id for the duration of fn (one task per process in this codebase), restores it after. */
+/** Sets the task id for the duration of fn; 并发任务各带自己的 id（r59：全局变量会串号）。 */
 export async function runWithTask<T>(taskId: string, fn: () => Promise<T> | T): Promise<T> {
-  const prev = processTask;
-  processTask = taskId;
-  try {
-    const result = fn();
-    return await (result as Promise<T>);
-  } finally {
-    processTask = prev;
-  }
+  return taskScope.run(taskId, async () => await fn());
 }
 
 export function pruneOldLogs(dir: string, keepDays = PRUNE_KEEP_DAYS, now: Date = new Date()): string[] {

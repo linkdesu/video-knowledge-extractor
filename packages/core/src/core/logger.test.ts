@@ -89,6 +89,27 @@ describe("runWithTask 任务作用域", () => {
       "2026-10-24T05:31:02.123Z INFO  app 之后",
     ]);
   });
+
+  test("并发两个 runWithTask：各自带自己的 task，结束后不残留（r59 实测并发提取把 task 串到别的用例里）", async () => {
+    const { l, lines } = makeSinkLogger();
+    // 用 promise 定序，不用真实计时：fast 先写完再放行 slow
+    const release = Promise.withResolvers<void>();
+    const slow = runWithTask("task-slow", async () => {
+      await release.promise;
+      l.info("app", "slow");
+    });
+    const fast = runWithTask("task-fast", async () => {
+      l.info("app", "fast");
+      release.resolve();
+    });
+    await Promise.all([slow, fast]);
+    l.info("app", "之后");
+    expect(lines).toEqual([
+      "2026-10-24T05:31:02.123Z INFO  app task=task-fast fast",
+      "2026-10-24T05:31:02.123Z INFO  app task=task-slow slow",
+      "2026-10-24T05:31:02.123Z INFO  app 之后",
+    ]);
+  });
 });
 
 describe("文件写入与 readTaskLog", () => {
