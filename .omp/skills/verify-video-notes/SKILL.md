@@ -44,9 +44,11 @@ What `up` does:
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
 2. Seeds the run userData from the private LLM config (`settings.json` version 3 + `secrets.bin` version 2, both `0600`; `state.json` records `configSeeded: true`). `--empty-settings` skips this for feature journeys that assert a virgin settings page.
 3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment.
-4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=tmp/verify-state/<run>/user-data` (outside the evidence tree, r50), `VNOTE_MODEL_DIR` = the real model cache.
+4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=tmp/verify-state/<run>/user-data` (outside the evidence tree, r50), `VNOTE_MODEL_DIR` = the real model cache. A leftover default userData directory fails `up` (`默认 userData 目录已存在`) instead of being inherited; `--run` accepts `[A-Za-z0-9._-]` only and never `latest`.
 5. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
 6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run. The pointer is always rewritten as a plain file: a stale symlink or directory at that path is removed first (r50), so `up` cannot die with `EISDIR` after the app already started.
+
+Step 0 is the secrets gate: before anything is created or launched, `up` scans `tmp/verify` for `secrets.bin` / `secrets.pending` / `secrets.bin.legacy-*` and exits 1 on a hit — a dirty evidence tree never leaves an orphan process behind.
 
 Isolation limits:
 
@@ -137,7 +139,7 @@ Teardown (always, including after a failed journey):
 bun .omp/skills/verify-video-notes/scripts/verify.ts down
 ```
 
-`down` stops only the pid recorded in `state.json` (SIGTERM after `ps` confirms the process name, wait for exit; it never kills by name), records `stoppedAt` in `state.json`, keeps the flat evidence set (`state.json`, `status.json`, `app.log`, `build.log`, `cli.log`, every `*.png` and `*.aria.txt`, and any artifact snapshots in the run directory such as `trajectory.json`), and prunes only the renderer caches (`home/.cache` plus, under the run's recorded `userData` — `tmp/verify-state/<run>/user-data`, not the evidence tree — `Cache`, `Code Cache`, `GPUCache`, `DawnGraphiteCache`, `DawnWebGPUCache`, `ShaderCache`, `GrShaderCache`, `Partitions`, and `Local Storage` only when it contains no evidence). It refuses to delete the run directory unless `--purge` is passed; `down --purge` removes the whole directory and prints a warning that the evidence is gone. `<repo>/tmp/verify/<run-id>/` is the single legal evidence location: do not copy evidence into a repo-root `artifacts/` directory, and the directory is kept after the work lands.
+`down` stops only the pid recorded in `state.json` (SIGTERM after `ps` confirms the process name, wait for exit; it never kills by name), records `stoppedAt` in `state.json`, keeps the flat evidence set (`state.json`, `status.json`, `app.log`, `build.log`, `cli.log`, every `*.png` and `*.aria.txt`, and any artifact snapshots in the run directory such as `trajectory.json`), and prunes only the renderer caches (`home/.cache` plus, under the run's recorded `userData` — `tmp/verify-state/<run>/user-data`, not the evidence tree — `Cache`, `Code Cache`, `GPUCache`, `DawnGraphiteCache`, `DawnWebGPUCache`, `ShaderCache`, `GrShaderCache`, `Partitions`, and `Local Storage` only when it contains no evidence). It refuses to delete the run directory unless `--purge` is passed; `down --purge` removes the whole directory and prints a warning that the evidence is gone, and since r50 also removes the run's default userData (`tmp/verify-state/<run>`, on Windows `D:\code\video-notes\verify-state\<run>`) so the id can be reused. `<repo>/tmp/verify/<run-id>/` is the single legal evidence location: do not copy evidence into a repo-root `artifacts/` directory, and the directory is kept after the work lands.
 
 `state.json` records the run: `commit` (the `git rev-parse HEAD` at launch time, `null` when git failed), `startedAt` (the launch ISO timestamp), and, after `down`, `stoppedAt`. `doctor` may compare `commit` against the current `git rev-parse HEAD` as a warning only (a mismatch means the sources moved since launch; it never fails the check).
 
@@ -145,9 +147,10 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 
 `tmp/verify/` holds evidence only. userData — `settings.json` plus `secrets.bin`, the plaintext LLM key — lives outside it in `tmp/verify-state/<run>/user-data` (Windows: `D:\code\video-notes\verify-state\<run>\user-data`), because a run's evidence is copied into reports and kept for months.
 
-- `up`, `down`, `doctor` and the standalone `secrets-gate` command all scan the evidence tree for `secrets.bin`, `secrets.pending` and `secrets.bin.legacy-*`; a hit is a hard failure that prints every path and changes nothing (deleting a key file is the operator's call).
-- `up --user-data` refuses a directory inside `tmp/verify` (and `--user-data` on `--target win-gamepc` refuses a path inside `D:\code\video-notes\verify`), so the gate cannot be defeated by pointing userData back into the evidence tree.
-- `up` re-checks after the launch and `down` after the pull; a win run's pulled `win/` tree is covered by the same scan.
+- `up`, `down`, `doctor` and the standalone `secrets-gate` command all scan the evidence tree for `secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*` and `secrets.bin.tmp-*`; a hit is a hard failure that prints every path and changes nothing (deleting a key file is the operator's call). `up` scans before it creates or launches anything, so a dirty tree never leaves an orphan process.
+- `up --user-data` refuses a directory inside `tmp/verify` (symlinks resolved), and `--user-data` on `--target win-gamepc` refuses a path inside `D:\code\video-notes\verify` after normalizing separators, `.`/`..` and case; `seed-config` applies the same rule per target, so the gate cannot be defeated by pointing userData back into the evidence tree.
+- A leftover default userData directory is refused by `up` rather than inherited (`--empty-settings` would silently stop being empty); `down --purge` removes `tmp/verify-state/<run>` (and the remote `verify-state\<run>`) with the evidence.
+- `up` re-checks after the pull on a win run (throwing into the cleanup path, since the remote app, task and tunnel are live) and `down` re-checks after the prune; a win run's pulled `win/` tree is covered by the same scan.
 - Historical runs from before r50 keep their `user-data/` where it is: `secrets-gate` will report them until they are deleted (`down --run <id> --purge`). Recipe and gotchas: [features/evidence-hygiene.md](./features/evidence-hygiene.md).
 
 ### Windows real machine

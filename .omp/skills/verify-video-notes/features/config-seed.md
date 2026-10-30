@@ -58,7 +58,7 @@ Failure probes (do not weaken the checks to make them pass):
 
 - The private file is **not** in the repo and must stay that way (`.gitignore` does not reach `~/.config`). Never copy it into `.omp/`, `tmp/` or a fixture directory, and never print its contents.
 - The app in a verify run is a dev (unpacked) build: it would normally take `VNOTE_LLM_*` from its process environment as a seed. The helper removes those variables, so seeded files are the only truth; exporting them in front of `up` no longer has any effect on LLM config.
-- `--empty-settings` only means "no settings file and no env seed". The local ASR model directory and `VNOTE_HOME` isolation are unaffected.
+- `--empty-settings` only means "no settings file and no env seed". The local ASR model directory and `VNOTE_HOME` isolation are unaffected. Since r50 the run's userData lives in `tmp/verify-state/<run>/user-data`, and a leftover directory there fails `up` instead of being reused — otherwise `--empty-settings` would silently inherit a saved key.
 - Windows: the private file lives on the Windows box, not on the Mac. `export-private-config --target win-gamepc` writes it there; a run fails with the Windows path in the hint if it is missing.
 - `seed-config` writes files but does not hot-reload a running app; settings are read at startup.
 - `settings().llm.configured` is true only when baseUrl **and** key are present; a model may be discovered at runtime when `model` is absent from the private file.

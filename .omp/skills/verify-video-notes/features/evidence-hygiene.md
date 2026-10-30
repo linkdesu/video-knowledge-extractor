@@ -5,9 +5,10 @@ The verification harness must never copy a credential into a run's evidence. Bef
 ## Sub-features
 
 - `userdata-outside-evidence` `up` puts userData in `tmp/verify-state/<run>/user-data` (Windows: `D:\code\video-notes\verify-state\<run>\user-data`). Evidence (`<run>/state.json`, `*.png`, `*.aria.txt`, `app.log`, artifacts) stays in `tmp/verify/<run>/`; `state.json#userData` / `#remoteUserData` record the real path, and `down` prunes the renderer caches from that recorded path.
-- `userdata-inside-evidence-refused` `up --user-data` (and `seed-config` on a run whose `state.json` points there) refuses a directory inside `tmp/verify` with the default path in the message; `up --target win-gamepc --user-data` refuses a path inside `D:\code\video-notes\verify`. The gate cannot be defeated by pointing userData back in.
-- `secrets-gate` `up` (both targets, after the launch / after the pull), `down` (both targets, after the prune / after the pull), `doctor` and the standalone `verify.ts secrets-gate` command scan the evidence tree recursively for `secrets.bin`, `secrets.bin.legacy-*` and `secrets.pending`. A hit prints every absolute path and exits 1; the harness never deletes a key file on its own.
-- `latest-pointer` `up` writes `tmp/verify/latest` through `writeLatestPointer`: whatever occupies that path (regular file, directory, symlink to a file, symlink to a directory, broken symlink) is removed with `lstat` + `rmSync` first, then a plain file `"<runId>\n"` is written. A symlink's target is never modified, and a directory target is never deleted.
+- `userdata-inside-evidence-refused` `up --user-data` (and `seed-config` on a run whose `state.json` points there, on both targets) refuses a directory inside `tmp/verify` with the default path in the message; the check resolves symlinks, so a link pointing back into the evidence tree is refused too. `up --target win-gamepc --user-data` compares normalized Windows paths (separators, `.`/`..`, case), so `D:/code/video-notes/verify/…` and `D:\code\video-notes\verify-state\..\verify\…` are refused as well.
+- `no-leftover-userdata` a default userData directory that already exists (a previous `up` that died before writing `state.json`, or a purged evidence dir whose state survived) is refused: reusing it would silently inherit `settings.json` / `secrets.bin` and make `--empty-settings` non-empty. `down --purge` removes `tmp/verify-state/<run>` (and the remote `D:\code\video-notes\verify-state\<run>`) together with the evidence, so the id is reusable. An explicit `--user-data` keeps its intentional reuse semantics.
+- `secrets-gate` `up` scans the evidence tree **before** it creates anything or launches the app, so a hit never leaves an orphan process; `down` (both targets, after the prune / after the pull), `doctor` and the standalone `verify.ts secrets-gate` command run the same scan. It reports `secrets.bin`, `secrets.bin.legacy-*`, `secrets.pending` and `secrets.bin.tmp-*`, follows directory symlinks (cycle-safe) and reports a key file that is itself a symlink. A hit prints every absolute path and exits 1; the harness never deletes a key file on its own. The one post-launch scan (win-gamepc, after the pull) throws into the cleanup path instead of exiting, because the remote app, scheduled task and tunnel are live at that point.
+- `latest-pointer` `up` writes `tmp/verify/latest` through `writeLatestPointer`: whatever occupies that path (regular file, directory, symlink to a file, symlink to a directory, broken symlink) is removed with `lstat` + `rmSync` first, then a plain file `"<runId>\n"` is written. A symlink's target is never modified, and a directory target is never deleted. `--run` therefore rejects `latest` (and any id outside `[A-Za-z0-9._-]`): a run id that resolves onto the pointer path would be deleted by its own `up`.
 
 ## How to get to it (user POV)
 
@@ -40,14 +41,18 @@ $V down --run r50-hygiene     # prune caches at the recorded userData, then the 
 
 Failure probes (do not weaken the checks to make them pass):
 
-- `mkdir -p tmp/verify/probe/user-data && touch tmp/verify/probe/user-data/secrets.bin` then `$V secrets-gate` → exit 1, the path printed; `$V up --run x` and `$V doctor` fail on the same line.
+- `mkdir -p tmp/verify/probe/user-data && touch tmp/verify/probe/user-data/secrets.bin` then `$V secrets-gate` → exit 1, the path printed; `$V up --run x` and `$V doctor` fail on the same line, and `up` fails **before** launching anything.
 - `$V up --run probe --user-data tmp/verify/probe/user-data` → exit 1, `userData 不能落在证据目录内`, before any app launch.
+- `$V up --target win-gamepc --user-data 'D:/code/video-notes/verify/probe/user-data'` (also `D:\code\video-notes\verify-state\..\verify\probe\user-data`) → exit 1, the normalized Windows boundary check.
+- `$V up --run latest` / `$V up --run ../escape` → exit 1, `--run 只接受字母数字与 . _ -`.
+- Leave `tmp/verify-state/probe/user-data` behind, then `$V up --run probe` → exit 1, `默认 userData 目录已存在`; `$V down --run probe --purge` on the previous run removes that directory instead.
 - Pre-create `tmp/verify/latest` as a symlink to a directory, then `$V up` → the run succeeds, `latest` is a regular file, the symlink target is untouched, and only one Electron process is running (`pgrep -fl -- '--remote-debugging-port=9411'`).
 
 ## Gotchas
 
 - **The gate scans the whole tree, including old runs.** Pre-r50 run directories still hold `user-data/secrets.bin`; after this change `up` / `down` / `doctor` fail until they are removed (`down --run <id> --purge`). That is intentional: an old evidence bundle is exactly the copy that must not be shared.
 - **`--user-data` reuse across runs must now point at `tmp/verify-state/<old>/user-data`.** The old `tmp/verify/<old>/user-data` form is refused (see [settings.md](./settings.md) 「Recipe: restart persistence」).
+- **A reused run id needs `down --purge`, not just `down`.** `down` keeps the evidence *and* the userData directory; only `--purge` removes both. A leftover default userData directory is refused by `up` rather than silently inherited.
 - **`state.json#userData` is the only source for cache pruning.** A hand-edited path prunes the wrong directory; `down` reads it, it does not re-derive `<run>/user-data`.
 - **Never delete `secrets.bin` by hand while a run is alive** — the running app rewrites the file (atomically, `0600`) the next time it saves a secret; stop the run first, then `down --purge`.
 - **The pointer rewrite is not a directory move.** `rmSync` on a symlink removes the link, never the target; a directory at `latest` is deleted recursively, which is why the path is a fixed constant (`tmp/verify/latest`), not a flag.
