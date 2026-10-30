@@ -116,7 +116,8 @@ describe("源视频路由", () => {
   });
 
   test("handler 按 url 前缀分发：源路由未登记 videoId → 404；已登记且文件存在 → 200", async () => {
-    const tmp = `${process.cwd()}/tmp-src-media-test`;
+    // r62 / ADR-0038：夹具目录必须每进程唯一，否则并行的两次全量测试会互相删掉对方的产物
+    const tmp = mkdtempSync(join(tmpdir(), "vnote-media-src-"));
     mkdirSync(tmp, { recursive: true });
     const realSrc = `${tmp}/src.mp4`;
     writeFileSync(realSrc, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
@@ -136,7 +137,7 @@ describe("源视频路由", () => {
   });
 
   test("clip 路由仍按 root 解析并 200 返回", async () => {
-    const root = `${process.cwd()}/tmp-media-test`;
+    const root = mkdtempSync(join(tmpdir(), "vnote-media-clip-"));
     mkdirSync(`${root}/vid-1/主题-01`, { recursive: true });
     writeFileSync(`${root}/vid-1/主题-01/clip-1.mp4`, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
     try {
@@ -183,10 +184,10 @@ describe("封面路由", () => {
   });
 
   test("handler 封面分支：已登记且文件存在 → 200 全量 + image/jpeg", async () => {
-    const dir = `${process.cwd()}/tmp-cover-media-test/vid-1`;
+    const root = mkdtempSync(join(tmpdir(), "vnote-media-cover-"));
+    const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/cover.jpg`, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
-    const root = `${process.cwd()}/tmp-cover-media-test`;
     try {
       const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
       const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
@@ -196,15 +197,15 @@ describe("封面路由", () => {
       const body = new Uint8Array(await res.arrayBuffer());
       expect(body.length).toBe(7);
     } finally {
-      rmSync(`${process.cwd()}/tmp-cover-media-test`, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
   test("handler 封面分支：带 Range 头也按 200 全量返回，忽略 Range", async () => {
-    const dir = `${process.cwd()}/tmp-cover-range-test/vid-1`;
+    const root = mkdtempSync(join(tmpdir(), "vnote-media-range-"));
+    const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/cover.jpg`, Buffer.from([1, 2, 3, 4, 5]));
-    const root = `${process.cwd()}/tmp-cover-range-test`;
     try {
       const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
       const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
@@ -213,14 +214,14 @@ describe("封面路由", () => {
       const body = new Uint8Array(await res.arrayBuffer());
       expect(body.length).toBe(5);
     } finally {
-      rmSync(`${process.cwd()}/tmp-cover-range-test`, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
   test("handler 封面分支：未登记 videoId → 404；文件不存在 → 404", async () => {
-    const dir = `${process.cwd()}/tmp-cover-missing-test/vid-1`;
+    const root = mkdtempSync(join(tmpdir(), "vnote-media-missing-"));
+    const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
-    const root = `${process.cwd()}/tmp-cover-missing-test`;
     try {
       const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
       const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
