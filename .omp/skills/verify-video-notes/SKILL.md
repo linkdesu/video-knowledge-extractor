@@ -149,10 +149,12 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 
 `tmp/verify/` holds evidence only. userData — `settings.json` plus `secrets.bin`, the plaintext LLM key — lives outside it in `tmp/verify-state/<run>/user-data` (Windows: `D:\code\video-notes\verify-state\<run>\user-data`), because a run's evidence is copied into reports and kept for months.
 
-- `up`, `down`, `doctor` and the standalone `secrets-gate` command all scan the evidence tree for `secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*` and `secrets.bin.tmp-*`; a hit is a hard failure that prints every path and changes nothing (deleting a key file is the operator's call). `up` scans before it creates or launches anything, so a dirty tree never leaves an orphan process.
+- `up`, `down`, `doctor` and the standalone `secrets-gate` command all scan the evidence tree for `secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*` and `secrets.bin.tmp-*` **and** match file contents against the private `apiKey` (r60: a renamed or copied key file still leaks the value); an unreadable directory is reported as a failure instead of "clean", a hit is a hard failure that prints every path (never any value) and changes nothing (deleting a key file is the operator's call). `up` scans before it creates or launches anything, so a dirty tree never leaves an orphan process.
 - `up --user-data` refuses a directory inside `tmp/verify` (symlinks resolved), and `--user-data` on `--target win-gamepc` refuses a path inside `D:\code\video-notes\verify` after normalizing separators, `.`/`..` and case; `seed-config` applies the same rule per target, so the gate cannot be defeated by pointing userData back into the evidence tree.
 - A leftover default userData directory is refused by `up` rather than inherited (`--empty-settings` would silently stop being empty); `down --purge` removes `tmp/verify-state/<run>` (and the remote `verify-state\<run>`) with the evidence.
-- `up` re-checks after the pull on a win run (throwing into the cleanup path, since the remote app, task and tunnel are live) and `down` re-checks after the prune; a win run's pulled `win/` tree is covered by the same scan.
+- `up` re-checks after the app is ready on both targets (win throws into the cleanup path, mac stops the process tree, since the app and tunnel are live) and `down` re-checks after the prune; a win run's pulled `win/` tree is covered by the same scan.
+- Remote residue is gated too (r60): `up --target win-gamepc` scans `D:\code\video-notes\verify` for historical key files before it writes anything (an unreadable remote directory fails as well), and `down` never pulls a remote key file — it lists it and fails so the operator deletes it on the box.
+- Cleanup only acts inside the two roots: `down` / `down --purge` refuse a `state.json` whose `runDir` (or symlinked default state directory) resolves outside `tmp/verify` / `tmp/verify-state`, and a refusal happens before anything is deleted or written.
 - Historical runs from before r50 keep their `user-data/` where it is: `secrets-gate` will report them until they are deleted (`down --run <id> --purge`). Recipe and gotchas: [features/evidence-hygiene.md](./features/evidence-hygiene.md).
 
 ### Windows real machine
@@ -206,7 +208,7 @@ Read-only checks, exit code 1 on failure:
 - `settings().appVersion` equals `apps/desktop/package.json`;
 - the listening port is owned by the recorded pid (`lsof`); a listener that is an ssh tunnel instead is reported (r58: CDP-shaped residue can be cleared, a foreign `-L` tunnel is only reported);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`;
-- no key file (`secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*`) anywhere under `tmp/verify` (r50 — the evidence tree never holds userData; same scan as `verify.ts secrets-gate`).
+- no key file (`secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*`) and no file whose content contains the private `apiKey` anywhere under `tmp/verify`, and no unreadable directory there (r50 + r60 — the evidence tree never holds userData; same scan as `verify.ts secrets-gate`).
 
 **顶层视口布局不变量（硬门禁，r45）：** 读 `window.innerHeight`、`.vn-shell` 与 `.vn-aside` 的 `getBoundingClientRect().height`，断言两者与 `innerHeight` 的差 `<= 2`；任务浮层打开时（`[data-testid=job-banner]` 存在）`.vn-content` 的 `padding-bottom` 必须 `>= 浮层实际高度 + 32px` 且 `>= 240px`（矮窗口下限降级后仍成立）。不满足即 `fail` 并以退出码 1 结束。
 
