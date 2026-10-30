@@ -21,6 +21,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { join, resolve } from "node:path";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
 import { defaultModelDir } from "./lib/model-dir";
+import { stopProcessTree } from "./lib/proc";
 
 const REPO = resolve(import.meta.dirname, "../../../..");
 const DESKTOP = join(REPO, "apps/desktop");
@@ -158,7 +159,7 @@ async function waitForPort(deadline: number): Promise<void> {
 
 /** 每次启动的四条断言，逐条落进 launch-<i>.json，失败时能在 summary 里直接定位。 */
 type Checks = { readyState: boolean; root: boolean; navLibrary: boolean; appVersion: boolean };
-type LaunchOutcome = { ok: boolean; problems: string[]; checks: Checks | null; facts: LaunchFacts | null };
+type LaunchOutcome = { ok: boolean; problems: string[]; checks: Checks | null; facts: LaunchFacts | null; readyMs?: number };
 
 /** 白屏时渲染主线程可能被阻塞：每个 CDP 调用都要有上限，否则门禁自己会挂住。 */
 async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
@@ -204,6 +205,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
   env.VNOTE_HOME = home;
   env.VNOTE_USER_DATA = userData;
   env.VNOTE_MODEL_DIR ??= defaultModelDir(process.env.HOME ?? "/Users/link");
+  const launchedAt = Date.now();
   const proc = Bun.spawn([bundleExecutable(appPath), `--remote-debugging-port=${port}`], {
     env,
     cwd: REPO,
@@ -214,6 +216,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
   let facts: LaunchFacts | null = null;
   let problems: string[] = [];
   let checks: Checks | null = null;
+  let readyMs: number | undefined;
   const evidenceProblems: string[] = [];
   try {
     await waitForPort(Date.now() + timeoutMs);
@@ -226,7 +229,11 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
         const current = await withDeadline(cdp.eval<LaunchFacts>(FACTS_EXPRESSION), 5000, "Runtime.evaluate").catch(() => null);
         if (current !== null) {
           facts = current;
-          if (current.readyState === "complete" && current.navLibrary) break;
+          // 就绪即继续：等到主界面渲染，而不是固定等一段时间
+          if (current.readyState === "complete" && current.navLibrary) {
+            if (readyMs === undefined) readyMs = Date.now() - launchedAt;
+            break;
+          }
         }
         await Bun.sleep(200);
       }
@@ -274,12 +281,14 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
   } catch (err) {
     problems = [err instanceof Error ? err.message : String(err), ...evidenceProblems];
   } finally {
-    proc.kill();
-    await proc.exited;
-    // 进程必须真的退出，否则下一次冷启动会抢单实例锁
-    await Bun.sleep(300);
+    // 进程必须真的退出（否则下一次冷启动会抢单实例锁）：SIGTERM 宽限期后补 SIGKILL
+    const stopped = await stopProcessTree(proc.pid, { termMs: 4000, killMs: 3000 });
+    if (stopped.survivors.length > 0) {
+      problems.push(`进程 ${proc.pid} 收不掉：${stopped.survivors.join(",")}`);
+    }
+    await proc.exited.catch(() => {});
   }
-  return { ok: problems.length === 0, problems, checks, facts };
+  return { ok: problems.length === 0, problems, checks, facts, readyMs };
 }
 
 /** Windows 侧没有本地打包产物可跑：交给 verify.ts 的安装/计划任务/隧道机制。 */
@@ -287,14 +296,38 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
   // verify.ts 的 --run 不允许路径分隔符；证据目录仍用原始 runId
   const run = `${runId.replace(/[\\/]+/g, "-")}-win-${index}`;
   const verifyScript = join(REPO, ".omp/skills/verify-video-notes/scripts/verify.ts");
+  // Windows 安装版首启偶尔连不上调试端口：up 自己按 --ready-timeout 轮询重连，
+  // 这里给它同样的窗口，外加安装/收尾的余量；固定等 20 秒的老做法已经不存在。
+  const winReadyMs = Math.max(timeoutMs, 60000);
+  const launchedAt = Date.now();
   const up = Bun.spawnSync(
-    ["bun", verifyScript, "up", "--target", "win-gamepc", "--ssh-host", sshHost, "--app", appPath, "--run", run, "--empty-settings", "--port", String(port)],
-    { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 120000 },
+    [
+      "bun",
+      verifyScript,
+      "up",
+      "--target",
+      "win-gamepc",
+      "--ssh-host",
+      sshHost,
+      "--app",
+      appPath,
+      "--run",
+      run,
+      "--empty-settings",
+      "--port",
+      String(port),
+      "--ready-timeout",
+      String(winReadyMs),
+    ],
+    { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: winReadyMs + 180000 },
   );
-  writeFileSync(join(evidenceDir, `launch-${index}.up.log`), `${up.stdout.toString()}${up.stderr.toString()}`);
+  const upLog = `${up.stdout.toString()}${up.stderr.toString()}`;
+  writeFileSync(join(evidenceDir, `launch-${index}.up.log`), upLog);
   if (up.exitCode !== 0) {
-    return { ok: false, problems: [`verify.ts up 失败（退出码 ${up.exitCode}）`], checks: null, facts: null };
+    const tail = upLog.split("\n").filter((line) => line.trim() !== "").slice(-5).join("\n");
+    return { ok: false, problems: [`verify.ts up 失败（退出码 ${up.exitCode}）：\n${tail}`], checks: null, facts: null };
   }
+  const readyMs = Date.now() - launchedAt;
   const evalResult = Bun.spawnSync(["bun", verifyScript, "drive", "eval", FACTS_EXPRESSION, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 30000 });
   // verify.ts 把截图/aria 写进 <run>/win/；复制到本门禁的证据目录，保证两端证据形状一致
   const shot = Bun.spawnSync(["bun", verifyScript, "drive", "shot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 30000 });
@@ -308,7 +341,13 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
       captured.push(ext);
     }
   }
-  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 120000 });
+  // down 的退出码必须看：证据清单没拉齐时它会报错，吞掉就等于“收尾产物完整”在这条链路上失效
+  const down = Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], {
+    cwd: REPO,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 300000,
+  });
   let facts: LaunchFacts | null = null;
   try {
     facts = JSON.parse(evalResult.stdout.toString()) as LaunchFacts;
@@ -326,7 +365,11 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
   }
   if (!captured.includes("png")) problems.push(`缺少截图（drive shot 退出码 ${shot.exitCode}）`);
   if (!captured.includes("aria.txt")) problems.push(`缺少 aria 快照（drive snapshot 退出码 ${snapshot.exitCode}）`);
-  return { ok: problems.length === 0, problems, checks, facts };
+  if (down.exitCode !== 0) {
+    const tail = `${down.stdout.toString()}${down.stderr.toString()}`.split("\n").filter((line) => line.trim() !== "").slice(-5).join("\n");
+    problems.push(`verify.ts down 失败（退出码 ${down.exitCode}）：\n${tail}`);
+  }
+  return { ok: problems.length === 0, problems, checks, facts, readyMs };
 }
 
 const expectedVersion = desktopVersion();

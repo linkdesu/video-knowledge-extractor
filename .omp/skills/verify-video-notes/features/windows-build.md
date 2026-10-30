@@ -8,7 +8,7 @@ The Windows target drives a real Windows 11 machine over ssh: `up --target win-g
 - `win-install-dir-state` `state.json` records `installDir` and the resolved `remoteApp` (`<install-dir>\Video Notes.exe`); `doctor` checks the recorded executable over ssh and `down` works off it. The schema change is additive: older state files without the field keep working.
 - `win-ps-launcher` the launcher is `launch.ps1`, written as UTF-8 **with BOM**, started by a scheduled task whose action is pure ASCII: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<remoteRunDir>\launch.ps1"`. The script sets `NO_PROXY=*`, empties the proxy variables, sets `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR`, and launches the app in the foreground with stdout+stderr to `app.log`. A Chinese install dir would be garbled in a `.cmd` read by `cmd.exe`'s OEM code page; the BOM'd `.ps1` decodes it correctly, and the task action never carries non-ASCII bytes.
 - `win-r42-gate` the r42 acceptance gate on Windows: install into a directory with Chinese characters and spaces (`C:\Users\xieal\Desktop\新建文件夹\Video Notes`) and run at least one pure-audio journey end to end (import → topics → notes; the recipe is in [media-formats.md](./media-formats.md) 「Pure-audio journey」).
-- `win-r42-evidence` official r42 Windows evidence lands in `tmp/verify/r42-<slug>/win/` (screenshots, aria snapshots, and after `down` the pulled `app.log`, `home\logs\*`, and artifact files `video.json` / `topic.md` / `trajectory.json` / `status.json`).
+- `win-r42-evidence` official r42 Windows evidence lands in `tmp/verify/r42-<slug>/win/` (screenshots, aria snapshots, and after `down` the whole pulled remote run directory except caches: `app.log`, `home\logs\*`, and every artifact — `video.json` / `topic.md` / `labels.json` / `analysis.json` / `trajectory.json` / `status.json`). Since r58 the pull is inventory-driven: `down` lists the remote run dir (with `-EncodedCommand`, so quoted paths survive), pulls every file and verifies each against the listing (existence + size, one retry), failing with the missing list instead of silently skipping names it did not know about. Media above 8 MiB is listed in `evidence-inventory.json` as `skippedMedia` — derived products, and the base64 capture limit cannot carry them intact.
 
 ## How to get to it (user POV)
 
@@ -40,7 +40,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts doctor --run r42-win-audio
 # ... drop C:\Users\xieal\Documents\video-notes\r42-audio-30s.m4a, confirm, assert per that recipe ...
 # teardown pulls the r42 evidence
 bun .omp/skills/verify-video-notes/scripts/verify.ts down --run r42-win-audio
-# expected: the kept-evidence line counts tmp/verify/r42-win-audio/win/; app.log, home\logs\*, video.json, topic.md, trajectory.json and status.json are in it
+# expected: the kept-evidence line counts tmp/verify/r42-win-audio/win/; the `evidence: N 个远端证据文件全部拉齐并核对大小` line proves app.log, home\logs\*, and every artifact (video.json, topic.md, labels.json, analysis.json, trajectory.json, status.json) is in it
 ```
 
 For the official r42 report, the run id is `r42-<slug>` and every artifact is read from `tmp/verify/r42-<slug>/win/`, not from the box.

@@ -63,7 +63,7 @@ $V snapshot r54-lab-dev
 - **Lab 的音频协议只读 `audio.wav`**：`vnote-media://lab/<id>` 固定映射 `<cacheRoot>/<id>/audio.wav`，样本没有音频时页面禁用播放。
 - **实验目录必须带 `segtext-*.json`**：只有 `labels-*.json` 的目录会被拒绝（缺段级文本无法判语气词）。
 - **`refine` 与语气词规则只存在于 Lab**：`apps/desktop/src/main/dev-lab/` 与 `shared/lab-*.ts`，不进入 `packages/core` 正式管线；不要在视频页断言同样的聚类数。
-- **打包版首帧可能超过 20s**：`up --app` 的就绪等待写死 20s，实测安装包首次启动约 16s、冷启更久；超时后可用 CDP 直连同一个安装包补证据（r48 实测 `nav-lab=false`、`vnote.lab=undefined`）。
+- **打包版首帧可能超过 20s（r58 起不再写死等待）**：`up --app` 的等待是轮询就绪（`window.vnote` + `[data-testid=nav-library]` + notesRoot 对端校验），上限默认 60s、`--ready-timeout` 可调；就绪即继续，超时打印最后观察到的状态与 `app.log` 尾巴。安装包首启慢也不再需要「超时后 CDP 直连补证据」这种绕过。
 - **`refine` 是自适应 k**：`cut 0.65` 只是种子 < 8 时的回退值；30 分钟样本上是 BIC + silhouette 选出 7 簇，不能拿固定切点解释。
 - **主播簇数依赖样本自带锚点**：只有实验目录里带 `gt-anchors*.json` 时摘要才显示 `主播簇 A→B`，否则是 `—`。
 - **播放不用 media fragment**：自定义 scheme 上 `<audio src="…#t=start,end">` 实测 error 4，改为 seek 到行首 + `timeupdate` 自动停。

@@ -32,7 +32,9 @@ bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts \
 
 - `--app` accepts a `.app` directory, an executable inside a bundle, or (`win-gamepc`) a Windows exe path. Defaults: `/Applications/Video Notes.app` on macOS, `D:\code\video-notes\app\Video Notes.exe` on Windows.
 - `--runs N` — how many cold starts. Each one is a new process with a new userData; the previous one is killed and waited for, so Electron's single-instance lock never interferes.
-- `--port N` (default 9481) is reused across launches; `--timeout MS` (default 25000) bounds each launch's wait for the main UI.
+- `--port N` (default 9481) is reused across launches; `--timeout MS` (default 25000) bounds each launch's wait for the main UI. Readiness is polled and the launch continues as soon as `readyState === "complete"` and `[data-testid=nav-library]` exist, so `launch-<i>.json` now records `readyMs` (r58) — a fast first frame is visible as a small number, not as a fixed 20-second wait.
+- On `win-gamepc` each launch runs `verify.ts up --ready-timeout <max(timeout, 60000)>` (r58): the first launch after an install often needs longer before the debug port answers, so the harness rebuilds the CDP connection every 250 ms inside that window instead of probing once; `launch-<i>.json.readyMs` includes the install/launch/tunnel path. A failed `up` reports the last five lines of `launch-<i>.up.log` in the verdict.
+- Each launch is torn down with a tree stop (SIGTERM, then SIGKILL after 4 s; r58). A survivor is reported as a failed launch, so a leaked process cannot pass as "the next launch reused the single-instance lock".
 - Exit code 1 if any launch fails; the failing launch's verdict line names the unmet assertion (`readyState=…`, `root 无子节点`, `缺少 [data-testid=nav-library]`, `appVersion=…`).
 - The private LLM config is **not** seeded: this check is about rendering, and an unseeded run keeps the userData free of secrets.
 
