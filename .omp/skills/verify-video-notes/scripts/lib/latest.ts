@@ -8,12 +8,41 @@
  *   2. 指向文件的符号链接 → 顺着链接写到那个文件里，latest 与它指向的 run 记录都被改写。
  * 先把旧指针按 lstat 类型删掉（rmSync 不跟随符号链接，只删链接本身），再写普通文件。
  * 读侧同样只认普通文件：旧版链接与目录当作“没有指针”，否则 readFileSync 会 EISDIR。
+ *
+ * r51 加一条硬边界：同名目录里如果有 `state.json`，那是**一份跑过的 run**，不是旧指针。
+ * 大小写不敏感的卷上（`--run Latest` 落在 `latest` 上）会把 run 目录与指针撞成同一个
+ * inode，删掉就等于删证据 + 让 app 变孤儿，因此这里直接抛错，绝不删除。
  */
 
-import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { join } from "node:path";
+
+/**
+ * latest 路径占着的东西能不能当旧指针清掉；不能时返回原因，能（或不存在）时返回 null。
+ * `up` 在新建目录、拉起 app 之前先问一次，避免走到最后一步才发现写不进去。
+ */
+export function latestPointerProblem(latestPath: string): string | null {
+  let stat: Stats;
+  try {
+    stat = lstatSync(latestPath);
+  } catch (err) {
+    // 只有「不存在」算没有旧指针；EACCES / ELOOP 这类故障必须冒出来，否则门禁被静默跳过
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw err;
+  }
+  if (!stat.isDirectory()) return null;
+  if (!existsSync(join(latestPath, "state.json"))) return null;
+  return (
+    `${latestPath} 是一个带 state.json 的 run 目录，不是旧指针；拒绝删除它。\n` +
+    `把它改名成 tmp/verify/<run-id>（或用 --run 指定别的 id）后重试。`
+  );
+}
 
 /** 把 latest 指针指向 runId；旧指针是文件、目录还是符号链接都先删除。 */
 export function writeLatestPointer(latestPath: string, runId: string): void {
+  const problem = latestPointerProblem(latestPath);
+  if (problem !== null) throw new Error(problem);
   let occupied = true;
   try {
     // lstat 而不是 existsSync：断链符号链接 existsSync 会说“不存在”，writeFileSync 却会
