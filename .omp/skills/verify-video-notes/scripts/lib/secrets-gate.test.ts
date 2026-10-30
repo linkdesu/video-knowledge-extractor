@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { findSecretFiles, isInside, isSecretFile, winPathInside } from "./secrets-gate";
 
 describe("isSecretFile", () => {
@@ -82,8 +82,9 @@ describe("findSecretFiles", () => {
       writeFileSync(join(root, "r48/win/user-data/secrets.pending"), "{}");
       writeFileSync(join(root, "r48/win/user-data/settings.json"), "{}");
       writeFileSync(join(root, "r48/summary.json"), "{}");
-      const found = findSecretFiles(root).map((path) => path.slice(root.length + 1)).sort();
-      expect(found).toEqual(["r47-final/user-data/secrets.bin", "r48/win/user-data/secrets.pending"]);
+      // 断言相对路径段而不是分隔符：CI 在 Windows 上跑同一份测试
+      const found = findSecretFiles(root).map((path) => relative(root, path));
+      expect(found.sort()).toEqual([join("r47-final", "user-data", "secrets.bin"), join("r48", "win", "user-data", "secrets.pending")]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -98,7 +99,7 @@ describe("findSecretFiles", () => {
       mkdirSync(join(evidence, "r49"), { recursive: true });
       symlinkSync(outside, join(evidence, "r49", "secrets.bin"));
 
-      expect(findSecretFiles(evidence).map((path) => path.slice(evidence.length + 1))).toEqual(["r49/secrets.bin"]);
+      expect(findSecretFiles(evidence).map((path) => relative(evidence, path))).toEqual([join("r49", "secrets.bin")]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -115,8 +116,8 @@ describe("findSecretFiles", () => {
       symlinkSync(elsewhere, join(evidence, "r49", "profile"));
       symlinkSync(evidence, join(evidence, "r49", "loop"));
 
-      const found = findSecretFiles(evidence).map((path) => path.slice(evidence.length + 1));
-      expect(found).toEqual(["r49/profile/user-data/secrets.bin"]);
+      const found = findSecretFiles(evidence).map((path) => relative(evidence, path));
+      expect(found).toEqual([join("r49", "profile", "user-data", "secrets.bin")]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -126,7 +127,7 @@ describe("findSecretFiles", () => {
     const root = mkdtempSync(join(tmpdir(), "secrets-gate-broken-"));
     try {
       symlinkSync(join(root, "gone"), join(root, "secrets.bin"));
-      expect(findSecretFiles(root).map((path) => path.slice(root.length + 1))).toEqual(["secrets.bin"]);
+      expect(findSecretFiles(root).map((path) => relative(root, path))).toEqual(["secrets.bin"]);
       expect(findSecretFiles(join(tmpdir(), "secrets-gate-does-not-exist-12345"))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
