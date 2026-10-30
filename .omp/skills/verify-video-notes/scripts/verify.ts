@@ -365,11 +365,11 @@ async function fill(cdp: Cdp, selector: string, text: string): Promise<void> {
   await type(cdp, text);
 }
 
-async function drop(cdp: Cdp, file: string, winPath?: string): Promise<void> {
+async function drop(cdp: Cdp, file: string, selector: string, winPath?: string): Promise<void> {
   // a win run's app reads the remote filesystem: the Windows path was validated over ssh already
   const path = winPath ?? resolve(file);
   if (winPath === undefined && !existsSync(path)) fail(`file not found: ${path}`);
-  const { x, y } = await elementCenter(cdp, "[data-testid=dropzone]", 0);
+  const { x, y } = await elementCenter(cdp, selector, 0);
   const data = { items: [], files: [path], dragOperationsMask: 1 };
   for (const type of ["dragEnter", "dragOver", "drop"]) {
     await cdp.send("Input.dispatchDragEvent", { type, x, y, data });
@@ -1417,6 +1417,7 @@ async function drive(args: string[]): Promise<void> {
         break;
       }
       case "drop": {
+        const dropSelector = takeFlag(args, "--selector") ?? "[data-testid=dropzone]";
         const file = args[0];
         if (file === undefined) fail("drop needs a file path");
         if (win) {
@@ -1426,12 +1427,12 @@ async function drive(args: string[]): Promise<void> {
           } catch (err) {
             fail(err instanceof Error ? err.message : String(err));
           }
-          await drop(cdp, file, winPath);
-          console.log(`dropped ${winPath} on the dropzone`);
+          await drop(cdp, file, dropSelector, winPath);
+          console.log(`dropped ${winPath} on ${dropSelector}`);
           break;
         }
-        await drop(cdp, file);
-        console.log(`dropped ${resolve(file)} on the dropzone`);
+        await drop(cdp, file, dropSelector);
+        console.log(`dropped ${resolve(file)} on ${dropSelector}`);
         break;
       }
       case "drag": {

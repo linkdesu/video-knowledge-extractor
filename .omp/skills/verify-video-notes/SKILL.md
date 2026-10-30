@@ -227,6 +227,7 @@ $V fill '[data-testid=glossary-right]' 'sherpa-onnx'
 $V type 'sherpa'                           # key events into the focused element
 $V press Enter
 $V drop /abs/path/video.mp4                 # real drag-and-drop onto the dropzone
+$V drop /abs/path/sample.m4a --selector '[data-testid=lab-dropzone]'   # any other drop target (r52)
 $V drag '[data-testid=player-resize]' 0 120 # real pointer drag: press at center, N steps (default 8) to center+(dx,dy), release
 $V wait "window.vnote.activeJob().then(j => j === null)" --timeout 240000
 $V shot glossary-proof                     # -> <run>/glossary-proof.png

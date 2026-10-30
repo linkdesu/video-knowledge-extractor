@@ -16,6 +16,7 @@ import {
   type LabRow,
 } from "../../../shared/lab-view";
 import { Select } from "@/rbp/blocks/settings-form-3";
+import { LAB_THRESHOLD_MAX, LAB_THRESHOLD_MIN, readLabViewState, writeLabViewState } from "@/lib/lab-view-state";
 import { errMessage } from "@/lib/format";
 import { showToast } from "@/lib/toast";
 import { LabTimeline } from "@/components/lab/LabTimeline";
@@ -55,12 +56,16 @@ function speakerSample(config: LabConfig, speakerId: string, index = 0): { start
 
 export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const lab = window.vnote.lab;
+  // r52：样本、A/B 方案、阈值、两处滚动位置跨导航与重启保留（localStorage，见 lib/lab-view-state）。
+  const [storedView] = useState(() => readLabViewState(window.localStorage));
   const [samples, setSamples] = useState<LabSampleMeta[]>([]);
   const [sampleId, setSampleId] = useState<string | null>(null);
   const [payload, setPayload] = useState<LabPayload | null>(null);
-  const [configA, setConfigA] = useState<LabConfigName>("baseline");
-  const [configB, setConfigB] = useState<LabConfigName>("refine_filter");
-  const [threshold, setThreshold] = useState(1);
+  const [configA, setConfigA] = useState<LabConfigName>(storedView.configA);
+  const [configB, setConfigB] = useState<LabConfigName>(storedView.configB);
+  const [threshold, setThreshold] = useState(storedView.threshold);
+  // 首屏加载完成前不写回，否则会把「还没选样本」的 null 覆盖到已保存的样本上。
+  const [hydrated, setHydrated] = useState(false);
   const [filter, setFilter] = useState<LabFilter>("all");
   const [speakerFilter, setSpeakerFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -73,12 +78,22 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const [playing, setPlaying] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const stopAtRef = useRef<number | null>(null);
   const queueRef = useRef<{ start: number; end: number }[]>([]);
   const markTimer = useRef<number | undefined>(undefined);
   const autoImportRef = useRef<string | null>(null);
+  const scrollRef = useRef({ contentScrollTop: storedView.contentScrollTop, rowsScrollTop: storedView.rowsScrollTop });
+  const restoreDoneRef = useRef(false);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const viewRef = useRef({ sampleId, configA, configB, threshold });
+
+  // 写回整份视图状态：最新选择 + 最新滚动位置（滚动位置只在内存 ref 里攒，写盘节流）。
+  const saveView = useCallback(() => {
+    writeLabViewState(window.localStorage, { ...viewRef.current, ...scrollRef.current });
+  }, []);
 
   const reloadSamples = useCallback(async (): Promise<LabSampleMeta[]> => {
     if (lab === undefined) return [];
@@ -106,7 +121,9 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
       if (lab === undefined) return;
       try {
         const list = await reloadSamples();
-        const target = sourcePath ?? list[0]?.id;
+        // 恢复上次的样本；样本已被删掉就退回最近一个。
+        const stored = list.find((s) => s.id === storedView.sampleId);
+        const target = sourcePath ?? stored?.id ?? list[0]?.id;
         if (sourcePath !== undefined && autoImportRef.current !== sourcePath) {
           autoImportRef.current = sourcePath;
           const first = list[0];
@@ -120,9 +137,60 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
         if (target !== undefined) await loadSample(target);
       } catch (err) {
         showToast(`加载 Lab 样本失败：${errMessage(err)}`);
+      } finally {
+        setHydrated(true);
       }
     })();
-  }, [lab, sourcePath, reloadSamples, loadSample]);
+  }, [lab, sourcePath, reloadSamples, loadSample, storedView.sampleId]);
+
+  // 视图状态 ref 与 state 同步：saveView 是稳定回调，靠 ref 读最新选择。
+  useEffect(() => {
+    viewRef.current = { sampleId, configA, configB, threshold };
+  }, [sampleId, configA, configB, threshold]);
+
+  // 选择或阈值变化立即写回；滚动位置在下面单独节流。
+  useEffect(() => {
+    if (hydrated) saveView();
+  }, [hydrated, sampleId, configA, configB, threshold, saveView]);
+
+  // 两处滚动：页面（.vn-content）与字幕行列表。恢复完成前的滚动事件一律丢弃，避免把 0 写回。
+  useEffect(() => {
+    if (payload === null) return;
+    const content = rootRef.current?.closest<HTMLElement>(".vn-content") ?? null;
+    const rows = listRef.current;
+    const onScroll = () => {
+      if (!restoreDoneRef.current) return;
+      scrollRef.current = { contentScrollTop: content?.scrollTop ?? 0, rowsScrollTop: rows?.scrollTop ?? 0 };
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(saveView, 200);
+    };
+    content?.addEventListener("scroll", onScroll, { passive: true });
+    rows?.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      content?.removeEventListener("scroll", onScroll);
+      rows?.removeEventListener("scroll", onScroll);
+    };
+  }, [payload, saveView]);
+
+  // 样本加载完（行列表已渲染）再恢复滚动，否则内容还没撑开，scrollTop 会被夹到 0。
+  useEffect(() => {
+    if (payload === null || restoreDoneRef.current) return;
+    const content = rootRef.current?.closest<HTMLElement>(".vn-content") ?? null;
+    const apply = () => {
+      if (content !== null) content.scrollTop = storedView.contentScrollTop;
+      if (listRef.current !== null) listRef.current.scrollTop = storedView.rowsScrollTop;
+    };
+    apply();
+    // 卡片高度要等一次布局稳定，第二帧再对一次。
+    requestAnimationFrame(apply);
+    restoreDoneRef.current = true;
+  }, [payload, storedView.contentScrollTop, storedView.rowsScrollTop]);
+
+  // 卸载（导航离开）时立刻落盘，不等滚动节流。
+  useEffect(() => () => {
+    window.clearTimeout(saveTimer.current);
+    if (hydrated) saveView();
+  }, [hydrated, saveView]);
 
   // 导入进度
   useEffect(() => {
@@ -332,6 +400,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
 
   return (
     <div
+      ref={rootRef}
       className="vn-wrap vn-lab"
       data-testid="lab-page"
       onDragOver={(e) => {
@@ -348,12 +417,12 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
       }}
     >
       <section className={`vn-card vn-pad vn-lab-bar${dragging ? " dragging" : ""}`} data-testid="lab-drop">
-        <div className="vn-row vn-lab-bar-row">
-          <div className="vn-lab-drop-hint" data-testid="dropzone">
+        <div className="vn-lab-bar-row">
+          <div className="vn-lab-drop-hint" data-testid="lab-dropzone">
             <b>拖入样本</b>
             <span>音视频文件，或含 segtext-*.json 的实验目录；样本落 tmp/verify/lab/</span>
           </div>
-          <label className="vn-lab-control">
+          <label className="vn-lab-control vn-lab-select-control">
             <span>最近样本</span>
             <Select
               value={sampleId ?? ""}
@@ -362,25 +431,30 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
               testId="lab-sample-select"
             />
           </label>
-          <label className="vn-lab-control">
+          <label className="vn-lab-control vn-lab-select-control">
             <span>方案 A</span>
             <Select value={configA} options={configOptions} onChange={(v) => setConfigA(v as LabConfigName)} testId="lab-config-a" />
           </label>
-          <label className="vn-lab-control">
+          <label className="vn-lab-control vn-lab-select-control">
             <span>方案 B</span>
             <Select value={configB} options={configOptions} onChange={(v) => setConfigB(v as LabConfigName)} testId="lab-config-b" />
           </label>
           <label className="vn-lab-control vn-lab-threshold">
-            <span>语气词阈值 {threshold.toFixed(1)}s</span>
-            <input
-              type="range"
-              min={0.6}
-              max={1.5}
-              step={0.1}
-              value={threshold}
-              data-testid="lab-threshold"
-              onChange={(e) => setThreshold(Number(e.target.value))}
-            />
+            <span className="vn-lab-threshold-head">
+              <span>语气词阈值</span>
+              <span className="vn-lab-threshold-value">{threshold.toFixed(1)}s</span>
+            </span>
+            <span className="vn-lab-threshold-track">
+              <input
+                type="range"
+                min={LAB_THRESHOLD_MIN}
+                max={LAB_THRESHOLD_MAX}
+                step={0.1}
+                value={threshold}
+                data-testid="lab-threshold"
+                onChange={(e) => setThreshold(Number(e.target.value))}
+              />
+            </span>
           </label>
         </div>
         <p className="vn-lab-summary" data-testid="lab-summary">
@@ -474,7 +548,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                 </div>
               </div>
 
-              <div className="vn-lab-rows" ref={listRef}>
+              <div className="vn-lab-rows" data-testid="lab-rows" ref={listRef}>
                 {visible.length === 0 ? (
                   <p className="vn-hint">没有符合当前筛选的字幕行。</p>
                 ) : (

@@ -12,7 +12,7 @@ import { topicElapsedSeconds, topicGenerating, topicStateLabel, topicUiState } f
 import { clipSeekTarget } from "@/lib/playback";
 import { showErrorToast, showToast } from "@/lib/toast";
 
-// 播放器高度唯一持久化键（r33 契约：localStorage 只用这一个键）。
+// 播放器高度持久化键（r33 契约：localStorage 只存 UI 状态，键集中在这儿与 lib/lab-view-state.ts 两处）。
 const HEIGHT_STORAGE_KEY = "vn.topics.playerHeight";
 // 主题页：左（播放器 + 当前主题按段原始字幕，可删单条/整段）右（主题列表 + 合并）。
 export function TopicsPage({ detail, job, onRefresh, onStartNotes }: PageContext) {
