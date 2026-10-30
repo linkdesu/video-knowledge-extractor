@@ -6,13 +6,28 @@
  * 3. 将对应版本的 Windows NSIS 安装包静默重装到 gamepc 的 D:\code\video-notes\app（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致）。
  *    CI 产物按「当前提交 + 当前 package 版本」对齐：只下载 headSha === HEAD 的成功 windows-build 运行，
  *    产物版本不符直接失败，等不到就超时报错，绝不回退去装旧提交/旧版本的包（r61 / #81）。
+ *    缓存命中前核对内容：本地 exe 的大小与 sha256 必须与 provenance 记录一致，且记录里的 CI 产物摘要
+ *    必须与现查的 run 摘要一致，任一条不符就丢弃缓存重新下载（r63 / #86）。HEAD 已有自己的 CI 产物时
+ *    绝不使用别的提交的缓存；确实用了别的提交打的包时，输出里明确写出 run、提交与哈希。
  *
  * 用法：
- *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--win-ci-wait-seconds <n>] [--ssh-host <host>]
+ *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--win-ci-wait-seconds <n>] [--ssh-host <host>] [--win-download-only]
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import {
   assertVersionBumped,
@@ -23,14 +38,22 @@ import {
   readLlmConfigFingerprint,
 } from "../src/main/settings-fingerprint";
 import {
+  PROVENANCE_SCHEMA_VERSION,
   assertArtifactVersion,
-  cachedArtifactMatchesHead,
   installerName,
+  judgeCachedArtifact,
+  parseArtifactProvenance,
   pickReusableAncestorRun,
+  pickRunArtifact,
+  selectRunForCommit,
   waitForRunForCommit,
   type ArtifactProvenance,
+  type CiArtifact,
   type WindowsBuildRun,
 } from "./win-installer-source";
+
+/** windows-build.yml 里 `actions/upload-artifact` 的名字。 */
+const WIN_ARTIFACT_NAME = "video-notes-windows-installer";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
@@ -52,6 +75,8 @@ interface CliOptions {
   winInstaller: string | null;
   winCiWaitSeconds: number;
   sshHost: string;
+  /** 只解析/下载并打印来源与哈希，不连 gamepc、不安装（r63 证据与排障用）。 */
+  winDownloadOnly: boolean;
 }
 
 function parseCliArgs(argv: string[]): CliOptions {
@@ -63,6 +88,7 @@ function parseCliArgs(argv: string[]): CliOptions {
     winInstaller: null,
     winCiWaitSeconds: 1800,
     sshHost: "gamepc",
+    winDownloadOnly: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -85,6 +111,8 @@ function parseCliArgs(argv: string[]): CliOptions {
       opts.winCiWaitSeconds = parsed;
     } else if (arg === "--ssh-host") {
       opts.sshHost = argv[++i] ?? "gamepc";
+    } else if (arg === "--win-download-only") {
+      opts.winDownloadOnly = true;
     } else {
       throw new Error(`未知参数: ${arg}`);
     }
@@ -297,19 +325,32 @@ function listWindowsBuildRuns(): WindowsBuildRun[] {
   return JSON.parse(runsJson) as WindowsBuildRun[];
 }
 
-/** 读 `tmp/installer/v<version>/provenance.json`；缺失或形状不对一律当作没有来源。 */
+/** 读 `tmp/installer/v<version>/provenance.json`；缺失/形状不对一律当作没有来源。 */
 function readCacheProvenance(cacheDir: string): ArtifactProvenance | null {
   const path = resolve(cacheDir, "provenance.json");
   if (!existsSync(path)) return null;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof parsed !== "object" || parsed === null) return null;
-    if (!("runId" in parsed) || typeof parsed.runId !== "number") return null;
-    if (!("headSha" in parsed) || typeof parsed.headSha !== "string") return null;
-    return { runId: parsed.runId, headSha: parsed.headSha };
+    return parseArtifactProvenance(JSON.parse(readFileSync(path, "utf8")));
   } catch {
     return null;
   }
+}
+
+/** 分块算 sha256：174 MB 的安装包不能整文件读进内存。 */
+function sha256File(path: string): string {
+  const hash = createHash("sha256");
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.allocUnsafe(4 * 1024 * 1024);
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, null);
+      if (n <= 0) break;
+      hash.update(buf.subarray(0, n));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
 }
 
 /** 两个提交之间的差异路径；来源提交不在本地仓库时返回 null（表示算不出来）。 */
@@ -325,56 +366,185 @@ function diffPaths(fromSha: string, toSha: string): string[] | null {
     .filter((p) => p !== "");
 }
 
+/** `owner/repo`：产物摘要要按仓库 API 现查，不能靠猜。 */
+function repoSlug(): string {
+  return runCmd("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], {
+    env: ghEnv(),
+  });
+}
+
+/** 现查某次 run 的安装包产物（id + CI 摘要）；查不到/形状不对返回 null。 */
+function runArtifact(runId: number): CiArtifact | null {
+  const raw = runCmd(
+    "gh",
+    ["api", `repos/${repoSlug()}/actions/runs/${runId}/artifacts`],
+    { env: ghEnv() },
+  );
+  return pickRunArtifact(JSON.parse(raw), WIN_ARTIFACT_NAME);
+}
+
+/** 把 API 返回的二进制 zip 直接写进文件（stdout 走 fd，不经内存缓冲）。 */
+function ghApiToFile(apiPath: string, destPath: string): void {
+  const fd = openSync(destPath, "w");
+  try {
+    const res = spawnSync("gh", ["api", apiPath], {
+      stdio: ["ignore", fd, "pipe"],
+      env: ghEnv(),
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if ((res.status ?? 1) !== 0) {
+      throw new Error(
+        `下载 CI 产物失败 (gh api ${apiPath}, exit=${String(res.status)}): ${String(res.stderr ?? "")}`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** 安装包来源：写进 summary，报告里的「哪个 run / 哪个提交 / 什么哈希」直接取自这里。 */
+export interface InstallerSource {
+  /** 谁打的包：本机打包、手工指定、HEAD 的 CI、别的提交的 CI、缓存。 */
+  source:
+    | "release-win"
+    | "explicit"
+    | "ci-head"
+    | "ci-ancestor"
+    | "cache-head"
+    | "cache-ancestor";
+  file: string;
+  fileSizeBytes: number | null;
+  fileSha256: string | null;
+  runId: number | null;
+  headSha: string | null;
+  artifactDigest: string | null;
+  /** true = 这份包不是 HEAD 自己那次 CI 打的；输出里必须明说。 */
+  fromOtherCommit: boolean;
+}
+
 function resolveOrDownloadWinInstaller(
   version: string,
   explicitPath: string | null,
   waitSeconds: number,
-): { localPath: string | null; remotePath: string | null } {
+): { localPath: string | null; remotePath: string | null; source: InstallerSource } {
   const expectedName = installerName(version);
   if (explicitPath !== null) {
     if (/^[A-Za-z]:\\/.test(explicitPath)) {
-      return { localPath: null, remotePath: explicitPath };
+      console.log(`[win] 使用 --win-installer 指定的远端包 ${explicitPath}（本脚本无法核对内容哈希）`);
+      return {
+        localPath: null,
+        remotePath: explicitPath,
+        source: {
+          source: "explicit",
+          file: explicitPath,
+          fileSizeBytes: null,
+          fileSha256: null,
+          runId: null,
+          headSha: null,
+          artifactDigest: null,
+          fromOtherCommit: false,
+        },
+      };
     }
     const abs = resolve(repoRoot, explicitPath);
     if (!existsSync(abs)) {
       throw new Error(`指定的 --win-installer 不存在: ${abs}`);
     }
-    return { localPath: abs, remotePath: null };
+    console.log(`[win] 使用 --win-installer 指定的本地包 ${abs}（不核对 CI 来源）`);
+    return {
+      localPath: abs,
+      remotePath: null,
+      source: {
+        source: "explicit",
+        file: abs,
+        fileSizeBytes: statSync(abs).size,
+        fileSha256: sha256File(abs),
+        runId: null,
+        headSha: null,
+        artifactDigest: null,
+        fromOtherCommit: false,
+      },
+    };
   }
 
   const sha = runCmd("git", ["rev-parse", "HEAD"]);
   const releaseWin = resolve(desktopRoot, `release-win/${expectedName}`);
   if (existsSync(releaseWin)) {
     console.log(`[win] 使用本机打包的 ${releaseWin}`);
-    return { localPath: releaseWin, remotePath: null };
+    return {
+      localPath: releaseWin,
+      remotePath: null,
+      source: {
+        source: "release-win",
+        file: releaseWin,
+        fileSizeBytes: statSync(releaseWin).size,
+        fileSha256: sha256File(releaseWin),
+        runId: null,
+        headSha: sha,
+        artifactDigest: null,
+        fromOtherCommit: false,
+      },
+    };
   }
 
-  // 同版本的缓存可能来自别的提交（r61 实测）：只认来源提交与 HEAD 构建输入一致的缓存
+  const runs = listWindowsBuildRuns();
+  const headRun = selectRunForCommit(runs, sha);
+  // HEAD 自己那次运行的产物版本必须就是本版本，否则它不算「HEAD 为这个版本打的包」
+  const headOwnRunId =
+    headRun !== null && commitDesktopVersion(headRun.headSha) === version
+      ? headRun.databaseId
+      : null;
+
+  // 缓存命中前核对内容（r63 / #86）：哈希、大小、CI 摘要、来源提交四条都得过
   const cacheDir = resolve(repoRoot, `tmp/installer/v${version}`);
   const cachedPath = resolve(cacheDir, expectedName);
   if (existsSync(cachedPath)) {
     const provenance = readCacheProvenance(cacheDir);
-    const changedPaths = provenance === null ? null : diffPaths(provenance.headSha, sha);
-    if (provenance !== null && cachedArtifactMatchesHead(provenance, sha, changedPaths)) {
-      console.log(
-        `[win] 复用缓存 ${cachedPath}（来源 run ${provenance.runId} @ ${provenance.headSha.slice(0, 7)}）`,
-      );
-      return { localPath: cachedPath, remotePath: null };
+    const ci = provenance === null ? null : runArtifact(provenance.runId);
+    const verdict = judgeCachedArtifact({
+      provenance,
+      local: {
+        fileName: expectedName,
+        sizeBytes: statSync(cachedPath).size,
+        sha256: sha256File(cachedPath),
+      },
+      expectedFileName: expectedName,
+      headSha: sha,
+      changedPaths:
+        provenance === null || provenance.headSha === sha
+          ? []
+          : diffPaths(provenance.headSha, sha),
+      headOwnRunId,
+      ci: ci === null ? null : { runId: provenance!.runId, digest: ci.digest },
+    });
+    if (verdict.usable) {
+      console.log(`[win] 复用缓存 ${cachedPath}：${verdict.summary}`);
+      return {
+        localPath: cachedPath,
+        remotePath: null,
+        source: {
+          source: verdict.fromOtherCommit ? "cache-ancestor" : "cache-head",
+          file: cachedPath,
+          fileSizeBytes: statSync(cachedPath).size,
+          fileSha256: provenance!.fileSha256,
+          runId: provenance!.runId,
+          headSha: provenance!.headSha,
+          artifactDigest: provenance!.artifactDigest,
+          fromOtherCommit: verdict.fromOtherCommit,
+        },
+      };
     }
-    console.log(
-      `[win] 缓存 ${cachedPath} 没有可核对的来源提交或来源与 ${sha.slice(0, 7)} 构建输入不同，删除后重新下载`,
-    );
+    console.log(`[win] 丢弃缓存 ${cachedPath}：${verdict.reason}；重新下载`);
     rmSync(cacheDir, { recursive: true, force: true });
   }
 
   // 只认「当前提交 + 当前版本」的 CI 产物：旧提交的成功运行绝不复用（r61 / #81）
   console.log(
-    `[win] 本地未找到 ${expectedName}，按提交 ${sha.slice(0, 7)} 查找 windows-build.yml 的 v${version} 产物...`,
+    `[win] 本地未找到可用的 ${expectedName}，按提交 ${sha.slice(0, 7)} 查找 windows-build.yml 的 v${version} 产物...`,
   );
-  const initialRuns = listWindowsBuildRuns();
   // 末尾只改文档时 workflow 因 paths-ignore 不会起构建：仅当构建输入逐字节相同才复用祖先产物
   const ancestors: Array<{ sha: string; changedPaths: string[] }> = [];
-  if (!initialRuns.some((r) => r.headSha === sha)) {
+  if (!runs.some((r) => r.headSha === sha)) {
     for (const line of runCmd("git", ["rev-list", "--max-count=20", sha]).split("\n")) {
       const ancestorSha = line.trim();
       if (ancestorSha === "" || ancestorSha === sha) continue;
@@ -387,7 +557,7 @@ function resolveOrDownloadWinInstaller(
       });
     }
   }
-  const reused = pickReusableAncestorRun(initialRuns, sha, ancestors);
+  const reused = pickReusableAncestorRun(runs, sha, ancestors);
   const run =
     reused ??
     waitForRunForCommit({
@@ -401,7 +571,7 @@ function resolveOrDownloadWinInstaller(
     });
   if (reused !== null) {
     console.log(
-      `[win] HEAD ${sha.slice(0, 7)} 只改了不触发构建的文档，复用构建输入完全一致的 ${reused.headSha.slice(0, 7)} 产物（run ${reused.databaseId}）`,
+      `[win] ⚠ 安装包来自其他提交：HEAD ${sha.slice(0, 7)} 只改了不触发构建的文档，复用构建输入完全一致的 ${reused.headSha.slice(0, 7)} 产物（run ${reused.databaseId}）`,
     );
   }
   // 构建产物版本 = 该提交的 package.json 版本：先读 git，版本不符就别浪费 174 MB 下载
@@ -412,43 +582,98 @@ function resolveOrDownloadWinInstaller(
         `请先把四个 package.json 同步到 ${version} 并等该提交的 Windows CI 重新构建完成，本脚本不会退回去装旧版本。`,
     );
   }
+
+  const artifact = runArtifact(run.databaseId);
+  if (artifact === null) {
+    throw new Error(
+      `run ${run.databaseId}（${run.headSha.slice(0, 7)}）没有名为 ${WIN_ARTIFACT_NAME} 的产物，无法下载 v${version} 安装包。`,
+    );
+  }
+  if (artifact.expired) {
+    throw new Error(
+      `run ${run.databaseId} 的 ${WIN_ARTIFACT_NAME} 产物已过期（GitHub 保留 90 天），无法再次下载。请用本地打包（release-win/）或 --win-installer 指定安装包。`,
+    );
+  }
+  if (artifact.digest === null) {
+    throw new Error(
+      `run ${run.databaseId} 的 ${WIN_ARTIFACT_NAME} 没有 CI 产物摘要（digest），下载后无法核对内容，拒绝使用。请用本地打包（release-win/）或 --win-installer 指定安装包。`,
+    );
+  }
+
   const destDir = resolve(repoRoot, `tmp/installer/v${version}`);
   // 清空该版本目录，避免上次失败留下的旧产物在这里冒充本版本
   rmSync(destDir, { recursive: true, force: true });
   mkdirSync(destDir, { recursive: true });
-  runCmd(
-    "gh",
-    [
-      "run",
-      "download",
-      String(run.databaseId),
-      "-n",
-      "video-notes-windows-installer",
-      "-D",
-      destDir,
-    ],
-    { env: ghEnv(), inherit: true },
+  const zipPath = resolve(repoRoot, `tmp/installer/v${version}.zip`);
+  console.log(
+    `[win] 下载 run ${run.databaseId}（${run.headSha.slice(0, 7)}）的产物 zip（${artifact.sizeInBytes} 字节）并核对 CI 摘要...`,
   );
+  ghApiToFile(`repos/${repoSlug()}/actions/artifacts/${artifact.id}/zip`, zipPath);
+  const zipSha256 = sha256File(zipPath);
+  const expectedZipSha256 = artifact.digest.replace(/^sha256:/, "");
+  if (zipSha256 !== expectedZipSha256) {
+    const badPath = zipPath;
+    rmSync(badPath, { force: true });
+    throw new Error(
+      `CI 产物 zip 摘要不符：CI 说 sha256=${expectedZipSha256}，下载到 sha256=${zipSha256}（${badPath} 已删除）。下载被截断或被篡改，请重试。`,
+    );
+  }
+  try {
+    runCmd("unzip", ["-o", "-q", zipPath, "-d", destDir]);
+  } finally {
+    rmSync(zipPath, { force: true });
+  }
   const files = readdirSync(destDir, { recursive: true, encoding: "utf8" }).map((f) =>
     f.split(/[/\\]/).pop()!,
   );
-  const picked = assertArtifactVersion(files, {
+  assertArtifactVersion(files, {
     version,
     runId: run.databaseId,
     headSha: run.headSha,
   });
-  const downloaded = resolve(destDir, picked);
+  const downloaded = resolve(destDir, expectedName);
   if (!existsSync(downloaded)) {
     throw new Error(
       `下载的构建产物中未找到 ${expectedName}（实际目录: ${destDir}），请确认 CI 构建对应的版本号已更新为 ${version}`,
     );
   }
-  // 记录来源提交：下次复用这个缓存前要核对（同版本号可能来自别的提交）
+  const fileSizeBytes = statSync(downloaded).size;
+  const fileSha256 = sha256File(downloaded);
+  // 记录来源 + 内容哈希 + CI 摘要：下次复用这个缓存前要逐条核对（r63 / #86）
   writeFileSync(
     resolve(destDir, "provenance.json"),
-    `${JSON.stringify({ runId: run.databaseId, headSha: run.headSha }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        schemaVersion: PROVENANCE_SCHEMA_VERSION,
+        runId: run.databaseId,
+        headSha: run.headSha,
+        artifactDigest: artifact.digest,
+        artifactSizeBytes: artifact.sizeInBytes,
+        fileName: expectedName,
+        fileSizeBytes,
+        fileSha256,
+      },
+      null,
+      2,
+    )}\n`,
   );
-  return { localPath: downloaded, remotePath: null };
+  console.log(
+    `[win] 安装包来自 run ${run.databaseId} @ ${run.headSha.slice(0, 7)}，sha256=${fileSha256}（${fileSizeBytes} 字节，CI 产物摘要 ${artifact.digest}）`,
+  );
+  return {
+    localPath: downloaded,
+    remotePath: null,
+    source: {
+      source: reused !== null ? "ci-ancestor" : "ci-head",
+      file: downloaded,
+      fileSizeBytes,
+      fileSha256,
+      runId: run.databaseId,
+      headSha: run.headSha,
+      artifactDigest: artifact.digest,
+      fromOtherCommit: run.headSha !== sha,
+    },
+  };
 }
 
 function installWindowsApp(
@@ -456,12 +681,27 @@ function installWindowsApp(
   sshHost: string,
   explicitInstaller: string | null,
   waitSeconds: number,
+  downloadOnly: boolean,
 ) {
-  const { localPath, remotePath } = resolveOrDownloadWinInstaller(
+  const { localPath, remotePath, source } = resolveOrDownloadWinInstaller(
     version,
     explicitInstaller,
     waitSeconds,
   );
+  if (source.fromOtherCommit) {
+    console.log(
+      `[win] ⚠ 注意：安装的包不是 HEAD 自己那次 CI 打的 —— 来源提交 ${String(source.headSha).slice(0, 7)}，run ${String(source.runId)}，sha256=${String(source.fileSha256)}`,
+    );
+  }
+  if (downloadOnly) {
+    console.log("[win] --win-download-only：已解析并核对安装包，未上传、未安装");
+    return { ...source, installDir: defaultWinInstallDir, installed: false };
+  }
+  if (source.fileSha256 === null) {
+    console.log(
+      `[win] ⚠ 安装包内容哈希未知（${source.source}：${source.file}），上传后无法核对内容 —— 只有你明确指定 --win-installer 远端路径时才会走到这里`,
+    );
+  }
   const remoteInstallerPath =
     remotePath ??
     `${defaultWinInstallerStageDir}\\${installerName(version)}`;
@@ -475,6 +715,21 @@ function installWindowsApp(
     runCmd("scp", [localPath, `${sshHost}:${remoteInstallerPath}`], {
       inherit: true,
     });
+    // 传输后核对远端文件的哈希：scp 截断/旧文件残留都不许混进安装
+    if (source.fileSha256 !== null) {
+      const remoteHash = runWinPwsh(
+        sshHost,
+        `(Get-FileHash -LiteralPath '${remoteInstallerPath}' -Algorithm SHA256).Hash.ToLowerInvariant()`,
+      )
+        .trim()
+        .toLowerCase();
+      if (remoteHash !== source.fileSha256) {
+        throw new Error(
+          `上传后的安装包哈希不符：本地 sha256=${source.fileSha256}，${sshHost}:${remoteInstallerPath} sha256=${remoteHash}。已中止安装。`,
+        );
+      }
+      console.log(`[win] 上传后哈希核对通过：sha256=${remoteHash}`);
+    }
   }
 
   console.log(
@@ -636,7 +891,7 @@ $llmAfter = Get-LlmFingerprint
   };
   const llm = assertLlmConfigPreserved(parsed.llmBefore, parsed.llmAfter, "Windows");
   console.log(`[win] LLM 配置：升级前 ${fmtFingerprint(parsed.llmBefore)} → 升级后 ${fmtFingerprint(parsed.llmAfter)}${llm.checked ? "（已校验保留）" : "（升级前未配置，跳过校验）"}`);
-  return { ...parsed, llm };
+  return { ...parsed, llm, installer: source };
 }
 
 async function main() {
@@ -659,6 +914,7 @@ async function main() {
       opts.sshHost,
       opts.winInstaller,
       opts.winCiWaitSeconds,
+      opts.winDownloadOnly,
     );
   }
 
