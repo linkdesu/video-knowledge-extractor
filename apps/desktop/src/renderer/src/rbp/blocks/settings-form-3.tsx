@@ -2,6 +2,7 @@
 
 import {
   type ButtonHTMLAttributes,
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -10,6 +11,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Eye, EyeOff } from "lucide-react";
 import { comboboxEmptyHint, filterComboboxOptions } from "../../lib/combobox";
 
@@ -80,8 +82,9 @@ export function Select({
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [flip, setFlip] = useState(false);
-  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  // r52c：弹层不再留在卡片里（`.vn-card` 的 backdrop-filter 会自建层叠上下文，把弹层困在卡片下，
+  // 且会被 DOM 后面的卡片整块盖住）。改为 portal 到 body + fixed 定位，placement 就是此刻的锚点几何。
+  const [placement, setPlacement] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight?: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const typeahead = useRef({ buffer: "", at: 0 });
@@ -89,34 +92,63 @@ export function Select({
   const selectedIndex = options.findIndex((o) => o.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
 
-  const openList = () => {
+  // 可见区域 = 视口 ∩ 各滚动祖先的矩形；body 本身也是滚动容器，必须参与求交。
+  const place = useCallback(() => {
     const node = rootRef.current;
-    if (node !== null) {
-      const box = node.getBoundingClientRect();
-      // 可见区域 = 视口 ∩ 各滚动祖先的矩形；body 本身也是滚动容器，必须参与求交。
-      let top = 0;
-      let bottom = window.innerHeight;
-      let el: HTMLElement | null = node.parentElement;
-      while (el !== null) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY !== "visible") {
-          const clip = el.getBoundingClientRect();
-          top = Math.max(top, clip.top);
-          bottom = Math.min(bottom, clip.bottom);
-        }
-        el = el.parentElement;
+    if (node === null) return null;
+    const box = node.getBoundingClientRect();
+    let top = 0;
+    let bottom = window.innerHeight;
+    let el: HTMLElement | null = node.parentElement;
+    while (el !== null) {
+      const style = window.getComputedStyle(el);
+      if (style.overflowY !== "visible") {
+        const clip = el.getBoundingClientRect();
+        top = Math.max(top, clip.top);
+        bottom = Math.min(bottom, clip.bottom);
       }
-      const listHeight = Math.min(options.length * 32 + 10, 264);
-      const roomBelow = bottom - box.bottom;
-      const roomAbove = box.top - top;
-      const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
-      const room = (up ? roomAbove : roomBelow) - 10;
-      setFlip(up);
-      setMaxHeight(room < listHeight ? Math.max(room, 72) : undefined);
+      el = el.parentElement;
     }
+    const listHeight = Math.min(options.length * 32 + 10, 264);
+    const roomBelow = bottom - box.bottom;
+    const roomAbove = box.top - top;
+    const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
+    const room = (up ? roomAbove : roomBelow) - 10;
+    const maxHeight = room < listHeight ? Math.max(room, 72) : undefined;
+    return {
+      left: box.left,
+      width: box.width,
+      ...(up ? { bottom: window.innerHeight - box.top + 6 } : { top: box.bottom + 6 }),
+      ...(maxHeight === undefined ? {} : { maxHeight }),
+    };
+  }, [options.length]);
+
+  const openList = () => {
+    const next = place();
+    if (next !== null) setPlacement(next);
     setActive(selectedIndex >= 0 ? selectedIndex : 0);
     setOpen(true);
   };
+
+  // 打开期间跟随触发器的位置（内容区滚动、窗口缩放、任务浮层改变留白都会移动锚点）。
+  useEffect(() => {
+    if (!open) return;
+    let frame = 0;
+    const reposition = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const next = place();
+        if (next !== null) setPlacement(next);
+      });
+    };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, place]);
 
   useEffect(() => {
     if (!open) return;
@@ -125,7 +157,10 @@ export function Select({
     const doc = node.ownerDocument;
     if (doc === null) return;
     const onPointer = (e: Event) => {
-      if (!node.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      // 弹层在 body 上，不在 rootRef 里，必须单独判一次，否则点选项会先被当成“点外面”。
+      if (node.contains(target) || listRef.current?.contains(target) === true) return;
+      setOpen(false);
     };
     doc.addEventListener("mousedown", onPointer);
     doc.addEventListener("touchstart", onPointer);
@@ -222,36 +257,39 @@ export function Select({
         <span className="vn-select-caret" aria-hidden="true" />
       </button>
 
-      {open ? (
-        <ul
-          ref={listRef}
-          id={listId}
-          role="listbox"
-          tabIndex={-1}
-          data-testid={testId !== undefined ? `${testId}-listbox` : undefined}
-          style={maxHeight !== undefined ? { maxHeight } : undefined}
-          className={`vn-select-list${flip ? " up" : ""}`}
-        >
-          {options.map((o, i) => (
-            <li
-              key={o.value}
-              id={`${listId}-opt-${i}`}
-              role="option"
-              aria-selected={o.value === value}
-              data-highlighted={i === active ? "" : undefined}
-              data-index={i}
-              data-testid={testId !== undefined ? `${testId}-option-${i}` : undefined}
-              data-value={o.value}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => commit(i)}
-              className="vn-select-option"
+      {open && placement !== null
+        ? createPortal(
+            <ul
+              ref={listRef}
+              id={listId}
+              role="listbox"
+              tabIndex={-1}
+              data-testid={testId !== undefined ? `${testId}-listbox` : undefined}
+              style={{ left: placement.left, width: placement.width, top: placement.top, bottom: placement.bottom, maxHeight: placement.maxHeight }}
+              className="vn-select-list portal"
             >
-              <span className="vn-select-option-text">{o.label}</span>
-              {o.value === value ? <span className="vn-select-check" aria-hidden="true">✓</span> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+              {options.map((o, i) => (
+                <li
+                  key={o.value}
+                  id={`${listId}-opt-${i}`}
+                  role="option"
+                  aria-selected={o.value === value}
+                  data-highlighted={i === active ? "" : undefined}
+                  data-index={i}
+                  data-testid={testId !== undefined ? `${testId}-option-${i}` : undefined}
+                  data-value={o.value}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => commit(i)}
+                  className="vn-select-option"
+                >
+                  <span className="vn-select-option-text">{o.label}</span>
+                  {o.value === value ? <span className="vn-select-check" aria-hidden="true">✓</span> : null}
+                </li>
+              ))}
+            </ul>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

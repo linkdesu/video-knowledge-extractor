@@ -980,6 +980,20 @@ textarea {
   top: auto;
   bottom: calc(100% + 6px);
 }
+/* r52c：Select 的弹层 portal 到 body，用 fixed + 内联锚点几何定位。
+   留在卡片里会被 .vn-card 的 backdrop-filter 层叠上下文困住，下方卡片会盖住超出卡片高度的选项。
+   z-index 55：高于 .vn-mask(50)、job-banner(z-40) 与 .vn-shell(1)，低于 .vn-toast(60)。 */
+.vn-select-list.portal {
+  position: fixed;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  z-index: 55;
+}
 .vn-select-option {
   display: flex;
   align-items: flex-start;

@@ -128,7 +128,9 @@ const HELP = `usage: verify.ts <command>
       type <text>                 key events into the focused element
       fill <selector> <text>      focus + select + type (works on inputs/textareas)
       press <key> [--meta]        press one key (e.g. Enter, Escape)
-      drop <file>                 drag a real file onto the library dropzone
+      drop <file> [--selector SEL]
+                                drag a real file onto SEL[0] (default
+                                [data-testid=dropzone]; e.g. [data-testid=lab-dropzone])
       drag <selector> <dx> <dy> [--index N] [--steps N]
                                 real pointer drag: press at the element center, move in
                                 N steps (default 8) to center+(dx,dy), release at the end
