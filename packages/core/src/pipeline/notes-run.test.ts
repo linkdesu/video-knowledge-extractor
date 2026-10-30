@@ -35,7 +35,10 @@ async function encodeSource(kind: "mp4" | "m4a", seconds: number): Promise<void>
 beforeAll(async () => {
   // 所有用例实际用到的时长（用例里传第三个参数时同步加到这里）
   await Promise.all([encodeSource("mp4", 340), encodeSource("mp4", 120), encodeSource("mp4", 60), encodeSource("m4a", 30)]);
-});
+  // Windows runner 上四条并发的 libx264 编码会超过 bun 的 5 s 默认钩子超时（r61 实测
+  // 连续两次 windows-build 都在此被判 5002 ms 超时）；这是真实 ffmpeg 重活，显式放宽，
+  // 与 ADR-0038「真实 ffmpeg 重活保留显式 timeout」一致。
+}, 120_000);
 
 afterAll(() => {
   rmSync(fixtureRoot, { recursive: true, force: true });
