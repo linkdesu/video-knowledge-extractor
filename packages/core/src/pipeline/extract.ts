@@ -22,6 +22,16 @@ import { correctionsFor } from "./notes-run";
 import { detectHosts } from "./host-detect";
 import { segmentTopics } from "./segment-topics";
 
+/**
+ * 音轨预检的临时 wav 路径（r59）：必须**每次调用唯一**。
+ * 旧实现只带 `taskId`，同一 token 的两次运行（并发测试进程、同一录像重复导入）会写同一个文件，
+ * 并在各自 `finally` 里删掉对方刚写的产物 → 另一侧读不到 wav，被判成「音轨无法解码」
+ * （r59 实测：并发跑 extract.test.ts 时 6 份里有 1 份偶发红，ffmpeg 明明报 audio:62KiB）。
+ */
+export function preflightWavPath(taskId: string): string {
+  return join(tmpdir(), `vnote-preflight-${taskId}-${randomUUID().slice(0, 8)}.wav`);
+}
+
 export type ExtractInput = {
   videoPath: string;
   /** 必填：由 CLI 边界（env + .env + 模型发现）解析好传入。 */
@@ -91,9 +101,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
     logger().info("ffmpeg", "媒体探测完成", { durationSeconds: probe.duration, width: probe.width, height: probe.height, sourceBytes, durationMs: Math.round(performance.now() - probeStart) });
     // 容器可读但音轨解不出（加密/损坏的直播录像）：抽 2 秒音频预检，在建目录、进 ASR 之前失败
     const preflightStart = performance.now();
-    await logger().step("ffmpeg", "音轨预检", () =>
-      assertAudioDecodable(input.videoPath, join(tmpdir(), `vnote-preflight-${taskId}.wav`)),
-    );
+    await logger().step("ffmpeg", "音轨预检", () => assertAudioDecodable(input.videoPath, preflightWavPath(taskId)));
     logger().info("ffmpeg", "音轨预检通过", { durationMs: Math.round(performance.now() - preflightStart) });
     const video = openVideo(input.videoPath, probe.duration, notesRoot);
     const cacheDir = ensureDir(cacheDirFor(input.cacheRoot, video.id));

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
 import type { AsrEngine } from "../asr/engine";
 import type { SpeakerId } from "../core/types";
-import { runExtract } from "./extract";
+import { preflightWavPath, runExtract } from "./extract";
 import { AUDIO_UNDECODABLE_ERROR } from "../core/audio";
 import { describeFailure } from "../core/failure-summary";
 import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "../core/test-media";
@@ -176,6 +176,51 @@ describe("runExtract 的音轨可解码预检", () => {
     });
     expect(r.topicCount).toBe(1);
     expect(existsSync(join(r.video.outputDir, "video.json"))).toBe(true);
+  });
+
+  test("音轨预检的临时 wav 每次唯一：同一 runToken 的并发导入不会互删产物", async () => {
+    // r59：旧路径只带 taskId，同一 token 的两次运行写同一个 wav 并在 finally 里互删，
+    // 另一侧因此被判「音轨无法解码」。两个不同目录 + 同一 token 的并发导入必须先红后绿。
+    const dirA = mkdtemp();
+    const dirB = mkdtemp();
+    const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "stub-model",
+      run: async () => ({
+        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+        chunks: [{ index: 1, start: 0, end: 2 }],
+        timings: {},
+        cacheHits: [],
+        engine: "local",
+        modelId: "stub-model",
+      }),
+    };
+    const run = (dir: string) => {
+      const videoPath = join(dir, "clean.ts");
+      makeDecodableTs(videoPath);
+      return runExtract({
+        videoPath,
+        notesRoot: join(dir, "notes"),
+        endpoint,
+        cacheRoot: join(dir, ".cache"),
+        client: fakeClient(),
+        asrEngine: engine,
+        runToken: "tok-shared-preflight",
+      });
+    };
+    const [a, b] = await Promise.all([run(dirA), run(dirB)]);
+    expect(a.topicCount).toBe(1);
+    expect(b.topicCount).toBe(1);
+  });
+
+  test("preflightWavPath：同一 taskId 连续两次给出不同路径，仍带 taskId 便于排障", () => {
+    const first = preflightWavPath("tok-1");
+    const second = preflightWavPath("tok-1");
+    expect(first).not.toBe(second);
+    expect(first).toContain("tok-1");
+    expect(first.startsWith(tmpdir())).toBe(true);
+    expect(first.endsWith(".wav")).toBe(true);
   });
 });
 
