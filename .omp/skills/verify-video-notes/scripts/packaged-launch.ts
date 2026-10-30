@@ -17,7 +17,7 @@
  *   bun ... packaged-launch.ts --target win-gamepc --app "D:\code\video-notes\app\Video Notes.exe"
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
 import { defaultModelDir } from "./lib/model-dir";
@@ -67,6 +67,18 @@ const runs = Number(takeFlag("--runs") ?? "3");
 const port = Number(takeFlag("--port") ?? "9481");
 const timeoutMs = Number(takeFlag("--timeout") ?? "25000");
 const sshHost = takeFlag("--ssh-host") ?? "gamepc";
+if (!Number.isInteger(runs) || runs < 1) {
+  process.stderr.write(`packaged-launch: --runs 必须是 >=1 的整数（收到 ${String(runs)}）\n`);
+  process.exit(1);
+}
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  process.stderr.write(`packaged-launch: --port 必须是 1..65535 的整数（收到 ${String(port)}）\n`);
+  process.exit(1);
+}
+if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
+  process.stderr.write(`packaged-launch: --timeout 必须是 >=1000 的毫秒数（收到 ${String(timeoutMs)}）\n`);
+  process.exit(1);
+}
 const appFlag = takeFlag("--app");
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
 const runId = takeFlag("--run") ?? `pkglaunch-${stamp}`;
@@ -144,17 +156,27 @@ async function waitForPort(deadline: number): Promise<void> {
   throw new Error(`CDP 端口 ${port} 在 ${timeoutMs}ms 内没有出现 page target`);
 }
 
-/** 白屏的判定标准就是这三条：文档没完成、root 空、没有主界面导航。 */
-function verdict(facts: LaunchFacts, expectedVersion: string): string[] {
+/** 每次启动的四条断言，逐条落进 launch-<i>.json，失败时能在 summary 里直接定位。 */
+type Checks = { readyState: boolean; root: boolean; navLibrary: boolean; appVersion: boolean };
+type LaunchOutcome = { ok: boolean; problems: string[]; checks: Checks | null; facts: LaunchFacts | null };
+
+/** 白屏的判定标准就是这四条：文档没完成、root 空、没有主界面导航、版本不符。 */
+function verdict(facts: LaunchFacts, expectedVersion: string): { problems: string[]; checks: Checks } {
+  const checks: Checks = {
+    readyState: facts.readyState === "complete",
+    root: facts.rootChildren > 0,
+    navLibrary: facts.navLibrary,
+    appVersion: facts.settingsVersion === expectedVersion,
+  };
   const problems: string[] = [];
-  if (facts.readyState !== "complete") problems.push(`readyState=${facts.readyState}`);
-  if (facts.rootChildren === 0) problems.push("root 无子节点");
-  if (!facts.navLibrary) problems.push("缺少 [data-testid=nav-library]");
-  if (facts.settingsVersion !== expectedVersion) problems.push(`appVersion=${String(facts.settingsVersion)}，期望 ${expectedVersion}`);
-  return problems;
+  if (!checks.readyState) problems.push(`readyState=${facts.readyState}`);
+  if (!checks.root) problems.push("root 无子节点");
+  if (!checks.navLibrary) problems.push("缺少 [data-testid=nav-library]");
+  if (!checks.appVersion) problems.push(`appVersion=${String(facts.settingsVersion)}，期望 ${expectedVersion}`);
+  return { problems, checks };
 }
 
-async function launchMac(appPath: string, index: number, expectedVersion: string): Promise<{ ok: boolean; problems: string[]; facts: LaunchFacts | null }> {
+async function launchMac(appPath: string, index: number, expectedVersion: string): Promise<LaunchOutcome> {
   const launchDir = join(stateDir, `launch-${index}`);
   rmSync(launchDir, { recursive: true, force: true });
   mkdirSync(launchDir, { recursive: true });
@@ -178,6 +200,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
   });
   let facts: LaunchFacts | null = null;
   let problems: string[] = [];
+  let checks: Checks | null = null;
   try {
     await waitForPort(Date.now() + timeoutMs);
     const cdp = await Cdp.open(port);
@@ -198,7 +221,12 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
     } finally {
       cdp.close();
     }
-    problems = facts === null ? ["CDP 求值全部失败"] : verdict(facts, expectedVersion);
+    problems = facts === null ? ["CDP 求值全部失败"] : [];
+    if (facts !== null) {
+      const v = verdict(facts, expectedVersion);
+      problems = v.problems;
+      checks = v.checks;
+    }
   } catch (err) {
     problems = [err instanceof Error ? err.message : String(err)];
   } finally {
@@ -207,11 +235,11 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
     // 进程必须真的退出，否则下一次冷启动会抢单实例锁
     await Bun.sleep(300);
   }
-  return { ok: problems.length === 0, problems, facts };
+  return { ok: problems.length === 0, problems, checks, facts };
 }
 
 /** Windows 侧没有本地打包产物可跑：交给 verify.ts 的安装/计划任务/隧道机制。 */
-async function launchWin(appPath: string, index: number, expectedVersion: string): Promise<{ ok: boolean; problems: string[]; facts: LaunchFacts | null }> {
+async function launchWin(appPath: string, index: number, expectedVersion: string): Promise<LaunchOutcome> {
   const run = `${runId}-win-${index}`;
   const verifyScript = join(REPO, ".omp/skills/verify-video-notes/scripts/verify.ts");
   const up = Bun.spawnSync(
@@ -220,19 +248,40 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
   );
   writeFileSync(join(evidenceDir, `launch-${index}.up.log`), `${up.stdout.toString()}${up.stderr.toString()}`);
   if (up.exitCode !== 0) {
-    return { ok: false, problems: [`verify.ts up 失败（退出码 ${up.exitCode}）`], facts: null };
+    return { ok: false, problems: [`verify.ts up 失败（退出码 ${up.exitCode}）`], checks: null, facts: null };
   }
   const evalResult = Bun.spawnSync(["bun", verifyScript, "drive", "eval", FACTS_EXPRESSION, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["bun", verifyScript, "drive", "shot", `launch-${index}`, "--run", run], { cwd: REPO });
-  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO });
+  // verify.ts 把截图/aria 写进 <run>/win/；复制到本门禁的证据目录，保证两端证据形状一致
+  const shot = Bun.spawnSync(["bun", verifyScript, "drive", "shot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+  const snapshot = Bun.spawnSync(["bun", verifyScript, "drive", "snapshot", `launch-${index}`, "--run", run], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+  const winDir = join(EVIDENCE_ROOT, run, "win");
+  const captured: string[] = [];
+  for (const ext of ["png", "aria.txt"]) {
+    const source = join(winDir, `launch-${index}.${ext}`);
+    if (existsSync(source)) {
+      copyFileSync(source, join(evidenceDir, `launch-${index}.${ext}`));
+      captured.push(ext);
+    }
+  }
+  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
   let facts: LaunchFacts | null = null;
   try {
     facts = JSON.parse(evalResult.stdout.toString()) as LaunchFacts;
   } catch {
     facts = null;
   }
-  const problems = facts === null ? [`drive eval 失败：${evalResult.stderr.toString().slice(0, 400)}`] : verdict(facts, expectedVersion);
-  return { ok: problems.length === 0, problems, facts };
+  const problems: string[] = [];
+  let checks: Checks | null = null;
+  if (facts === null) {
+    problems.push(`drive eval 失败：${evalResult.stderr.toString().slice(0, 400)}`);
+  } else {
+    const v = verdict(facts, expectedVersion);
+    problems.push(...v.problems);
+    checks = v.checks;
+  }
+  if (!captured.includes("png")) problems.push(`缺少截图（drive shot 退出码 ${shot.exitCode}）`);
+  if (!captured.includes("aria.txt")) problems.push(`缺少 aria 快照（drive snapshot 退出码 ${snapshot.exitCode}）`);
+  return { ok: problems.length === 0, problems, checks, facts };
 }
 
 const expectedVersion = desktopVersion();
@@ -245,7 +294,7 @@ process.stdout.write(
     `packaged-launch: userData 在证据目录之外 -> ${stateDir}\n`,
 );
 
-type RunResult = { index: number; ok: boolean; problems: string[]; facts: LaunchFacts | null };
+type RunResult = LaunchOutcome & { index: number };
 const results: RunResult[] = [];
 for (let index = 1; index <= runs; index++) {
   const result = target === "win-gamepc" ? await launchWin(appPath, index, expectedVersion) : await launchMac(appPath, index, expectedVersion);
@@ -257,6 +306,7 @@ for (let index = 1; index <= runs; index++) {
 }
 
 const failed = results.filter((r) => !r.ok);
+const passed = results.filter((r) => r.ok);
 writeFileSync(
   join(evidenceDir, "summary.json"),
   `${JSON.stringify(
@@ -266,6 +316,9 @@ writeFileSync(
       installedVersion: target === "mac" ? appVersionOf(appPath) : null,
       expectedVersion,
       runs,
+      passed: passed.length,
+      failed: failed.length,
+      count: `${passed.length}/${runs}`,
       startedAt: new Date().toISOString(),
       results,
     },
@@ -278,4 +331,4 @@ if (failed.length > 0) {
   process.stderr.write(`packaged-launch: ${failed.length}/${runs} 次冷启动没有渲染主界面（白屏/版本不符）\n`);
   process.exit(1);
 }
-process.stdout.write(`packaged-launch: ${runs}/${runs} 次冷启动都渲染了主界面，证据在 ${evidenceDir}\n`);
+process.stdout.write(`packaged-launch: ${passed.length}/${runs} 次冷启动都渲染了主界面，证据在 ${evidenceDir}\n`);

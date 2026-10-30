@@ -5,7 +5,8 @@ Launching the installed, packaged app must show the library UI on the first fram
 ## Sub-features
 
 - **Cold-start rendering gate** — the packaged bundle is launched `--runs N` (default 3, use 10 for a release) times, each with a fresh `VNOTE_HOME` / `VNOTE_USER_DATA`, and every launch must reach `document.readyState === "complete"`, a non-empty `#root`, `[data-testid=nav-library]`, and `settings().appVersion` equal to `apps/desktop/package.json#version`.
-- **Evidence per launch** — `launch-<i>.png` (retina screenshot), `launch-<i>.aria.txt` (accessibility tree), `launch-<i>.json` (the raw facts plus the verdict) and `summary.json` land in `tmp/verify/<run>/`. A failing launch keeps its `stdout.log` / `stderr.log` in `tmp/verify-state/<run>/launch-<i>/`.
+- **Evidence per launch** — `launch-<i>.png` (retina screenshot), `launch-<i>.aria.txt` (accessibility tree), `launch-<i>.json` (the raw facts, the four per-assertion booleans under `checks`, and the verdict) and `summary.json` land in `tmp/verify/<run>/`. `summary.json` always carries `passed`, `failed` and the `count` line (e.g. `"count": "10/10"`). A failing launch keeps its `stdout.log` / `stderr.log` in `tmp/verify-state/<run>/launch-<i>/`; a Windows launch also keeps `launch-<i>.up.log` in the evidence directory.
+- **Same evidence shape on both targets** — on `win-gamepc` the screenshot and aria tree are produced by `verify.ts drive shot` / `drive snapshot` under `tmp/verify/<run>-win-<i>/win/` and copied into the run's evidence directory, so `launch-<i>.png` / `launch-<i>.aria.txt` sit next to the launch JSON on mac and Windows alike. A missing screenshot or aria snapshot fails the launch.
 - **userData stays out of the evidence tree** — each launch's userData lives in `tmp/verify-state/<run>/launch-<i>/user-data`, so the evidence directory never contains `settings.json` or `secrets.bin`.
 - **Dual target** — on macOS the gate launches the bundle (or any executable) directly over CDP; `--target win-gamepc` reuses `verify.ts`'s installer / scheduled-task / tunnel machinery and asserts the same DOM facts on the installed Windows app.
 
@@ -36,6 +37,21 @@ bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts \
 - The private LLM config is **not** seeded: this check is about rendering, and an unseeded run keeps the userData free of secrets.
 
 Run it right after `bun run package:mac` and again after `bun run install:local`, so both the built bundle and the installed one are proven.
+
+## Failing the gate on purpose (negative control)
+
+A gate that has never failed proves nothing. r56 keeps a reproducible red run: build a throwaway copy of the app whose `vnote-app` handler returns a `ReadableStream` that never closes (the pre-r49 white-screen mechanism — the document body never finishes, so the deferred module script never runs), then point the gate at that copy. It must exit 1 with `readyState=loading` / `root 无子节点` / `缺少 [data-testid=nav-library]` in the verdict and still leave a screenshot + aria snapshot of the blank page.
+
+```bash
+# after `bun run package:mac`, copy the staging dir and patch out/main/index.js:
+#   return net.fetch(pathToFileURL(target).toString());
+# becomes a Response whose body is an unterminated ReadableStream with Content-Type: text/html
+bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts \
+  --app "tmp/verify-artifacts/r56-gate-negative/Video Notes.app" --runs 1 \
+  --run r56-packaged-launch/negative-control; echo "exit=$?"   # must print exit=1
+```
+
+Never point this at `/Applications/Video Notes.app`; the sabotaged bundle is built and discarded under `tmp/`. The real gate run follows on the installed app, and `summary.json` there must say `"count": "10/10"`.
 
 ## Gotchas
 
