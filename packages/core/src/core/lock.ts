@@ -112,6 +112,13 @@ export function acquireVideoLock(outputDir: string): VideoLock {
   for (let attempt = 0; ; attempt++) {
     const existing = readLock(path);
     if (existing !== undefined && processAlive(existing.pid)) {
+      // r59：失败信息带锁文件路径与持锁时刻，一次失败就能看出是哪个目录、谁的锁（常见于测试共用固定临时目录）
+      logger().error("fs", "运行锁被占用", {
+        path,
+        holderPid: existing.pid,
+        holderStartedAt: new Date(existing.startedAt).toISOString(),
+        heldSeconds: Math.round((Date.now() - existing.startedAt) / 1000),
+      });
       throw new Error(`视频正在运行（pid ${existing.pid}）`);
     }
     let fd: number;
