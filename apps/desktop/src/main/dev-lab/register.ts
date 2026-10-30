@@ -1,10 +1,12 @@
 /**
  * Lab 的 IPC 与任务编排（r48）：只在 `app.isPackaged === false` 时注册。
  * 打包版不注册任何通道，`dev:lab:available` 也无人应答，preload 因此不暴露 `vnote.lab`。
+ *
+ * r53：导入前先算「源内容哈希 + 规范化参数」的键，命中条目直接返回，不 fork worker（不加载模型、不解码）。
  */
-import { existsSync, mkdirSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { logger } from "@video-notes/core";
 import { ipcMain, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import {
   LAB_CONFIGS,
@@ -17,6 +19,18 @@ import {
   type LabSampleMeta,
 } from "../../shared/lab";
 import { encodeLabUrl } from "../media";
+import {
+  LAB_CACHE_SCHEMA,
+  discardEntryDir,
+  hashSourcePath,
+  labAnalysisKey,
+  labAnalysisParams,
+  newEntryDir,
+  probeLabEntry,
+  publishEntry,
+  sweepTempEntries,
+  type LabAnalysisStamp,
+} from "./analysis-cache";
 import { assembleLines, hostClusterCount } from "./lines";
 import { refineSegments } from "./refine";
 import { isLabSampleId, listSamples, readMarks, readSample, marksPath, sampleDir, writeMarks, writeJson } from "./sample-store";
@@ -41,11 +55,6 @@ type RunningImport = {
   settled: boolean;
 };
 
-function fingerprintOf(path: string): string {
-  const stat = statSync(path);
-  return createHash("sha256").update(`${path}:${stat.size}:${Math.round(stat.mtimeMs)}`).digest("hex").slice(0, 16);
-}
-
 function distinctCount(labels: number[]): number {
   return new Set(labels).size;
 }
@@ -54,6 +63,11 @@ export function createLabRuntime(options: LabRuntimeOptions) {
   if (options.isPackaged === true) throw new Error("打包版不注册 Lab");
   const root = options.root;
   let running: RunningImport | null = null;
+  /** 已占的导入槽位（源路径）：哈希与建目录都在 await 之间，先占位才能保证本机模型严格串行。 */
+  let starting: string | null = null;
+  // 崩溃残留的半成品目录（.tmp 下超过一天）在启动时回收；键路径上的条目永远只可能是完整的。
+  const swept = sweepTempEntries(root);
+  if (swept.length > 0) logger().info("app", "Lab 缓存：回收残留临时目录", { count: swept.length, names: swept });
 
   const configFor = (
     name: LabConfigName,
@@ -132,26 +146,41 @@ export function createLabRuntime(options: LabRuntimeOptions) {
     };
   };
 
-  const importPath = async (sourcePath: string): Promise<{ sampleId: string }> => {
-    if (!existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`);
-    if (running !== null) throw new Error("Lab 已有导入在跑，等它结束");
+  const startImport = async (sourcePath: string): Promise<{ sampleId: string }> => {
     if (options.isBusy()) throw new Error("生成任务正在跑；本机模型要串行，Lab 导入等任务结束再试");
-    const stat = statSync(sourcePath);
-    const mode: LabRunMessage["mode"] = stat.isDirectory() ? "dir" : "file";
-    const sampleId = fingerprintOf(sourcePath);
-    const dir = sampleDir(root, sampleId);
-    if (existsSync(join(dir, "sample.json"))) return { sampleId };
-    mkdirSync(dir, { recursive: true });
-    const name = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? sampleId;
+    const started = Date.now();
+    // 大文件的内容指纹要读全片：先给页面一条「读取」进度，避免看起来卡死（命中后由 save 清掉）。
+    options.send({ sampleId: null, step: "load", done: 0, total: 1, detail: "计算内容指纹" });
+    const source = await hashSourcePath(sourcePath);
+    // 哈希期间可能起了生成任务：fork 之前必须再确认一次，否则两套本机模型会重叠。
+    if (options.isBusy()) throw new Error("生成任务正在跑；本机模型要串行，Lab 导入等任务结束再试");
+    const modelDir = options.modelDir();
+    const params = labAnalysisParams({ mode: source.mode, modelDir });
+    const key = labAnalysisKey(params, source.hash);
+    const hashMs = Date.now() - started;
+    const probe = probeLabEntry(root, key, source.mode);
+    if (probe.hit !== null) {
+      // 命中：只有哈希与一次目录自检，没有 worker、没有模型加载、没有解码。
+      logger().info("app", "Lab 分析缓存命中", { key, mode: source.mode, reason: probe.reason, hashMs, elapsedMs: Date.now() - started });
+      options.send({ sampleId: key, step: "save", done: 1, total: 1, detail: null });
+      return { sampleId: key };
+    }
+    logger().info("app", "Lab 分析缓存未命中", { key, mode: source.mode, reason: probe.reason, hashMs, sourceHash: source.hash });
+    const dir = newEntryDir(root, key);
+    const analysis: LabAnalysisStamp = { key, schema: LAB_CACHE_SCHEMA, sourceHash: source.hash, params };
+    const name = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? key;
     const message: LabRunMessage = {
       type: "run",
-      mode,
+      mode: source.mode,
       sourcePath,
-      modelDir: options.modelDir(),
+      modelDir,
       outDir: dir,
-      id: sampleId,
+      id: key,
       name: name.replace(/\.[^.]+$/, ""),
+      analysis,
     };
+    // 键做样本 id：参数或内容一变就是另一个条目，旧条目原样留着（后续切片再做清理/共享）。
+    const sampleId = key;
     const proc = utilityProcess.fork(join(__dirname, "lab-worker.js"), [], { stdio: ["ignore", "ignore", "pipe"] });
     const state: RunningImport = { sampleId, proc, settled: false };
     running = state;
@@ -200,9 +229,33 @@ export function createLabRuntime(options: LabRuntimeOptions) {
     });
     try {
       const sampleIdResult = await result;
+      // 整个目录 rename 到键路径：中途失败/取消的目录永远不会被当成命中。
+      publishEntry(root, key, dir);
+      logger().info("app", "Lab 分析缓存已写入", {
+        key,
+        mode: source.mode,
+        analysisMs: Date.now() - started - hashMs,
+        elapsedMs: Date.now() - started,
+      });
       return { sampleId: sampleIdResult };
+    } catch (err) {
+      discardEntryDir(dir);
+      logger().warn("app", "Lab 分析失败，丢弃半成品", { key, elapsedMs: Date.now() - started });
+      throw err;
     } finally {
       if (running === state) running = null;
+    }
+  };
+
+  /** 导入入口：同步占位再进 startImport —— 槽位为空才允许开始，第二个并发请求直接拒绝。 */
+  const importPath = async (sourcePath: string): Promise<{ sampleId: string }> => {
+    if (!existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`);
+    if (running !== null || starting !== null) throw new Error("Lab 已有导入在跑，等它结束");
+    starting = sourcePath;
+    try {
+      return await startImport(sourcePath);
+    } finally {
+      starting = null;
     }
   };
 
