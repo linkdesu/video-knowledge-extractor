@@ -129,7 +129,9 @@ const HELP = `usage: verify.ts <command>
       type <text>                 key events into the focused element
       fill <selector> <text>      focus + select + type (works on inputs/textareas)
       press <key> [--meta]        press one key (e.g. Enter, Escape)
-      drop <file>                 drag a real file onto the library dropzone
+      drop <file> [--selector SEL]
+                                drag a real file onto SEL[0] (default
+                                [data-testid=dropzone]; e.g. [data-testid=lab-dropzone])
       drag <selector> <dx> <dy> [--index N] [--steps N]
                                 real pointer drag: press at the element center, move in
                                 N steps (default 8) to center+(dx,dy), release at the end
@@ -374,11 +376,11 @@ async function fill(cdp: Cdp, selector: string, text: string): Promise<void> {
   await type(cdp, text);
 }
 
-async function drop(cdp: Cdp, file: string, winPath?: string): Promise<void> {
+async function drop(cdp: Cdp, file: string, selector: string, winPath?: string): Promise<void> {
   // a win run's app reads the remote filesystem: the Windows path was validated over ssh already
   const path = winPath ?? resolve(file);
   if (winPath === undefined && !existsSync(path)) fail(`file not found: ${path}`);
-  const { x, y } = await elementCenter(cdp, "[data-testid=dropzone]", 0);
+  const { x, y } = await elementCenter(cdp, selector, 0);
   const data = { items: [], files: [path], dragOperationsMask: 1 };
   for (const type of ["dragEnter", "dragOver", "drop"]) {
     await cdp.send("Input.dispatchDragEvent", { type, x, y, data });
@@ -1430,6 +1432,7 @@ async function drive(args: string[]): Promise<void> {
         break;
       }
       case "drop": {
+        const dropSelector = takeFlag(args, "--selector") ?? "[data-testid=dropzone]";
         const file = args[0];
         if (file === undefined) fail("drop needs a file path");
         if (win) {
@@ -1439,12 +1442,12 @@ async function drive(args: string[]): Promise<void> {
           } catch (err) {
             fail(err instanceof Error ? err.message : String(err));
           }
-          await drop(cdp, file, winPath);
-          console.log(`dropped ${winPath} on the dropzone`);
+          await drop(cdp, file, dropSelector, winPath);
+          console.log(`dropped ${winPath} on ${dropSelector}`);
           break;
         }
-        await drop(cdp, file);
-        console.log(`dropped ${resolve(file)} on the dropzone`);
+        await drop(cdp, file, dropSelector);
+        console.log(`dropped ${resolve(file)} on ${dropSelector}`);
         break;
       }
       case "drag": {
