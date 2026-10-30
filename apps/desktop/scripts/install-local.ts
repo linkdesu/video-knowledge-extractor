@@ -45,7 +45,6 @@ import {
   parseArtifactProvenance,
   pickReusableAncestorRun,
   pickRunArtifact,
-  selectRunForCommit,
   waitForRunForCommit,
   type ArtifactProvenance,
   type CiArtifact,
@@ -378,7 +377,7 @@ function runArtifact(runId: number): CiArtifact | null {
   try {
     const raw = runCmd(
       "gh",
-      ["api", `repos/${repoSlug()}/actions/runs/${runId}/artifacts`],
+      ["api", `repos/${repoSlug()}/actions/runs/${runId}/artifacts?per_page=100`],
       { env: ghEnv() },
     );
     return pickRunArtifact(JSON.parse(raw), WIN_ARTIFACT_NAME);
@@ -505,12 +504,9 @@ function resolveOrDownloadWinInstaller(
   }
 
   const runs = listWindowsBuildRuns();
-  const headRun = selectRunForCommit(runs, sha);
-  // HEAD 自己那次运行的产物版本必须就是本版本，否则它不算「HEAD 为这个版本打的包」
-  const headOwnRunId =
-    headRun !== null && commitDesktopVersion(headRun.headSha) === version
-      ? headRun.databaseId
-      : null;
+  // 与 pickReusableAncestorRun 同口径：HEAD 只要有自己的 windows-build 运行（排队/失败也算），
+  // 就不能改用别的提交的缓存 —— 那条路径也会拒绝复用祖先产物。
+  const headOwnRunId = runs.find((r) => r.headSha === sha)?.databaseId ?? null;
 
   // 缓存命中前核对内容（r63 / #86）：哈希、大小、CI 摘要、来源提交四条都得过
   // 缓存的唯一可信内容是指向 CI 摘要的 artifact.zip；安装包每次从它重新解出（r63 / #86）
@@ -543,24 +539,37 @@ function resolveOrDownloadWinInstaller(
             },
     });
     if (verdict.usable && provenance !== null) {
-      const extracted = extractInstaller(cachedZip, cacheDir, expectedName);
-      const extractedSha256 = sha256File(extracted);
-      const extractedSize = statSync(extracted).size;
-      if (extractedSha256 !== provenance.fileSha256 || extractedSize !== provenance.fileSizeBytes) {
+      // 解包/核对失败一律降级为重下，绝不带着残留文件继续
+      let reuse: { path: string; sizeBytes: number; sha256: string } | null = null;
+      try {
+        const extracted = extractInstaller(cachedZip, cacheDir, expectedName);
+        const extractedSha256 = sha256File(extracted);
+        const extractedSize = statSync(extracted).size;
+        if (
+          extractedSha256 === provenance.fileSha256 &&
+          extractedSize === provenance.fileSizeBytes
+        ) {
+          reuse = { path: extracted, sizeBytes: extractedSize, sha256: extractedSha256 };
+        } else {
+          console.log(
+            `[win] 丢弃缓存 ${cacheDir}：从 artifact.zip 解出的安装包与记录不符（记录 sha256=${provenance.fileSha256}/${provenance.fileSizeBytes} 字节，实际 sha256=${extractedSha256}/${extractedSize} 字节）；重新下载`,
+          );
+        }
+      } catch (err) {
         console.log(
-          `[win] 丢弃缓存 ${cacheDir}：从 artifact.zip 解出的安装包与记录不符（记录 sha256=${provenance.fileSha256}/${provenance.fileSizeBytes} 字节，实际 sha256=${extractedSha256}/${extractedSize} 字节）；重新下载`,
+          `[win] 丢弃缓存 ${cacheDir}：从 artifact.zip 解包失败（${err instanceof Error ? err.message : String(err)}）；重新下载`,
         );
-        rmSync(cacheDir, { recursive: true, force: true });
-      } else {
-        console.log(`[win] 复用缓存 ${extracted}：${verdict.summary}`);
+      }
+      if (reuse !== null) {
+        console.log(`[win] 复用缓存 ${reuse.path}：${verdict.summary}`);
         return {
-          localPath: extracted,
+          localPath: reuse.path,
           remotePath: null,
           source: {
             source: verdict.fromOtherCommit ? "cache-ancestor" : "cache-head",
-            file: extracted,
-            fileSizeBytes: extractedSize,
-            fileSha256: extractedSha256,
+            file: reuse.path,
+            fileSizeBytes: reuse.sizeBytes,
+            fileSha256: reuse.sha256,
             runId: provenance.runId,
             headSha: provenance.headSha,
             artifactDigest: provenance.artifactDigest,
@@ -568,6 +577,7 @@ function resolveOrDownloadWinInstaller(
           },
         };
       }
+      rmSync(cacheDir, { recursive: true, force: true });
     } else {
       const reason = verdict.usable ? "provenance 不可用" : verdict.reason;
       console.log(`[win] 丢弃缓存 ${cacheDir}：${reason}；重新下载`);
@@ -741,14 +751,18 @@ function installWindowsApp(
       `[win] ⚠ 注意：安装的包不是 HEAD 自己那次 CI 打的 —— 来源提交 ${String(source.headSha).slice(0, 7)}，run ${String(source.runId)}，sha256=${String(source.fileSha256)}`,
     );
   }
-  if (downloadOnly) {
-    console.log("[win] --win-download-only：已解析并核对安装包，未上传、未安装");
-    return { ...source, installDir: defaultWinInstallDir, installed: false };
-  }
   if (source.fileSha256 === null) {
     console.log(
-      `[win] ⚠ 安装包内容哈希未知（${source.source}：${source.file}），上传后无法核对内容 —— 只有你明确指定 --win-installer 远端路径时才会走到这里`,
+      `[win] ⚠ 安装包内容哈希未知（${source.source}：${source.file}），无法核对内容 —— 只有你明确指定 --win-installer 远端路径时才会走到这里`,
     );
+  }
+  if (downloadOnly) {
+    const verified =
+      source.fileSha256 === null
+        ? "来源无法核对内容（未计算 sha256）"
+        : `已核对 sha256=${source.fileSha256}`;
+    console.log(`[win] --win-download-only：${verified}，未上传、未安装`);
+    return { ...source, installDir: defaultWinInstallDir, installed: false };
   }
   const remoteInstallerPath =
     remotePath ??
