@@ -40,7 +40,7 @@ $V snapshot r48-lab-dev
 
 - `lab-progress` 显示导入阶段（抽音频 / 分离 / 嵌入 / 段级解码）；导入期间不要另开 Lab 导入，也不要同时跑生成任务（本机模型严格串行，主进程会拒绝）。
 - 阈值验证：`$V eval "performance.now()"` 前后各读一次过滤行数，或直接断言 `lab-summary` 文本在两个阈值下不同。
-- 标记持久化：打完 `lab-mark-B` 后 `down` + 新 run id 复用同一 `--home`/`--user-data`，重开页面断言按钮仍高亮。
+- 标记持久化：打完 `lab-mark-B` 后 `down` + 新 run id 复用同一 `--home` 与旧 run 的 userData（`--user-data tmp/verify-state/<旧 run>/user-data`，r50 起 userData 不在证据目录里），重开页面断言按钮仍高亮。
 - 打包版证明：`verify.ts up --app "/Applications/Video Notes.app" --no-build`，断言 `nav-lab` 不存在、`window.vnote.lab === undefined`、`vnote-media://lab/<id>` 的 fetch 直接失败（协议 handler 未注册，返回 ERR_FAILED 而不是 404）。
 
 ## Gotchas

@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, sta
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
+import { readLatestPointer, writeLatestPointer } from "./lib/latest";
+import { findSecretFiles, isInside, winPathInside } from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
 import { defaultModelDir } from "./lib/model-dir";
@@ -43,6 +45,11 @@ const REPO = resolve(import.meta.dirname, "../../../..");
 const DESKTOP = join(REPO, "apps/desktop");
 const VERIFY_ROOT = join(REPO, "tmp/verify");
 const LATEST = join(VERIFY_ROOT, "latest");
+/**
+ * 证据目录之外的状态根（r49/r50）：userData（含 secrets.bin）只允许落在这里。
+ * 证据 = 截图 + aria + 日志 + 产物；用户数据不是证据，混进去等于把密钥复制到每份验收记录里。
+ */
+const VERIFY_STATE_ROOT = join(REPO, "tmp/verify-state");
 
 type RunState = {
   /** Platform the run drives; absent means mac (every state.json written before r41). */
@@ -92,6 +99,9 @@ const HELP = `usage: verify.ts <command>
      [--app PATH] [--min-path] [--empty-settings]
       Build apps/desktop, start Electron with isolated VNOTE_HOME / VNOTE_USER_DATA,
       wait until the renderer answers, write tmp/verify/<run>/state.json.
+      userData defaults to tmp/verify-state/<run>/user-data, outside the evidence tree;
+      an explicit --user-data inside tmp/verify is refused (secrets.bin must never be
+      copied into the evidence).
       --app drives an already packaged .app (or its executable) instead of apps/desktop,
       and implies --no-build. --min-path replaces the child PATH with launchd's
       /usr/bin:/bin:/usr/sbin:/sbin so the packaged app's PATH repair is what finds ffmpeg.
@@ -150,6 +160,11 @@ const HELP = `usage: verify.ts <command>
   runs
       List runs and whether each process is still alive.
 
+  secrets-gate
+      Hard gate: scan tmp/verify for secrets.bin / secrets.pending / secrets.bin.legacy-*
+      and exit 1 (printing the paths) when any is found. up, down and doctor run the same
+      assertion, because the harness must never put userData inside the evidence tree.
+
   detect [--run ID] [--target mac|win-gamepc] [--source-only]
       Hard gate: \`impeccable detect --json\` over apps/desktop/src/renderer/src
       (never the repo root, never tmp/) plus, unless --source-only, a live scan of
@@ -180,12 +195,13 @@ const HELP = `usage: verify.ts <command>
       impeccable-report.json, freeze-manifest.json). Exit 1 on any failed check.
 
   Targets
-    mac        (default) everything lives in <repo>/tmp/verify/<run>/; up builds
-               apps/desktop and launches it locally. --target mac is the old behaviour.
+    mac        (default) evidence lives in <repo>/tmp/verify/<run>/; userData (settings +
+               secrets.bin) lives outside it in <repo>/tmp/verify-state/<run>/user-data.
+               up builds apps/desktop and launches it locally. --target mac is the old behaviour.
     win-gamepc a Windows machine reached over ssh. No config file; the layout is fixed:
                  root      D:\\code\\video-notes
                  run dir   D:\\code\\video-notes\\verify\\<run>
-                 home      <run>\\home        user-data <run>\\user-data
+                 home      <run>\\home        user-data D:\\code\\video-notes\\verify-state\\<run>\\user-data
                  app log   <run>\\app.log     launch    <run>\\launch.ps1
                  models    C:\\Users\\xieal\\Documents\\video-notes\\models
                  app       <install-dir>\\Video Notes.exe (default D:\\code\\video-notes\\app,
@@ -245,8 +261,9 @@ function readState(runId?: string): RunState {
   if (runId !== undefined) {
     dir = join(VERIFY_ROOT, runId);
   } else {
-    if (!existsSync(LATEST)) fail("no verification run yet: run `verify.ts up` first");
-    dir = join(VERIFY_ROOT, readFileSync(LATEST, "utf8").trim());
+    const latest = readLatestPointer(LATEST);
+    if (latest === null) fail("no verification run yet: run `verify.ts up` first");
+    dir = join(VERIFY_ROOT, latest);
   }
   const file = join(dir, "state.json");
   if (!existsSync(file)) fail(`no state.json in ${dir}`);
@@ -404,6 +421,8 @@ const OUTPUTS = [
 const WIN_ROOT = "D:\\code\\video-notes";
 const WIN_RUNS = `${WIN_ROOT}\\verify`;
 const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
+/** 远端 userData 根（r50）：证据 staging 目录 D:\code\video-notes\verify 之外。 */
+const WIN_STATE_ROOT = `${WIN_ROOT}\\verify-state`;
 const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
 const WIN_SSH_HOST = "gamepc";
 
@@ -571,6 +590,46 @@ function withoutLlmEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
+/**
+ * 证据目录里永远不许出现 userData（r49/r50）。默认 userData 已挪到 VERIFY_STATE_ROOT；
+ * 显式 --user-data 一旦指回证据目录，直接拒绝，而不是先写密钥再靠人记得清理。
+ */
+function assertUserDataOutsideEvidence(userData: string): void {
+  if (!isInside(VERIFY_ROOT, userData)) return;
+  fail(
+    `userData 不能落在证据目录内：${userData}\n` +
+      `默认位置是 ${join(VERIFY_STATE_ROOT, "<run>", "user-data")}；证据目录只放截图/日志/产物。\n` +
+      `旧 run 的 userData 在 tmp/verify 里时请用 down --purge 丢弃后重跑。`,
+  );
+}
+
+/**
+ * 门禁文案。命中时由调用方决定是 fail（无活资源）还是抛给清理路径（远端 app / tunnel 已起）。
+ */
+function secretsFailureMessage(context: string, found: string[]): string {
+  return (
+    `${context}：证据目录里有 ${found.length} 个密钥文件（tmp/verify 不允许出现 userData）\n` +
+    `${found.map((path) => `  ${path}`).join("\n")}\n` +
+    `删除后再跑；harness 的 userData 现在落在 ${VERIFY_STATE_ROOT}。`
+  );
+}
+
+/** 证据目录密钥门禁：命中即失败，打印路径，由人决定是否删除。 */
+function assertNoSecretsInEvidence(context: string): void {
+  const found = findSecretFiles(VERIFY_ROOT);
+  if (found.length > 0) fail(secretsFailureMessage(context, found));
+}
+
+/** run id 会拼进路径，也决定 latest 指针的落点：`latest` 本身与带分隔符的 id 一律拒绝。 */
+function assertRunId(runId: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === "latest") {
+    fail(
+      `--run 只接受字母数字与 . _ -，且不能用 latest（那是 tmp/verify/latest 指针本身）：${runId}\n` +
+        `例如 --run r50-mac。`,
+    );
+  }
+}
+
 /** Seed one local (mac) run userData before the app starts. */
 function seedLocalRunConfig(userData: string): void {
   if (existsSync(PRIVATE_CONFIG_MAC)) assertPrivateMode(statSync(PRIVATE_CONFIG_MAC).mode, PRIVATE_CONFIG_MAC);
@@ -690,9 +749,17 @@ async function seedConfig(args: string[]): Promise<void> {
   if (target === "win-gamepc") {
     const remoteUserData = state.remoteUserData;
     if (remoteUserData === undefined) fail("this run has no remoteUserData");
+    // 同一条远端边界规则：pre-r50 的 run 其 remoteUserData 就在 staging 里，不能往里再写密钥
+    if (winPathInside(WIN_RUNS, remoteUserData)) {
+      fail(
+        `${remoteUserData} 在远端证据目录 ${WIN_RUNS} 内，不再往里写密钥。\n` +
+          `用 down --purge 丢掉旧 run，再按新布局重跑（userData 默认在 ${WIN_STATE_ROOT}\\<run>\\user-data）。`,
+      );
+    }
     seedRemoteRunConfig(state.sshHost ?? WIN_SSH_HOST, remoteUserData);
     console.log(`seeded ${remoteUserData}\\settings.json + secrets.bin (ACL: 当前用户)`);
   } else {
+    assertUserDataOutsideEvidence(state.userData);
     seedLocalRunConfig(state.userData);
     console.log(`seeded ${state.userData}/settings.json + secrets.bin (0600)`);
   }
@@ -722,6 +789,9 @@ async function up(args: string[]): Promise<void> {
   const target = resolveTarget(takeFlag(args, "--target"));
   const port = Number(takeFlag(args, "--port") ?? "9411");
   const runId = takeFlag(args, "--run") ?? stamp();
+  assertRunId(runId);
+  // 启动前先拒绝：历史 run 的 secrets.bin 不该等 app 起来才报（那时进程已在跑，退出就留下孤儿）
+  assertNoSecretsInEvidence("up");
   if (target === "win-gamepc") {
     await upWin(args, port, runId);
     return;
@@ -734,11 +804,22 @@ async function up(args: string[]): Promise<void> {
   const emptySettings = hasFlag(args, "--empty-settings");
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
-  mkdirSync(runDir, { recursive: true });
 
   const home = resolve(takeFlag(args, "--home") ?? join(runDir, "home"));
-  const userData = resolve(takeFlag(args, "--user-data") ?? join(runDir, "user-data"));
+  const userDataArg = takeFlag(args, "--user-data");
+  const userData = resolve(userDataArg ?? join(VERIFY_STATE_ROOT, runId, "user-data"));
+  assertUserDataOutsideEvidence(userData);
+  // 默认 userData 目录残留（上一次 up 崩在写 state.json 之前）会让同名 run 直接继承旧凭据
+  if (userDataArg === undefined && existsSync(userData)) {
+    fail(
+      `默认 userData 目录已存在：${userData}\n` +
+        `同名 run 会复用它的 settings.json / secrets.bin（--empty-settings 就不再是空的）。\n` +
+        `换一个 --run，或先删除该目录；确实要复用旧 profile 时显式传 --user-data。`,
+    );
+  }
   const modelDir = resolve(takeFlag(args, "--model-dir") ?? process.env.VNOTE_MODEL_DIR ?? defaultModelDir(process.env.HOME ?? "."));
+  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
+  mkdirSync(runDir, { recursive: true });
   mkdirSync(home, { recursive: true });
   mkdirSync(userData, { recursive: true });
   if (!emptySettings) {
@@ -837,7 +918,7 @@ async function up(args: string[]): Promise<void> {
   }
 
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
-  writeFileSync(LATEST, `${runId}\n`);
+  writeLatestPointer(LATEST, runId);
   console.log(`run:      ${runDir}`);
   console.log(`port:     ${port}`);
   console.log(`pid:      ${child.pid}`);
@@ -861,12 +942,17 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   if (uploadInstaller && !existsSync(installerFlag)) fail(`installer not found: ${installerFlag}`);
   const runDir = join(VERIFY_ROOT, runId);
   if (existsSync(runDir)) fail(`run already exists: ${runDir}`);
-  mkdirSync(runDir, { recursive: true });
   const winDir = winLocal({ runDir });
 
   const remoteRunDir = `${WIN_RUNS}\\${runId}`;
   const remoteHome = takeFlag(args, "--home") ?? `${remoteRunDir}\\home`;
-  const remoteUserData = takeFlag(args, "--user-data") ?? `${remoteRunDir}\\user-data`;
+  const remoteUserDataArg = takeFlag(args, "--user-data");
+  const remoteUserData = remoteUserDataArg ?? `${WIN_STATE_ROOT}\\${runId}\\user-data`;
+  // 远端证据 staging 目录同样不许放 userData：那里面的东西会被 pull 到本地证据树。
+  // 用归一化比较（分隔符、`.`/`..`、大小写），否则 D:/… 或 verify-state\..\verify\… 都能绕过去。
+  if (winPathInside(WIN_RUNS, remoteUserData)) {
+    fail(`--user-data 不能落在远端证据目录 ${WIN_RUNS} 内；默认位置是 ${WIN_STATE_ROOT}\\<run>\\user-data`);
+  }
   const emptySettings = hasFlag(args, "--empty-settings");
   const remoteAppLog = `${remoteRunDir}\\app.log`;
   const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
@@ -874,6 +960,19 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const localAppLog = join(winDir, "app.log");
   let tunnelPid: number | undefined;
 
+  // 默认远端 userData 残留会让同名 run 直接继承旧凭据（--empty-settings 就不再是空的）
+  if (remoteUserDataArg === undefined) {
+    const exists = sshRun(sshHost, winPs(`if (Test-Path -LiteralPath '${remoteUserData}') { 'exists' } else { 'absent' }`)).stdout.trim();
+    if (exists === "exists") {
+      fail(
+        `默认远端 userData 目录已存在：${remoteUserData}\n` +
+          `同名 run 会复用它的 settings.json / secrets.bin。换一个 --run，或先在 ${sshHost} 上删除该目录。`,
+      );
+    }
+  }
+
+  // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
+  mkdirSync(runDir, { recursive: true });
   try {
     sshRun(sshHost, winPs(`New-Item -ItemType Directory -Force -Path '${remoteRunDir}','${remoteHome}','${remoteUserData}' | Out-Null`));
     if (!emptySettings) {
@@ -1027,7 +1126,7 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     };
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
     writeFileSync(join(winDir, "state.json"), JSON.stringify(state, null, 2));
-    writeFileSync(LATEST, `${runId}\n`);
+    writeLatestPointer(LATEST, runId);
     console.log(`run:      ${runDir}`);
     console.log(`port:     ${port}`);
     console.log(`pid:      ${pid} (remote ${sshHost})`);
@@ -1038,6 +1137,10 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     console.log(`remote:   ${remoteRunDir}`);
     console.log(`tunnel:   ssh -N -L ${port}:127.0.0.1:${port} pid ${tunnelPid}`);
     console.log(`task:     ${task}`);
+    // 远端 userData 不在 staging 里，但主动证明一次：拉回本地的东西里没有密钥。
+    // 抛给外层 catch：此时远端 app、scheduled task 与 tunnel 都在，fail 会直接 exit 留下它们。
+    const leaked = findSecretFiles(VERIFY_ROOT);
+    if (leaked.length > 0) throw new RemoteError(secretsFailureMessage("up --target win-gamepc", leaked));
   } catch (err) {
     // no leftovers: the tunnel, the remote app, the task and both run dirs go away
     if (tunnelPid !== undefined) {
@@ -1050,6 +1153,11 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     sshExec(sshHost, winCmd(`schtasks /End /TN "${task}"`));
     sshExec(sshHost, winCmd(`schtasks /Delete /TN "${task}" /F`));
     sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    // 默认远端 userData 是这次 up 自己建的（含 secrets.bin）：失败时一并清掉，
+    // 否则远端留下一份密钥，同名 id 还会被“默认 userData 已存在”挡住
+    if (remoteUserDataArg === undefined) {
+      sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${WIN_STATE_ROOT}\\${runId}' -Recurse -Force -ErrorAction SilentlyContinue`));
+    }
     rmSync(runDir, { recursive: true, force: true });
     fail(err instanceof Error ? err.message : String(err));
   }
@@ -1209,6 +1317,11 @@ async function doctor(args: string[]): Promise<void> {
       ? ok("build output is newer than apps/desktop + packages/core sources")
       : bad(`stale build: ${stale.map((p) => p.replace(`${REPO}/`, "")).join(", ")} older than sources`);
   }
+
+  const secretFiles = findSecretFiles(VERIFY_ROOT);
+  secretFiles.length === 0
+    ? ok(`no secrets.* files under ${VERIFY_ROOT}`)
+    : bad(`证据目录里有 ${secretFiles.length} 个密钥文件：${secretFiles.map((path) => path.replace(`${REPO}/`, "")).join(", ")}`);
 
   if (problems.length > 0) {
     console.log(`\ndoctor: ${problems.length} problem(s)`);
@@ -1460,25 +1573,31 @@ async function down(args: string[]): Promise<void> {
 
   // Prune only the renderer's space-consuming runtime caches. Evidence and small
   // operator artifacts (png, aria.txt, logs, trajectory.json, topic.md, …) are kept.
-  const prune = (rel: string) => {
-    const path = join(state.runDir, rel);
+  const prune = (path: string, label: string) => {
     if (existsSync(path)) {
       rmSync(path, { recursive: true, force: true });
-      console.log(`pruned ${rel}`);
+      console.log(`pruned ${label}`);
     }
   };
-  prune("home/.cache");
-  for (const rel of ["user-data/Cache", "user-data/Code Cache", "user-data/GPUCache", "user-data/DawnGraphiteCache", "user-data/DawnWebGPUCache", "user-data/ShaderCache", "user-data/GrShaderCache", "user-data/Partitions"]) {
-    prune(rel);
+  prune(join(state.runDir, "home/.cache"), "home/.cache");
+  // userData 现在在证据目录之外（r50），缓存要按 state.json 记录的真实路径剪
+  for (const name of ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "Partitions"]) {
+    prune(join(state.userData, name), `userData/${name}`);
   }
   // Local Storage is pruned only when it holds no evidence.
-  const localStore = join(state.runDir, "user-data/Local Storage");
+  const localStore = join(state.userData, "Local Storage");
   if (existsSync(localStore) && readdirSync(localStore).length === 0) {
     rmSync(localStore, { recursive: true, force: true });
-    console.log(`pruned user-data/Local Storage`);
+    console.log(`pruned userData/Local Storage`);
   }
 
   reportKept(state.runDir, purge);
+  // purge 也清掉这个 run 的默认 userData 目录：留着会让同名 run 复用旧 settings/secrets
+  if (purge && resolve(state.userData) === join(VERIFY_STATE_ROOT, state.runId, "user-data")) {
+    rmSync(join(VERIFY_STATE_ROOT, state.runId), { recursive: true, force: true });
+    console.log(`purged ${join(VERIFY_STATE_ROOT, state.runId)}`);
+  }
+  assertNoSecretsInEvidence("down");
 }
 
 /** The tail every `down` shares: purge the run dir or report what stayed in `evidenceDir`. */
@@ -1486,7 +1605,7 @@ function reportKept(runDir: string, purge: boolean, evidenceDir: string = runDir
   if (purge) {
     rmSync(runDir, { recursive: true, force: true });
     // a pointer at a deleted run would make the next bare `drive`/`doctor` read a missing state.json
-    if (existsSync(LATEST) && readFileSync(LATEST, "utf8").trim() === basename(runDir)) rmSync(LATEST, { force: true });
+    if (readLatestPointer(LATEST) === basename(runDir)) rmSync(LATEST, { recursive: true, force: true });
     console.log(`purged ${runDir}; the evidence is gone`);
     return;
   }
@@ -1551,10 +1670,11 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
     }
 
     // Prune only the space-consuming remote caches; evidence and small operator artifacts stay.
+    const remoteUserData = state.remoteUserData ?? `${WIN_STATE_ROOT}\\${state.runId}\\user-data`;
     const remoteCaches = [
       `${remoteRunDir}\\home\\.cache`,
       ...["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "ShaderCache", "GrShaderCache", "Partitions"].map(
-        (name) => `${remoteRunDir}\\user-data\\${name}`,
+        (name) => `${remoteUserData}\\${name}`,
       ),
     ];
     sshExec(host, winPs(`${remoteCaches.map((path) => `'${path}'`).join(",")} | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse -Force -ErrorAction SilentlyContinue }`));
@@ -1592,9 +1712,16 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
   if (purge) {
     const dropped = sshExec(host, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
     console.log(dropped.code === 0 ? `purged ${remoteRunDir} on ${host}` : `could not purge ${remoteRunDir} on ${host}: ${stderrTail(dropped)}`);
+    // 默认远端 userData 目录一并清掉：留着会让同名 run 复用旧 settings/secrets
+    const defaultState = `${WIN_STATE_ROOT}\\${state.runId}`;
+    if ((state.remoteUserData ?? "").toLowerCase() === `${defaultState}\\user-data`.toLowerCase()) {
+      const stateDropped = sshExec(host, winPs(`Remove-Item -LiteralPath '${defaultState}' -Recurse -Force -ErrorAction SilentlyContinue`));
+      console.log(stateDropped.code === 0 ? `purged ${defaultState} on ${host}` : `could not purge ${defaultState} on ${host}: ${stderrTail(stateDropped)}`);
+    }
   }
   // the proof for a win run lives in win/, not next to state.json
   reportKept(state.runDir, purge, purge ? state.runDir : winLocal(state));
+  assertNoSecretsInEvidence("down --target win-gamepc");
 }
 
 function runs(): void {
@@ -1642,8 +1769,9 @@ function tryReadState(runId?: string): RunState | null {
     const file = join(VERIFY_ROOT, runId, "state.json");
     return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
   }
-  if (!existsSync(LATEST)) return null;
-  const file = join(VERIFY_ROOT, readFileSync(LATEST, "utf8").trim(), "state.json");
+  const latest = readLatestPointer(LATEST);
+  if (latest === null) return null;
+  const file = join(VERIFY_ROOT, latest, "state.json");
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
 }
 
@@ -2006,6 +2134,20 @@ async function prototype(args: string[]): Promise<void> {
   );
 }
 
+/**
+ * secrets-gate：独立门禁，专门扫证据目录里的密钥文件。
+ * `up`/`down`/`doctor` 都会跑同一条断言；这个命令让 CI 或人手动单独跑。
+ */
+function secretsGate(): void {
+  const found = findSecretFiles(VERIFY_ROOT);
+  if (found.length === 0) {
+    console.log(`secrets-gate: clean (${VERIFY_ROOT})`);
+    return;
+  }
+  process.stdout.write(`secrets-gate: ${found.length} 个密钥文件在证据目录里\n${found.map((path) => `  ${path}`).join("\n")}\n`);
+  process.exit(1);
+}
+
 const argv = process.argv.slice(2);
 // `--target` may lead: `verify.ts --target win-gamepc up` is `verify.ts up --target win-gamepc`
 if (argv[0] === "--target" && argv.length >= 3) {
@@ -2028,6 +2170,9 @@ switch (command) {
     break;
   case "runs":
     runs();
+    break;
+  case "secrets-gate":
+    secretsGate();
     break;
   case "detect":
     await detect(rest);
