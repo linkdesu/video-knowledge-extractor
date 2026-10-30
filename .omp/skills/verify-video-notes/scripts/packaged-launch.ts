@@ -341,7 +341,13 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
       captured.push(ext);
     }
   }
-  Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], { cwd: REPO, stdout: "pipe", stderr: "pipe", timeout: 120000 });
+  // down 的退出码必须看：证据清单没拉齐时它会报错，吞掉就等于“收尾产物完整”在这条链路上失效
+  const down = Bun.spawnSync(["bun", verifyScript, "down", "--run", run, "--target", "win-gamepc"], {
+    cwd: REPO,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 300000,
+  });
   let facts: LaunchFacts | null = null;
   try {
     facts = JSON.parse(evalResult.stdout.toString()) as LaunchFacts;
@@ -359,6 +365,10 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
   }
   if (!captured.includes("png")) problems.push(`缺少截图（drive shot 退出码 ${shot.exitCode}）`);
   if (!captured.includes("aria.txt")) problems.push(`缺少 aria 快照（drive snapshot 退出码 ${snapshot.exitCode}）`);
+  if (down.exitCode !== 0) {
+    const tail = `${down.stdout.toString()}${down.stderr.toString()}`.split("\n").filter((line) => line.trim() !== "").slice(-5).join("\n");
+    problems.push(`verify.ts down 失败（退出码 ${down.exitCode}）：\n${tail}`);
+  }
   return { ok: problems.length === 0, problems, checks, facts, readyMs };
 }
 

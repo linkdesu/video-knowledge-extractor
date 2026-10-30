@@ -17,7 +17,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
 import { ensureElectronBinary, ElectronBootstrapError, type ElectronBootstrapResult } from "./lib/electron";
-import { describeGap, evidenceGaps, expectedEvidence, parseRemoteListing, relativeEvidencePath } from "./lib/evidence";
+import { describeGap, evidenceGaps, evidenceInventory, parseRemoteListing, relativeEvidencePath } from "./lib/evidence";
 import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./lib/latest";
 import { describeListeners, inspectPort, portConflict, processList, tunnelsOf } from "./lib/port";
 import { describeStop, stopProcessTree } from "./lib/proc";
@@ -98,6 +98,8 @@ type RunState = {
   configSeeded?: boolean;
   /** r54: Lab cache mode the dev app was started with (`--lab-cache=…`). */
   labCache?: string;
+  /** r58: electron 的 dist/ 由本次 up 补装（记录实际跑过的命令，便于判断这次跑的是哪个二进制）。 */
+  electronBootstrap?: string[];
 };
 
 const HELP = `usage: verify.ts <command>
@@ -178,12 +180,19 @@ const HELP = `usage: verify.ts <command>
       against the remote listing and retried once — into <run>/win/, and fails when
       anything is still missing. app.log, home\\logs and every video.json / topic.md /
       labels.json / analysis.json / trajectory.json / status.json included.
+      Media binaries above 8 MiB (topic.mp4, extracted wav, …) are derived products and
+      are listed in evidence-inventory.json as skippedMedia instead of pulled: the
+      transfer is base64 over ssh with a 64 MiB capture limit, so large media cannot be
+      pulled intact. Every pulled file is size-checked; a gap fails the command.
 
-  tunnels [--kill]
-      List every local ssh tunnel of this harness's shape
-      (ssh -N -L <port>:127.0.0.1:<port>), with the run that recorded it or "residue".
-      --kill stops them (SIGTERM then SIGKILL). \`up\` does the same for the port it is
-      about to use, and \`doctor\` warns while one is still alive.
+  tunnels [--kill] [--pid PID]
+      List every local ssh -L tunnel with its port, whether it is CDP-shaped
+      (ssh -N -L <port>:127.0.0.1:<port>, this harness) and which run recorded it
+      (searched across every git worktree of this repo), or "residue" when none did.
+      --kill only stops CDP-shaped tunnels with no live owner; a live run's tunnel and a
+      plain forward (ssh -L 5432:127.0.0.1:5432 db-host) are left alone unless you name
+      the pid with --pid. \`up\` does the same for the port it is about to use (after
+      probing that nothing CDP answers behind it), and \`doctor\` warns while one is alive.
 
   seed-config [--run ID] [--target mac|win-gamepc]
       Write the private LLM config into an existing run's userData (settings.json + secrets.bin).
@@ -384,25 +393,58 @@ async function waitFor(cdp: Cdp, expression: string, timeoutMs: number): Promise
  *
  * 判据是监听者身份而不是「CDP 有没有应答」：端口被非 CDP 的应用占着时，旧代码把
  * `listTargets` 的异常当成「端口空闲」，拉起 app 后再连上的其实是别人。
- * 只有 ssh 隧道 pid 没有被任何 run 的 state.json 记成「仍在运行」时才算残留。
  */
-function recordedTunnelRun(pid: number): RunState | null {
-  if (!existsSync(VERIFY_ROOT)) return null;
-  for (const entry of readdirSync(VERIFY_ROOT)) {
-    const file = join(VERIFY_ROOT, entry, "state.json");
-    if (!existsSync(file)) continue;
-    try {
-      const state = JSON.parse(readFileSync(file, "utf8")) as RunState;
-      if (state.sshTunnelPid === pid && state.stoppedAt === undefined) return state;
-    } catch {
-      // 坏掉的 state.json 不该让预检失效
+type TunnelOwner = { runId: string; live: boolean; root: string };
+
+/** 所有可能记录隧道的证据根：本 worktree + `git worktree list` 里的其它 worktree。 */
+function knownVerifyRoots(): string[] {
+  const roots = new Set<string>([VERIFY_ROOT]);
+  const listed = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: REPO, stdout: "pipe", stderr: "ignore" });
+  for (const line of listed.stdout.toString().split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    roots.add(join(line.slice("worktree ".length).trim(), "tmp/verify"));
+  }
+  return [...roots];
+}
+
+/**
+ * 谁记录了这个隧道 pid。`live` 表示那一轮还没 down（隧道仍归它用）。
+ * 跨 worktree 查是必须的：另一个 worktree 正在跑的 win 验证也用这种形状的隧道，
+ * 只看本目录会把别人的活跃会话当残留杀掉。
+ */
+function tunnelOwner(pid: number): TunnelOwner | null {
+  for (const root of knownVerifyRoots()) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root)) {
+      const file = join(root, entry, "state.json");
+      if (!existsSync(file)) continue;
+      try {
+        const state = JSON.parse(readFileSync(file, "utf8")) as RunState;
+        if (state.sshTunnelPid !== pid) continue;
+        return { runId: state.runId ?? entry, live: state.stoppedAt === undefined, root };
+      } catch {
+        // 坏掉的 state.json 不该让预检失效
+      }
     }
   }
   return null;
 }
 
+/** 这个端口上有没有一个真的在应答的 CDP 服务（隧道对端还活着时就会应答）。 */
+async function cdpAnswers(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1200) });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { webSocketDebuggerUrl?: unknown };
+    return typeof body.webSocketDebuggerUrl === "string";
+  } catch {
+    return false;
+  }
+}
+
 async function reservePort(port: number): Promise<void> {
-  const conflict = portConflict(inspectPort(port));
+  const state = inspectPort(port);
+  const conflict = portConflict(state);
   if (conflict === null) return;
   if (conflict.kind === "occupied") {
     fail(
@@ -411,23 +453,33 @@ async function reservePort(port: number): Promise<void> {
     );
   }
   if (conflict.kind === "foreign-tunnel") {
+    const pid = conflict.owners[0]?.pid;
     fail(
       `端口被占用（${port}）：一条 ssh 隧道占着它，但不是本 harness 的 CDP 隧道（本地端口 ≠ 远端端口）：\n  ${describeListeners(conflict.owners)}\n` +
-        `确认是上一轮残留后再清（verify.ts tunnels --kill，或 kill -9 <pid>），或者换一个 --port。`,
+        `确认是上一轮残留后再清（verify.ts tunnels --kill --pid ${pid ?? "<pid>"}），或者换一个 --port。`,
+    );
+  }
+  // 隧道后面可能还有一个活着的 CDP 服务（别的会话正在用）：先探活，能应答就不动它
+  if (await cdpAnswers(port)) {
+    fail(
+      `端口被占用（${port}）：隧道后面有活的 CDP 服务在应答（多半是另一个仍在运行的验证会话）。\n` +
+        `  ${describeListeners(state.listeners)}\n` +
+        `先收尾那一轮，或换一个 --port；这里不会替你杀掉别人的会话。`,
     );
   }
   for (const pid of conflict.pids) {
-    const owner = recordedTunnelRun(pid);
-    if (owner !== null) {
+    const owner = tunnelOwner(pid);
+    if (owner?.live === true) {
       fail(
-        `端口被占用（${port}）：run ${owner.runId} 的 ssh 隧道 pid ${pid} 还在用这个端口。\n` +
+        `端口被占用（${port}）：${owner.root === VERIFY_ROOT ? "" : `${owner.root} 里`}run ${owner.runId} 的 ssh 隧道 pid ${pid} 还在用这个端口。\n` +
           `先收尾那一轮（verify.ts down --run ${owner.runId}），或换一个 --port。`,
       );
     }
+    // 只自动清「CDP 形状 + 没有活跃 owner + 对端无应答」的隧道；形状不符的由人用 tunnels --kill --pid 决定
     const stopped = await stopProcessTree(pid, { termMs: 3000, killMs: 2000 });
     process.stderr.write(`verify: 清掉上一轮残留隧道——${describeStop(stopped)}（端口 ${port}）\n`);
     if (stopped.survivors.length > 0) fail(`残留隧道 pid ${pid} 收不掉：先 kill -9 ${pid} 再重试`);
-    console.log(`tunnel:   清掉上一轮残留隧道 pid ${pid}（端口 ${port}）`);
+    console.log(`tunnel:   清掉上一轮残留隧道 pid ${pid}（端口 ${port}，${owner === null ? "没有 run 记录它" : `run ${owner.runId} 已收尾`}）`);
   }
 }
 
@@ -472,10 +524,25 @@ const READINESS_EXPRESSION = `(async () => {
   };
 })()`;
 
+/** 单个 promise 的上限：白屏时 renderer 主线程会被阻塞，eval / ws 握手都可能永不结算。 */
+async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} 超过 ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * 轮询到「可用」为止（r58）：就绪即继续，超时给出明确报错（最后观察到的状态 + 端口 + 上限）。
  * 顺带校验对端身份：CDP 上应答的实例必须是本次启动的那一个（notesRoot = 本 run 的隔离 home）。
  * 每次都重新 `Cdp.open`：Windows 首启的调试端口偶发连不上，重连比一次性连上更可靠。
+ * 每次连接与求值都受剩余期限约束：app 的 settings() 可能长时间不返回，不能让一次求值越过
+ * 整个 --ready-timeout，也不能让卡死的 renderer 把 up 的失败收尾永远拖住。
  */
 async function waitUntilReady(options: {
   port: number;
@@ -486,33 +553,34 @@ async function waitUntilReady(options: {
   guard?: () => string | null;
 }): Promise<number> {
   const started = Date.now();
+  const deadline = started + options.timeoutMs;
+  const remaining = () => Math.max(200, deadline - Date.now());
   let last = "CDP 端口还没有 page target";
-  while (Date.now() - started < options.timeoutMs) {
+  while (Date.now() < deadline) {
     const dead = options.guard?.();
     if (dead !== null && dead !== undefined) throw new Error(dead);
+    let cdp: Cdp | undefined;
     try {
-      const cdp = await Cdp.open(options.port);
-      try {
-        const probe = await cdp.eval<ReadinessProbe>(READINESS_EXPRESSION);
-        last = `readyState=${probe.readyState}, nav-library=${probe.navLibrary}, notesRoot=${JSON.stringify(probe.notesRoot)}`;
-        if (probe.ready) {
-          const same = probe.notesRoot !== null && (options.win ? sameWinPath(probe.notesRoot, options.home) : probe.notesRoot === options.home);
-          if (!same) {
-            throw new Error(
-              `端口 ${options.port} 上应答的不是本次启动的实例：notesRoot=${JSON.stringify(probe.notesRoot)}，期望 ${options.home}；` +
-                "先确认没有残留的实例/隧道占用该端口",
-            );
-          }
-          return Date.now() - started;
+      cdp = await withDeadline(Cdp.open(options.port), remaining(), `CDP 连接 ${options.port}`);
+      const probe = await withDeadline(cdp.eval<ReadinessProbe>(READINESS_EXPRESSION), Math.min(5000, remaining()), "就绪探测");
+      last = `readyState=${probe.readyState}, nav-library=${probe.navLibrary}, notesRoot=${JSON.stringify(probe.notesRoot)}`;
+      if (probe.ready) {
+        const same = probe.notesRoot !== null && (options.win ? sameWinPath(probe.notesRoot, options.home) : probe.notesRoot === options.home);
+        if (!same) {
+          throw new Error(
+            `端口 ${options.port} 上应答的不是本次启动的实例：notesRoot=${JSON.stringify(probe.notesRoot)}，期望 ${options.home}；` +
+              "先确认没有残留的实例/隧道占用该端口",
+          );
         }
-      } finally {
-        cdp.close();
+        return Date.now() - started;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // 对端身份不符不是「还没就绪」，等下去只会连到别人
       if (message.includes("不是本次启动的实例")) throw err;
       last = message;
+    } finally {
+      cdp?.close();
     }
     await sleep(250);
   }
@@ -737,7 +805,14 @@ function winDropPath(host: string, file: string): string {
 
 /** Copy one remote file in a single round trip: base64 on stdout, so only exec is needed. */
 function pullRemoteFile(host: string, remotePath: string, localPath: string): boolean {
-  const result = sshExec(host, winPs(`[Convert]::ToBase64String([IO.File]::ReadAllBytes('${remotePath}'))`));
+  // 路径按 base64 传：视频标题里的单/双引号、`$`、中文都不能进 -Command 的引号边界
+  const encodedPath = Buffer.from(remotePath, "utf8").toString("base64");
+  const result = sshExec(
+    host,
+    winPsEncoded(
+      `[Convert]::ToBase64String([IO.File]::ReadAllBytes([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'))))`,
+    ),
+  );
   if (result.code !== 0) return false;
   mkdirSync(dirname(localPath), { recursive: true });
   writeFileSync(localPath, Buffer.from(result.stdout.replace(/\s+/g, ""), "base64"));
@@ -965,8 +1040,6 @@ async function up(args: string[]): Promise<void> {
   // 同理：latest 上如果是一份带 state.json 的 run，写指针时绝不覆盖；提前到拉 app 之前拒绝
   const latestProblem = latestPointerProblem(LATEST);
   if (latestProblem !== null) fail(latestProblem);
-  // 端口先看清占用者：被别的应用占着就报错，上一轮自己的隧道就清掉（r58）
-  await reservePort(port);
   if (target === "win-gamepc") {
     await upWin(args, port, runId);
     return;
@@ -1004,6 +1077,9 @@ async function up(args: string[]): Promise<void> {
     args,
     "verify.ts up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build] [--app PATH] [--min-path] [--empty-settings] [--lab-cache shared|isolated|cold] [--ready-timeout MS]",
   );
+  // 端口先看清占用者（r58）：被别的应用占着就报错，上一轮自己的隧道就清掉。
+  // 放在参数与 userData 边界之后、建目录/拉起 app 之前：被拒的 up 不留任何痕迹。
+  await reservePort(port);
   // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
   mkdirSync(runDir, { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -1032,6 +1108,7 @@ async function up(args: string[]): Promise<void> {
   let electron: string;
   let appArgs: string[];
   let appPath: string | undefined;
+  let electronBootstrap: string[] | undefined;
   if (appArg !== undefined) {
     appPath = resolve(appArg);
     electron = bundleExecutable(appPath);
@@ -1045,7 +1122,10 @@ async function up(args: string[]): Promise<void> {
       fail(err instanceof ElectronBootstrapError ? err.message : String(err));
     }
     electron = resolved.binary;
-    if (resolved.installed) console.log(`electron: 缺 dist/，已补跑 ${resolved.steps.join(" → ")}`);
+    if (resolved.installed) {
+      console.log(`electron: 缺 dist/，已补跑 ${resolved.steps.join(" → ")}`);
+      electronBootstrap = resolved.steps;
+    }
     // Lab 只在开发态存在：把模式显式传进去，绝不依赖「默认值恰好是 isolated」。
     appArgs = ["apps/desktop", `--remote-debugging-port=${port}`, `--lab-cache=${labCache}`];
   }
@@ -1083,6 +1163,7 @@ async function up(args: string[]): Promise<void> {
     ...(emptySettings ? {} : { configSeeded: true }),
     // 打包版没有 Lab，模式没有意义，不写进状态。
     ...(appArg === undefined ? { labCache } : {}),
+    ...(electronBootstrap !== undefined ? { electronBootstrap } : {}),
   };
 
   let readyMs: number;
@@ -1162,6 +1243,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   const task = `VNoteVerify_${runId}`;
   const localAppLog = join(winDir, "app.log");
   let tunnelPid: number | undefined;
+  /** 失败收尾要知道远端启动的是哪个 exe：声明在 try 之外，catch 里才用得上。 */
+  let remoteApp: string | undefined;
 
   // 默认远端 userData 残留会让同名 run 直接继承旧凭据（--empty-settings 就不再是空的）
   if (remoteUserDataArg === undefined) {
@@ -1174,6 +1257,8 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     }
   }
 
+  // 本地端口同样先预检（r58）：CDP 隧道要绑它，别的应用/上一轮隧道占着就不能连
+  await reservePort(port);
   // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
   mkdirSync(runDir, { recursive: true });
   try {
@@ -1183,7 +1268,6 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
       console.log(`config:   seeded %USERPROFILE%\\.config\\video-notes-verify\\llm.json -> ${remoteUserData}\\settings.json + secrets.bin (ACL: 当前用户)`);
     }
 
-    let remoteApp: string;
     let stateInstallDir: string | undefined;
     if (installerFlag !== undefined) {
       const remoteExe = uploadInstaller ? `${WIN_INSTALLER_DIR}\\${basename(installerFlag)}` : installerFlag;
@@ -1336,6 +1420,21 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     }
     sshExec(sshHost, winCmd(`schtasks /End /TN "${task}"`));
     sshExec(sshHost, winCmd(`schtasks /Delete /TN "${task}" /F`));
+    // schtasks /End 只结束 powershell 本身：app 已经起来时，它是 launch.ps1 的子进程，
+    // 会带着调试端口活下来。按「这个 exe + 这个调试端口」精确收掉（r58 验收 1 的 win 侧）。
+    const exeName = remoteApp === undefined ? undefined : (remoteApp.split(/[\\/]/).pop() ?? remoteApp);
+    const strayFilter =
+      exeName === undefined
+        ? `$_.CommandLine -like '*--remote-debugging-port=${port}*'`
+        : `$_.Name -eq '${exeName}' -and $_.CommandLine -like '*--remote-debugging-port=${port}*'`;
+    const stray = sshExec(
+      sshHost,
+      winPsEncoded(
+        `Get-CimInstance Win32_Process | Where-Object { ${strayFilter} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }`,
+      ),
+    );
+    const strayPids = stray.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+    process.stderr.write(`verify: 收尾远端进程——${strayPids.length === 0 ? "没有残留" : `杀掉 ${strayPids.join(",")}`}\n`);
     sshExec(sshHost, winPs(`Remove-Item -LiteralPath '${remoteRunDir}' -Recurse -Force -ErrorAction SilentlyContinue`));
     // 默认远端 userData 是这次 up 自己建的（含 secrets.bin）：失败时一并清掉，
     // 否则远端留下一份密钥，同名 id 还会被“默认 userData 已存在”挡住
@@ -1488,9 +1587,10 @@ async function doctor(args: string[]): Promise<void> {
         )}）；用 \`verify.ts tunnels --kill\` 或下一次 up 清掉`,
       );
     } else if (conflict?.kind === "foreign-tunnel") {
+      const pid = conflict.owners[0]?.pid;
       warn(
         `port ${state.port} 上有一条 ssh 隧道但不是 CDP 形状（${describeListeners(conflict.owners)}）；` +
-          "确认是残留后用 `verify.ts tunnels --kill` 清掉",
+          `确认是残留后用 \`verify.ts tunnels --kill --pid ${pid ?? "<pid>"}\` 清掉`,
       );
     } else if (probe.listeners.length === 0) {
       warn(`lsof reports no listener on ${state.port}`);
@@ -1816,12 +1916,28 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
   const remoteRunDir = state.remoteRunDir ?? `${WIN_RUNS}\\${state.runId}`;
   try {
     if (state.sshTunnelPid !== undefined) {
-      // 验证脚本自己开的隧道必须真的关掉（r58 验收 6）：SIGTERM 宽限期后补 SIGKILL
-      const stopped = await stopProcessTree(state.sshTunnelPid, { termMs: 3000, killMs: 2000 });
-      console.log(`ssh tunnel: ${describeStop(stopped)}`);
-      if (stopped.survivors.length > 0) fail(`ssh 隧道 pid ${state.sshTunnelPid} 收不掉：先 kill -9 ${state.sshTunnelPid}`);
+      // pid 复用保护：只杀确实是 ssh 的那个 pid（state.json 可能早已陈旧）
+      const tunnelName = processName(state.sshTunnelPid);
+      if (tunnelName === "") {
+        console.log(`ssh tunnel pid ${state.sshTunnelPid} 已经不在`);
+      } else if (!tunnelName.toLowerCase().includes("ssh")) {
+        fail(`refusing to kill pid ${state.sshTunnelPid}: 进程名是 "${tunnelName}"，不是 ssh（state.json 陈旧、pid 已被复用）`);
+      } else {
+        // 验证脚本自己开的隧道必须真的关掉（r58 验收 6）：SIGTERM 宽限期后补 SIGKILL
+        const stopped = await stopProcessTree(state.sshTunnelPid, { termMs: 3000, killMs: 2000 });
+        console.log(`ssh tunnel: ${describeStop(stopped)}`);
+        if (stopped.survivors.length > 0) fail(`ssh 隧道 pid ${state.sshTunnelPid} 收不掉：先 kill -9 ${state.sshTunnelPid}`);
+      }
     } else {
       console.log("no sshTunnelPid recorded; nothing to stop locally");
+    }
+
+    // 远端 pid 同样先核身份：陈旧 state.json 的 pid 可能已经分给了别的进程
+    const expectedExe = (state.remoteApp ?? "Video Notes.exe").split(/[\\/]/).pop() ?? "Video Notes.exe";
+    const expectedName = expectedExe.toLowerCase().endsWith(".exe") ? expectedExe.slice(0, -4) : expectedExe;
+    const remoteName = sshExec(host, winPs(`(Get-Process -Id ${state.pid} -ErrorAction SilentlyContinue).ProcessName`)).stdout.trim();
+    if (remoteName !== "" && remoteName.toLowerCase() !== expectedName.toLowerCase()) {
+      fail(`refusing to kill remote pid ${state.pid}: 远端进程名是 "${remoteName}"，不是 "${expectedName}"（state.json 陈旧、pid 已被复用）`);
     }
 
     // /T takes the renderer and helper children with the main process
@@ -1876,17 +1992,27 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
     const winDir = winLocal(state);
     // 清单即契约（r58 验收 5）：远端 run 目录下除了缓存都是证据，逐个拉、逐个核对大小；
     // 漏的补拉一次，仍然缺就报错，而不是像以前那样只按文件名白名单拉。
+    // 用 -EncodedCommand：清单里的插值字符串带双引号，放进 winPs 的 -Command "…" 会破引号边界。
     const listing = sshRun(
       host,
-      winPs(`Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`),
+      winPsEncoded(
+        `Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`,
+      ),
     ).stdout;
-    const expected = expectedEvidence(parseRemoteListing(listing), remoteRunDir);
+    const inventory = evidenceInventory(parseRemoteListing(listing), remoteRunDir);
+    const expected = inventory.expected;
     const localPathOf = (remotePath: string) => join(winDir, ...relativeEvidencePath(remotePath, remoteRunDir));
     const pullOne = (remotePath: string): boolean => pullRemoteFile(host, remotePath, localPathOf(remotePath));
     const localBytes = (remotePath: string): number | null => {
       const path = localPathOf(remotePath);
       return existsSync(path) ? statSync(path).size : null;
     };
+    if (inventory.skipped.length > 0) {
+      console.log(
+        `evidence: ${inventory.skipped.length} 个大体积媒体不拉取（派生件，源文件可复现）：` +
+          inventory.skipped.map((file) => `${file.path.replace(`${remoteRunDir}\\`, "")} ${file.bytes}B`).join(", "),
+      );
+    }
 
     const failures = expected.filter((file) => !pullOne(file.path)).length;
     let gaps = evidenceGaps(expected, localBytes);
@@ -1902,6 +2028,22 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
       );
     }
     console.log(`evidence: ${expected.length} 个远端证据文件全部拉齐并核对大小（缓存已排除）-> ${winDir}`);
+    // 清单本身也是证据：应拉取/已跳过（大媒体）/不拉取（缓存）三份列表都落盘
+    writeFileSync(
+      join(winDir, "evidence-inventory.json"),
+      `${JSON.stringify(
+        {
+          remoteRunDir,
+          expected: expected.map((file) => ({ path: file.path, bytes: file.bytes })),
+          skippedMedia: inventory.skipped.map((file) => ({ path: file.path, bytes: file.bytes })),
+          excluded: parseRemoteListing(listing)
+            .filter((file) => !expected.includes(file) && !inventory.skipped.includes(file))
+            .map((file) => file.path),
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     state.stoppedAt = new Date().toISOString();
     writeFileSync(join(state.runDir, "state.json"), JSON.stringify(state, null, 2));
@@ -1942,31 +2084,53 @@ function runs(): void {
 }
 
 /**
- * 本机 harness 形状的 ssh 隧道（`ssh -N -L <port>:127.0.0.1:<port>`）：
- * 列出 pid/端口，`--kill` 清掉。收尾后应该一条都不剩；启动前的残留由 `up` 自己识别处理。
+ * 列出本机的 ssh -L 隧道（含本 harness 的 CDP 形状），带端口、形状与记录它的 run。
+ *
+ * `--kill` 只清「CDP 形状 + 没有活跃 run 记录」的残留；有活跃 owner 的隧道、以及形状
+ * 不符的普通 ssh 转发（例如 `-L 5432:127.0.0.1:5432 db-host`）一律不动，必须用
+ * `--pid <pid>` 显式点名——列举候选不等于授权杀掉整机所有 SSH 会话。
  */
 async function tunnels(args: string[]): Promise<void> {
   const kill = hasFlag(args, "--kill");
-  rejectUnknownArgs(args, "verify.ts tunnels [--kill]");
+  const pidRaw = takeFlag(args, "--pid");
+  rejectUnknownArgs(args, "verify.ts tunnels [--kill [--pid PID]]");
+  const pid = pidRaw === undefined ? undefined : Number(pidRaw);
+  if (pidRaw !== undefined && (!Number.isInteger(pid) || (pid ?? 0) <= 0)) fail(`--pid 必须是正整数（收到 ${JSON.stringify(pidRaw)}）`);
   const found = tunnelsOf(processList());
   if (found.length === 0) {
-    console.log("本机没有 harness 形状的 ssh 隧道（ssh -N -L <port>:127.0.0.1:<port>）");
+    console.log("本机没有 ssh -L 隧道");
     return;
   }
+  const selected = pid === undefined ? found : found.filter((entry) => entry.pid === pid);
+  if (pid !== undefined && selected.length === 0) {
+    fail(`没有记录到 ssh 隧道 pid ${pid}；当前隧道：${found.map((entry) => entry.pid).join(", ")}`);
+  }
   for (const entry of found) {
-    const owner = recordedTunnelRun(entry.pid);
+    const owner = tunnelOwner(entry.pid);
     const shape = entry.cdpShape ? "CDP 形状" : "非 CDP 形状";
-    console.log(`tunnel:   pid ${entry.pid}  port ${entry.port}  ${shape}  ${owner === null ? "残留（没有仍在运行的 run 记录它）" : `run ${owner.runId}`}`);
+    const ownership = owner === null ? "残留（没有 run 记录它）" : owner.live ? `活跃 run ${owner.runId}` : `run ${owner.runId} 已收尾`;
+    console.log(`tunnel:   pid ${entry.pid}  port ${entry.port}  ${shape}  ${ownership}`);
     console.log(`  ${entry.command}`);
   }
   if (!kill) {
-    console.log("\n确认是残留后再清：verify.ts tunnels --kill");
+    console.log("\n清理：verify.ts tunnels --kill（只清 CDP 形状残留）或 tunnels --kill --pid <pid>（显式点名）");
     return;
   }
-  for (const entry of found) {
+  const refused: number[] = [];
+  for (const entry of selected) {
+    const owner = tunnelOwner(entry.pid);
+    // 不带 --pid 时只清「残留 + CDP 形状」；显式点名则按操作者的决定执行
+    if (pid === undefined && (owner?.live === true || !entry.cdpShape)) {
+      refused.push(entry.pid);
+      continue;
+    }
     const stopped = await stopProcessTree(entry.pid, { termMs: 3000, killMs: 2000 });
     console.log(`stopped   ${describeStop(stopped)}`);
     if (stopped.survivors.length > 0) fail(`隧道 pid ${entry.pid} 收不掉：kill -9 ${entry.pid}`);
+  }
+  if (refused.length > 0) {
+    console.log(`\n未清理 ${refused.join(", ")}：有活跃 run 记录它，或不是 CDP 形状的 ssh 转发。`);
+    console.log("确认确实要清时显式点名：verify.ts tunnels --kill --pid <pid>");
   }
 }
 
