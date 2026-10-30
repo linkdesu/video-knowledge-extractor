@@ -207,6 +207,32 @@ describe("主进程侧：worker 不残留", () => {
     host.dispose();
   });
 
+  /**
+   * r57 / #74：run 结算必须等于「这个 worker 进程没了」。以前 done 一到就结算，
+   * 主进程紧接着 fork 下一个 worker，而前一个还在收尾 —— 日志里见过 `live=2`。
+   */
+  test("连续未命中不重叠：run 结算时上一个 worker 已退出，live 从不超过 1", async () => {
+    const forked: { pid: number; exited: Promise<number> }[] = [];
+    const liveAtStart: number[] = [];
+    const host = createLabWorkerHost({
+      fork: () => {
+        const child = bunProcess(`overlap-${forked.length}`, COOPERATIVE);
+        forked.push({ pid: child.pid, exited: child.exited });
+        return child.proc;
+      },
+      log: (_level, message, fields) => {
+        if (message === "Lab worker 启动") liveAtStart.push(Number(fields?.live));
+      },
+    });
+    for (let i = 0; i < 5; i++) {
+      await host.run({ message: { ...RUN, id: `${i}${"b".repeat(31)}` }, onProgress: () => {} });
+      // 结算即生命周期结束：下一次未命中可以立刻 fork，任何时刻都只有一个进程。
+      expect(host.live()).toBe(0);
+    }
+    expect(liveAtStart).toEqual([1, 1, 1, 1, 1]);
+    host.dispose();
+  });
+
   test("worker 无视 ack：宽限期到就被 kill（退出码非 0，进程归零）", async () => {
     let child: { pid: number; exited: Promise<number> } | undefined;
     const host = createLabWorkerHost({
