@@ -51,5 +51,5 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Windows build and run](./windows-build.md) — `--install-dir`, the Chinese-plus-space install gate, the BOM'd PowerShell launcher, r42 evidence in `win/`.
 - [Packaged first launch (r49)](./packaged-launch.md) — cold-start the installed bundle N times with a fresh userData and assert the library UI rendered (screenshot + DOM + version), never a white window.
 - [Diarization Lab (r48)](./diarization-lab.md) — dev-only 验收台：拖样本、A/B 方案色带、试听、阈值滑块、差异标记。
-- [Evidence hygiene (r50)](./evidence-hygiene.md) — userData lives outside the evidence tree, `secrets.bin` in `tmp/verify` fails `up`/`down`/`doctor`, and `latest` is always rewritten as a plain file.
+- [Evidence hygiene (r50, run-id gate r51)](./evidence-hygiene.md) — userData lives outside the evidence tree, `secrets.bin` in `tmp/verify` fails `up`/`down`/`doctor`, `latest` is always rewritten as a plain file, and `--run` rejects `latest` in any casing before creating anything.
 - [Media formats (r42, r45b normalized imports)](./media-formats.md) — the direct-play matrix, import-time normalization (`media.mp4`/`media.mp3`), the fixture recipe, the pure-audio journey and the `.ts` legacy playback notice.

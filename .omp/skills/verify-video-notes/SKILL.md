@@ -44,9 +44,9 @@ What `up` does:
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
 2. Seeds the run userData from the private LLM config (`settings.json` version 3 + `secrets.bin` version 2, both `0600`; `state.json` records `configSeeded: true`). `--empty-settings` skips this for feature journeys that assert a virgin settings page.
 3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment.
-4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=tmp/verify-state/<run>/user-data` (outside the evidence tree, r50), `VNOTE_MODEL_DIR` = the real model cache. A leftover default userData directory fails `up` (`默认 userData 目录已存在`) instead of being inherited; `--run` accepts `[A-Za-z0-9._-]` only and never `latest`.
+4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=tmp/verify-state/<run>/user-data` (outside the evidence tree, r50), `VNOTE_MODEL_DIR` = the real model cache. A leftover default userData directory fails `up` (`默认 userData 目录已存在`) instead of being inherited; `--run` accepts `[A-Za-z0-9._-]` only, never `latest` in any casing (`Latest`, `LATEST` are the same inode on case-insensitive APFS), and never `.` / `..` or a path separator — all refused before any directory is created or app launched (`lib/run-id.ts`, r51).
 5. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
-6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run. The pointer is always rewritten as a plain file: a stale symlink or directory at that path is removed first (r50), so `up` cannot die with `EISDIR` after the app already started.
+6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run. The pointer is always rewritten as a plain file: a stale symlink or directory at that path is removed first (r50), so `up` cannot die with `EISDIR` after the app already started. The one directory it refuses to touch is a run directory — `latest` containing `state.json` is evidence, so `up` exits 1 before launching anything (`latestPointerProblem`, r51).
 
 Step 0 is the secrets gate: before anything is created or launched, `up` scans `tmp/verify` for `secrets.bin` / `secrets.pending` / `secrets.bin.legacy-*` and exits 1 on a hit — a dirty evidence tree never leaves an orphan process behind.
 
@@ -212,7 +212,7 @@ On `--target win-gamepc` (r41) the mac-only checks are replaced: the remote proc
 
 ## Drive
 
-All commands read `tmp/verify/latest` unless you pass `--run <id>`. The app is at 1280×860; screenshots are retina (2560×1656).
+All commands read `tmp/verify/latest` unless you pass `--run <id>`, and both go through the same id gate as `up` (`lib/run-id.ts`: no `latest` in any casing, no `.`/`..`, no separators). The app is at 1280×860; screenshots are retina (2560×1656).
 
 ```bash
 V="bun .omp/skills/verify-video-notes/scripts/verify.ts drive"
