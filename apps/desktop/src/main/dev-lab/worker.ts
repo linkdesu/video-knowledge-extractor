@@ -9,27 +9,11 @@ import type { DiarizationSegment } from "@video-notes/core";
 import { createTranscriber, detectSilences, extractAudio, readWav, resolveModelPaths } from "@video-notes/core";
 import * as sherpaModule from "sherpa-onnx-node";
 import { importExperimentDir } from "./experiment";
-import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS, type LabAnalysisStamp, type LabSourceMode } from "./analysis-cache";
+import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS } from "./analysis-cache";
+import { serveLabWorker, type LabParentPort, type LabRunMessage, type LabWorkerProgress } from "./lab-worker-host";
 import type { EmbeddingRow } from "./refine";
 import { writeJson, writeSampleFile } from "./sample-store";
 import type { LabSampleFile } from "./sample-store";
-
-type ParentPort = {
-  postMessage(message: unknown): void;
-  on(event: "message", listener: (event: { data: unknown }) => void): void;
-};
-
-export type LabRunMessage = {
-  type: "run";
-  mode: LabSourceMode;
-  sourcePath: string;
-  modelDir: string;
-  outDir: string;
-  id: string;
-  name: string;
-  /** r53：主进程算好的分析缓存戳，原样写进 sample.json。 */
-  analysis: LabAnalysisStamp;
-};
 
 function resolveSherpa(): typeof sherpaModule {
   const mod = sherpaModule as unknown as { OnnxRuntime?: unknown; default?: typeof sherpaModule };
@@ -39,10 +23,7 @@ function resolveSherpa(): typeof sherpaModule {
 
 type SegmentTextRow = { start: number; end: number; text: string };
 
-async function computeSample(
-  message: LabRunMessage,
-  post: (progress: { step: "extract" | "diarize" | "embed" | "decode" | "save"; done: number; total: number; detail: string | null }) => void,
-): Promise<LabSampleFile> {
+async function computeSample(message: LabRunMessage, post: (progress: LabWorkerProgress) => void): Promise<LabSampleFile> {
   const timings: Record<string, number> = {};
   const wavPath = join(message.outDir, "audio.wav");
   mkdirSync(message.outDir, { recursive: true });
@@ -131,29 +112,20 @@ async function computeSample(
 }
 
 function main(): void {
-  const port = (process as unknown as { parentPort?: ParentPort }).parentPort ?? null;
-  if (port === null) return;
-  port.on("message", (event) => {
-    const message = event.data as LabRunMessage;
-    if (message === null || typeof message !== "object" || message.type !== "run") return;
-    // Electron utilityProcess 的结构化克隆会拒收含外部内存缓冲的消息（实测 embed 阶段抛
-    // "External buffers are not allowed"）；进度/结果都是纯 JSON，统一走字符串。
-    const post = (progress: { step: "extract" | "diarize" | "embed" | "decode" | "save"; done: number; total: number; detail: string | null }) => {
-      port.postMessage(JSON.stringify({ type: "progress", ...progress }));
-    };
-    void (async () => {
-      try {
-        const file =
-          message.mode === "dir"
-            ? importExperimentDir(message.sourcePath, message.outDir, message.id, message.name)
-            : await computeSample(message, post);
-        writeSampleFile(message.outDir, { ...file, analysis: message.analysis });
-        port.postMessage(JSON.stringify({ type: "done", meta: file }));
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        port.postMessage(JSON.stringify({ type: "error", message: error.message, stack: error.stack }));
-      }
-    })();
+  // Electron 在 utilityProcess 里把父端口挂在 process.parentPort 上，Node 类型里没有；
+  // 只能先按名字取再断言（拿不到就是普通 node 进程，没有活可干）。
+  const rawPort: unknown = Reflect.get(process, "parentPort");
+  if (rawPort === undefined || rawPort === null) return;
+  const port = rawPort as LabParentPort;
+  serveLabWorker({
+    port,
+    run: async (message, post) => {
+      const file =
+        message.mode === "dir"
+          ? importExperimentDir(message.sourcePath, message.outDir, message.id, message.name)
+          : await computeSample(message, post);
+      writeSampleFile(message.outDir, { ...file, analysis: message.analysis });
+    },
   });
 }
 

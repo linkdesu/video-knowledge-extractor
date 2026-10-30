@@ -90,11 +90,12 @@ describe("preload sendSync 通道", () => {
     expect(source.includes("ipcMain.on(")).toBe(false);
   });
 
-  test("Lab 可用性通道的注册不在 labRoot 门禁里（打包版也要应答 false）", () => {
+  test("Lab 可用性通道的注册不在 Lab 运行时门禁里（打包版也要应答 false）", () => {
     const source = readFileSync(MAIN_INDEX, "utf8");
     const registration = source.indexOf("ipcMain.on(LAB_IPC.available");
     expect(registration).toBeGreaterThan(-1);
-    const gate = source.indexOf("if (labRoot !== undefined)");
+    // 门禁 = 创建 Lab 运行时的那一段；注册必须排在它前面，才可能对打包版也生效。
+    const gate = source.indexOf("createLabRuntime({");
     expect(gate).toBeGreaterThan(-1);
     expect(registration).toBeLessThan(gate);
   });
