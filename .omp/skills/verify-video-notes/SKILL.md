@@ -19,8 +19,7 @@ Two targets are supported (r41): macOS Apple Silicon, the default (no `--target`
 Preconditions, once per machine:
 
 ```bash
-bun install
-node apps/desktop/node_modules/electron/install.js   # a fresh worktree install skips Electron's binary; `up` fails without it
+bun install              # a fresh worktree links electron but does not fetch dist/; `up`补跑 install.js 自行修复
 ffmpeg -version          # required by every extraction; Homebrew is fine
 ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, required for import journeys (`--model-dir`)
 # Readiness is file existence: a fresh process is ready when the four required paths exist.
@@ -41,12 +40,15 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up
 
 What `up` does:
 
+0. Refuses early (r58): an unknown `--target` / `--run` id / unknown flag (e.g. `--prot 9412`) exits before anything is created, and the port is checked by **listener identity**, not by "does CDP answer". Another app on the port fails with its pid and command line; a leftover tunnel from an earlier run is recognized — CDP-shaped (`ssh -N -L <port>:127.0.0.1:<port>`, recorded by no live run) is cleared automatically, a foreign ssh tunnel (`-L 9416:127.0.0.1:9415`, the 10/29 residue) is reported for `verify.ts tunnels --kill`. The harness never connects to somebody else's listener.
 1. `bun run build` in `apps/desktop` (skip with `--no-build`). Verification always drives the built artifact in `apps/desktop/out/`, not a dev server.
 2. Seeds the run userData from the private LLM config (`settings.json` version 3 + `secrets.bin` version 2, both `0600`; `state.json` records `configSeeded: true`). `--empty-settings` skips this for feature journeys that assert a virgin settings page.
-3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment.
+3. Starts `apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop --remote-debugging-port=9411` with `VNOTE_LLM_*` / `IDEALSOFT_*` removed from the child environment. If a fresh worktree's `bun install` skipped Electron's `dist/`, `up` bootstraps it (runs the package's `install.js`, after `bun install` when the package is not linked) and prints what it ran.
 4. Isolates state: `VNOTE_HOME=<run>/home`, `VNOTE_USER_DATA=tmp/verify-state/<run>/user-data` (outside the evidence tree, r50), `VNOTE_MODEL_DIR` = the real model cache. A leftover default userData directory fails `up` (`默认 userData 目录已存在`) instead of being inherited; `--run` accepts `[A-Za-z0-9._-]` only, never `latest` in any casing (`Latest`, `LATEST` are the same inode on case-insensitive APFS), and never `.` / `..` or a path separator — all refused before any directory is created or app launched (`lib/run-id.ts`, r51).
-5. Waits until the app is **usable**, not merely listening: a page target at `vnote-app://bundle/index.html`, `window.vnote` present, and `[data-testid=nav-library]` rendered.
+5. Polls until the app is **usable**, not merely listening (r58): a page target at `vnote-app://bundle/index.html`, `window.vnote` present, `[data-testid=nav-library]` rendered, and `settings().notesRoot` equal to this run's isolated home (peer identity — a stale instance answering on the port is refused, not driven). Readiness continues the moment it holds (`ready: <ms>`); `--ready-timeout` (default 60000, packaged apps included) turns a slow first launch into a clear timeout error with the last observed state and the log tail.
 6. Writes `tmp/verify/<run>/state.json` and points `tmp/verify/latest` at the run. The pointer is always rewritten as a plain file: a stale symlink or directory at that path is removed first (r50), so `up` cannot die with `EISDIR` after the app already started. The one directory it refuses to touch is a run directory — `latest` containing `state.json` is evidence, so `up` exits 1 before launching anything (`latestPointerProblem`, r51).
+
+If `up` fails after launching, it stops the whole process tree: SIGTERM to the main process and every descendant, then SIGKILL for whatever is still alive after the grace period, and it reports any survivor instead of pretending success (r58). No orphan Electron is left behind.
 
 Step 0 is the secrets gate: before anything is created or launched, `up` scans `tmp/verify` for `secrets.bin` / `secrets.pending` / `secrets.bin.legacy-*` and exits 1 on a hit — a dirty evidence tree never leaves an orphan process behind.
 
@@ -202,7 +204,7 @@ Read-only checks, exit code 1 on failure:
 - CDP page on the recorded port;
 - effective `settings().notesRoot` equals the run's isolated home;
 - `settings().appVersion` equals `apps/desktop/package.json`;
-- the listening port is owned by the recorded pid (`lsof`);
+- the listening port is owned by the recorded pid (`lsof`); a listener that is an ssh tunnel instead is reported (r58: CDP-shaped residue can be cleared, a foreign `-L` tunnel is only reported);
 - `apps/desktop/out/` is newer than every source file in `apps/desktop/src` and `packages/core/src`;
 - no key file (`secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*`) anywhere under `tmp/verify` (r50 — the evidence tree never holds userData; same scan as `verify.ts secrets-gate`).
 
@@ -291,7 +293,7 @@ Every proof goes under the run directory printed by `up` (`tmp/verify/<run>/`). 
 - `app.log`, `build.log`, `cli.log` — process logs, command output, exit codes.
 - Side effects read from disk, not just the UI: `<home>/corrections.json`, `<home>/index.json`, `<outputDir>/index.md`, `<outputDir>/<topic>/topic.md`, `<outputDir>/<topic>/*.mp4`.
 
-On a win-gamepc run (r41) artifacts land in `tmp/verify/<run>/win/` instead: `<name>.png`, `<name>.aria.txt`, and after `down` the pulled `app.log`, `<remoteHome>\logs\*` and artifact files (`video.json`, `topic.md`, `trajectory.json`, `status.json`). A copy of `state.json` lives in `win/` and carries the same `stoppedAt` as the run-level `state.json`.
+On a win-gamepc run (r41) artifacts land in `tmp/verify/<run>/win/` instead: `<name>.png`, `<name>.aria.txt`, and after `down` **everything** the remote run directory held except renderer caches — `app.log`, `launch.ps1`, `<remoteHome>\logs\*`, and every video's `video.json` / `topic.md` / `labels.json` / `analysis.json` / `trajectory.json` / `status.json`. The list is not a name whitelist any more (r58): `down` takes one remote inventory, pulls each file, then verifies each one against the listing (existence + byte size, one retry) and fails when anything is missing. A copy of `state.json` lives in `win/` and carries the same `stoppedAt` as the run-level `state.json`.
 
 Proof standards:
 
@@ -306,7 +308,7 @@ Last proven runs: `tmp/verify/r38-regenerate-cache-and-real-e2e/` (the r38 round
 
 ## Gotchas
 
-- **Worktree installs skip Electron's binary.** `bun install` in a fresh worktree links `node_modules/electron` but does not fetch `dist/`; `up` then fails with "Electron binary not found". Run `node node_modules/electron/install.js` once.
+- **Worktree installs skip Electron's binary (fixed in r58).** `bun install` in a fresh worktree links `node_modules/electron` but does not fetch `dist/`. `up` now repairs this itself: when the binary is missing it runs the package's `install.js` (and `bun install` first if the package is not linked at all), printing what it runs; only if that fails does it stop with the copy-paste commands. No manual step is needed.
 - **The packaged app's process is not "Electron".** `down` compares `ps`'s process name with the recorded executable, so packaged runs pass only because `appPath` is in `state.json`. If you start the binary by hand, `down` refuses on purpose.
 - **CJS native packages lose half their named exports under ESM.** `import * as sherpa from "sherpa-onnx-node"` yields only `OnlineRecognizer` plus `default`; `sherpa.OfflineRecognizer` is `undefined` and `new sherpa.OfflineRecognizer(...)` throws "is not a constructor". Only the packaged app hit it in r26, but the shape is a property of the package, not the bundle. Read through `default` (core's `resolveSherpaApi` does).
 - **A local ASR job that dies in the utility process** shows up as `worker 进程退出（退出码 …）` on the topic or job, and `~/Library/Logs/DiagnosticReports/` holds the Electron crash log. One 70-second utterance was enough to SIGTRAP Electron's ONNX allocator (ADR-0018); the fix lived in `ASR_MAX_UTTERANCE_SECONDS`, not in the surface you are driving.
@@ -326,8 +328,8 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 ```
 
-- `down` stops only the pid this run started, records `stoppedAt`, prunes the renderer caches and keeps the rest of the run directory; confirm it prints the kept evidence counts and the evidence path, and that the port is closed. `down --purge` deletes the whole run directory and, when `tmp/verify/latest` pointed at it, that pointer too — a dangling pointer makes the next bare `drive` or `doctor` read a missing `state.json`.
-- On a win-gamepc run (r41) `down` stops the SSH tunnel, runs `taskkill /PID <pid> /T /F` over ssh, deletes the `VNoteVerify_<runId>` scheduled task, prunes the remote renderer caches, then pulls `app.log`, `<remoteHome>\logs\*` and the artifact files (`video.json`, `topic.md`, `trajectory.json`, `status.json`) into `tmp/verify/<run>/win/` before recording `stoppedAt` in both `state.json` files (the run directory and the `win/` copy); the kept-evidence line counts the `win/` directory. `--purge` also removes the remote run directory `D:\code\video-notes\verify\<runId>\` after the pull, then deletes the local run directory, so the box and the worktree both end clean.
+- `down` stops only the pid this run started, records `stoppedAt`, prunes the renderer caches and keeps the rest of the run directory; confirm it prints the kept evidence counts and the evidence path, and that the port is closed. The stop is a tree stop (r58): SIGTERM to the recorded process and its descendants, SIGKILL for stragglers after the grace period, and a non-zero exit if anything survived — `down` never reports a half-stopped run as success. `down --purge` deletes the whole run directory and, when `tmp/verify/latest` pointed at it, that pointer too — a dangling pointer makes the next bare `drive` or `doctor` read a missing `state.json`.
+- On a win-gamepc run (r41/r58) `down` stops the SSH tunnel (SIGTERM, then SIGKILL; a survivor fails the command), runs `taskkill /PID <pid> /T /F` over ssh, deletes the `VNoteVerify_<runId>` scheduled task and prunes the remote renderer caches. It then pulls the **whole** remote run directory except caches — one inventory taken over ssh, every file pulled, then checked file by file against the remote listing (size included) with one retry — into `tmp/verify/<run>/win/`; a still-missing or truncated file fails `down` with the list (`evidence: N 个远端证据文件全部拉齐并核对大小` is the pass line). `stoppedAt` lands in both `state.json` files. `--purge` also removes the remote run directory `D:\code\video-notes\verify\<runId>\` after the pull, then deletes the local run directory, so the box and the worktree both end clean.
 - If `up` failed before writing `state.json`, the log tail is printed and the child is terminated by `up` itself. If a run was interrupted by the agent, use `runs` to find the pid and `down --run <id>`.
 - Scratch state lives in the run directory (`home/`, `cli-home/`) plus the run's userData outside it (`tmp/verify-state/<run>/user-data`, r50); `down` prunes the big renderer caches automatically, so the directory that remains is evidence only.
 - Never `pkill Electron`, never delete `tmp/verify/<run>/*.png` or `*.aria.txt` as “cleanup”.
@@ -342,6 +344,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 | `doctor` | read-only health check, exit 1 on failure (`--target` falls back to `state.target`) |
 | `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log / clipboard (`--save <path>`; `--target` falls back to `state.target`) |
 | `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory; `--target` falls back to `state.target`) |
+| `tunnels` | list every local `ssh -L` tunnel of this harness's shape with its port and owning run, `--kill` stops them (r58) |
 | `runs` | list runs with liveness |
 
 CLI surface (run from the repo root so `.env` is read):
