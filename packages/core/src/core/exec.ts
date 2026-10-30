@@ -126,7 +126,11 @@ export async function run(
     });
   }
   const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
-  if (child.stdout === null || child.stderr === null) throw new Error(`${label}: 子进程管道不可用`);
+  if (child.stdout === null || child.stderr === null) {
+    // 进程能建但管道没建成（资源耗尽的一种形态）：同样要落日志，否则诊断里只剩一句「启动失败」
+    log.error(mod, "命令启动失败", { cmd: file, reason: "子进程管道不可用", label });
+    throw new Error(`${label}: 子进程管道不可用`);
+  }
 
   let stdout = "";
   let stderr = "";
@@ -154,6 +158,14 @@ export async function run(
   const code = await new Promise<number>((resolveCode, rejectCode) => {
     child.once("error", (err) => {
       activeChildren.delete(child);
+      // spawn 失败（ENOENT / EAGAIN 等）以前只 reject 不写日志：诊断里看不出「起不来」，
+      // 只有一声没有上下文的启动失败（r62 / #79）。这里补一条 ERROR，带上命令与 errno。
+      log.error(mod, "命令启动失败", {
+        cmd: file,
+        reason: `${(err as NodeJS.ErrnoException).code ?? "unknown"} ${err.message}`,
+        label,
+        durationMs: Date.now() - startedAt,
+      });
       rejectCode(new Error(`${label} 启动失败: ${(err as NodeJS.ErrnoException).code === "ENOENT" ? `命令不存在: ${file}` : err.message}`));
     });
     child.once("close", (exitCode) => {

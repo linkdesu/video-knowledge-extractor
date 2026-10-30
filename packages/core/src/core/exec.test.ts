@@ -95,6 +95,26 @@ describe("run", () => {
     await expect(run(["definitely-not-a-real-cmd-xyz"], { label: "测试命令" })).rejects.toThrow("definitely-not-a-real-cmd-xyz");
   });
 
+  test("命令启动失败也写 ERROR 行：诊断能看出是「起不来」而不是「跑失败」", async () => {
+    // r62 / #79：spawn 失败时 run() 只 reject，不写任何日志行，诊断文本里看不出原因
+    // （高负载下进程创建瞬时失败会让只断言「命令失败」行的用例静默落空）
+    const lines: string[] = [];
+    configureLogging({ sink: (s) => lines.push(s) });
+    const err = await run(["definitely-not-a-real-cmd-xyz"], { label: "测试命令" }).then(
+      () => undefined,
+      (e: Error) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    // 抛错消息保持不变
+    expect(err!.message).toContain("测试命令");
+    const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" ffmpeg ") && l.includes("命令启动失败")) ?? "";
+    expect(errLine).toContain("definitely-not-a-real-cmd-xyz");
+    // 失败原因（ENOENT 等）必须落在日志里，否则只能看到「启动失败」四个字
+    expect(errLine).toContain("ENOENT");
+    // 起不来时不该伪造「命令失败」行（那是 exit code 语义）
+    expect(lines.some((l) => l.includes("命令失败"))).toBe(false);
+  });
+
   test("非零退出默认抛错，消息含 stderr 尾部最后 12 行", async () => {
     const lines = Array.from({ length: 20 }, (_, i) => "stderr-line-" + i);
     const script = lines.map((l) => `process.stderr.write('${l}\\n')`).join("; ");
