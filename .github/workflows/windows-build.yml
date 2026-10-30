@@ -5,8 +5,12 @@ on:
   push:
     branches:
       - main
+      # 斜杠与横杠两种命名都要覆盖：分支规范里 `feat-r54-…` / `fix-r57-…` 是横杠形式，
+      # 只写 `feat/**` 时这类分支推送不会触发 Windows CI（r57 / #74）。
       - "feat/**"
       - "fix/**"
+      - "feat-*"
+      - "fix-*"
     paths-ignore:
       - "**/*.md"
       - "docs/**"
