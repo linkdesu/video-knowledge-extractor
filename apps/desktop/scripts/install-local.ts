@@ -24,9 +24,11 @@ import {
 } from "../src/main/settings-fingerprint";
 import {
   assertArtifactVersion,
+  cachedArtifactMatchesHead,
   installerName,
   pickReusableAncestorRun,
   waitForRunForCommit,
+  type ArtifactProvenance,
   type WindowsBuildRun,
 } from "./win-installer-source";
 
@@ -295,6 +297,34 @@ function listWindowsBuildRuns(): WindowsBuildRun[] {
   return JSON.parse(runsJson) as WindowsBuildRun[];
 }
 
+/** 读 `tmp/installer/v<version>/provenance.json`；缺失或形状不对一律当作没有来源。 */
+function readCacheProvenance(cacheDir: string): ArtifactProvenance | null {
+  const path = resolve(cacheDir, "provenance.json");
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    if (!("runId" in parsed) || typeof parsed.runId !== "number") return null;
+    if (!("headSha" in parsed) || typeof parsed.headSha !== "string") return null;
+    return { runId: parsed.runId, headSha: parsed.headSha };
+  } catch {
+    return null;
+  }
+}
+
+/** 两个提交之间的差异路径；来源提交不在本地仓库时返回 null（表示算不出来）。 */
+function diffPaths(fromSha: string, toSha: string): string[] | null {
+  const res = spawnSync("git", ["diff", "--name-only", `${fromSha}..${toSha}`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if ((res.status ?? 1) !== 0) return null;
+  return (res.stdout ?? "")
+    .split("\n")
+    .map((p) => p.trim())
+    .filter((p) => p !== "");
+}
+
 function resolveOrDownloadWinInstaller(
   version: string,
   explicitPath: string | null,
@@ -312,18 +342,32 @@ function resolveOrDownloadWinInstaller(
     return { localPath: abs, remotePath: null };
   }
 
-  const candidates = [
-    resolve(desktopRoot, `release-win/${expectedName}`),
-    resolve(repoRoot, `tmp/installer/v${version}/${expectedName}`),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) {
-      return { localPath: c, remotePath: null };
+  const sha = runCmd("git", ["rev-parse", "HEAD"]);
+  const releaseWin = resolve(desktopRoot, `release-win/${expectedName}`);
+  if (existsSync(releaseWin)) {
+    console.log(`[win] 使用本机打包的 ${releaseWin}`);
+    return { localPath: releaseWin, remotePath: null };
+  }
+
+  // 同版本的缓存可能来自别的提交（r61 实测）：只认来源提交与 HEAD 构建输入一致的缓存
+  const cacheDir = resolve(repoRoot, `tmp/installer/v${version}`);
+  const cachedPath = resolve(cacheDir, expectedName);
+  if (existsSync(cachedPath)) {
+    const provenance = readCacheProvenance(cacheDir);
+    const changedPaths = provenance === null ? null : diffPaths(provenance.headSha, sha);
+    if (provenance !== null && cachedArtifactMatchesHead(provenance, sha, changedPaths)) {
+      console.log(
+        `[win] 复用缓存 ${cachedPath}（来源 run ${provenance.runId} @ ${provenance.headSha.slice(0, 7)}）`,
+      );
+      return { localPath: cachedPath, remotePath: null };
     }
+    console.log(
+      `[win] 缓存 ${cachedPath} 没有可核对的来源提交或来源与 ${sha.slice(0, 7)} 构建输入不同，删除后重新下载`,
+    );
+    rmSync(cacheDir, { recursive: true, force: true });
   }
 
   // 只认「当前提交 + 当前版本」的 CI 产物：旧提交的成功运行绝不复用（r61 / #81）
-  const sha = runCmd("git", ["rev-parse", "HEAD"]);
   console.log(
     `[win] 本地未找到 ${expectedName}，按提交 ${sha.slice(0, 7)} 查找 windows-build.yml 的 v${version} 产物...`,
   );
@@ -399,6 +443,11 @@ function resolveOrDownloadWinInstaller(
       `下载的构建产物中未找到 ${expectedName}（实际目录: ${destDir}），请确认 CI 构建对应的版本号已更新为 ${version}`,
     );
   }
+  // 记录来源提交：下次复用这个缓存前要核对（同版本号可能来自别的提交）
+  writeFileSync(
+    resolve(destDir, "provenance.json"),
+    `${JSON.stringify({ runId: run.databaseId, headSha: run.headSha }, null, 2)}\n`,
+  );
   return { localPath: downloaded, remotePath: null };
 }
 

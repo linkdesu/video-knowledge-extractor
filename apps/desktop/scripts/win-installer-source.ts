@@ -61,6 +61,29 @@ export function isBuildRelevantPath(path: string): boolean {
   return !(path.endsWith(".md") || path === "docs" || path.startsWith("docs/"));
 }
 
+export interface ArtifactProvenance {
+  runId: number;
+  headSha: string;
+}
+
+/**
+ * `tmp/installer/v<version>/` 里的缓存能不能直接用。
+ * 版本号相同不代表内容相同：同一版本在不同提交上重新打包过（r61 实测），
+ * 所以必须看来源提交。没有来源记录、来源含代码差异、算不出差异 → 一律重下。
+ *
+ * @param changedPaths 来源提交到 HEAD 的差异路径；`null` 表示算不出来（来源提交不在本地）。
+ */
+export function cachedArtifactMatchesHead(
+  provenance: ArtifactProvenance | null,
+  headSha: string,
+  changedPaths: string[] | null,
+): boolean {
+  if (provenance === null) return false;
+  if (provenance.headSha === headSha) return true;
+  if (changedPaths === null) return false;
+  return !changedPaths.some(isBuildRelevantPath);
+}
+
 /**
  * 末尾只改了文档时，workflow 因 paths-ignore 不会为 HEAD 起构建。
  * 只有当 HEAD 与某个已有成功运行之间的 diff 全部是不触发构建的路径时，

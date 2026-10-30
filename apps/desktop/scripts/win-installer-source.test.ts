@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertArtifactVersion,
+  cachedArtifactMatchesHead,
   installerName,
   isBuildRelevantPath,
   pickReusableAncestorRun,
@@ -92,6 +93,38 @@ describe("selectRunForCommit：只认当前提交的构建", () => {
       SHA_HEAD,
     );
     expect(picked).toBeNull();
+  });
+});
+
+describe("tmp/installer/v<version> 缓存必须有提交来源", () => {
+  test("没有来源记录（老目录/手工放的包）一律不认，重新下载", () => {
+    expect(cachedArtifactMatchesHead(null, SHA_HEAD, [])).toBe(false);
+  });
+
+  test("来源就是 HEAD：可用", () => {
+    expect(
+      cachedArtifactMatchesHead({ runId: 7, headSha: SHA_HEAD }, SHA_HEAD, []),
+    ).toBe(true);
+  });
+
+  test("来源是祖先且差异全为文档：可用（构建输入相同）", () => {
+    expect(
+      cachedArtifactMatchesHead({ runId: 7, headSha: SHA_OLD }, SHA_HEAD, [
+        "docs/adr/0039-x.md",
+      ]),
+    ).toBe(true);
+  });
+
+  test("来源提交含代码差异：不可用（必须重新构建/下载）", () => {
+    expect(
+      cachedArtifactMatchesHead({ runId: 7, headSha: SHA_OLD }, SHA_HEAD, [
+        "apps/desktop/src/main/index.ts",
+      ]),
+    ).toBe(false);
+  });
+
+  test("算不出差异（来源提交不在本地）：不可用", () => {
+    expect(cachedArtifactMatchesHead({ runId: 7, headSha: SHA_OLD }, SHA_HEAD, null)).toBe(false);
   });
 });
 
