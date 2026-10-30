@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { LlmClient } from "../core/steps";
@@ -10,15 +10,48 @@ import { notesTrigger, runNotes, runTopics } from "./notes-run";
 const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
 
 /**
- * 真实源 mp4（340 秒，覆盖测试里最远的段 [300,330]）：r33 后切片走临时 part +
- * concat 成 `topic.mp4`，cutClip 不再短路预置文件，必须真 ffmpeg 切。
+ * 源片每个「时长 + 容器」只编码一次（r59）：`execFileSync` 会冻住整个 bun test 进程的
+ * 事件循环——所有测试文件共享同一个循环和同一套 5 s 超时计时器，一条 340 s 源片同步编码
+ * 1.4 s、十几条叠起来就能把别的文件里毫秒级用例判成超时（`test-preload.ts` 会打出这种停顿）。
+ * 所以生成走异步 `Bun.spawn`，用例里只做一次 `copyFileSync`。
  */
+const fixtureRoot = mkdtempSync(join(tmpdir(), "vnote-notes-run-fixtures-"));
+const fixtureSources = new Map<string, string>();
+
+async function encodeSource(kind: "mp4" | "m4a", seconds: number): Promise<void> {
+  const key = `${kind}-${seconds}`;
+  if (fixtureSources.has(key)) return;
+  const path = join(fixtureRoot, `${key}.${kind}`);
+  const args =
+    kind === "mp4"
+      ? ["-y", "-f", "lavfi", "-i", `color=c=red:s=128x80:d=${seconds}`, "-f", "lavfi", "-i", `sine=d=${seconds}`, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path]
+      : ["-y", "-f", "lavfi", "-i", `sine=d=${seconds}`, "-c:a", "aac", "-b:a", "128k", path];
+  const proc = Bun.spawn(["ffmpeg", ...args], { stdio: ["ignore", "ignore", "pipe"] });
+  const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+  if (code !== 0) throw new Error(`夹具编码失败（${key}，exit ${code}）：${stderr.slice(-400)}`);
+  fixtureSources.set(key, path);
+}
+
+beforeAll(async () => {
+  // 所有用例实际用到的时长（用例里传第三个参数时同步加到这里）
+  await Promise.all([encodeSource("mp4", 340), encodeSource("mp4", 120), encodeSource("mp4", 60), encodeSource("m4a", 30)]);
+});
+
+afterAll(() => {
+  rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+/** 把预生成的源片拷进用例目录；没预生成就立刻报错，而不是同步编码冻住循环。 */
+function copyFixture(kind: "mp4" | "m4a", seconds: number, dest: string): void {
+  const src = fixtureSources.get(`${kind}-${seconds}`);
+  if (src === undefined) throw new Error(`夹具源片未预生成：${kind}-${seconds}（加进 beforeAll 的 encodeSource 列表）`);
+  copyFileSync(src, dest);
+}
+
+/** 真实源 mp4（340 秒，覆盖测试里最远的段 [300,330]）：r33 后切片走临时 part +
+ * concat 成 `topic.mp4`，cutClip 不再短路预置文件，必须真 ffmpeg 切。 */
 function makeMp4(path: string, seconds: number): void {
-  execFileSync(
-    "ffmpeg",
-    ["-y", "-f", "lavfi", "-i", `color=c=red:s=128x80:d=${seconds}`, "-f", "lavfi", "-i", `sine=d=${seconds}`, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path],
-    { stdio: "pipe" },
-  );
+  copyFixture("mp4", seconds, path);
 }
 
 /** 纯音频源：AAC，无视频轨；`video.json` 标 `hasVideo: false`。 */
@@ -39,7 +72,7 @@ function makeAudioVideo(outputDir: string, mutate: (d: Record<string, unknown>) 
   };
   mutate(d);
   writeFileSync(join(outputDir, "video.json"), JSON.stringify(d));
-  execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", `sine=d=${seconds}`, "-c:a", "aac", "-b:a", "128k", join(outputDir, "src.m4a")], { stdio: "pipe" });
+  copyFixture("m4a", seconds, join(outputDir, "src.m4a"));
 }
 
 /** 在临时目录里建好 `video.json` + 真实源 `src.mp4`；`outputDir` 为笔记输出目录。 */
@@ -213,7 +246,7 @@ describe("runNotes", () => {
   }, 30000);
 
   test("导入后的 proposed 状态：全部未生成时生成；子集确认只动未 done 的主题", async () => {
-    const out = join(tmpdir(), "rn-proposed-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-proposed-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -246,7 +279,7 @@ describe("runNotes", () => {
   });
 
   test("force: done 主题被重新生成（topic.mp4 与 topic.md 重写，状态 done，noteCount 1）", async () => {
-    const out = join(tmpdir(), "rn-force-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-force-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -290,7 +323,7 @@ describe("runNotes", () => {
   });
 
   test("force 重新生成不读磁盘缓存：每次都真实请求模型，cacheHits 为空，轨迹每条都有真实 rawText", async () => {
-    const out = join(tmpdir(), "rn-force-cache-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-force-cache-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -330,7 +363,7 @@ describe("runNotes", () => {
   }, 30000);
 
   test("done 主题不带 force：产物齐全时队列为空，明确报错，产物原样", async () => {
-    const out = join(tmpdir(), "rn-skip-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-skip-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -370,7 +403,7 @@ describe("runNotes", () => {
   });
 
   test("成功生成后清 speakerChangedAt（force 重生成 done 主题）", async () => {
-    const out = join(tmpdir(), "rn-speaker-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-speaker-"));
     makeVideo(out, (d) => {
       d.speakerChangedAt = "2026-10-01T00:00:00.000Z";
       d.transcript = {
@@ -399,7 +432,8 @@ describe("runNotes", () => {
 
 describe("runTopics", () => {
   test("从存盘分块重建主题，同名主题分到不同目录，拼接成 topic.mp4 并删旧编号切片", async () => {
-    const out = join(tmpdir(), "rt-main");
+    // 每进程唯一目录（r59）：固定 `/tmp/rt-main` 会让并发的两次测试进程互抢 `.vnote-run.lock`
+    const out = mkdtempSync(join(tmpdir(), "rt-main-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -486,7 +520,7 @@ describe("runTopics", () => {
 
 describe("中断结算（runToken 与锁内结算）", () => {
   test("runNotes 普通失败：done 主题保持 done，失败主题 failed+补写 elapsed，token 清 null，锁释放", async () => {
-    const out = join(tmpdir(), "rn-fail-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-fail-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -537,7 +571,7 @@ describe("中断结算（runToken 与锁内结算）", () => {
   });
 
   test("done 主题缺 topic.mp4（界面 needs-rerun）：被重新生成；产物齐全时拒绝「没有需要生成的主题」", async () => {
-    const out = join(tmpdir(), "rn-rerun-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rn-rerun-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -577,7 +611,7 @@ describe("中断结算（runToken 与锁内结算）", () => {
   });
 
   test("runTopics 失败：划主题成功后逐主题生成失败，结算后磁盘终态", async () => {
-    const out = join(tmpdir(), "rt-fail-" + Date.now());
+    const out = mkdtempSync(join(tmpdir(), "rt-fail-"));
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],

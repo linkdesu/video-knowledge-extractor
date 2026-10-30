@@ -50,10 +50,13 @@ const ROWS: Row[] = [
   { name: "avi mpeg4+mp3", probe: probe({ extension: ".avi", formatName: "avi", hasVideo: true, videoCodec: "mpeg4", audioCodec: "mp3" }), expected: "transcode-mp4" },
   { name: "mp4 vp9+vorbis（音频不直读）", probe: probe({ extension: ".mp4", formatName: MP4, hasVideo: true, videoCodec: "vp9", audioCodec: "vorbis" }), expected: "transcode-mp4" },
   { name: "webm vp9+aac（webm 里的 aac 不直读）", probe: probe({ extension: ".webm", formatName: "matroska,webm", hasVideo: true, videoCodec: "vp9", audioCodec: "aac" }), expected: "transcode-mp4" },
+  { name: "wmv wmv3+wmav2（ASF 容器不被 Chromium 直读）", probe: probe({ extension: ".wmv", formatName: "asf", hasVideo: true, videoCodec: "wmv3", audioCodec: "wmav2" }), expected: "transcode-mp4" },
+  { name: "wmv vc1+aac（ASF 容器不被 Chromium 直读）", probe: probe({ extension: ".wmv", formatName: "asf", hasVideo: true, videoCodec: "vc1", audioCodec: "aac" }), expected: "transcode-mp4" },
 
   // 纯音频转 mp3
   { name: "flac", probe: probe({ extension: ".flac", formatName: "flac", hasVideo: false, audioCodec: "flac" }), expected: "transcode-mp3" },
   { name: "wma", probe: probe({ extension: ".wma", formatName: "asf", hasVideo: false, audioCodec: "wmav2" }), expected: "transcode-mp3" },
+  { name: "wmv 纯音频 wmav2", probe: probe({ extension: ".wmv", formatName: "asf", hasVideo: false, audioCodec: "wmav2" }), expected: "transcode-mp3" },
   { name: "m4a alac", probe: probe({ extension: ".m4a", formatName: MP4, hasVideo: false, audioCodec: "alac" }), expected: "transcode-mp3" },
   { name: "wav 24bit float", probe: probe({ extension: ".wav", formatName: "wav", hasVideo: false, audioCodec: "pcm_f32le" }), expected: "none" },
   { name: "无扩展名的 mp3（只认 format_name）", probe: probe({ extension: "", formatName: "mp3", hasVideo: false, audioCodec: "mp3" }), expected: "none" },
@@ -124,6 +127,22 @@ describe("normalizeMedia（真 ffmpeg）", () => {
     return out.trim().split(/\r?\n/).map((line) => line.trim()).sort();
   }
 
+  /** 真探测：从 ffprobe 的 JSON 取容器名与首条音/视频轨编码，拼出 MediaProbe（不写死常量）。 */
+  function probeFile(file: string, extension: string): MediaProbe {
+    const raw = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=format_name:stream=codec_type,codec_name", "-of", "json", file], { encoding: "utf8" });
+    const parsed = JSON.parse(raw) as { format?: { format_name?: string }; streams?: { codec_type?: string; codec_name?: string }[] };
+    const streams = parsed.streams ?? [];
+    const video = streams.find((s) => s.codec_type === "video");
+    const audio = streams.find((s) => s.codec_type === "audio");
+    return {
+      extension,
+      formatName: parsed.format?.format_name ?? "",
+      hasVideo: video !== undefined,
+      videoCodec: video?.codec_name ?? null,
+      audioCodec: audio?.codec_name ?? null,
+    };
+  }
+
   test("ts(h264+aac) → media.mp4 流拷贝，产物可被 ffprobe 读回", async () => {
     const dir = mkdtemp();
     const src = makeTs(dir);
@@ -152,5 +171,22 @@ describe("normalizeMedia（真 ffmpeg）", () => {
     expect(out.path).toBe(join(dir, "media.mp3"));
     expect(codecsOf(out.path)).toEqual(["mp3"]);
     expect(statSync(src).size).toBeGreaterThan(0);
+  });
+
+  test("wmv(wmv2+wmav2) → media.mp4 全转码（探测结果驱动决策）", async () => {
+    const dir = mkdtemp();
+    const src = join(dir, "src.wmv");
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=2", "-f", "lavfi", "-i", "sine=d=2", "-c:v", "wmv2", "-c:a", "wmav2", "-shortest", "-f", "asf", src], { stdio: "pipe" });
+    const detected = probeFile(src, ".wmv");
+    const decision = decideNormalization(detected);
+    expect(decision).toEqual({ mode: "transcode", target: "mp4" });
+    if (decision.mode === "none") throw new Error("直读矩阵不应命中 .wmv");
+    const out = await normalizeMedia({ sourcePath: src, outputDir: dir, decision, durationSeconds: 2 });
+    expect(out.mode).toBe("transcode");
+    expect(out.path).toBe(join(dir, "media.mp4"));
+    expect(existsSync(out.path)).toBe(true);
+    expect(codecsOf(out.path)).toEqual(["aac", "h264"]);
+    // 没有半截 .part 残留
+    expect(readdirSync(dir).filter((n) => n.includes(".part-"))).toEqual([]);
   });
 });

@@ -35,23 +35,38 @@ let server: Server<undefined> | undefined;
 let requestLog: Array<{ path: string; authorization: string | null }> = [];
 let status = 200;
 let body: string = "";
+let echoAuth = false;
+let endpointBase = "";
 
+/**
+ * One listener for the whole file; every call only resets the per-test state.
+ * Rebuilding the server per test (stop + Bun.serve({ port: 0 })) lets the OS hand the same
+ * ephemeral port to a later test while an earlier keep-alive socket is still pooled; reuse of
+ * that stale connection made requests hang until the 5 s test timeout, or resolve with the
+ * previous test's response (r59). Keeping a single port and a single connection pool avoids both.
+ */
 function startServer(echoAuthorization = false): string {
-  server?.stop(true);
   requestLog = [];
-  server = Bun.serve({
-    port: 0,
-    async fetch(req) {
-      const url = new URL(req.url);
-      requestLog.push({ path: url.pathname, authorization: req.headers.get("authorization") });
-      if (echoAuthorization) {
-        const auth = req.headers.get("authorization") ?? "";
-        return new Response(`echo ${auth}`, { status: 500 });
-      }
-      return new Response(body, { status, headers: { "content-type": "application/json" } });
-    },
-  });
-  return `http://127.0.0.1:${server.port}`;
+  status = 200;
+  body = "";
+  echoAuth = echoAuthorization;
+  if (!server) {
+    const created = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        requestLog.push({ path: url.pathname, authorization: req.headers.get("authorization") });
+        if (echoAuth) {
+          const auth = req.headers.get("authorization") ?? "";
+          return new Response(`echo ${auth}`, { status: 500 });
+        }
+        return new Response(body, { status, headers: { "content-type": "application/json" } });
+      },
+    });
+    server = created;
+    endpointBase = `http://127.0.0.1:${created.port}`;
+  }
+  return endpointBase;
 }
 
 afterAll(() => server?.stop(true));
