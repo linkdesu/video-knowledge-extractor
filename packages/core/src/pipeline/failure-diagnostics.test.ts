@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as nextTurn, setTimeout as delay } from "node:timers/promises";
 import { run } from "../core/exec";
 import { probeVideo } from "../core/audio";
 import { buildDiagnostics } from "../core/diagnostics";
@@ -45,34 +46,73 @@ function loggedPath(path: string): string {
   return JSON.stringify(redactHomePaths(path, homePathPrefixes())).slice(1, -1);
 }
 
+// ---- r62 / #79：让「环境起不来子进程」不再伪装成「坏视频诊断坏了」 ----
+
+const SPAWN_ATTEMPTS = 3;
+const SPAWN_BACKOFF_MS = 50;
+
+/**
+ * 跑一次真实子进程动作，把「被测行为失败」与「环境起不来进程」分开。
+ *
+ * 高负载并行下进程创建会瞬时失败（#79：8 路并行全量里偶发一次），那是机器资源状态，
+ * 不是被测的产品行为；`run()` 对这类失败抛「启动失败」/「子进程管道不可用」。
+ * 这类失败重试 `SPAWN_ATTEMPTS` 次，仍起不来就抛带原因的错误——不再表现为「日志里少了一行」。
+ * 其它错误（ffprobe 真跑了并失败、模型缺失等）原样交给用例断言。
+ * 重试之间让出事件循环并等一小段时间：要等的是操作系统真的放行进程创建（别的进程退出、
+ * 句柄释放），这个状态没法用假时钟推进，所以这里用真实短等待（只在环境故障时发生）。
+ */
+async function attemptSpawn<T>(what: string, fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: Error }> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return { ok: true, value: await fn() };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // ffprobe 真的跑了并失败时是 `ffprobe failed (exit 1)`，不含这两句
+      const spawnFailure = message.includes("启动失败") || message.includes("子进程管道不可用");
+      if (!spawnFailure) return { ok: false, error: err instanceof Error ? err : new Error(message) };
+      if (attempt >= SPAWN_ATTEMPTS) {
+        throw new Error(`${what}：环境连续 ${attempt} 次无法启动子进程，不是被测行为——${message}`);
+      }
+      await nextTurn();
+      await delay(SPAWN_BACKOFF_MS * attempt);
+    }
+  }
+}
+
+// 每个用例开头清空捕获的行：同进程里别的文件留下的日志行不能混进本用例的 find（r62）
+
 describe("三种失败都能从诊断文本里看出来", () => {
   test("坏视频：ffprobe 失败的日志行带 module、输入路径、退出码与真实 stderr 尾部", async () => {
+    lines.length = 0;
     const mp4 = join(dir, "corrupt.mp4");
     writeFileSync(mp4, randomBytes(200));
     await runWithTask(TASK, async () => {
-      const err = await probeVideo(mp4).then(
-        () => {
-          throw new Error("坏视频居然探测成功了");
-        },
-        (e: unknown) => e as Error,
-      );
+      const probe = await attemptSpawn("坏视频 ffprobe", () => probeVideo(mp4));
+      // 坏视频必须探测失败；探测成功说明夹具不再是「坏视频」
+      expect(probe.ok).toBe(false);
+      const err = probe.ok ? new Error("坏视频居然探测成功了") : probe.error;
       expect(err.message).toContain("ffprobe");
       // 产品日志分两行：info 行记整条 argv（含 ffprobe 与输入路径），
       // error 行记 code 与 50 行 stderrTail；合起来才能诊断出 ffprobe 失败
       const infoLine = lines.find((l) => l.includes("INFO") && l.includes(" ffmpeg ") && l.includes("ffprobe")) ?? "";
+      // 失败时把捕获到的行与真实错误一起打出来：不必重跑就能看出是「没有这行」还是「行不对」
+      const context = `捕获的日志行（${lines.length} 行）：\n${lines.join("\n")}\n实际错误：${err.message}`;
       // 日志字段是 JSON.stringify，Windows 的 \\ 会被转义成 \\\\；logger 还会把 home 前缀替换成 ~ / %USERPROFILE%
-      expect(infoLine).toContain(loggedPath(mp4));
+      expect(infoLine, context).toContain(loggedPath(mp4));
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" ffmpeg ") && l.includes("命令失败")) ?? "";
-      expect(errLine).toContain("stderrTail=");
-      expect(errLine).toContain("code=1");
-      expect(errLine).toContain(loggedPath(mp4)); // stderr 里带输入文件名
+      expect(errLine, context).toContain("stderrTail=");
+      expect(errLine, context).toContain("code=1");
+      expect(errLine, context).toContain(loggedPath(mp4)); // stderr 里带输入文件名
       // stderrTail 是真实 ffmpeg 输出（非空、非占位）
-      expect(errLine).toContain("stderrTail=\"");
-      expect(errLine.length).toBeGreaterThan("stderrTail=\"".length + 20);
+      expect(errLine, context).toContain("stderrTail=\"");
+      expect(errLine.length, context).toBeGreaterThan("stderrTail=\"".length + 20);
     });
-  });
+    // 真实子进程 + 8 路并行全量：默认 5 s 预算会被机器负载吃掉（r62 实测 5000.00ms 触顶），
+    // 与本仓库其它真实 ffmpeg 用例一样给显式上限；断言不变，卡住仍然会被判失败
+  }, 30_000);
 
   test("LLM key 无效：401 日志行带 module、baseUrl、模型名与 status=401，key 不落盘", async () => {
+    lines.length = 0;
     const server = Bun.serve({
       port: 0,
       fetch: (req) => {
@@ -103,24 +143,29 @@ describe("三种失败都能从诊断文本里看出来", () => {
         expect(err.message).toContain("401");
         // 401 不可重试：只发了一次请求（一条 warn 响应行）
         const warnLine = lines.find((l) => l.includes("WARN") && l.includes(" llm ") && l.includes("status=401")) ?? "";
-        expect(warnLine).toContain(server.url.toString().replace(/\/$/, ""));
-        expect(warnLine).toContain("test-model");
-        expect(warnLine).toContain("invalid api key");
+        const context = `捕获的日志行（${lines.length} 行）：\n${lines.join("\n")}`;
+        expect(warnLine, context).toContain(server.url.toString().replace(/\/$/, ""));
+        expect(warnLine, context).toContain("test-model");
+        expect(warnLine, context).toContain("invalid api key");
         // 回显的 key 被 client redact + logger 脱敏后不会出现在任何日志行里
         expect(lines.join("\n")).not.toContain(FAKE_KEY);
       });
     } finally {
       server.stop();
     }
-  });
+    // 同上：真实 loopback 请求在满载下也会超过默认 5 s
+  }, 30_000);
 
   test("模型文件缺失：错误消息与日志行都点名缺失的模型路径", async () => {
+    lines.length = 0;
     const modelDir = mkdtempSync(join(tmpdir(), "vnote-nomodel-"));
     const wavPath = join(dir, "silent-1s.wav");
-    await run(
-      ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "pcm_s16le", wavPath],
-      { label: "生成静音 wav" },
+    const wav = await attemptSpawn("生成静音 wav", () =>
+      run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "pcm_s16le", wavPath], {
+        label: "生成静音 wav",
+      }),
     );
+    if (!wav.ok) throw wav.error;
     const cacheDir = mkdtempSync(join(tmpdir(), "vnote-nocache-"));
     const video: Video = {
       id: "v-fail" as Video["id"],
@@ -144,10 +189,12 @@ describe("三种失败都能从诊断文本里看出来", () => {
       expect(err.message).toContain(missingPath);
       // step 的 error 行（module asr）带同一缺失路径
       const errLine = lines.find((l) => l.includes("ERROR") && l.includes(" asr ") && l.includes("失败")) ?? "";
-      expect(errLine).toContain(loggedPath(missingPath));
-      expect(errLine).toContain("缺少模型文件");
+      const context = `捕获的日志行（${lines.length} 行）：\n${lines.join("\n")}`;
+      expect(errLine, context).toContain(loggedPath(missingPath));
+      expect(errLine, context).toContain("缺少模型文件");
     });
-  });
+    // 同上：用例里真跑 ffmpeg 生成夹具，再加载本地引擎
+  }, 30_000);
 
   test("buildDiagnostics 聚合：三种失败的日志行与 environment 都在，key 不在", () => {
     const text = buildDiagnostics({
