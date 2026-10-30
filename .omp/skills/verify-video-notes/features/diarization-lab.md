@@ -10,6 +10,9 @@
 - 缓存模式与位置（r54）：`--lab-cache=shared|isolated|cold`（或环境变量 `VNOTE_LAB_CACHE`；命令行优先）。`shared`（`bun run dev` 默认）读写 `~/.cache/video-notes/lab-cache`（`VNOTE_LAB_CACHE_DIR` 可覆盖，`$XDG_CACHE_HOME` 优先于 `~/.cache`）；`isolated` 每次启动 `mkdtemp` 一个空临时目录，只读写它、完全不碰共享目录；`cold` 用共享目录但跳过命中判定，算完整目录覆盖写回。拼错或缺值直接启动失败，不静默回退。`verify.ts up` 默认 `--lab-cache=isolated`，`state.json#labCache` 记录本次模式（`docs/adr/0035-lab-cache-shared-and-worker-lifecycle.md`）。
 - 并发与迁移（r54）：两个 worktree 同时发布同一个键时，`rename` 撞 `ENOTEMPTY`/`EPERM` 会把当前目标挪进 `.tmp` 重试（≤4 次）；重试用尽且对方已留下完整 `sample.json` 就接受对方那份。发布前 `fsync` 整棵临时目录、发布后 `fsync` 父目录。首次以 shared/cold 启动时把旧分支目录（`<worktree>/tmp/verify/lab`）里共享目录缺失的条目 + `marks-<id>.json` 复制过去，只复制不删旧目录，幂等。
 - worker 生命周期（r54）：一次未命中 = 一个 `lab-worker.js` 进程。worker 回 `done`/`error` 后等主进程 `{type:"ack"}` 再 `process.exit(0)`；主进程 ack 后起 2s 宽限兜底 `kill`，`exit` 时记 `Lab worker 退出`（`key`/`code`/`live`），app 退出时 `dispose()` 无条件杀光。连续 5 次未命中后进程数必须回到 0（r48–r53 每次未命中留一个常驻进程）。
+- 缓存上限淘汰（r55）：条数 / 总字节 / 存活时间三道上限，默认 **200 条 / 20 GiB / 30 天**；`VNOTE_LAB_CACHE_MAX_ENTRIES`、`VNOTE_LAB_CACHE_MAX_BYTES`、`VNOTE_LAB_CACHE_MAX_AGE_DAYS` 覆盖（非负整数，`0` = 不限制，非法取值启动即抛错）。`shared`/`cold` 启动时与每次发布后各跑一次：先按 `sample.json#createdAt` 淘汰超龄条目（缺失退回目录 mtime），再按最旧优先淘汰超量/超字节的条目；刚发布的键先占额度、永不淘汰；`.tmp`、`marks-*.json` 不参与。日志 `Lab 缓存：按上限淘汰旧条目`（`removed`/`reasons`/`kept`/`keptBytes`/`failed`），启动行 `Lab 缓存就绪` 带 `limits`（`docs/adr/0036-lab-cache-eviction-dedupe-and-force-rerun.md`）。
+- 同内容去重（r55）：发布成功后删掉 `analysis.sourceHash` 相同、键不同的旧条目（模型 mtime / schema 变了留下的重复），日志 `Lab 缓存：同内容旧条目已删除`；样本列表 `listSamples` 再按内容指纹去重、保留最新一条，所以历史重复也不会在「最近样本」里出现两次。没有 `analysis` 戳的 r53 之前条目既不删也不合并。命中路径不做去重（不删别的 worktree 正在读的目录）。
+- 命中可见与强制重算（r55）：`lab.importPath(path, { force })` 返回 `{ sampleId, hit, reason, hashMs, elapsedMs, sourceHash }`。顶栏状态行 `lab-cache-status`：命中 → `命中缓存 · 12 ms · 未加载模型、未解码音频`（青色）；未命中 → `重新分析 · 3.6 s` / `强制重新生成 · 2.9 s` / `cold 模式重算 · …`（muted，`reason` 在 `title`）。`lab-force`「强制重新生成」按钮对当前样本按 `{ force: true }` 重算并覆盖（无样本或导入中禁用，失败保留旧条目），日志 `reason="forced"`、`forced=true`。
 - 样本切换：顶栏「最近样本」下拉。
 - 方案：A/B 各自可选 `baseline`（sherpa 原始簇）/ `refine`（二次聚类）/ `refine + filter`（整行语气词隐藏）；摘要显示双方说话人数、主播锚点簇数、过滤行数与秒数、两方案不同的行数。
 - 对比时间轴：上下两条色带，每色一个说话人；过滤行灰斜纹；两方案说话人不同的区间在两带之间标红；播放头联动，点色带播放该段。
@@ -42,6 +45,9 @@ $V wait "window.vnote.lab.list().then(x => x.length >= 2)" --timeout 600000
 $V click '[data-testid=lab-sample-select]'                # 真下拉（role=combobox + listbox），见下
 $V click '[data-testid=lab-line-3]'
 $V eval "document.querySelector('[data-testid=lab-audio]').currentTime"   # 行首附近
+$V text '[data-testid=lab-cache-status]'                  # r55：命中缓存 · 12 ms · 未加载模型、未解码音频 / 重新分析 · 3.6 s
+$V click '[data-testid=lab-force]'                        # r55：跳过缓存重算并覆盖（真跑模型）
+$V wait "document.querySelector('[data-testid=lab-cache-status]')?.textContent?.includes('强制重新生成')" --timeout 600000
 $V shot r48-lab-dev
 $V snapshot r54-lab-dev
 ```
@@ -65,6 +71,8 @@ $V snapshot r54-lab-dev
 - **QA 默认 isolated**：`up` 不带 `--lab-cache` 就是 `isolated`，因此同一个样本在 QA 里必然第一次全量跑；想验证共享命中要显式 `--lab-cache=shared`（会读/写 `~/.cache`，别用它跑断言「首次」的用例）。`state.json#labCache` 是唯一可审计来源。
 - **worker 进程数必须回到 0**：一次未命中 = 一个 `lab-worker.js`。导入结束后 `pgrep -fl lab-worker.js`（或 `ps -o pid,command -ax | grep lab-worker`）应为空；日志里每次任务有 `Lab worker 启动` 与 `Lab worker 退出 code=0`。连续 5 次未命中仍不增长才算过（r54 修复 r48 起的进程泄漏）；app 退出后仍残留说明 `before-quit → dispose()` 被绕过。
 - **缓存命中看键路径上的条目，不看 `.tmp`**：`.tmp/<键>-<pid>-<时间>` 是 worker 的落盘目录，rename 到位才算条目；`.tmp` 下超过一天的东西启动时会被回收（r53）。
-- **重复导入同一份内容不会多一条样本**：键相同即同一条目；r53 之前按路径指纹建的旧目录仍在，同一个源会同时出现旧条目与新条目。
-- **证明命中不用猜**：`verify.ts drive log 40` 里找 `Lab 分析缓存命中 … cacheMode=shared|isolated|… root=… elapsedMs=<小>`，未命中是 `Lab 分析缓存未命中 … reason="missing"`，cold 模式恒为 `reason="cold"`；三者都带 `key` 与 `hashMs`。
-- **跨 worktree 共享的验收姿势**：worktree A 用 `--lab-cache=shared`（或默认）跑完一个样本，worktree B 用同一 `--lab-cache=shared` 拖同一份文件，B 的日志必须是 `Lab 分析缓存命中` 且 `elapsedMs` 在毫秒级、没有 `Lab worker 启动`。两个 worktree 同时拖同一份文件也不能出现半截条目：`sample.json` 必须可解析、`audio.wav` 必须是 RIFF/WAVE。
+- **重复导入同一份内容不会多一条样本**：键相同即同一条目；r53 之前按路径指纹建的旧目录仍在，同一个源会同时出现旧条目与新条目。r55 起发布成功后还会删掉 `analysis.sourceHash` 相同、键不同的旧条目，列表也按内容指纹去重（保留最新一条）。
+- **证明命中不用猜**：`verify.ts drive log 40` 里找 `Lab 分析缓存命中：未加载模型、未解码音频 … cacheMode=shared|isolated|… root=… elapsedMs=<小>`（r55 起文案直说，另有 `modelLoads=0 decodedSegments=0`），未命中是 `Lab 分析缓存未命中 … reason="missing"`，cold 模式恒为 `reason="cold"`，按「强制重新生成」是 `reason="forced" forced=true`；三者都带 `key` 与 `hashMs`。
+- **跨 worktree 共享的验收姿势**：worktree A 用 `--lab-cache=shared`（或默认）跑完一个样本，worktree B 用同一 `--lab-cache=shared` 拖同一份文件，B 的日志必须是 `Lab 分析缓存命中：未加载模型、未解码音频` 且 `elapsedMs` 在毫秒级、没有 `Lab worker 启动`。两个 worktree 同时拖同一份文件也不能出现半截条目：`sample.json` 必须可解析、`audio.wav` 必须是 RIFF/WAVE。
+- **界面上的命中/耗时看 `lab-cache-status`**：`$V text '[data-testid=lab-cache-status]'` 读文案（命中带「未加载模型、未解码音频」），`$V click '[data-testid=lab-force]'` 触发强制重算，再用 `$V wait "…textContent?.includes('强制重新生成')"` 等它结束；重算期间按钮为 `disabled`。
+- **淘汰要测就换一个缓存根**：`VNOTE_LAB_CACHE_DIR=<临时目录> VNOTE_LAB_CACHE_MAX_ENTRIES=1 $V up --lab-cache=shared`，启动行 `Lab 缓存就绪 … limits={…}` 与随后的 `Lab 缓存：按上限淘汰旧条目 … reasons=["count"|"age"|"bytes"]` 是证据；别拿真实 `~/.cache` 跑上限测试。`verify up` 会继承环境变量，所以这两个变量放在命令前即可。
