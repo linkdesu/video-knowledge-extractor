@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   LAB_CACHE_SCHEMA,
   canonicalJson,
@@ -281,7 +281,7 @@ describe("Lab 条目自检与原子发布", () => {
       const past = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
       utimesSync(old, past, past);
       const removed = sweepTempEntries(root);
-      expect(removed).toEqual([old.slice(old.lastIndexOf("/") + 1)]);
+      expect(removed).toEqual([basename(old)]);
       expect(existsSync(old)).toBe(false);
       expect(existsSync(fresh)).toBe(true);
     } finally {
