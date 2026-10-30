@@ -9,6 +9,7 @@ import type { DiarizationSegment } from "@video-notes/core";
 import { createTranscriber, detectSilences, extractAudio, readWav, resolveModelPaths } from "@video-notes/core";
 import * as sherpaModule from "sherpa-onnx-node";
 import { importExperimentDir } from "./experiment";
+import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS, type LabAnalysisStamp } from "./analysis-cache";
 import type { EmbeddingRow } from "./refine";
 import { writeJson, writeSampleFile } from "./sample-store";
 import type { LabSampleFile } from "./sample-store";
@@ -26,10 +27,9 @@ export type LabRunMessage = {
   outDir: string;
   id: string;
   name: string;
+  /** r53：主进程算好的分析缓存戳，原样写进 sample.json。 */
+  analysis: LabAnalysisStamp;
 };
-
-const SEGMENT_PADDING_SECONDS = 0.1;
-const EMBED_MIN_SECONDS = 0.1;
 
 function resolveSherpa(): typeof sherpaModule {
   const mod = sherpaModule as unknown as { OnnxRuntime?: unknown; default?: typeof sherpaModule };
@@ -83,7 +83,7 @@ async function computeSample(
     const from = Math.max(0, Math.round(seg.start * sampleRate));
     const to = Math.min(samples.length, Math.round(seg.end * sampleRate));
     let v: number[] | null = null;
-    if (seg.end - seg.start >= EMBED_MIN_SECONDS && to > from) {
+    if (seg.end - seg.start >= LAB_EMBED_MIN_SECONDS && to > from) {
       const stream = extractor.createStream();
       stream.acceptWaveform({ samples: samples.subarray(from, to), sampleRate });
       // Electron utility process 禁止 napi 外部缓冲（默认 true 会抛 External buffers are not allowed）。
@@ -99,8 +99,8 @@ async function computeSample(
   t = Date.now();
   const rows: SegmentTextRow[] = [];
   segments.forEach((seg, i) => {
-    const from = Math.max(0, Math.round((seg.start - SEGMENT_PADDING_SECONDS) * sampleRate));
-    const to = Math.min(samples.length, Math.round((seg.end + SEGMENT_PADDING_SECONDS) * sampleRate));
+    const from = Math.max(0, Math.round((seg.start - LAB_SEGMENT_PADDING_SECONDS) * sampleRate));
+    const to = Math.min(samples.length, Math.round((seg.end + LAB_SEGMENT_PADDING_SECONDS) * sampleRate));
     let text = "";
     try {
       text = transcriber.decode(samples.subarray(from, to));
@@ -147,7 +147,7 @@ function main(): void {
           message.mode === "dir"
             ? importExperimentDir(message.sourcePath, message.outDir, message.id, message.name)
             : await computeSample(message, post);
-        writeSampleFile(message.outDir, file);
+        writeSampleFile(message.outDir, { ...file, analysis: message.analysis });
         port.postMessage(JSON.stringify({ type: "done", meta: file }));
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
