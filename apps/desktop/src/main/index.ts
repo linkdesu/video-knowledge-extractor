@@ -178,8 +178,13 @@ protocol.registerSchemesAsPrivileged([
   { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-// 主进程单实例（ADR-0015 §4）：写方入口只有 main，锁接管竞态压到可忽略
-if (!app.requestSingleInstanceLock()) app.quit();
+// 主进程单实例（ADR-0015 §4）：写方入口只有 main，锁接管竞态压到可忽略。
+// 拿不到锁就退出时 logger 还没配置，只能用 stderr 留一行：r48b 那次「空闲自行退出」
+// 排查时最大的障碍就是退出路径完全没有记录。
+if (!app.requestSingleInstanceLock()) {
+  console.error(`[startup] 已有实例持有单实例锁（userData=${app.getPath("userData")}），本进程退出`);
+  app.quit();
+}
 
 // 启动顺序（ADR-0015 §3）：
 // 1) readSettingsFileSafe —— 文件层唯一入口，坏文件隔离成 .bad-* 后按空文件继续
@@ -1627,7 +1632,13 @@ app.on("before-quit", (event) => {
   });
 });
 app.on("window-all-closed", () => {
+  // 退出路径留痕（r59）：窗口被关掉/渲染进程消失时这里是唯一能解释「应用自己没了」的地方
+  logger().info("app", "所有窗口已关闭，退出应用");
   app.quit();
+});
+
+app.on("will-quit", () => {
+  logger().info("app", "will-quit，进程即将结束", { exitCode: process.exitCode ?? null });
 });
 
 void app.whenReady().then(async () => {
