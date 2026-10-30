@@ -19,7 +19,6 @@ import {
   waitForRunForCommit,
   type ArtifactProvenance,
   type CachedArtifactCheck,
-  type LocalArtifact,
   type WindowsBuildRun,
 } from "./win-installer-source";
 
@@ -122,19 +121,15 @@ function provenance(over: Partial<ArtifactProvenance> = {}): ArtifactProvenance 
   };
 }
 
-function localArtifact(over: Partial<LocalArtifact> = {}): LocalArtifact {
-  return { fileName: EXE_NAME, sizeBytes: 174_253_093, sha256: EXE_SHA, ...over };
-}
-
 function cacheCheck(over: Partial<CachedArtifactCheck> = {}): CachedArtifactCheck {
   return {
     provenance: provenance(),
-    local: localArtifact(),
+    localZip: { sizeBytes: 174_269_292, sha256: "a".repeat(64) },
     expectedFileName: EXE_NAME,
     headSha: SHA_HEAD,
     changedPaths: [],
     headOwnRunId: HEAD_RUN,
-    ci: { runId: HEAD_RUN, digest: CI_DIGEST },
+    ci: { runId: HEAD_RUN, headSha: SHA_HEAD, digest: CI_DIGEST, expired: false },
     ...over,
   };
 }
@@ -164,60 +159,93 @@ describe("parseArtifactProvenance：只认带内容哈希的新格式", () => {
 });
 
 describe("tmp/installer/v<version> 缓存命中前必须核对内容（r63 / #86）", () => {
-  test("内容哈希、大小、CI 摘要全对且来源是 HEAD：可用", () => {
+  test("缓存 zip 的 sha256 等于 CI 摘要、来源是 HEAD：可用", () => {
     const verdict = judgeCachedArtifact(cacheCheck());
     expect(verdict.usable).toBe(true);
     if (verdict.usable) {
       expect(verdict.fromOtherCommit).toBe(false);
       expect(verdict.summary).toContain(String(HEAD_RUN));
       expect(verdict.summary).toContain(SHA_HEAD.slice(0, 7));
-      expect(verdict.summary).toContain(EXE_SHA);
+      expect(verdict.summary).toContain(CI_DIGEST);
     }
   });
 
-  test("缓存文件被篡改（哈希对不上）：不安装，理由带期望与实际哈希", () => {
+  test("缓存 zip 被改动/不完整（sha256 与 CI 摘要不符）：不安装，理由带期望与实际哈希", () => {
     const tampered = "c".repeat(64);
-    const verdict = judgeCachedArtifact(cacheCheck({ local: localArtifact({ sha256: tampered }) }));
+    const verdict = judgeCachedArtifact(cacheCheck({ localZip: { sizeBytes: 174_269_292, sha256: tampered } }));
     expect(verdict.usable).toBe(false);
     if (!verdict.usable) {
-      expect(verdict.reason).toContain(EXE_SHA);
-      expect(verdict.reason).toContain(tampered);
+      expect(verdict.reason).toContain(`sha256:${tampered}`);
+      expect(verdict.reason).toContain(CI_DIGEST);
     }
   });
 
-  test("缓存文件不完整（大小对不上）：不安装", () => {
-    const verdict = judgeCachedArtifact(cacheCheck({ local: localArtifact({ sizeBytes: 1024 }) }));
+  test("缓存 zip 大小与 CI 记录不符（下载不完整）：不安装", () => {
+    const verdict = judgeCachedArtifact(
+      cacheCheck({ localZip: { sizeBytes: 1024, sha256: "a".repeat(64) } }),
+    );
     expect(verdict.usable).toBe(false);
-    if (!verdict.usable) expect(verdict.reason).toContain("174253093");
+    if (!verdict.usable) expect(verdict.reason).toContain("174269292");
   });
 
-  test("缓存目录里其实没有安装包：不安装", () => {
-    expect(judgeCachedArtifact(cacheCheck({ local: null })).usable).toBe(false);
+  test("缓存目录里没有 artifact.zip：不安装", () => {
+    expect(judgeCachedArtifact(cacheCheck({ localZip: null })).usable).toBe(false);
   });
 
   test("没有来源记录（老目录/手工放的包）：不安装", () => {
     expect(judgeCachedArtifact(cacheCheck({ provenance: null })).usable).toBe(false);
   });
 
-  test("查不到 CI 产物摘要：无法与可信来源比对，不安装", () => {
+  test("provenance 记的 exe 哈希无法单独当真：判定只认 zip 与 CI 摘要", () => {
+    // 改掉记录里的 fileSha256 不影响判定 —— 真正的锚点是 zip 内容 + CI 摘要
+    const verdict = judgeCachedArtifact(
+      cacheCheck({ provenance: provenance({ fileSha256: "d".repeat(64) }) }),
+    );
+    expect(verdict.usable).toBe(true);
+  });
+
+  test("查不到 CI 产物元数据：无法与可信来源比对，不安装", () => {
     const verdict = judgeCachedArtifact(cacheCheck({ ci: null }));
     expect(verdict.usable).toBe(false);
     if (!verdict.usable) expect(verdict.reason).toContain("CI");
   });
 
-  test("CI 产物摘要与记录不同（来源被改写）：不安装", () => {
+  test("CI 摘要与记录不同（来源被改写）：不安装", () => {
     const verdict = judgeCachedArtifact(
-      cacheCheck({ ci: { runId: HEAD_RUN, digest: `sha256:${"d".repeat(64)}` } }),
+      cacheCheck({
+        ci: { runId: HEAD_RUN, headSha: SHA_HEAD, digest: `sha256:${"d".repeat(64)}`, expired: false },
+      }),
     );
     expect(verdict.usable).toBe(false);
     if (!verdict.usable) expect(verdict.reason).toContain(CI_DIGEST);
   });
 
-  test("CI 产物摘要是别的 run 的：不安装", () => {
+  test("该 run 的产物其实来自别的提交：不安装（产物与记录提交不符）", () => {
     const verdict = judgeCachedArtifact(
-      cacheCheck({ ci: { runId: OLD_RUN, digest: CI_DIGEST } }),
+      cacheCheck({
+        ci: { runId: HEAD_RUN, headSha: SHA_OLD, digest: CI_DIGEST, expired: false },
+      }),
     );
     expect(verdict.usable).toBe(false);
+    if (!verdict.usable) expect(verdict.reason).toContain(SHA_OLD.slice(0, 7));
+  });
+
+  test("CI 产物摘要是别的 run 的：不安装", () => {
+    const verdict = judgeCachedArtifact(
+      cacheCheck({
+        ci: { runId: OLD_RUN, headSha: SHA_HEAD, digest: CI_DIGEST, expired: false },
+      }),
+    );
+    expect(verdict.usable).toBe(false);
+  });
+
+  test("产物已过期但缓存 zip 的摘要对得上：仍可用（摘要就是锚点）", () => {
+    const verdict = judgeCachedArtifact(
+      cacheCheck({
+        ci: { runId: HEAD_RUN, headSha: SHA_HEAD, digest: CI_DIGEST, expired: true },
+      }),
+    );
+    expect(verdict.usable).toBe(true);
   });
 
   test("来源是祖先且只差文档、HEAD 没有自己的运行：可用，但必须明确说明包来自其他提交", () => {
@@ -226,7 +254,7 @@ describe("tmp/installer/v<version> 缓存命中前必须核对内容（r63 / #86
         provenance: provenance({ runId: OLD_RUN, headSha: SHA_OLD }),
         changedPaths: ["docs/adr/0040-x.md"],
         headOwnRunId: null,
-        ci: { runId: OLD_RUN, digest: CI_DIGEST },
+        ci: { runId: OLD_RUN, headSha: SHA_OLD, digest: CI_DIGEST, expired: false },
       }),
     );
     expect(verdict.usable).toBe(true);
@@ -235,17 +263,16 @@ describe("tmp/installer/v<version> 缓存命中前必须核对内容（r63 / #86
       expect(verdict.summary).toContain("其他提交");
       expect(verdict.summary).toContain(String(OLD_RUN));
       expect(verdict.summary).toContain(SHA_OLD.slice(0, 7));
-      expect(verdict.summary).toContain(EXE_SHA);
     }
   });
 
-  test("HEAD 已有自己的 CI 产物时不使用旧提交的缓存（哪怕只差文档、哈希全对）", () => {
+  test("HEAD 已有自己的 CI 产物时不使用旧提交的缓存（哪怕只差文档、摘要全对）", () => {
     const verdict = judgeCachedArtifact(
       cacheCheck({
         provenance: provenance({ runId: OLD_RUN, headSha: SHA_OLD }),
         changedPaths: ["docs/adr/0040-x.md"],
         headOwnRunId: HEAD_RUN,
-        ci: { runId: OLD_RUN, digest: CI_DIGEST },
+        ci: { runId: OLD_RUN, headSha: SHA_OLD, digest: CI_DIGEST, expired: false },
       }),
     );
     expect(verdict.usable).toBe(false);
@@ -261,7 +288,7 @@ describe("tmp/installer/v<version> 缓存命中前必须核对内容（r63 / #86
         provenance: provenance({ runId: OLD_RUN, headSha: SHA_OLD }),
         changedPaths: ["apps/desktop/src/main/index.ts"],
         headOwnRunId: null,
-        ci: { runId: OLD_RUN, digest: CI_DIGEST },
+        ci: { runId: OLD_RUN, headSha: SHA_OLD, digest: CI_DIGEST, expired: false },
       }),
     );
     expect(verdict.usable).toBe(false);
@@ -273,21 +300,21 @@ describe("tmp/installer/v<version> 缓存命中前必须核对内容（r63 / #86
         provenance: provenance({ runId: OLD_RUN, headSha: SHA_OLD }),
         changedPaths: null,
         headOwnRunId: null,
-        ci: { runId: OLD_RUN, digest: CI_DIGEST },
+        ci: { runId: OLD_RUN, headSha: SHA_OLD, digest: CI_DIGEST, expired: false },
       }),
     );
     expect(verdict.usable).toBe(false);
   });
 
-  test("缓存里是别的版本的文件名：不安装", () => {
+  test("缓存里记录的文件名是别的版本：不安装", () => {
     const verdict = judgeCachedArtifact(
-      cacheCheck({ local: localArtifact({ fileName: "Video Notes-0.1.21-setup.exe" }) }),
+      cacheCheck({ provenance: provenance({ fileName: "Video Notes-0.1.21-setup.exe" }) }),
     );
     expect(verdict.usable).toBe(false);
   });
 });
 
-describe("pickRunArtifact：从 gh api 的产物清单里取摘要", () => {
+describe("pickRunArtifact：从 gh api 的产物清单里取摘要与所属提交", () => {
   const listing = {
     total_count: 2,
     artifacts: [
@@ -297,6 +324,7 @@ describe("pickRunArtifact：从 gh api 的产物清单里取摘要", () => {
         size_in_bytes: 10,
         digest: `sha256:${"e".repeat(64)}`,
         expired: false,
+        workflow_run: { id: HEAD_RUN, head_sha: SHA_HEAD },
       },
       {
         id: 12,
@@ -304,23 +332,24 @@ describe("pickRunArtifact：从 gh api 的产物清单里取摘要", () => {
         size_in_bytes: 174_269_292,
         digest: CI_DIGEST,
         expired: false,
+        workflow_run: { id: HEAD_RUN, head_sha: SHA_HEAD },
       },
     ],
   };
 
-  test("按名字取到 id、大小与摘要", () => {
+  test("按名字取到 id、大小、摘要与所属 run/提交", () => {
     expect(pickRunArtifact(listing, "video-notes-windows-installer")).toEqual({
       id: 12,
       sizeInBytes: 174_269_292,
       digest: CI_DIGEST,
       expired: false,
+      runId: HEAD_RUN,
+      runHeadSha: SHA_HEAD,
     });
   });
 
   test("产物没有摘要时 digest 为 null（调用方不能据此认缓存）", () => {
-    const noDigest = {
-      artifacts: [{ ...listing.artifacts[1]!, digest: null }],
-    };
+    const noDigest = { artifacts: [{ ...listing.artifacts[1]!, digest: null }] };
     expect(pickRunArtifact(noDigest, "video-notes-windows-installer")?.digest).toBeNull();
   });
 

@@ -373,14 +373,31 @@ function repoSlug(): string {
   });
 }
 
-/** 现查某次 run 的安装包产物（id + CI 摘要）；查不到/形状不对返回 null。 */
+/** 现查某次 run 的安装包产物（id + CI 摘要 + 所属提交）；查不到/出错返回 null。 */
 function runArtifact(runId: number): CiArtifact | null {
-  const raw = runCmd(
-    "gh",
-    ["api", `repos/${repoSlug()}/actions/runs/${runId}/artifacts`],
-    { env: ghEnv() },
-  );
-  return pickRunArtifact(JSON.parse(raw), WIN_ARTIFACT_NAME);
+  try {
+    const raw = runCmd(
+      "gh",
+      ["api", `repos/${repoSlug()}/actions/runs/${runId}/artifacts`],
+      { env: ghEnv() },
+    );
+    return pickRunArtifact(JSON.parse(raw), WIN_ARTIFACT_NAME);
+  } catch (err) {
+    console.log(
+      `[win] 查不到 run ${runId} 的产物元数据（${err instanceof Error ? err.message : String(err)}），按无法核对处理`,
+    );
+    return null;
+  }
+}
+
+/** 从已核对的 artifact.zip 里解出安装包；解不出/大小不符就直接失败，不拿残留文件顶替。 */
+function extractInstaller(zipPath: string, destDir: string, expectedName: string): string {
+  runCmd("unzip", ["-o", "-q", zipPath, expectedName, "-d", destDir]);
+  const extracted = resolve(destDir, expectedName);
+  if (!existsSync(extracted)) {
+    throw new Error(`artifact.zip 里没有 ${expectedName}（${zipPath}）`);
+  }
+  return extracted;
 }
 
 /** 把 API 返回的二进制 zip 直接写进文件（stdout 走 fd，不经内存缓冲）。 */
@@ -496,17 +513,17 @@ function resolveOrDownloadWinInstaller(
       : null;
 
   // 缓存命中前核对内容（r63 / #86）：哈希、大小、CI 摘要、来源提交四条都得过
+  // 缓存的唯一可信内容是指向 CI 摘要的 artifact.zip；安装包每次从它重新解出（r63 / #86）
   const cacheDir = resolve(repoRoot, `tmp/installer/v${version}`);
-  const cachedPath = resolve(cacheDir, expectedName);
-  if (existsSync(cachedPath)) {
+  const cachedZip = resolve(cacheDir, "artifact.zip");
+  if (existsSync(cachedZip)) {
     const provenance = readCacheProvenance(cacheDir);
     const ci = provenance === null ? null : runArtifact(provenance.runId);
     const verdict = judgeCachedArtifact({
       provenance,
-      local: {
-        fileName: expectedName,
-        sizeBytes: statSync(cachedPath).size,
-        sha256: sha256File(cachedPath),
+      localZip: {
+        sizeBytes: statSync(cachedZip).size,
+        sha256: sha256File(cachedZip),
       },
       expectedFileName: expectedName,
       headSha: sha,
@@ -515,27 +532,47 @@ function resolveOrDownloadWinInstaller(
           ? []
           : diffPaths(provenance.headSha, sha),
       headOwnRunId,
-      ci: ci === null ? null : { runId: provenance!.runId, digest: ci.digest },
+      ci:
+        ci === null
+          ? null
+          : {
+              runId: ci.runId ?? -1,
+              headSha: ci.runHeadSha ?? "",
+              digest: ci.digest,
+              expired: ci.expired,
+            },
     });
-    if (verdict.usable) {
-      console.log(`[win] 复用缓存 ${cachedPath}：${verdict.summary}`);
-      return {
-        localPath: cachedPath,
-        remotePath: null,
-        source: {
-          source: verdict.fromOtherCommit ? "cache-ancestor" : "cache-head",
-          file: cachedPath,
-          fileSizeBytes: statSync(cachedPath).size,
-          fileSha256: provenance!.fileSha256,
-          runId: provenance!.runId,
-          headSha: provenance!.headSha,
-          artifactDigest: provenance!.artifactDigest,
-          fromOtherCommit: verdict.fromOtherCommit,
-        },
-      };
+    if (verdict.usable && provenance !== null) {
+      const extracted = extractInstaller(cachedZip, cacheDir, expectedName);
+      const extractedSha256 = sha256File(extracted);
+      const extractedSize = statSync(extracted).size;
+      if (extractedSha256 !== provenance.fileSha256 || extractedSize !== provenance.fileSizeBytes) {
+        console.log(
+          `[win] 丢弃缓存 ${cacheDir}：从 artifact.zip 解出的安装包与记录不符（记录 sha256=${provenance.fileSha256}/${provenance.fileSizeBytes} 字节，实际 sha256=${extractedSha256}/${extractedSize} 字节）；重新下载`,
+        );
+        rmSync(cacheDir, { recursive: true, force: true });
+      } else {
+        console.log(`[win] 复用缓存 ${extracted}：${verdict.summary}`);
+        return {
+          localPath: extracted,
+          remotePath: null,
+          source: {
+            source: verdict.fromOtherCommit ? "cache-ancestor" : "cache-head",
+            file: extracted,
+            fileSizeBytes: extractedSize,
+            fileSha256: extractedSha256,
+            runId: provenance.runId,
+            headSha: provenance.headSha,
+            artifactDigest: provenance.artifactDigest,
+            fromOtherCommit: verdict.fromOtherCommit,
+          },
+        };
+      }
+    } else {
+      const reason = verdict.usable ? "provenance 不可用" : verdict.reason;
+      console.log(`[win] 丢弃缓存 ${cacheDir}：${reason}；重新下载`);
+      rmSync(cacheDir, { recursive: true, force: true });
     }
-    console.log(`[win] 丢弃缓存 ${cachedPath}：${verdict.reason}；重新下载`);
-    rmSync(cacheDir, { recursive: true, force: true });
   }
 
   // 只认「当前提交 + 当前版本」的 CI 产物：旧提交的成功运行绝不复用（r61 / #81）
@@ -599,29 +636,40 @@ function resolveOrDownloadWinInstaller(
       `run ${run.databaseId} 的 ${WIN_ARTIFACT_NAME} 没有 CI 产物摘要（digest），下载后无法核对内容，拒绝使用。请用本地打包（release-win/）或 --win-installer 指定安装包。`,
     );
   }
+  // 产物自带的所属 run/提交必须就是要装的那个：不许「查 A 的摘要、下 B 的包」
+  if (artifact.runId !== null && artifact.runId !== run.databaseId) {
+    throw new Error(
+      `CI 产物属于 run ${artifact.runId}，与要下载的 run ${run.databaseId} 不符，拒绝使用。`,
+    );
+  }
+  if (artifact.runHeadSha !== null && artifact.runHeadSha !== run.headSha) {
+    throw new Error(
+      `run ${run.databaseId} 的产物其实由提交 ${artifact.runHeadSha.slice(0, 7)} 打出，与运行的提交 ${run.headSha.slice(0, 7)} 不符，拒绝使用。`,
+    );
+  }
 
   const destDir = resolve(repoRoot, `tmp/installer/v${version}`);
   // 清空该版本目录，避免上次失败留下的旧产物在这里冒充本版本
   rmSync(destDir, { recursive: true, force: true });
   mkdirSync(destDir, { recursive: true });
-  const zipPath = resolve(repoRoot, `tmp/installer/v${version}.zip`);
+  const zipPath = resolve(destDir, "artifact.zip");
   console.log(
     `[win] 下载 run ${run.databaseId}（${run.headSha.slice(0, 7)}）的产物 zip（${artifact.sizeInBytes} 字节）并核对 CI 摘要...`,
   );
-  ghApiToFile(`repos/${repoSlug()}/actions/artifacts/${artifact.id}/zip`, zipPath);
-  const zipSha256 = sha256File(zipPath);
-  const expectedZipSha256 = artifact.digest.replace(/^sha256:/, "");
-  if (zipSha256 !== expectedZipSha256) {
-    const badPath = zipPath;
-    rmSync(badPath, { force: true });
-    throw new Error(
-      `CI 产物 zip 摘要不符：CI 说 sha256=${expectedZipSha256}，下载到 sha256=${zipSha256}（${badPath} 已删除）。下载被截断或被篡改，请重试。`,
-    );
-  }
   try {
-    runCmd("unzip", ["-o", "-q", zipPath, "-d", destDir]);
-  } finally {
-    rmSync(zipPath, { force: true });
+    ghApiToFile(`repos/${repoSlug()}/actions/artifacts/${artifact.id}/zip`, zipPath);
+    const zipSha256 = sha256File(zipPath);
+    const expectedZipSha256 = artifact.digest.replace(/^sha256:/, "");
+    if (zipSha256 !== expectedZipSha256) {
+      throw new Error(
+        `CI 产物 zip 摘要不符：CI 说 sha256=${expectedZipSha256}，下载到 sha256=${zipSha256}（${zipPath} 已删除）。下载被截断或被篡改，请重试。`,
+      );
+    }
+    extractInstaller(zipPath, destDir, expectedName);
+  } catch (err) {
+    // 半成品缓存不许留着：下次会当成「可核对来源」再被撞上
+    rmSync(destDir, { recursive: true, force: true });
+    throw err;
   }
   const files = readdirSync(destDir, { recursive: true, encoding: "utf8" }).map((f) =>
     f.split(/[/\\]/).pop()!,

@@ -149,25 +149,18 @@ export function parseArtifactProvenance(raw: unknown): ArtifactProvenance | null
   };
 }
 
-/** 缓存目录里现有的安装包实测结果（大小 + sha256）。 */
-export interface LocalArtifact {
-  fileName: string;
-  sizeBytes: number;
-  sha256: string;
-}
-
 export interface CachedArtifactCheck {
   provenance: ArtifactProvenance | null;
-  /** null = 缓存目录里没有这个文件。 */
-  local: LocalArtifact | null;
+  /** 缓存目录里 `artifact.zip` 的实测大小与 sha256；`null` = 没有这个文件。 */
+  localZip: { sizeBytes: number; sha256: string } | null;
   expectedFileName: string;
   headSha: string;
   /** 来源提交到 HEAD 的差异路径；`null` 表示算不出来（来源提交不在本地）。 */
   changedPaths: string[] | null;
   /** HEAD 自己那次 CI 运行（成功且构建的是本版本）；有则绝不用别的提交的缓存。 */
   headOwnRunId: number | null;
-  /** 现查的该 run 的 CI 产物摘要；`null` = 查不到，无法与可信来源比对。 */
-  ci: { runId: number; digest: string | null } | null;
+  /** 现查的该 run 的 CI 产物元数据；`null` = 查不到，无法与可信来源比对。 */
+  ci: { runId: number; headSha: string; digest: string | null; expired: boolean } | null;
 }
 
 export type CachedArtifactVerdict =
@@ -179,10 +172,13 @@ export type CachedArtifactVerdict =
  *
  * r62 的故障：缓存只在下载时记录了 run id 与提交，命中时不再核对内容 ——
  * 于是被截断/替换过的 exe（或手写 provenance.json）会被静默装到 gamepc。
- * 现在的门槛，任何一条不过就删缓存重下：
+ *
+ * 可信锚点是 **CI 产物 zip 的 sha256**：缓存只信「`artifact.zip` 等于 CI 摘要」这一条，
+ * 安装包每次从这份 zip 重新解出来，不再单独信任目录里残留的 exe 或 provenance 里自报的 exe 哈希。
+ * 任何一条不过就删缓存重下：
  * 1. provenance 是带内容哈希的新格式；
- * 2. 目录里的 exe 存在、文件名对、大小与 sha256 与记录一致（篡改/半包在这里挂）；
- * 3. 现查 CI 该 run 的产物摘要与记录一致（把记录锚回可信来源）；
+ * 2. 缓存里存在 artifact.zip，且大小、sha256 等于 provenance 记录的 CI 摘要（篡改/半包在这里挂）；
+ * 3. 现查该 run 的产物元数据：run id、所属提交、摘要三者都要与记录一致（记录不可能凭空指向 HEAD）；
  * 4. HEAD 已有自己的 CI 产物时，绝不使用别的提交的缓存；
  * 5. 来源不是 HEAD 时，必须算得出差异且差异全是文档（构建输入相同），并明确报出来源。
  */
@@ -192,33 +188,39 @@ export function judgeCachedArtifact(input: CachedArtifactCheck): CachedArtifactV
     const reason = "缓存没有可解析的 provenance.json（来源无法核对）";
     return { usable: false, reason };
   }
-  const local = input.local;
-  if (local === null) {
-    const reason = `缓存目录里没有 ${input.expectedFileName}`;
+  if (prov.fileName !== input.expectedFileName) {
+    const reason = `provenance 记录的安装包名不符：期望 ${input.expectedFileName}，记录 ${prov.fileName}`;
     return { usable: false, reason };
   }
-  if (local.fileName !== input.expectedFileName || prov.fileName !== input.expectedFileName) {
-    const reason = `缓存里的安装包名不符：期望 ${input.expectedFileName}，实际 ${local.fileName}（记录 ${prov.fileName}）`;
+  const zip = input.localZip;
+  if (zip === null) {
+    const reason = "缓存目录里没有 artifact.zip，无法核对安装包内容";
     return { usable: false, reason };
   }
-  if (local.sizeBytes !== prov.fileSizeBytes) {
-    const reason = `缓存文件大小与记录不符（文件不完整或被改动）：记录 ${prov.fileSizeBytes} 字节，实际 ${local.sizeBytes} 字节`;
+  if (zip.sizeBytes !== prov.artifactSizeBytes) {
+    const reason = `缓存 artifact.zip 大小与记录不符（下载不完整或被改动）：记录 ${prov.artifactSizeBytes} 字节，实际 ${zip.sizeBytes} 字节`;
     return { usable: false, reason };
   }
-  if (local.sha256 !== prov.fileSha256) {
-    const reason = `缓存文件内容与记录不符（文件被改动）：记录 sha256=${prov.fileSha256}，实际 sha256=${local.sha256}`;
+  const digestSha256 = prov.artifactDigest.replace(/^sha256:/, "");
+  if (zip.sha256 !== digestSha256) {
+    const reason = `缓存 artifact.zip 与 CI 产物摘要不符（文件被改动或下载不完整）：CI ${prov.artifactDigest}，实际 sha256:${zip.sha256}`;
     return { usable: false, reason };
   }
-  if (input.ci === null || input.ci.digest === null) {
-    const reason = `无法与 CI 产物摘要比对：查不到 run ${prov.runId} 的产物摘要（产物过期或未上报 digest），缓存内容不可信`;
+  const ci = input.ci;
+  if (ci === null || ci.digest === null) {
+    const reason = `无法与 CI 产物元数据比对：查不到 run ${prov.runId} 的产物摘要（产物已被清理或未上报 digest），缓存内容不可信`;
     return { usable: false, reason };
   }
-  if (input.ci.runId !== prov.runId) {
-    const reason = `CI 产物摘要是 run ${input.ci.runId} 的，与记录的 run ${prov.runId} 不符`;
+  if (ci.runId !== prov.runId) {
+    const reason = `CI 产物属于 run ${ci.runId}，与记录的 run ${prov.runId} 不符`;
     return { usable: false, reason };
   }
-  if (input.ci.digest !== prov.artifactDigest) {
-    const reason = `CI 产物摘要与记录不符：CI 说 ${input.ci.digest}，记录是 ${prov.artifactDigest}（来源被改写）`;
+  if (ci.headSha !== prov.headSha) {
+    const reason = `CI 产物其实由提交 ${ci.headSha.slice(0, 7)}（run ${ci.runId}）打出，与记录声称的 ${prov.headSha.slice(0, 7)} 不符`;
+    return { usable: false, reason };
+  }
+  if (ci.digest !== prov.artifactDigest) {
+    const reason = `CI 产物摘要与记录不符：CI 说 ${ci.digest}，记录是 ${prov.artifactDigest}（来源被改写）`;
     return { usable: false, reason };
   }
 
@@ -227,7 +229,7 @@ export function judgeCachedArtifact(input: CachedArtifactCheck): CachedArtifactV
     return {
       usable: true,
       fromOtherCommit: false,
-      summary: `安装包来源：run ${prov.runId} @ ${shortSha}（HEAD 自己的 CI 产物），sha256=${prov.fileSha256}`,
+      summary: `安装包来源：run ${prov.runId} @ ${shortSha}（HEAD 自己的 CI 产物），artifact ${prov.artifactDigest}`,
     };
   }
   if (input.headOwnRunId !== null) {
@@ -246,7 +248,7 @@ export function judgeCachedArtifact(input: CachedArtifactCheck): CachedArtifactV
   return {
     usable: true,
     fromOtherCommit: true,
-    summary: `⚠ 安装包来自其他提交：run ${prov.runId} @ ${shortSha}（HEAD ${input.headSha.slice(0, 7)} 与之只差文档，构建输入相同），sha256=${prov.fileSha256}`,
+    summary: `⚠ 安装包来自其他提交：run ${prov.runId} @ ${shortSha}（HEAD ${input.headSha.slice(0, 7)} 与之只差文档，构建输入相同），artifact ${prov.artifactDigest}`,
   };
 }
 
@@ -255,11 +257,14 @@ export interface CiArtifact {
   sizeInBytes: number;
   digest: string | null;
   expired: boolean;
+  /** artifact 所属 run 与其提交：用来证明「这份产物确实由记录里的提交打出」。 */
+  runId: number | null;
+  runHeadSha: string | null;
 }
 
 /**
- * 从 `gh api .../runs/<id>/artifacts` 的 JSON 里按名字取产物（id + 摘要）。
- * 摘要缺失/过期时 digest 为 null，调用方必须把它当成「无法核对」，不能当成通过。
+ * 从 `gh api .../runs/<id>/artifacts` 的 JSON 里按名字取产物（id + 摘要 + 所属 run/提交）。
+ * 摘要缺失时 digest 为 null，调用方必须把它当成「无法核对」，不能当成通过。
  */
 export function pickRunArtifact(raw: unknown, name: string): CiArtifact | null {
   if (!isObjectShape(raw)) return null;
@@ -273,16 +278,27 @@ export function pickRunArtifact(raw: unknown, name: string): CiArtifact | null {
     const size = "size_in_bytes" in entry ? entry.size_in_bytes : undefined;
     const digest = "digest" in entry ? entry.digest : undefined;
     const expired = "expired" in entry ? entry.expired : undefined;
+    const workflowRun = "workflow_run" in entry ? entry.workflow_run : undefined;
     return {
       id: entry.id,
       sizeInBytes: typeof size === "number" ? size : 0,
       digest: typeof digest === "string" && digest !== "" ? digest : null,
       expired: expired === true,
+      runId:
+        isObjectShape(workflowRun) && "id" in workflowRun && typeof workflowRun.id === "number"
+          ? workflowRun.id
+          : null,
+      runHeadSha:
+        isObjectShape(workflowRun) &&
+        "head_sha" in workflowRun &&
+        typeof workflowRun.head_sha === "string" &&
+        workflowRun.head_sha !== ""
+          ? workflowRun.head_sha
+          : null,
     };
   }
   return null;
 }
-
 
 /**
  * 末尾只改了文档时，workflow 因 paths-ignore 不会为 HEAD 起构建。
