@@ -12,7 +12,7 @@
  *
  * Run with `--help` for the full command list.
  */
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
@@ -1462,6 +1462,22 @@ async function doctor(args: string[]): Promise<void> {
     console.log(`fail: ${label}`);
     problems.push(label);
   };
+
+  // r45 事故（worktree 在验收中被外部进程整目录删除，证据与报告随之丢失）之后的自检：
+  // 先确认这个仓库根还真的在盘上、且 git 认得它，再谈别的证据完整性问题。
+  try {
+    const toplevel = Bun.spawnSync(["git", "-C", REPO, "rev-parse", "--show-toplevel"]);
+    const reported = toplevel.stdout.toString().trim();
+    if (toplevel.exitCode !== 0 || reported === "") {
+      bad(`repo root ${REPO} is not a git worktree any more (worktree deleted or volume unmounted?)`);
+    } else if (realpathSync(reported) !== realpathSync(REPO)) {
+      bad(`repo root mismatch: script ${REPO}, git ${reported}`);
+    } else {
+      ok(`repo root ${REPO} is reachable and registered with git`);
+    }
+  } catch (err) {
+    bad(`repo root ${REPO} is unreachable: ${String(err)}`);
+  }
 
   if (win) {
     const host = state.sshHost ?? WIN_SSH_HOST;
