@@ -16,7 +16,11 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, sta
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
+import { ensureElectronBinary, ElectronBootstrapError, type ElectronBootstrapResult } from "./lib/electron";
+import { describeGap, evidenceGaps, expectedEvidence, parseRemoteListing, relativeEvidencePath } from "./lib/evidence";
 import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./lib/latest";
+import { describeListeners, inspectPort, portConflict, processList, tunnelsOf } from "./lib/port";
+import { describeStop, stopProcessTree } from "./lib/proc";
 import { findSecretFiles, isInside, winPathInside } from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
@@ -100,8 +104,18 @@ const HELP = `usage: verify.ts <command>
 
   up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build]
      [--app PATH] [--min-path] [--empty-settings] [--lab-cache shared|isolated|cold]
+     [--ready-timeout MS]
       Build apps/desktop, start Electron with isolated VNOTE_HOME / VNOTE_USER_DATA,
       wait until the renderer answers, write tmp/verify/<run>/state.json.
+      Before anything is created the port is checked by listener identity: another app
+      holding it fails with its pid and command line, and a leftover ssh tunnel from an
+      earlier run on that port is recognised and cleared (never connected to).
+      Readiness is polled (window.vnote + [data-testid=nav-library] + notesRoot identity)
+      and the run continues the moment it is up; --ready-timeout (default 60000, packaged
+      or dev) turns a slow first launch into a clear timeout error instead of a mystery.
+      A failed launch stops the whole process tree: SIGTERM, then SIGKILL after the grace
+      period, so no orphan Electron survives. The Electron binary is bootstrapped when a
+      fresh worktree's \`bun install\` skipped dist/ (runs the package's install.js).
       userData defaults to tmp/verify-state/<run>/user-data, outside the evidence tree;
       an explicit --user-data inside tmp/verify is refused (secrets.bin must never be
       copied into the evidence).
@@ -118,12 +132,15 @@ const HELP = `usage: verify.ts <command>
       both 0600 and outside the repo); a feature that asserts a virgin settings page
       (requires: empty-settings) passes --empty-settings instead.
   up --target win-gamepc [--installer PATH | --app WINPATH] [--install-dir WINPATH] [--ssh-host NAME]
-     [--empty-settings]
+     [--empty-settings] [--ready-timeout MS]
       Drive a Windows machine over ssh instead of this Mac (see Targets below).
       --installer runs the NSIS installer silently into --install-dir (default
       D:\\code\\video-notes\\app), --app drives an exe that is already installed; the two
       are mutually exclusive. --install-dir is ignored with --app.
       --ssh-host picks the ssh host alias (default gamepc).
+      --ready-timeout (default 180000) is the window for the first launch to answer over
+      the tunnel: the CDP connection is rebuilt every 250ms, which is what makes a fresh
+      install's slow debug-port startup reliable.
 
   doctor [--run ID] [--target mac|win-gamepc]
       Read-only health check of the latest run: process, CDP port owner, build freshness,
@@ -155,9 +172,18 @@ const HELP = `usage: verify.ts <command>
       Stop the Electron process this helper started (never kills by name), record
       stoppedAt in state.json, prune the renderer caches, keep the evidence.
       --purge also deletes the whole run directory (the default keeps it).
-      A win-gamepc run also stops the ssh tunnel, kills the remote process, deletes the
-      scheduled task, prunes the remote caches and pulls app.log, home\\logs and every
-      video.json / topic.md / trajectory.json / status.json into <run>/win/.
+      A win-gamepc run also stops the ssh tunnel (SIGTERM, then SIGKILL), kills the remote
+      process, deletes the scheduled task and prunes the remote caches. It then pulls the
+      WHOLE remote run directory except caches — one inventory, verified file by file
+      against the remote listing and retried once — into <run>/win/, and fails when
+      anything is still missing. app.log, home\\logs and every video.json / topic.md /
+      labels.json / analysis.json / trajectory.json / status.json included.
+
+  tunnels [--kill]
+      List every local ssh tunnel of this harness's shape
+      (ssh -N -L <port>:127.0.0.1:<port>), with the run that recorded it or "residue".
+      --kill stops them (SIGTERM then SIGKILL). \`up\` does the same for the port it is
+      about to use, and \`doctor\` warns while one is still alive.
 
   seed-config [--run ID] [--target mac|win-gamepc]
       Write the private LLM config into an existing run's userData (settings.json + secrets.bin).
@@ -294,7 +320,13 @@ function readState(runId?: string): RunState {
   const file = join(dir, "state.json");
   if (!existsSync(file)) fail(`no state.json in ${dir}`);
   // Older state.json files lack commit / startedAt / stoppedAt; the optional type tolerates them.
-  return JSON.parse(readFileSync(file, "utf8")) as RunState;
+  const state = JSON.parse(readFileSync(file, "utf8")) as RunState;
+  // 运行编号校验（r58）：state.json 里的 runId 必须与目录名一致，否则 pid/端口/收尾路径都对不上
+  if (state.runId !== id) {
+    fail(`运行编号不一致：${dir}/state.json 记录的 runId 是 ${JSON.stringify(state.runId)}，目录名是 ${id}。\n` +
+      `这份 state.json 不可信（pid / 端口 / 证据路径都可能指向别的 run）；确认后再手工修正或换一个 --run。`);
+  }
+  return state;
 }
 
 function alive(pid: number): boolean {
@@ -345,6 +377,146 @@ async function waitFor(cdp: Cdp, expression: string, timeoutMs: number): Promise
     await sleep(100);
   }
   throw new Error(`timed out after ${timeoutMs}ms waiting for: ${expression}${last === "" ? "" : ` (${last})`}`);
+}
+
+/**
+ * r58：启动前的端口预检。要么报冲突，要么清掉上一轮自己的隧道，绝不连到别的应用。
+ *
+ * 判据是监听者身份而不是「CDP 有没有应答」：端口被非 CDP 的应用占着时，旧代码把
+ * `listTargets` 的异常当成「端口空闲」，拉起 app 后再连上的其实是别人。
+ * 只有 ssh 隧道 pid 没有被任何 run 的 state.json 记成「仍在运行」时才算残留。
+ */
+function recordedTunnelRun(pid: number): RunState | null {
+  if (!existsSync(VERIFY_ROOT)) return null;
+  for (const entry of readdirSync(VERIFY_ROOT)) {
+    const file = join(VERIFY_ROOT, entry, "state.json");
+    if (!existsSync(file)) continue;
+    try {
+      const state = JSON.parse(readFileSync(file, "utf8")) as RunState;
+      if (state.sshTunnelPid === pid && state.stoppedAt === undefined) return state;
+    } catch {
+      // 坏掉的 state.json 不该让预检失效
+    }
+  }
+  return null;
+}
+
+async function reservePort(port: number): Promise<void> {
+  const conflict = portConflict(inspectPort(port));
+  if (conflict === null) return;
+  if (conflict.kind === "occupied") {
+    fail(
+      `端口被占用（${port}）：\n  ${describeListeners(conflict.owners)}\n` +
+        `换一个 --port，或先停掉占用者；验证脚本不会连到别的应用/旧进程上。`,
+    );
+  }
+  if (conflict.kind === "foreign-tunnel") {
+    fail(
+      `端口被占用（${port}）：一条 ssh 隧道占着它，但不是本 harness 的 CDP 隧道（本地端口 ≠ 远端端口）：\n  ${describeListeners(conflict.owners)}\n` +
+        `确认是上一轮残留后再清（verify.ts tunnels --kill，或 kill -9 <pid>），或者换一个 --port。`,
+    );
+  }
+  for (const pid of conflict.pids) {
+    const owner = recordedTunnelRun(pid);
+    if (owner !== null) {
+      fail(
+        `端口被占用（${port}）：run ${owner.runId} 的 ssh 隧道 pid ${pid} 还在用这个端口。\n` +
+          `先收尾那一轮（verify.ts down --run ${owner.runId}），或换一个 --port。`,
+      );
+    }
+    const stopped = await stopProcessTree(pid, { termMs: 3000, killMs: 2000 });
+    process.stderr.write(`verify: 清掉上一轮残留隧道——${describeStop(stopped)}（端口 ${port}）\n`);
+    if (stopped.survivors.length > 0) fail(`残留隧道 pid ${pid} 收不掉：先 kill -9 ${pid} 再重试`);
+    console.log(`tunnel:   清掉上一轮残留隧道 pid ${pid}（端口 ${port}）`);
+  }
+}
+
+/** --port 必须是 1..65535 的整数：`Number("abc")` 是 NaN，监听 NaN 只会得到莫名其妙的失败。 */
+function portFlag(args: string[]): number {
+  const raw = takeFlag(args, "--port") ?? "9411";
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail(`--port 必须是 1..65535 的整数（收到 ${JSON.stringify(raw)}）`);
+  return port;
+}
+
+/** 打包版首启可能几十秒：等待上限可调，但必须是有限毫秒数（r58 去掉了写死的 20 秒）。 */
+function readyTimeoutFlag(args: string[], fallback: number): number {
+  const raw = takeFlag(args, "--ready-timeout");
+  if (raw === undefined) return fallback;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms < 200) fail(`--ready-timeout 必须是 >=200 的毫秒数（收到 ${JSON.stringify(raw)}）`);
+  return ms;
+}
+
+/** 认不出的参数一律报错：静默忽略会让 `--prot 9412` 悄悄用默认端口起一个实例。 */
+function rejectUnknownArgs(args: string[], usage: string): void {
+  if (args.length === 0) return;
+  fail(`未知参数：${args.join(" ")}\n${usage}\n用 --help 看完整用法。`);
+}
+
+/** Windows 路径比较：分隔符、尾部分隔符与大小写都不敏感（`notesRoot` 由 app 自己拼）。 */
+function sameWinPath(a: string, b: string): boolean {
+  const norm = (path: string) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+type ReadinessProbe = { ready: boolean; readyState: string; navLibrary: boolean; notesRoot: string | null };
+
+const READINESS_EXPRESSION = `(async () => {
+  const settings = typeof window.vnote === "object" ? await window.vnote.settings().catch(() => null) : null;
+  return {
+    readyState: document.readyState,
+    navLibrary: document.querySelector('[data-testid=nav-library]') !== null,
+    notesRoot: settings === null ? null : settings.notesRoot,
+    ready: typeof window.vnote === "object" && document.querySelector('[data-testid=nav-library]') !== null,
+  };
+})()`;
+
+/**
+ * 轮询到「可用」为止（r58）：就绪即继续，超时给出明确报错（最后观察到的状态 + 端口 + 上限）。
+ * 顺带校验对端身份：CDP 上应答的实例必须是本次启动的那一个（notesRoot = 本 run 的隔离 home）。
+ * 每次都重新 `Cdp.open`：Windows 首启的调试端口偶发连不上，重连比一次性连上更可靠。
+ */
+async function waitUntilReady(options: {
+  port: number;
+  home: string;
+  timeoutMs: number;
+  win: boolean;
+  /** 进程/隧道本身没了就别等满上限 */
+  guard?: () => string | null;
+}): Promise<number> {
+  const started = Date.now();
+  let last = "CDP 端口还没有 page target";
+  while (Date.now() - started < options.timeoutMs) {
+    const dead = options.guard?.();
+    if (dead !== null && dead !== undefined) throw new Error(dead);
+    try {
+      const cdp = await Cdp.open(options.port);
+      try {
+        const probe = await cdp.eval<ReadinessProbe>(READINESS_EXPRESSION);
+        last = `readyState=${probe.readyState}, nav-library=${probe.navLibrary}, notesRoot=${JSON.stringify(probe.notesRoot)}`;
+        if (probe.ready) {
+          const same = probe.notesRoot !== null && (options.win ? sameWinPath(probe.notesRoot, options.home) : probe.notesRoot === options.home);
+          if (!same) {
+            throw new Error(
+              `端口 ${options.port} 上应答的不是本次启动的实例：notesRoot=${JSON.stringify(probe.notesRoot)}，期望 ${options.home}；` +
+                "先确认没有残留的实例/隧道占用该端口",
+            );
+          }
+          return Date.now() - started;
+        }
+      } finally {
+        cdp.close();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 对端身份不符不是「还没就绪」，等下去只会连到别人
+      if (message.includes("不是本次启动的实例")) throw err;
+      last = message;
+    }
+    await sleep(250);
+  }
+  throw new Error(`app 没有就绪（等待 ${options.timeoutMs}ms 超时，端口 ${options.port}）：${last}`);
 }
 
 async function elementCenter(cdp: Cdp, selector: string, index: number): Promise<{ x: number; y: number }> {
@@ -543,30 +715,11 @@ function sshRun(host: string, command: string): SshResult {
   return result;
 }
 
-/** Full paths a Get-ChildItem pipeline prints; a missing directory yields an empty list, not a failure. */
-function remoteFiles(host: string, listing: string): string[] {
-  return sshExec(host, winPs(`${listing} | ForEach-Object { $_.FullName }`))
-    .stdout.split("\n")
-    .map((line) => line.replace(/\r$/, "").trim())
-    .filter((line) => line !== "");
-}
-
 /** Local evidence directory for remote artifacts: <run>/win. */
 function winLocal(state: Pick<RunState, "runDir">): string {
   const dir = join(state.runDir, "win");
   mkdirSync(dir, { recursive: true });
   return dir;
-}
-
-/** Where a remote path lands under win/: its path below the remote run dir, else its file name. */
-function winRelPath(remotePath: string, remoteRunDir: string): string[] {
-  const path = remotePath.replace(/\//g, "\\");
-  const root = remoteRunDir.replace(/\//g, "\\").replace(/\\+$/, "");
-  if (path.toLowerCase().startsWith(`${root.toLowerCase()}\\`)) {
-    return path.slice(root.length + 1).split("\\").filter((part) => part !== "");
-  }
-  // a path outside the run dir keeps only its file name, so the pull cannot escape win/
-  return path.split("\\").filter((part) => part !== "").slice(-1);
 }
 
 /** A drop path must resolve on the Windows box: the remote app never sees this Mac's filesystem. */
@@ -803,7 +956,7 @@ function remoteMainPid(host: string, remoteApp: string, port: number): number {
 async function up(args: string[]): Promise<void> {
   // resolved before anything is created: an unknown --target must leave tmp/verify untouched
   const target = resolveTarget(takeFlag(args, "--target"));
-  const port = Number(takeFlag(args, "--port") ?? "9411");
+  const port = portFlag(args);
   const runId = takeFlag(args, "--run") ?? stamp();
   // 建目录、拉 app 之前先拒绝：保留名/分隔符/../ 一律不过（lib/run-id.ts）
   checkedRunId(runId);
@@ -812,11 +965,15 @@ async function up(args: string[]): Promise<void> {
   // 同理：latest 上如果是一份带 state.json 的 run，写指针时绝不覆盖；提前到拉 app 之前拒绝
   const latestProblem = latestPointerProblem(LATEST);
   if (latestProblem !== null) fail(latestProblem);
+  // 端口先看清占用者：被别的应用占着就报错，上一轮自己的隧道就清掉（r58）
+  await reservePort(port);
   if (target === "win-gamepc") {
     await upWin(args, port, runId);
     return;
   }
   const appArg = takeFlag(args, "--app");
+  // 打包版首启比 dev 慢得多：默认给 60s，可用 --ready-timeout 调整；就绪即继续
+  const readyTimeout = readyTimeoutFlag(args, 60000);
   // --app drives an already packaged bundle: building apps/desktop cannot change what it runs
   const skipBuild = hasFlag(args, "--no-build") || appArg !== undefined;
   const minPath = hasFlag(args, "--min-path");
@@ -843,6 +1000,10 @@ async function up(args: string[]): Promise<void> {
   if (!["shared", "isolated", "cold"].includes(labCache)) {
     fail(`--lab-cache 只接受 shared|isolated|cold（收到：${labCache}）`);
   }
+  rejectUnknownArgs(
+    args,
+    "verify.ts up [--port N] [--run ID] [--home DIR] [--user-data DIR] [--model-dir DIR] [--no-build] [--app PATH] [--min-path] [--empty-settings] [--lab-cache shared|isolated|cold] [--ready-timeout MS]",
+  );
   // 目录一律放在所有拒绝之后：被拒的 up 不留下空 run 目录，同名 id 还能直接重跑
   mkdirSync(runDir, { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -860,6 +1021,7 @@ async function up(args: string[]): Promise<void> {
     if (build.exitCode !== 0) fail(`build failed (exit ${build.exitCode}); see ${buildLog}`);
   }
 
+  // 端口占用在 reservePort 里已经判定过（监听者身份，而不只是 CDP 应答）
   try {
     await listTargets(port);
     fail(`port ${port} already has a CDP endpoint; choose another --port`);
@@ -875,12 +1037,15 @@ async function up(args: string[]): Promise<void> {
     electron = bundleExecutable(appPath);
     appArgs = [`--remote-debugging-port=${port}`];
   } else {
-    const devElectron = [
-      join(DESKTOP, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
-      join(REPO, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
-    ].find((path) => existsSync(path));
-    if (devElectron === undefined) fail("Electron binary not found; run `bun install` in the repo root");
-    electron = devElectron;
+    // 新 worktree 的 `bun install` 不下载 electron 的 dist/：缺了就补跑 install.js（r58 验收 4）
+    let resolved: ElectronBootstrapResult;
+    try {
+      resolved = ensureElectronBinary(REPO, DESKTOP);
+    } catch (err) {
+      fail(err instanceof ElectronBootstrapError ? err.message : String(err));
+    }
+    electron = resolved.binary;
+    if (resolved.installed) console.log(`electron: 缺 dist/，已补跑 ${resolved.steps.join(" → ")}`);
     // Lab 只在开发态存在：把模式显式传进去，绝不依赖「默认值恰好是 isolated」。
     appArgs = ["apps/desktop", `--remote-debugging-port=${port}`, `--lab-cache=${labCache}`];
   }
@@ -920,42 +1085,36 @@ async function up(args: string[]): Promise<void> {
     ...(appArg === undefined ? { labCache } : {}),
   };
 
+  let readyMs: number;
   try {
-    const started = Date.now();
-    let cdp: Cdp | undefined;
-    while (Date.now() - started < 40000) {
-      try {
-        cdp = await Cdp.open(port);
-        break;
-      } catch {
-        await sleep(250);
-      }
-    }
-    if (cdp === undefined) throw new Error("CDP endpoint never appeared");
-    await waitFor(cdp, `typeof window.vnote === "object" && document.querySelector('[data-testid=nav-library]') !== null`, 20000);
-    cdp.close();
+    readyMs = await waitUntilReady({
+      port,
+      home,
+      timeoutMs: readyTimeout,
+      win: false,
+      // app 自己退了就别等满上限：日志里能看出是崩溃还是白屏
+      guard: () => (alive(child.pid) ? null : `pid ${child.pid} 在就绪之前退出了（见 ${appLog}）`),
+    });
   } catch (err) {
     writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
     const tail = existsSync(appLog) ? readFileSync(appLog, "utf8").split("\n").slice(-20).join("\n") : "";
-    try {
-      process.kill(child.pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
-    fail(`app did not become ready: ${String(err)}\n--- app.log ---\n${tail}`);
+    // 收尾：SIGTERM 宽限期后补 SIGKILL，连同子进程一起收（r58 验收 1）
+    const stopped = await stopProcessTree(child.pid, { termMs: 4000, killMs: 3000 });
+    const stuck = stopped.survivors.length > 0 ? `\n仍有进程收不掉：${stopped.survivors.join(",")}（kill -9 后手工清理）` : "";
+    fail(`${err instanceof Error ? err.message : String(err)}\n收尾：${describeStop(stopped)}${stuck}\n--- app.log ---\n${tail}`);
   }
+  console.log(`ready:    ${readyMs}ms（就绪即继续，未命中 ${readyTimeout}ms 上限）`);
 
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
   try {
     writeLatestPointer(LATEST, runId);
   } catch (err) {
     // 检查与写指针之间 latest 被别的 up / 手工改成 run 目录：不覆盖，但别把刚起来的实例留成孤儿
-    try {
-      process.kill(child.pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
-    fail(`${String(err)}\n已停掉本次启动的 pid ${child.pid}；证据在 ${runDir}（state.json 已写，down --run ${runId} 可收尾）。`);
+    const stopped = await stopProcessTree(child.pid, { termMs: 4000, killMs: 3000 });
+    fail(
+      `${String(err)}\n已停掉本次启动的 pid ${child.pid}（${describeStop(stopped)}）；` +
+        `证据在 ${runDir}（state.json 已写，down --run ${runId} 可收尾）。`,
+    );
   }
   console.log(`run:      ${runDir}`);
   console.log(`port:     ${port}`);
@@ -992,6 +1151,12 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     fail(`--user-data 不能落在远端证据目录 ${WIN_RUNS} 内；默认位置是 ${WIN_STATE_ROOT}\\<run>\\user-data`);
   }
   const emptySettings = hasFlag(args, "--empty-settings");
+  // Windows 安装版首启（NSIS 后第一次拉起）可能几十秒才开调试端口：默认给 180s，轮询重连
+  const readyTimeout = readyTimeoutFlag(args, 180000);
+  rejectUnknownArgs(
+    args,
+    "verify.ts up --target win-gamepc [--installer PATH | --app WINPATH] [--install-dir WINPATH] [--ssh-host NAME] [--ready-timeout MS]",
+  );
   const remoteAppLog = `${remoteRunDir}\\app.log`;
   const remoteLaunch = `${remoteRunDir}\\launch.ps1`;
   const task = `VNoteVerify_${runId}`;
@@ -1098,44 +1263,27 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
     tunnelPid = tunnel.pid;
     tunnel.unref();
 
-    // the tunnel is up but the app still has to start: poll CDP through it
-    const started = Date.now();
-    let answering = false;
-    while (Date.now() - started < 120000) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
-        if (res.ok) {
-          answering = true;
-          break;
-        }
-      } catch {
-        // tunnel or app not up yet
-      }
-      if (!alive(tunnel.pid)) {
-        throw new RemoteError(`ssh tunnel exited before CDP answered: ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}`);
-      }
-      await sleep(500);
-    }
-    if (!answering) {
-      throw new RemoteError(`CDP never answered on 127.0.0.1:${port} through ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}; see ${remoteAppLog}`);
+    // 隧道刚起来时调试端口偶发连不上（Windows 安装版首启）：在 readyTimeout 内轮询重建
+    // 连接，而不是一次性 fetch 判定。就绪即继续，超时报出端口、上限与远端日志路径。
+    let readyMs: number;
+    try {
+      readyMs = await waitUntilReady({
+        port,
+        home: remoteHome,
+        timeoutMs: readyTimeout,
+        win: true,
+        guard: () =>
+          alive(tunnel.pid) ? null : `ssh 隧道在就绪前退出：ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}（远端日志 ${remoteAppLog}）`,
+      });
+    } catch (err) {
+      throw new RemoteError(
+        `${err instanceof Error ? err.message : String(err)}\n远端日志：${remoteAppLog}\n` +
+          `隧道：ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}`,
+      );
     }
 
     const pid = remoteMainPid(sshHost, remoteApp, port);
-
-    // the same readiness gate as the mac path, reached through the tunnel
-    const readyStarted = Date.now();
-    let cdp: Cdp | undefined;
-    while (Date.now() - readyStarted < 40000) {
-      try {
-        cdp = await Cdp.open(port);
-        break;
-      } catch {
-        await sleep(250);
-      }
-    }
-    if (cdp === undefined) throw new RemoteError(`CDP endpoint never appeared through ssh -N -L ${port}:127.0.0.1:${port} ${sshHost}`);
-    await waitFor(cdp, `typeof window.vnote === "object" && document.querySelector('[data-testid=nav-library]') !== null`, 20000);
-    cdp.close();
+    console.log(`ready:    ${readyMs}ms（就绪即继续，未命中 ${readyTimeout}ms 上限）`);
 
     const state: RunState = {
       target: "win-gamepc",
@@ -1182,11 +1330,9 @@ async function upWin(args: string[], port: number, runId: string): Promise<void>
   } catch (err) {
     // no leftovers: the tunnel, the remote app, the task and both run dirs go away
     if (tunnelPid !== undefined) {
-      try {
-        process.kill(tunnelPid, "SIGKILL");
-      } catch {
-        // already gone
-      }
+      // 隧道自己开的：SIGTERM 宽限期后补 SIGKILL，退出前证明它真的没了（r58 验收 6）
+      const stopped = await stopProcessTree(tunnelPid, { termMs: 3000, killMs: 2000 });
+      process.stderr.write(`verify: 收尾隧道——${describeStop(stopped)}\n`);
     }
     sshExec(sshHost, winCmd(`schtasks /End /TN "${task}"`));
     sshExec(sshHost, winCmd(`schtasks /Delete /TN "${task}" /F`));
@@ -1205,6 +1351,7 @@ async function doctor(args: string[]): Promise<void> {
   const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
   const win = resolveTarget(targetFlag, state) === "win-gamepc";
+  rejectUnknownArgs(args, "verify.ts doctor [--run ID] [--target mac|win-gamepc]");
   const problems: string[] = [];
   const notes: string[] = [];
   const ok = (label: string) => console.log(`ok:   ${label}`);
@@ -1258,7 +1405,8 @@ async function doctor(args: string[]): Promise<void> {
           if (probe.modelsReady) break;
         }
       }
-      probe.notesRoot === state.home
+      // win 的 notesRoot 由 app 自己拼：分隔符/大小写不敏感地比较（文档一直是这么写的）
+      (win ? sameWinPath(probe.notesRoot, state.home) : probe.notesRoot === state.home)
         ? ok(`notes root is the isolated home (${probe.notesRoot})`)
         : bad(`notes root is ${probe.notesRoot}, expected ${state.home}`);
       const pkg = JSON.parse(readFileSync(join(DESKTOP, "package.json"), "utf8")) as { version: string };
@@ -1330,14 +1478,26 @@ async function doctor(args: string[]): Promise<void> {
       bad(`remote 127.0.0.1:${state.port} is not listening on ${host} (exit ${listen.code}): ${probe}${tail === "" ? "" : `\n${tail}`}`);
     }
   } else {
-    try {
-      const listen = Bun.spawnSync(["lsof", "-nP", `-iTCP:${state.port}`, "-sTCP:LISTEN", "-t"]);
-      const pids = listen.stdout.toString().trim().split(/\s+/).filter((v) => v !== "");
-      if (listen.exitCode !== 0 || pids.length === 0) warn(`lsof reports no listener on ${state.port}`);
-      else if (pids.includes(String(state.pid))) ok(`port ${state.port} is owned by pid ${state.pid}`);
-      else bad(`port ${state.port} is owned by ${pids.join(",")}, not ${state.pid}`);
-    } catch {
-      warn("lsof unavailable; cannot prove port ownership");
+    const probe = inspectPort(state.port);
+    const conflict = portConflict(probe);
+    if (conflict?.kind === "stale-tunnels") {
+      // 这个端口上只剩隧道：多半是上一轮没收尾的（例如 10 月 29 日留在 9416 的 PID 62495）
+      warn(
+        `port ${state.port} 上还有上一轮残留的 ssh 隧道（${describeListeners(
+          probe.listeners.filter((entry) => probe.tunnels.includes(entry.pid)),
+        )}）；用 \`verify.ts tunnels --kill\` 或下一次 up 清掉`,
+      );
+    } else if (conflict?.kind === "foreign-tunnel") {
+      warn(
+        `port ${state.port} 上有一条 ssh 隧道但不是 CDP 形状（${describeListeners(conflict.owners)}）；` +
+          "确认是残留后用 `verify.ts tunnels --kill` 清掉",
+      );
+    } else if (probe.listeners.length === 0) {
+      warn(`lsof reports no listener on ${state.port}`);
+    } else if (probe.listeners.some((entry) => entry.pid === state.pid)) {
+      ok(`port ${state.port} is owned by pid ${state.pid}`);
+    } else {
+      bad(`port ${state.port} is owned by ${describeListeners(probe.listeners)}, not ${state.pid}`);
     }
   }
 
@@ -1584,6 +1744,7 @@ async function down(args: string[]): Promise<void> {
   const purge = hasFlag(args, "--purge");
   const targetFlag = takeFlag(args, "--target");
   const state = readState(takeFlag(args, "--run"));
+  rejectUnknownArgs(args, "verify.ts down [--run ID] [--purge] [--target mac|win-gamepc]");
   if (resolveTarget(targetFlag, state) === "win-gamepc") {
     await downWin(state, purge);
     return;
@@ -1595,15 +1756,10 @@ async function down(args: string[]): Promise<void> {
     if (!name.toLowerCase().includes(expected.toLowerCase())) {
       fail(`refusing to kill pid ${state.pid}: process name is "${name}", not ${expected}`);
     }
-    process.kill(state.pid, "SIGTERM");
-    const started = Date.now();
-    while (Date.now() - started < 8000 && alive(state.pid)) await sleep(100);
-    if (alive(state.pid)) {
-      process.kill(state.pid, "SIGKILL");
-      await sleep(300);
-    }
-    if (alive(state.pid)) fail(`pid ${state.pid} did not exit`);
-    console.log(`stopped pid ${state.pid}`);
+    // 同一棵进程树：主进程收掉后渲染进程/helper 也要收，SIGTERM 不行就补 SIGKILL
+    const stopped = await stopProcessTree(state.pid, { termMs: 8000, killMs: 3000 });
+    console.log(`stopped ${describeStop(stopped)}`);
+    if (stopped.survivors.length > 0) fail(`pid ${state.pid} did not exit：${stopped.survivors.join(",")}`);
   } else {
     console.log(`pid ${state.pid} is already gone`);
   }
@@ -1660,12 +1816,10 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
   const remoteRunDir = state.remoteRunDir ?? `${WIN_RUNS}\\${state.runId}`;
   try {
     if (state.sshTunnelPid !== undefined) {
-      try {
-        process.kill(state.sshTunnelPid, "SIGTERM");
-        console.log(`stopped ssh tunnel pid ${state.sshTunnelPid}`);
-      } catch {
-        console.log(`ssh tunnel pid ${state.sshTunnelPid} is already gone`);
-      }
+      // 验证脚本自己开的隧道必须真的关掉（r58 验收 6）：SIGTERM 宽限期后补 SIGKILL
+      const stopped = await stopProcessTree(state.sshTunnelPid, { termMs: 3000, killMs: 2000 });
+      console.log(`ssh tunnel: ${describeStop(stopped)}`);
+      if (stopped.survivors.length > 0) fail(`ssh 隧道 pid ${state.sshTunnelPid} 收不掉：先 kill -9 ${state.sshTunnelPid}`);
     } else {
       console.log("no sshTunnelPid recorded; nothing to stop locally");
     }
@@ -1720,26 +1874,34 @@ async function downWin(state: RunState, purge: boolean): Promise<void> {
     console.log(`pruned ${remoteCaches.length} remote cache paths`);
 
     const winDir = winLocal(state);
-    const remoteAppLog = state.remoteAppLog ?? `${remoteRunDir}\\app.log`;
-    const pulled: string[] = [];
-    const pull = (remotePath: string) => {
-      const rel = winRelPath(remotePath, remoteRunDir);
-      if (pullRemoteFile(host, remotePath, join(winDir, ...rel))) pulled.push(rel.join("/"));
-    };
-    if (pullRemoteFile(host, remoteAppLog, join(winDir, "app.log"))) pulled.push("app.log");
-    else console.log(`no remote app log at ${remoteAppLog}`);
-
-    for (const file of remoteFiles(host, `Get-ChildItem -LiteralPath '${remoteRunDir}\\home\\logs' -File -Recurse -ErrorAction SilentlyContinue`)) {
-      pull(file);
-    }
-    // every video's evidence: one video.json, its topic.md and the job's trajectory / status
-    for (const file of remoteFiles(
+    // 清单即契约（r58 验收 5）：远端 run 目录下除了缓存都是证据，逐个拉、逐个核对大小；
+    // 漏的补拉一次，仍然缺就报错，而不是像以前那样只按文件名白名单拉。
+    const listing = sshRun(
       host,
-      `Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | Where-Object { @('video.json','topic.md','trajectory.json','status.json') -contains $_.Name }`,
-    )) {
-      pull(file);
+      winPs(`Get-ChildItem -LiteralPath '${remoteRunDir}' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`),
+    ).stdout;
+    const expected = expectedEvidence(parseRemoteListing(listing), remoteRunDir);
+    const localPathOf = (remotePath: string) => join(winDir, ...relativeEvidencePath(remotePath, remoteRunDir));
+    const pullOne = (remotePath: string): boolean => pullRemoteFile(host, remotePath, localPathOf(remotePath));
+    const localBytes = (remotePath: string): number | null => {
+      const path = localPathOf(remotePath);
+      return existsSync(path) ? statSync(path).size : null;
+    };
+
+    const failures = expected.filter((file) => !pullOne(file.path)).length;
+    let gaps = evidenceGaps(expected, localBytes);
+    if (gaps.length > 0) {
+      // 一次重试：ssh 偶发断流不该让一份证据永久缺失
+      for (const gap of gaps) pullOne(gap.path);
+      gaps = evidenceGaps(expected, localBytes);
     }
-    console.log(`pulled ${pulled.length} remote file(s) into ${winDir}`);
+    if (gaps.length > 0) {
+      throw new RemoteError(
+        `证据清单没拉齐（${gaps.length}/${expected.length}，首次拉取失败 ${failures} 个）：\n${gaps.map((gap) => `  ${describeGap(gap)}`).join("\n")}\n` +
+          `远端清单来自 ${remoteRunDir}；补拉后可重跑 down，或手工 scp 后核对大小。`,
+      );
+    }
+    console.log(`evidence: ${expected.length} 个远端证据文件全部拉齐并核对大小（缓存已排除）-> ${winDir}`);
 
     state.stoppedAt = new Date().toISOString();
     writeFileSync(join(state.runDir, "state.json"), JSON.stringify(state, null, 2));
@@ -1776,6 +1938,35 @@ function runs(): void {
     // a win run's pid is remote: ask the box instead of the local process table
     const running = state.target === "win-gamepc" ? remoteAlive(state) : alive(state.pid);
     console.log(`${entry.name}  port=${state.port}  pid=${state.pid}  ${running ? "running" : "stopped"}`);
+  }
+}
+
+/**
+ * 本机 harness 形状的 ssh 隧道（`ssh -N -L <port>:127.0.0.1:<port>`）：
+ * 列出 pid/端口，`--kill` 清掉。收尾后应该一条都不剩；启动前的残留由 `up` 自己识别处理。
+ */
+async function tunnels(args: string[]): Promise<void> {
+  const kill = hasFlag(args, "--kill");
+  rejectUnknownArgs(args, "verify.ts tunnels [--kill]");
+  const found = tunnelsOf(processList());
+  if (found.length === 0) {
+    console.log("本机没有 harness 形状的 ssh 隧道（ssh -N -L <port>:127.0.0.1:<port>）");
+    return;
+  }
+  for (const entry of found) {
+    const owner = recordedTunnelRun(entry.pid);
+    const shape = entry.cdpShape ? "CDP 形状" : "非 CDP 形状";
+    console.log(`tunnel:   pid ${entry.pid}  port ${entry.port}  ${shape}  ${owner === null ? "残留（没有仍在运行的 run 记录它）" : `run ${owner.runId}`}`);
+    console.log(`  ${entry.command}`);
+  }
+  if (!kill) {
+    console.log("\n确认是残留后再清：verify.ts tunnels --kill");
+    return;
+  }
+  for (const entry of found) {
+    const stopped = await stopProcessTree(entry.pid, { termMs: 3000, killMs: 2000 });
+    console.log(`stopped   ${describeStop(stopped)}`);
+    if (stopped.survivors.length > 0) fail(`隧道 pid ${entry.pid} 收不掉：kill -9 ${entry.pid}`);
   }
 }
 
@@ -2190,6 +2381,12 @@ if (argv[0] === "--target" && argv.length >= 3) {
   argv.push(...leading);
 }
 const [command, ...rest] = argv;
+// `up --help` / `down -h` 必须只打印用法：以前 `up --help` 会被当成一次没有 --run 的启动（r57 踩过）
+const HELP_TOKENS = ["help", "--help", "-h"];
+if (HELP_TOKENS.includes(rest[0] ?? "")) {
+  console.log(HELP);
+  process.exit(0);
+}
 switch (command) {
   case "up":
     await up(rest);
@@ -2205,6 +2402,9 @@ switch (command) {
     break;
   case "runs":
     runs();
+    break;
+  case "tunnels":
+    await tunnels(rest);
     break;
   case "secrets-gate":
     secretsGate();
