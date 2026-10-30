@@ -63,9 +63,12 @@ function writeState(runId: string, fields: Record<string, unknown>): string {
   return dir;
 }
 
-/** 假的 ssh：只回答 verify.ts 会问的两类问题（远端 Test-Path 探测、远端密钥清单）。 */
-function writeFakeSsh(): string {
-  const bin = track(join(FIXTURES, "fakebin"));
+/**
+ * 假的 ssh：只回答 verify.ts 会问的两类问题（远端 Test-Path 探测、远端密钥清单）。
+ * mode 决定远端 staging 根的样子：有历史残留 / 目录不存在 / 读不了。
+ */
+function writeFakeSsh(mode: "residue" | "missing" | "error" = "residue"): string {
+  const bin = track(join(FIXTURES, `fakebin-${mode}`));
   mkdirSync(bin, { recursive: true });
   const ssh = join(bin, "ssh");
   writeFileSync(
@@ -74,6 +77,7 @@ function writeFakeSsh(): string {
       `#!/usr/bin/env bun`,
       `const args = process.argv.slice(2);`,
       `const command = args[args.length - 1] ?? "";`,
+      `const mode = ${JSON.stringify(mode)};`,
       `const decode = (cmd) => {`,
       `  const encoded = cmd.match(/-EncodedCommand\\s+(\\S+)/);`,
       `  if (encoded) return Buffer.from(encoded[1], "base64").toString("utf16le");`,
@@ -82,7 +86,8 @@ function writeFakeSsh(): string {
       `};`,
       `const script = decode(command);`,
       `if (script.includes("Get-ChildItem")) {`,
-      `  process.stdout.write("11\\tD:\\\\code\\\\video-notes\\\\verify\\\\r47\\\\user-data\\\\secrets.bin\\r\\n");`,
+      `  if (mode === "error") { process.stderr.write("Get-ChildItem : Access to the path is denied.\\n"); process.exit(1); }`,
+      `  if (mode === "missing") { process.stdout.write("MISSING\\n"); } else { process.stdout.write("11\\tD:\\\\code\\\\video-notes\\\\verify\\\\r47\\\\user-data\\\\secrets.bin\\r\\n"); }`,
       `} else if (script.includes("Test-Path")) {`,
       `  process.stdout.write("absent\\n");`,
       `} else {`,
@@ -163,6 +168,25 @@ describe.skipIf(process.platform !== "darwin")("r60 密钥门禁（issue #69）"
     // 远端残留不该等到建目录、传 app 之后才发现
     expect(existsSync(join(VERIFY_ROOT, runId))).toBe(false);
     expect(existsSync(join(STATE_ROOT, runId))).toBe(false);
+  });
+
+  test("漏洞 1b：远端目录不存在不算残留，读不了才失败", { timeout: 60_000 }, () => {
+    const runId = "r60-test-remote-unreadable";
+    for (const path of [join(VERIFY_ROOT, runId), join(STATE_ROOT, runId)]) {
+      rmSync(path, { recursive: true, force: true });
+      track(path);
+    }
+    // 新机器：远端还没有 verify 目录 -> 门禁放行（后面会在私有配置上失败，与门禁无关）
+    const fresh = run(["up", "--target", "win-gamepc", "--run", runId, "--port", String(freePort())], { path: writeFakeSsh("missing") });
+    expect(fresh.code).toBe(1);
+    expect(fresh.stderr).not.toContain("远端证据目录");
+
+    // 读不了（Get-ChildItem 报错 / ssh 退出非零）-> 失败，绝不报干净
+    const secondId = `${runId}-2`;
+    track(join(VERIFY_ROOT, secondId));
+    const unreadable = run(["up", "--target", "win-gamepc", "--run", secondId, "--port", String(freePort())], { path: writeFakeSsh("error") });
+    expect(unreadable.code).toBe(1);
+    expect(unreadable.stderr).toContain("无法读取远端证据目录");
   });
 
   test("漏洞 3：Mac 就绪后二次扫描——应用把密钥写进证据目录，up 失败并收掉进程", { timeout: 90_000 }, () => {

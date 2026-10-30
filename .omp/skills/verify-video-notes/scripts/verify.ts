@@ -917,13 +917,14 @@ function assertNoSecretsInEvidence(context: string, extraNeedles: string[] = [])
 
 /**
  * 远端历史残留门禁（r60 漏洞 1）：staging 根里 pre-r50 布局的 user-data 从来没被查过。
- * 读不了远端目录（ssh 失败 / 列目录报错）同样算失败——「问不到」不等于「没有」。
+ * 目录不存在 = 没有可残留的东西（新机器）；读不了目录（ssh 失败 / 列目录报错）才是失败——
+ * 「问不到」不等于「没有」。
  */
 function assertNoRemoteSecrets(host: string, root: string, context: string): void {
   const listing = sshExec(
     host,
     winPsEncoded(
-      `$ErrorActionPreference='Stop'; Get-ChildItem -LiteralPath '${root}' -File -Recurse -Force | ForEach-Object { "$($_.Length)\`t$($_.FullName)" }`,
+      `$ErrorActionPreference='Stop'; if (-not (Test-Path -LiteralPath '${root}')) { 'MISSING' } else { Get-ChildItem -LiteralPath '${root}' -File -Recurse -Force | ForEach-Object { "$($_.Length)\`t$($_.FullName)" } }`,
     ),
   );
   if (listing.code !== 0) {
