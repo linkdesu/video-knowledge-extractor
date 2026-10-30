@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLatestPointer, writeLatestPointer } from "./latest";
+import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./latest";
 
 /** 一个临时 verify 根：latest 与若干 run 目录，全部落在 tmp 里。 */
 function withRoot(body: (root: string) => void): void {
@@ -88,6 +88,38 @@ describe("writeLatestPointer", () => {
 
       expect(read(latest)).toBe("r50-mac\n");
       expect(existsSync(join(root, "gone"))).toBe(false);
+    });
+  });
+
+  test("同名目录里是带 state.json 的 run：拒绝覆盖，目录与证据原样保留", () => {
+    withRoot((root) => {
+      const latest = join(root, "latest");
+      mkdirSync(latest, { recursive: true });
+      writeFileSync(join(latest, "state.json"), '{"runId":"Latest"}');
+      writeFileSync(join(latest, "notes-page-final.png"), "png");
+
+      // 大小写不敏感的卷上 --run Latest 让 run 目录与指针撞成同一个 inode：删掉就是丢证据
+      expect(() => writeLatestPointer(latest, "Latest")).toThrow(/带 state\.json 的 run 目录/);
+      expect(statSync(latest).isDirectory()).toBe(true);
+      expect(read(join(latest, "state.json"))).toBe('{"runId":"Latest"}');
+      expect(existsSync(join(latest, "notes-page-final.png"))).toBe(true);
+    });
+  });
+
+  test("latestPointerProblem：不存在、普通文件、符号链接、无 state.json 的目录都不拦", () => {
+    withRoot((root) => {
+      const latest = join(root, "latest");
+      expect(latestPointerProblem(latest)).toBeNull();
+      writeLatestPointer(latest, "r51");
+      expect(latestPointerProblem(latest)).toBeNull();
+
+      const dir = join(root, "plain-dir");
+      mkdirSync(join(dir, "stale"), { recursive: true });
+      writeFileSync(join(dir, "stale", "state.json"), "{}");
+      expect(latestPointerProblem(dir)).toBeNull();
+
+      writeFileSync(join(dir, "state.json"), "{}");
+      expect(latestPointerProblem(dir)).toContain("state.json");
     });
   });
 });

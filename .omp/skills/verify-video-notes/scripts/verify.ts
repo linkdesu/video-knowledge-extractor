@@ -16,11 +16,12 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, sta
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Cdp, listTargets, writeAxTree } from "./lib/cdp";
-import { readLatestPointer, writeLatestPointer } from "./lib/latest";
+import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./lib/latest";
 import { findSecretFiles, isInside, winPathInside } from "./lib/secrets-gate";
 import { classifyFindings, dedupeFindings, parseFindings, resolveImpeccableBin, runImpeccable, type ImpeccableFinding } from "./lib/impeccable";
 import { jobPaddingProblems, viewportProblems } from "./lib/layout";
 import { defaultModelDir } from "./lib/model-dir";
+import { runIdProblem } from "./lib/run-id";
 import {
   assertPrivateMode,
   extractPrivateConfig,
@@ -258,15 +259,23 @@ function revParse(): string | null {
 }
 
 
+/**
+ * 只读命令也要同一条 run id 边界（r51）：run id 会拼进 `tmp/verify/<id>`，而 `down --purge`
+ * 会按 state.json 里的 pid / runDir 动手。显式 `--run` 与 latest 指针内容都过 `runIdProblem`；
+ * 没有 run 时返回 null，由调用方决定是报错还是当作“还没有 run”。
+ */
+function checkedRunId(runId: string | undefined): string | null {
+  const id = runId ?? readLatestPointer(LATEST);
+  if (id === null) return null;
+  const problem = runIdProblem(id);
+  if (problem !== null) fail(`${problem}\n来源：${runId === undefined ? "tmp/verify/latest" : "--run"}`);
+  return id;
+}
+
 function readState(runId?: string): RunState {
-  let dir: string;
-  if (runId !== undefined) {
-    dir = join(VERIFY_ROOT, runId);
-  } else {
-    const latest = readLatestPointer(LATEST);
-    if (latest === null) fail("no verification run yet: run `verify.ts up` first");
-    dir = join(VERIFY_ROOT, latest);
-  }
+  const id = checkedRunId(runId);
+  if (id === null) fail("no verification run yet: run `verify.ts up` first");
+  const dir = join(VERIFY_ROOT, id);
   const file = join(dir, "state.json");
   if (!existsSync(file)) fail(`no state.json in ${dir}`);
   // Older state.json files lack commit / startedAt / stoppedAt; the optional type tolerates them.
@@ -622,16 +631,6 @@ function assertNoSecretsInEvidence(context: string): void {
   if (found.length > 0) fail(secretsFailureMessage(context, found));
 }
 
-/** run id 会拼进路径，也决定 latest 指针的落点：`latest` 本身与带分隔符的 id 一律拒绝。 */
-function assertRunId(runId: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === "latest") {
-    fail(
-      `--run 只接受字母数字与 . _ -，且不能用 latest（那是 tmp/verify/latest 指针本身）：${runId}\n` +
-        `例如 --run r50-mac。`,
-    );
-  }
-}
-
 /** Seed one local (mac) run userData before the app starts. */
 function seedLocalRunConfig(userData: string): void {
   if (existsSync(PRIVATE_CONFIG_MAC)) assertPrivateMode(statSync(PRIVATE_CONFIG_MAC).mode, PRIVATE_CONFIG_MAC);
@@ -791,9 +790,13 @@ async function up(args: string[]): Promise<void> {
   const target = resolveTarget(takeFlag(args, "--target"));
   const port = Number(takeFlag(args, "--port") ?? "9411");
   const runId = takeFlag(args, "--run") ?? stamp();
-  assertRunId(runId);
+  // 建目录、拉 app 之前先拒绝：保留名/分隔符/../ 一律不过（lib/run-id.ts）
+  checkedRunId(runId);
   // 启动前先拒绝：历史 run 的 secrets.bin 不该等 app 起来才报（那时进程已在跑，退出就留下孤儿）
   assertNoSecretsInEvidence("up");
+  // 同理：latest 上如果是一份带 state.json 的 run，写指针时绝不覆盖；提前到拉 app 之前拒绝
+  const latestProblem = latestPointerProblem(LATEST);
+  if (latestProblem !== null) fail(latestProblem);
   if (target === "win-gamepc") {
     await upWin(args, port, runId);
     return;
@@ -920,7 +923,17 @@ async function up(args: string[]): Promise<void> {
   }
 
   writeFileSync(join(runDir, "state.json"), JSON.stringify(state, null, 2));
-  writeLatestPointer(LATEST, runId);
+  try {
+    writeLatestPointer(LATEST, runId);
+  } catch (err) {
+    // 检查与写指针之间 latest 被别的 up / 手工改成 run 目录：不覆盖，但别把刚起来的实例留成孤儿
+    try {
+      process.kill(child.pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+    fail(`${String(err)}\n已停掉本次启动的 pid ${child.pid}；证据在 ${runDir}（state.json 已写，down --run ${runId} 可收尾）。`);
+  }
   console.log(`run:      ${runDir}`);
   console.log(`port:     ${port}`);
   console.log(`pid:      ${child.pid}`);
@@ -1768,13 +1781,9 @@ function appendVerifyEvent(runDir: string | undefined, kind: string, action: str
 }
 /** 非致命版 readState：run 不存在时返回 null（prototype 的 round 模式允许没有 run；freeze 模式要求有 run 以拿 CDP 会话）。 */
 function tryReadState(runId?: string): RunState | null {
-  if (runId !== undefined) {
-    const file = join(VERIFY_ROOT, runId, "state.json");
-    return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
-  }
-  const latest = readLatestPointer(LATEST);
-  if (latest === null) return null;
-  const file = join(VERIFY_ROOT, latest, "state.json");
+  const id = checkedRunId(runId);
+  if (id === null) return null;
+  const file = join(VERIFY_ROOT, id, "state.json");
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunState) : null;
 }
 
