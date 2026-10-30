@@ -15,6 +15,7 @@
 - 标记：差异行打「B 对 / A 对 / 都错」，写 `tmp/verify/lab/marks-<样本>.json`，重开仍在。
 - 输入区布局（r52）：`.vn-lab-bar-row` 是一个 4 列网格，拖放提示 `lab-dropzone` 独占首行，最近样本 / 方案 A / 方案 B / 阈值四列等宽（16px gap、底边对齐）；视口 ≤1053px 降成 2×2，≤760px 单列。Select 触发器 `box-sizing: border-box` + `min-width: 0`，长样本名用省略号截断，展开的下拉不越出卡片内容宽。
 - 视图状态保留（r52）：样本、方案 A/B、阈值、页面滚动（`.vn-content`）与字幕行列表滚动写进 `localStorage['vn.lab.view']`（`renderer/src/lib/lab-view-state.ts`，严格白名单 + clamp），导航离开再返回、以及整机重启后都还原来同一屏。
+- 下拉弹层（r52c）：`Select` 的 `role=listbox` 通过 `createPortal` 渲染到 `document.body`，`.vn-select-list.portal` 用 `position: fixed` + 内联锚点几何（`z-index: 55`），打开期间跟随内容区滚动/窗口缩放。留在卡片里会被 `.vn-card` 的 `backdrop-filter` 层叠上下文困住，卡片比弹层矮时下方卡片会盖住第 2 个及以后的选项（r52b 的 G1）。验收要按**命中**判：对每个选项取 `getBoundingClientRect()` 中心做 `elementFromPoint`，断言落点 `closest('[role=option]')` 就是该选项，再用真实鼠标点击并断言触发器文案变成该选项；1280/900/700/520 四档都要测（r52c 证据 `tmp/verify/r52c-hit/hit-*.json`）。
 
 ## How to get to it (user POV)
 
