@@ -6,9 +6,9 @@
  * 命中路径不碰模型、不解码，只读 JSON 与 wav。
  */
 import { createHash } from "node:crypto";
-import { closeSync, cpSync, createReadStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { closeSync, cpSync, createReadStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
-import { DIARIZATION_TUNING, SILENCE_DETECTION, modelFileSpecs, type ModelRole } from "@video-notes/core";
+import { DIARIZATION_TUNING, SILENCE_DETECTION, logger, modelFileSpecs, type ModelRole } from "@video-notes/core";
 import { REFINE_DEFAULTS } from "./refine";
 
 /** 缓存 schema：产物格式或参数口径变了就 +1，旧条目自然全部 miss。 */
@@ -301,6 +301,49 @@ export function newEntryDir(root: string, key: string): string {
 }
 
 /**
+ * rename 可以「等一等再试」的 errno：POSIX 的 ENOTEMPTY/EEXIST 是目标被别人的条目占着；
+ * Windows 上目录 rename 撞已有目录报 EPERM/EACCES，句柄/杀软没放手也报这几个，统一在这里收口。
+ * 重试方式按「目标此刻在不在」分流，绝不因为这类 errno 直接判失败。
+ */
+const RENAME_RETRY_CODES: Record<string, true> = {
+  ENOTEMPTY: true,
+  EEXIST: true,
+  EPERM: true,
+  EACCES: true,
+  EBUSY: true,
+};
+/** 目标被别人的条目占着时的退避预算：竞争窗口只有几微秒，800 ms 已是它的一万倍。 */
+const PUBLISH_CONTENTION_BUDGET_MS = 800;
+/** 目标空着、rename 仍被句柄挡住（Windows 索引器/杀软）：实测几十到几百毫秒，给足 3 s。 */
+const PUBLISH_HANDLE_BUDGET_MS = 3000;
+/** readdir/rename 的瞬时抖动（防病毒、索引器、句柄未释放）：小步重试，真错误照抛。 */
+const FS_TRANSIENT_CODES: Record<string, true> = {
+  EBUSY: true,
+  EAGAIN: true,
+  EINTR: true,
+  EMFILE: true,
+  ENFILE: true,
+};
+
+/** 主进程是同步路径：只能用阻塞小睡（与 core 的 lock/library 同一做法）。 */
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function errnoCode(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" ? code : "";
+}
+
+/** 包装发布/读目录失败的上下文，并把 errno 留在 `code` 上：调用方日志与测试诊断都能直接读到。 */
+function publishError(message: string, err: unknown): Error {
+  const code = errnoCode(err);
+  const detail = err instanceof Error ? err.message : String(err);
+  const wrapped = new Error(`${message}（errno=${code || "unknown"}）：${detail}`);
+  return code === "" ? wrapped : Object.assign(wrapped, { code });
+}
+
+/**
  * 目录级 fsync：rename 之后必须把父目录刷盘，否则掉电后「键路径存在」可能不成立。
  * Windows 不允许对目录开 fsync（EPERM/EISDIR/EACCES），忽略即可 —— NTFS 的 rename 本身有日志。
  */
@@ -322,9 +365,25 @@ function fsyncPath(path: string): void {
   }
 }
 
+/** readdir 的瞬时抖动（索引器、防病毒、句柄未释放）重试；用尽或真错误时带上路径与 errno 抛出，绝不静默跳过。 */
+function readDirEntries(path: string): Dirent[] {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return readdirSync(path, { withFileTypes: true });
+    } catch (err) {
+      const code = errnoCode(err);
+      if (attempt >= 3 || FS_TRANSIENT_CODES[code] !== true) {
+        throw publishError(`读目录失败：${path}`, err);
+      }
+      logger().debug("fs", "fsyncTree 读目录重试", { path, code, attempt });
+      sleepMs(5 * (attempt + 1));
+    }
+  }
+}
+
 /** 递归 fsync 一个目录树里的所有文件，再 fsync 目录本身：发布前的落盘保证。 */
 export function fsyncTree(root: string): void {
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
+  for (const entry of readDirEntries(root)) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) {
       fsyncTree(path);
@@ -335,16 +394,91 @@ export function fsyncTree(root: string): void {
   fsyncPath(root);
 }
 
+/** 发布结果：自己的目录已经 rename 到位，或采用了对方已发布的条目。 */
+type PublishOutcome = "published" | "adopted";
+
+/**
+ * 最终兜底，保证返回时键路径上有某一方的完整条目：
+ *   1. 目标已有条目 → 采用它（"adopted"）；
+ *   2. 目标空着、而我们手里还攥着自己挪走的条目 → 先补回（"adopted"）；
+ *   3. 目标空着、补不回去（那条已被对方清掉）→ 把自己这份发布进去（"published"）；
+ *   4. 都不成 → 带 errno 抛错，调用方按分析失败处理。
+ * 窗口里读到「目标不存在」绝不能直接判失败：那只是对端发布过程中的一瞬（#85）；
+ * Windows 上 EPERM/EACCES/EBUSY 是句柄还没放手，短退避重试而不是报错。
+ */
+function resolveContention(target: string, tmpDir: string, stales: string[]): PublishOutcome {
+  if (existsSync(target)) return "adopted";
+  const stolen = stales[stales.length - 1];
+  if (stolen !== undefined) {
+    try {
+      renameSync(stolen, target);
+      stales.pop();
+      return "adopted";
+    } catch {
+      // 补不回去：对方可能刚补上，也可能已经把那条清掉 —— 下面按目标状态再判一次。
+      if (existsSync(target)) return "adopted";
+    }
+  }
+  const until = Date.now() + PUBLISH_HANDLE_BUDGET_MS / 6;
+  let lastErr: unknown = null;
+  do {
+    try {
+      renameSync(tmpDir, target);
+      return "published";
+    } catch (err) {
+      lastErr = err;
+      // 先看目标：对方在这几微秒里发布了，就采用它（无论我们这次撞的是什么 errno）。
+      if (existsSync(target)) return "adopted";
+      const code = errnoCode(err);
+      if (RENAME_RETRY_CODES[code] !== true) break;
+      sleepMs(25);
+    }
+  } while (Date.now() < until);
+  throw publishError(`发布条目失败：${tmpDir} -> ${target}（收尾仍无法发布）`, lastErr);
+}
+
+/**
+ * 竞争预算用尽后的收尾：目标上有对方 rename 到位的完整条目就采用它，空着就把自己 rename
+ * 进去；收尾阶段再给一小段预算处理 Windows 的句柄延迟，仍谈不拢才交给 `resolveContention`。
+ * 不再用一次 `existsSync(target)` 判死：那正是 #85 的竞争窗口。
+ */
+function settlePublishedEntry(target: string, tmpDir: string, attempts: number, lastCode: string): PublishOutcome {
+  const settleDeadline = Date.now() + PUBLISH_HANDLE_BUDGET_MS / 3;
+  while (Date.now() < settleDeadline) {
+    if (existsSync(target)) return "adopted";
+    try {
+      renameSync(tmpDir, target);
+      return "published";
+    } catch (err) {
+      const code = errnoCode(err);
+      if (RENAME_RETRY_CODES[code] !== true) {
+        throw publishError(`发布条目失败：${tmpDir} -> ${target}（第 ${attempts} 次后收尾）`, err);
+      }
+      lastCode = code;
+      sleepMs(25);
+    }
+  }
+  // 最后一次 rename 之后对方可能刚好发布完成：再裁决一次，不当成失败。
+  if (existsSync(target)) return "adopted";
+  throw new Error(
+    `发布条目竞争超时：${tmpDir} -> ${target}（${attempts} 次 rename 后仍在竞争，errno=${lastCode}）`,
+  );
+}
+
 /**
  * 原子发布：目录整体 rename 到键路径。已有旧条目（重算同一键）先挪到 `.tmp`。
  *
  * r54：多个 worktree（不同进程）可能同时发布同一个键。整目录 rename 是原子的，但「目标已存在」
- * 时 rename 会失败（POSIX ENOTEMPTY / Windows EPERM），所以竞争表现为：
+ * 时 rename 会失败（POSIX ENOTEMPTY，Windows 上常见 EPERM/EACCES），所以竞争表现为：
  *   1. 双方都想把旧条目挪走；
  *   2. 一方 rename 到键路径后，另一方再 rename 就撞上「目录非空」。
- * 处理：撞上「目标已被占」就把当前目标挪到 `.tmp` 再重试（有限次）。重试用尽时，目标存在即说明对方
- * 已完成一次原子 rename，接受它（两边算的是同一个键 = 同一份内容），丢掉自己这份；只有目标不存在
- * 且 rename 仍失败才如实报错。任何时刻键路径上只可能是某一方写完整的那份。
+ * 处理：「目标已被占」就把当前目标挪到 `.tmp` 再退避重试（EPERM/EACCES/EBUSY 只当句柄延迟、
+ * 原地重试，不动别人的条目）；预算内一直抢不到就采用对方那份（同一个键 = 同一份内容）。
+ *
+ * r66 / #85：旧实现在「第 4 次失败时 existsSync(target)」下决定抛不抛错 —— 而对方「把条目挪走 →
+ * 自己 rename 到位」之间 keep 着几毫秒的空窗，这个读到的 false 只是窗口的一瞬，据此抛错会把正常
+ * 竞争报成分析失败（实测 ENOTEMPTY 偶发子进程退出 1）。现在预算用尽后不再靠 existsSync 判死：
+ * `settlePublishedEntry` / `resolveContention` 会一直把「键路径上要有某一方的完整条目」落到实处。
  */
 export function publishEntry(root: string, key: string, tmpDir: string): void {
   mkdirSync(join(root, ".tmp"), { recursive: true });
@@ -352,29 +486,57 @@ export function publishEntry(root: string, key: string, tmpDir: string): void {
   // 发布前先把自己这份刷盘：rename 只保证目录项顺序，不保证文件内容落盘。
   fsyncTree(tmpDir);
   const stales: string[] = [];
-  for (let attempt = 0; ; attempt++) {
+  const collisionDeadline = Date.now() + PUBLISH_CONTENTION_BUDGET_MS;
+  const handleDeadline = Date.now() + PUBLISH_HANDLE_BUDGET_MS;
+  let attempts = 0;
+  let outcome: PublishOutcome | null = null;
+  for (;;) {
+    attempts++;
     try {
       renameSync(tmpDir, target);
+      outcome = "published";
       break;
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? "";
-      if (!["ENOTEMPTY", "EEXIST", "EPERM", "EACCES", "EBUSY"].includes(code)) throw err;
-      if (attempt >= 3) {
-        // 目标存在就说明对方已经完成一次原子 rename（rename 不会留下半截目录）；
-        // 两边算的是同一个键 = 同一份内容，采用对方那份，绝不因为竞争报分析失败。
-        if (existsSync(target)) {
-          discardEntryDir(tmpDir);
-          break;
+      const code = errnoCode(err);
+      if (RENAME_RETRY_CODES[code] !== true) {
+        throw publishError(`发布条目失败：${tmpDir} -> ${target}（第 ${attempts} 次）`, err);
+      }
+      // 目标此刻有东西 = 被别人的条目占着（含 Windows 目录 rename 的 EPERM）：挪走再抢。
+      // 目标空着 = 只是句柄还没放手：原地让一让，别动任何目录。
+      const occupied = existsSync(target);
+      if (Date.now() >= (occupied ? collisionDeadline : handleDeadline)) {
+        try {
+          outcome = settlePublishedEntry(target, tmpDir, attempts, code);
+        } catch {
+          // 收尾没谈拢：交给统一兜底再裁决一次；能采用/补回/发布就不算失败，
+          // 真的落不下才由它抛出带 errno 的错误。
+          outcome = resolveContention(target, tmpDir, stales);
         }
-        throw err;
+        break;
       }
-      const aside = join(root, ".tmp", `${key}-stale-${process.pid}-${Date.now()}-${attempt}`);
-      try {
-        renameSync(target, aside);
-        stales.push(aside);
-      } catch {
-        // 对方刚把目标挪走/替换掉：直接重试即可
+      if (occupied) {
+        const aside = join(root, ".tmp", `${key}-stale-${process.pid}-${Date.now()}-${attempts}`);
+        try {
+          renameSync(target, aside);
+          stales.push(aside);
+        } catch {
+          // 对方刚把目标挪走/替换掉：直接重试即可
+        }
+        // 退避：不给对方留出「rename 到位」的缝隙，重试会一直撞空。
+        // 前几次不睡：竞争通常几微秒就结束，空转重试比睡过去更快；连续撞空才让一让。
+        if (attempts > 3) sleepMs(Math.min(attempts - 3, 5));
+      } else {
+        // 句柄/杀软还没放手：让 25 ms 再试，不挪动任何东西。
+        sleepMs(25);
       }
+    }
+  }
+  if (outcome === "adopted") {
+    // 采用对方那份：先把可能被我们挪进 .tmp 的那条补回键路径，绝不留下「键路径不存在」。
+    // 兜底也可能反过来把「我们自己这份」发布进去（对方条目已被清掉），那就没什么可丢的。
+    if (resolveContention(target, tmpDir, stales) === "adopted") {
+      discardEntryDir(tmpDir);
+      logger().warn("fs", "Lab 缓存发布竞争：采用对方已发布的条目", { root, key, attempts });
     }
   }
   fsyncPath(root);
