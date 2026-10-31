@@ -3,12 +3,12 @@ import type { Server } from "bun";
 /**
  * 测试用共享 HTTP mock（r65 / #84）。
  *
- * 为什么不是「每个用例一个新 `Bun.serve`」：`bun test` 在**一个进程**里按文件顺序跑完 48 个文件，
+ * 为什么不是「每个用例一个新 `Bun.serve`」：`bun test` 在**一个进程**里按文件顺序跑完 core 的 49 个文件，
  * 每例/每文件起停 server 会让同一个进程不断新建 origin、回收短命端口、关掉 keep-alive 连接；
  * bun 的 fetch 连接池对这类「刚被关掉/刚被回收的 origin」并不总是及时剔除，满载（8 路并行全量）时
  * 偶发把请求交给一条已死的连接，报 `The socket connection was closed unexpectedly`，
- * 或者把上一条连接的残留字节当响应（`Malformed_HTTP_Response`）。实测：120 次 8 路并行全量里
- * 命中 3 次，全部落在 volcengine / endpoint 这两类 mock 用例上（issue #84）。
+ * 或者把上一条连接的残留字节当响应（`Malformed_HTTP_Response`）。实测修复前 300 次并行全量里
+ * 命中 5 次（约 1/60 轮），全部落在 volcengine / endpoint 这两类 mock 用例上（issue #84）。
  *
  * 这里的做法是 ADR-0038 决定 2 的延伸：
  * - **整个进程只绑一次端口**，直到进程退出都不 `stop`（`bun test` 跑完直接退出，不会被挂住）；
@@ -31,7 +31,6 @@ export interface MockEndpoint {
 
 interface Route {
   handler: MockHandler | null;
-  hits: number;
 }
 
 interface Registry {
@@ -64,7 +63,6 @@ function registry(): Registry {
       if (route.handler === null) {
         return new Response(`mock 端点 ${ns} 尚未设置 handler`, { status: 500 });
       }
-      route.hits += 1;
       const inner = new URL(req.url);
       inner.pathname = slash < 0 ? "/" : url.pathname.slice(slash);
       return route.handler(new Request(inner.href, req));
@@ -79,7 +77,7 @@ function registry(): Registry {
 export function createMockEndpoint(): MockEndpoint {
   const reg = registry();
   const ns = `mock-${reg.nextId++}`;
-  const route: Route = { handler: null, hits: 0 };
+  const route: Route = { handler: null };
   reg.routes.set(ns, route);
   return {
     url: `${reg.origin}/${ns}`,
