@@ -1,27 +1,30 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRemoteEngine, createUrlEngine } from "../remote";
+import { createMockEndpoint } from "../../core/test-http";
 type Req = { url: string; headers: Record<string, string>; body: Buffer };
 type Resp = { status: number; body: string; headers?: Record<string, string> };
 
+/**
+ * 整个进程一个 mock origin（`../../core/test-http`，r65 / #84）：用例只换 handler。
+ * 每例新起 `Bun.serve` 会让同一进程反复关连接、回收短命端口，8 路并行全量下偶发把请求交给死连接，
+ * 报 `The socket connection was closed unexpectedly`（本文件的两条「结构错误」用例是高频受害者）。
+ */
+const mock = createMockEndpoint();
+
 function startVolcMock(handler: (rec: Req) => Resp): { url: string; calls: Req[] } {
   const calls: Req[] = [];
-  const server = Bun.serve({
-    port: 0,
-    async fetch(req) {
-      const headers: Record<string, string> = {};
-      req.headers.forEach((v, k) => (headers[k] = v));
-      const rec: Req = { url: req.url, headers, body: Buffer.from(await req.arrayBuffer()) };
-      calls.push(rec);
-      const r = handler(rec);
-      return new Response(r.body, { status: r.status, headers: r.headers });
-    },
+  mock.setHandler(async (req) => {
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => (headers[k] = v));
+    const rec: Req = { url: req.url, headers, body: Buffer.from(await req.arrayBuffer()) };
+    calls.push(rec);
+    const r = handler(rec);
+    return new Response(r.body, { status: r.status, headers: r.headers });
   });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, calls };
+  return { url: mock.url, calls };
 }
 
 /** 守卫：任何不指向 mock 的请求立即失败，测试绝不出真实网络（ADR-0016 §2 端点注入）。 */
@@ -46,11 +49,9 @@ const API_KEY = "volc-api-key-secret-1";
 const APP_KEY = "volc-app-key-secret-2";
 const ACCESS_KEY = "volc-access-key-secret-3";
 
-const servers: Server<undefined>[] = [];
 const savedEnv: Record<string, string | undefined> = {};
 
 afterAll(() => {
-  for (const s of servers) s.stop(true);
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;

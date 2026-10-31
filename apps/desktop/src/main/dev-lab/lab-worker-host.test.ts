@@ -181,6 +181,11 @@ function bunProcess(tag: string, script: string): { proc: LabWorkerProcess; pid:
   };
 }
 
+/**
+ * 这几条用例会真的 `Bun.spawn` 一个 bun 子进程（每个用例 1–5 个）：8 路并行全量时
+ * 「起进程 + 等它退出」会被机器负载拖过默认 5 s 预算（r65 实测 20/20 轮都 5000.12ms 触顶，
+ * 单进程跑同一个文件全绿）。按 ADR-0038 §4 的约定给显式 30 s 上限，断言不变，卡住仍判失败。
+ */
 describe("主进程侧：worker 不残留", () => {
   test("连续 5 次未命中：每次 worker 都退出，没有进程增长", async () => {
     const logs: string[] = [];
@@ -205,7 +210,7 @@ describe("主进程侧：worker 不残留", () => {
     expect(steps.filter((step) => step === "extract")).toHaveLength(5);
     expect(logs.filter((line) => line.startsWith("Lab worker 退出"))).toHaveLength(5);
     host.dispose();
-  });
+  }, 30_000);
 
   /**
    * r57 / #74：run 结算必须等于「这个 worker 进程没了」。以前 done 一到就结算，
@@ -231,7 +236,7 @@ describe("主进程侧：worker 不残留", () => {
     }
     expect(liveAtStart).toEqual([1, 1, 1, 1, 1]);
     host.dispose();
-  });
+  }, 30_000);
 
   test("worker 无视 ack：宽限期到就被 kill（退出码非 0，进程归零）", async () => {
     let child: { pid: number; exited: Promise<number> } | undefined;
@@ -250,7 +255,7 @@ describe("主进程侧：worker 不残留", () => {
     expect(code).not.toBe(0);
     expect(host.live()).toBe(0);
     host.dispose();
-  });
+  }, 30_000);
 
   test("app 退出（dispose）杀掉还在跑的 worker，run 以错误收尾", async () => {
     let child: { pid: number; exited: Promise<number> } | undefined;
@@ -268,5 +273,5 @@ describe("主进程侧：worker 不残留", () => {
     if (child === undefined) throw new Error("fork 没被调用");
     await child.exited;
     expect(await pending).toBeInstanceOf(Error);
-  });
+  }, 30_000);
 });

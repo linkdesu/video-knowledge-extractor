@@ -1,5 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,16 +6,11 @@ import { createAsrEngine } from "./engine";
 import type { AsrRun } from "./engine";
 import type { Progress } from "../core/steps";
 import type { SpeakerId, Video } from "../core/types";
+import { createMockEndpoint } from "../core/test-http";
 
 const SR = 16000;
 const TEST_KEY = "sk-test-key-123";
 const TEST_MODEL = "whisper-mock";
-
-const servers: Server<undefined>[] = [];
-
-afterAll(() => {
-  for (const s of servers) s.stop(true);
-});
 
 /** 每个测试自建临时目录（ADR-0015 约定），不依赖 process.env 顺序。 */
 function freshDir(): string {
@@ -74,22 +68,24 @@ function parseMultipart(body: Buffer, contentType: string): Part[] {
   return parts;
 }
 
+/**
+ * 整个进程一个 mock origin（`../core/test-http`，r65 / #84）：用例只换 handler；
+ * 不再每例新起/停掉 `Bun.serve`（满载下会偶发复用到已关连接）。
+ */
+const mock = createMockEndpoint();
+
 function startMock(handler: (rec: Recorded) => { status: number; body: string }): { url: string; calls: Recorded[] } {
   const calls: Recorded[] = [];
-  const server = Bun.serve({
-    port: 0,
-    async fetch(req) {
-      const headers: Record<string, string> = {};
-      req.headers.forEach((v, k) => headers[k] = v);
-      const body = Buffer.from(await req.arrayBuffer());
-      const rec: Recorded = { url: req.url, headers, parts: parseMultipart(body, headers["content-type"] ?? "") };
-      calls.push(rec);
-      const { status, body: respBody } = handler(rec);
-      return new Response(respBody, { status, headers: { "content-type": "application/json" } });
-    },
+  mock.setHandler(async (req) => {
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => (headers[k] = v));
+    const body = Buffer.from(await req.arrayBuffer());
+    const rec: Recorded = { url: req.url, headers, parts: parseMultipart(body, headers["content-type"] ?? "") };
+    calls.push(rec);
+    const { status, body: respBody } = handler(rec);
+    return new Response(respBody, { status, headers: { "content-type": "application/json" } });
   });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}/v1`, calls };
+  return { url: `${mock.url}/v1`, calls };
 }
 
 function filePart(rec: Recorded): Part | undefined {

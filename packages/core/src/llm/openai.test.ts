@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
+import { describe, expect, test } from "bun:test";
 import { createLlmClient, parseJsonLoose, redact } from "./openai";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
+import { createMockEndpoint } from "../core/test-http";
 
 type Received = {
   path: string;
@@ -13,37 +13,25 @@ type Received = {
 let received: Received[] = [];
 let status = 200;
 let responseBody = "";
-let server: Server<undefined> | undefined;
 
 /**
- * 整个文件只绑一个 mock server（r59）：每例新起一个 `Bun.serve` 再 `stop` 会让 fetch 连接池
- * 复用到已关闭的 socket，偶发 `The socket connection was closed unexpectedly`（全量跑时约 1/10 命中，
- * 单独跑这个文件复现不到）。用例只复位状态，端口一直活着。
+ * 整个进程一个 mock origin（r59 定下方向，r65 / #84 收到 `../core/test-http`）：用例只复位状态，
+ * 端口从进程启动活到进程退出，不再每例起停 `Bun.serve`。
  */
-let baseUrl = "";
+const mock = createMockEndpoint();
 
 function startServer(): string {
-  if (server === undefined) {
-    server = Bun.serve({
-      port: 0,
-      // 别让服务端按空闲时间关掉连接池里的 socket（默认 10 s），mock 用例之间的间隔可能超过它
-      idleTimeout: 120,
-      async fetch(req) {
-        const url = new URL(req.url);
-        const headers: Record<string, string> = {};
-        req.headers.forEach((v, k) => {
-          headers[k] = v;
-        });
-        received.push({ path: url.pathname, method: req.method, headers, body: JSON.parse(await req.text()) });
-        return new Response(responseBody, { status, headers: { "content-type": "application/json" } });
-      },
+  mock.setHandler(async (req) => {
+    const url = new URL(req.url);
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => {
+      headers[k] = v;
     });
-    baseUrl = `http://127.0.0.1:${server.port}`;
-  }
-  return baseUrl;
+    received.push({ path: url.pathname, method: req.method, headers, body: JSON.parse(await req.text()) });
+    return new Response(responseBody, { status, headers: { "content-type": "application/json" } });
+  });
+  return mock.url;
 }
-
-afterAll(() => server?.stop(true));
 
 function freshClient(): LlmClient {
   const base = startServer();
