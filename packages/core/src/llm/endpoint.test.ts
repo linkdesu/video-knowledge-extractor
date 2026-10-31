@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
+import { describe, expect, test } from "bun:test";
 import type { LlmCredentials } from "../core/config";
+import { createMockEndpoint } from "../core/test-http";
 import { fetchModelIds, modelsUrl, pickChatModel, resolveLlmEndpoint } from "./endpoint";
 
 /** 顺序取自真实 `/models`，只把期望赢家挪到中间，免得「取第一个」的实现蒙混过关。 */
@@ -31,45 +31,34 @@ function shuffle<T>(items: readonly T[]): T[] {
   return arr;
 }
 
-let server: Server<undefined> | undefined;
 let requestLog: Array<{ path: string; authorization: string | null }> = [];
 let status = 200;
 let body: string = "";
 let echoAuth = false;
-let endpointBase = "";
 
 /**
- * One listener for the whole file; every call only resets the per-test state.
- * Rebuilding the server per test (stop + Bun.serve({ port: 0 })) lets the OS hand the same
- * ephemeral port to a later test while an earlier keep-alive socket is still pooled; reuse of
- * that stale connection made requests hang until the 5 s test timeout, or resolve with the
- * previous test's response (r59). Keeping a single port and a single connection pool avoids both.
+ * 整个进程一个 mock origin（`../core/test-http`，r65 / #84）：每例只复位状态与 handler，
+ * 不再 stop + `Bun.serve({ port: 0 })`。每例重绑端口会让连接池复用到已关连接，满载下偶发
+ * `The socket connection was closed unexpectedly`（r59 先在本文件观测到，r65 定位到整进程层面）。
  */
+const mock = createMockEndpoint();
+
 function startServer(echoAuthorization = false): string {
   requestLog = [];
   status = 200;
   body = "";
   echoAuth = echoAuthorization;
-  if (!server) {
-    const created = Bun.serve({
-      port: 0,
-      async fetch(req) {
-        const url = new URL(req.url);
-        requestLog.push({ path: url.pathname, authorization: req.headers.get("authorization") });
-        if (echoAuth) {
-          const auth = req.headers.get("authorization") ?? "";
-          return new Response(`echo ${auth}`, { status: 500 });
-        }
-        return new Response(body, { status, headers: { "content-type": "application/json" } });
-      },
-    });
-    server = created;
-    endpointBase = `http://127.0.0.1:${created.port}`;
-  }
-  return endpointBase;
+  mock.setHandler(async (req) => {
+    const url = new URL(req.url);
+    requestLog.push({ path: url.pathname, authorization: req.headers.get("authorization") });
+    if (echoAuth) {
+      const auth = req.headers.get("authorization") ?? "";
+      return new Response(`echo ${auth}`, { status: 500 });
+    }
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  });
+  return mock.url;
 }
-
-afterAll(() => server?.stop(true));
 
 function modelsResponse(ids: string[]): string {
   return JSON.stringify({ data: ids.map((id) => ({ id, object: "model" })) });

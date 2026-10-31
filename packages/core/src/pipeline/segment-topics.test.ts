@@ -1,9 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { afterAll, describe, expect, test } from "bun:test";
-import type { Server } from "bun";
+import { describe, expect, test } from "bun:test";
 import type { ChatMessage, LlmEndpoint, Progress, SegmentTopicsInput } from "../core/steps";
 import { configureLogging } from "../core/logger";
+import { createMockEndpoint } from "../core/test-http";
 import { segmentTopics } from "./segment-topics";
 import type { SpeakerId, Transcript, Utterance } from "../core/types";
 
@@ -13,7 +13,6 @@ type Received = {
   body: Record<string, unknown>;
 };
 
-let server: Server<undefined> | undefined;
 let received: Received[] = [];
 
 /** 每次用新的临时缓存目录：固定路径会让上一轮的文件变成命中，测试互相污染。 */
@@ -64,27 +63,26 @@ function respond(body: Record<string, unknown>): string {
   return JSON.stringify({ choices: [{ message: { content: payload } }] });
 }
 
-function startServer(): void {
-  server = Bun.serve({
-    port: 0,
-    async fetch(req) {
-      const url = new URL(req.url);
-      const headers: Record<string, string> = {};
-      req.headers.forEach((v, k) => {
-        headers[k] = v;
-      });
-      const body = JSON.parse(await req.text());
-      received.push({ path: url.pathname, headers, body });
-      return new Response(respond(body), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-  endpoint = { baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: "k-test", model: "m-test" };
-}
+/** 整个进程一个 mock origin（`../core/test-http`，r65 / #84）：每例只换 handler。 */
+const mock = createMockEndpoint();
 
-afterAll(() => server?.stop(true));
+function startServer(): void {
+  received = [];
+  mock.setHandler(async (req) => {
+    const url = new URL(req.url);
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => {
+      headers[k] = v;
+    });
+    const body = JSON.parse(await req.text());
+    received.push({ path: url.pathname, headers, body });
+    return new Response(respond(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  endpoint = { baseUrl: `${mock.url}/v1`, apiKey: "k-test", model: "m-test" };
+}
 
 const utt = (start: number, end: number, text: string): Utterance => ({
   start,

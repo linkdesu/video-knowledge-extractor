@@ -196,10 +196,11 @@ function compareLogNames(a: string, b: string): number {
   return na - nb;
 }
 
-function pruneIfPossible(dir: string | null): void {
+/** 保留窗口以 logger 自己的时钟为锚点：注入的 now() 必须同时决定「何时清理」（r65）。 */
+function pruneIfPossible(dir: string | null, at: Date): void {
   if (!dir) return;
   try {
-    pruneOldLogs(dir);
+    pruneOldLogs(dir, PRUNE_KEEP_DAYS, at);
   } catch {
     // 目录不可读时跳过清理
   }
@@ -211,7 +212,7 @@ export function createLogger(opts?: LoggerOptions): Logger {
   const now = opts?.now ?? (() => new Date());
   const maxBytes = opts?.maxBytes ?? MAX_LOG_FILE_BYTES;
   if (dir) mkdirSync(dir, { recursive: true });
-  pruneIfPossible(dir);
+  pruneIfPossible(dir, now());
   const secrets = new Set<string>();
   let dateKey = now().toDateString();
 
@@ -249,7 +250,7 @@ export function createLogger(opts?: LoggerOptions): Logger {
       // 滚动后立刻清理：先 append 再删，活跃文件是该天最新，只删最旧的，总数压到 KEEP_FILES
       if (rolled) {
         try {
-          pruneOldLogs(dir);
+          pruneOldLogs(dir, PRUNE_KEEP_DAYS, date);
         } catch {
           // 目录不可读时跳过清理
         }
@@ -264,7 +265,7 @@ export function createLogger(opts?: LoggerOptions): Logger {
       const date = now();
       if (date.toDateString() !== dateKey) {
         dateKey = date.toDateString();
-        pruneIfPossible(dir);
+        pruneIfPossible(dir, date);
       }
       // Homes are read on every write (never snapshotted at import): env changes take effect immediately
       const homes = homePathPrefixes();
