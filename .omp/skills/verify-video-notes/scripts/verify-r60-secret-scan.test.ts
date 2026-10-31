@@ -260,7 +260,8 @@ describe.skipIf(process.platform !== "darwin")("r60 密钥门禁（issue #69）"
       const output = result.stdout + result.stderr;
       expect(output).toContain(locked);
       expect(output).toContain("无法读取");
-      expect(output).not.toContain("clean");
+      // 成功行是 `secrets-gate: clean (<root>)`；不能用裸 "clean"，worktree 路径本身可能含 clean
+      expect(output).not.toContain("secrets-gate: clean");
     } finally {
       chmodSync(locked, 0o700);
     }

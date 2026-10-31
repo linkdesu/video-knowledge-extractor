@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  assertExeVersionMatches,
   assertVersionBumped,
   assertWorkspaceVersionsMatch,
   compareSemver,
@@ -9,6 +10,35 @@ import {
 } from "./release-version";
 
 const repoRoot = resolve(import.meta.dirname, "../../../..");
+
+describe("Windows exe 版本资源（r64）", () => {
+  test("按段比较：四段 0.1.23.0、三段 0.1.23 与带空白的读回等价", () => {
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: "0.1.23", productVersion: "0.1.23" }, "0.1.23"),
+    ).not.toThrow();
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: "0.1.23.0", productVersion: "0.1.23.0.0" }, "0.1.23"),
+    ).not.toThrow();
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: " 0.1.23\r\n", productVersion: "0.1.23" }, "0.1.23"),
+    ).not.toThrow();
+  });
+
+  test("任一项不等于 package.json 版本就失败，并点名是哪一项", () => {
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: "45.0.0", productVersion: "0.1.23" }, "0.1.23"),
+    ).toThrow("FileVersion=45.0.0");
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: "0.1.23", productVersion: "0.1.22" }, "0.1.23"),
+    ).toThrow("ProductVersion=0.1.22");
+    expect(() => assertExeVersionMatches({ fileVersion: null, productVersion: "0.1.23" }, "0.1.23")).toThrow(
+      "FileVersion",
+    );
+    expect(() =>
+      assertExeVersionMatches({ fileVersion: "0.1.23", productVersion: "not a version" }, "0.1.23"),
+    ).toThrow("ProductVersion=not a version");
+  });
+});
 
 describe("release-version", () => {
   test("parseSemver 解析合法 X.Y.Z 并拒绝非法格式", () => {

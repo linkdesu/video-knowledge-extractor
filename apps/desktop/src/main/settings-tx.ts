@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { saveSettings, validateSettingsPatch } from "@video-notes/core/storage";
 import type { SettingsPatch as CoreSettingsPatch, AppSettings, EnvRecord } from "@video-notes/core/storage";
 import type { SecretPatch } from "../shared/ipc";
-import { LegacyCipherError, SECRET_IDS, setAsideLegacy, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
+import { SECRET_IDS, UnreadableSecretFile, looksLikeLegacyCipher, setAsideUnreadable, writeBinaryAtomic, type SecretCodec, type SecretId, type SecretStore } from "./secrets";
 
 /**
  * 端点与密钥分属 settings.json 与 secrets.bin，两份文件之间进程崩溃会留下「新地址配旧 key」的半套。
@@ -65,9 +65,9 @@ function readPending(userData: string, codec: SecretCodec): { tx: PendingTx | nu
   try {
     plain = codec.decrypt(cipher);
   } catch (err) {
-    if (err instanceof LegacyCipherError) {
+    if (err instanceof UnreadableSecretFile && looksLikeLegacyCipher(cipher)) {
       // 旧版 safeStorage 密文的 pending 无法重放：挪开后按无 pending 继续，不设门禁
-      setAsideLegacy(pendingPath(userData));
+      setAsideUnreadable(pendingPath(userData));
       return { tx: null, error: null };
     }
     // 保留原文件不静默丢弃（ADR-0015 §3）
@@ -134,8 +134,8 @@ export function commitCredentialUpdate(input: {
   if (apiKey !== undefined && !secretStore.available()) {
     throw new Error(
       secret.id === "llm"
-        ? "系统密钥存储不可用，无法保存密钥"
-        : "系统密钥存储不可用，请用环境变量配置 ASR 密钥（VNOTE_ASR_API_KEY / VNOTE_VOLC_API_KEY / VNOTE_VOLC_APP_KEY / VNOTE_VOLC_ACCESS_KEY）",
+        ? "本机私有密钥文件不可写，无法保存密钥"
+        : "本机私有密钥文件不可写，请用环境变量配置 ASR 密钥（VNOTE_ASR_API_KEY / VNOTE_VOLC_API_KEY / VNOTE_VOLC_APP_KEY / VNOTE_VOLC_ACCESS_KEY）",
     );
   }
   // 旧 pending 未清时先幂等重放；失败则抛错且不写新记录，否则第二次保存会丢掉第一笔未完成的更新。

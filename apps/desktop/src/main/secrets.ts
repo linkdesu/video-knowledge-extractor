@@ -19,35 +19,47 @@ export type SecretCodec = {
   decrypt(cipher: Buffer): string;
 };
 
-/** 旧版 safeStorage 密文（非 JSON 字节）：无法也不应再解密，调用方静默重置。 */
-export class LegacyCipherError extends Error {
+/** 内容不是 JSON（空文件、乱码、旧版密文）：无法解析，由调用方决定备份与提示。 */
+export class UnreadableSecretFile extends Error {
   constructor() {
-    super("旧版系统加密密文，已不再支持");
-    this.name = "LegacyCipherError";
+    super("密钥文件内容不是 JSON");
+    this.name = "UnreadableSecretFile";
   }
 }
 
-/** 生产 codec：UTF-8 明文 JSON + 0o600；以 `{` 开头之外的字节视为旧版 safeStorage 密文。 */
+/**
+ * 旧版 Electron safeStorage 密文（r64）：Electron 自己的 decryptString 只接受 `v10` / `v11` 前缀，
+ * 所以只有这两种开头才可能是“旧密钥”。空文件、BOM、乱码都不是，不能被当成迁移对象——
+ * 那是 r45c 的误报来源（r45 QA GAP-1）。
+ */
+export function looksLikeLegacyCipher(cipher: Buffer): boolean {
+  const head = cipher.subarray(0, 3).toString("utf8");
+  return head === "v10" || head === "v11";
+}
+
+/** 生产 codec：UTF-8 明文 JSON + 0o600；以 `{` 开头之外的字节抛 UnreadableSecretFile。 */
 export const plainFileCodec: SecretCodec = {
   available: () => true,
   encrypt: (plain: string) => Buffer.from(plain, "utf8"),
   decrypt: (cipher: Buffer) => {
     const text = cipher.toString("utf8");
-    if (!text.trimStart().startsWith("{")) throw new LegacyCipherError();
+    if (!text.trimStart().startsWith("{")) throw new UnreadableSecretFile();
     return text;
   },
 };
 
-/** 把无法读取的旧文件挪到旁边（不删除，便于排查），返回是否成功。 */
-export function setAsideLegacy(path: string): void {
+/**
+ * 把无法读取的文件挪到旁边（不删除，便于排查；后缀 `.legacy-` 也是证据门禁的扫描目标）。
+ * 返回备份路径，挪不动返回 null。只做文件动作，提示由知道上下文（迁移成功/失败）的调用方写。
+ */
+export function setAsideUnreadable(path: string): string | null {
   const target = `${path}.legacy-${Date.now()}`;
   try {
     renameSync(path, target);
+    return target;
   } catch {
-    // 挪不动也不阻塞：下次 set 会覆盖
+    return null;
   }
-  // r45c：旧版 safeStorage 密文只能丢弃，但不能静默——日志里留下备份路径，排查“重装后 key 没了”时有据可查
-  logger().warn("app", "旧版系统加密密钥已失效，已备份并重置", { backup: target });
 }
 
 /** 二进制原子写：临时文件 0o600 → 写 → rename → 0o600；rename 前的权限窗口不暴露目标名。 */
@@ -73,6 +85,8 @@ export function writeBinaryAtomic(path: string, data: Buffer): void {
   }
 }
 
+export type LegacyMigrationResult = "none" | "migrated" | "failed";
+
 /** 进程内密钥表：文件是 codec.encrypt(JSON({version:2, llm?, asr?, volcApiKey?, volcAppKey?, volcAccessKey?})) 的二进制。 */
 export type SecretStore = {
   available(): boolean;
@@ -85,6 +99,11 @@ export type SecretStore = {
   all(): string[];
   /** 解密/IO 失败的可读原因，界面显示。 */
   error(): string | null;
+  /**
+   * r64：旧版 safeStorage 密文的一次性迁移，需要平台提供异步解密（Windows 的 DPAPI）。
+   * 没有旧密文时返回 "none"，既不调用 decrypt 也不写任何迁移日志；decrypt 为 null 表示该平台不提供解密。
+   */
+  migrateLegacy(decrypt: ((cipher: Buffer) => Promise<string>) | null): Promise<LegacyMigrationResult>;
 };
 
 type StoreImpl = {
@@ -92,8 +111,8 @@ type StoreImpl = {
   codec: SecretCodec;
   values: Partial<Record<SecretId, string>>;
   loadError: string | null;
-  /** r45c：读到的旧版 safeStorage 密文（已挪到 .legacy-* 备份），供 Windows DPAPI 迁移再试一次。 */
-  legacy: Buffer | null;
+  /** r64：读到的旧版 safeStorage 密文与它的备份路径，等 migrateLegacy 决定能否迁回。 */
+  legacy: { cipher: Buffer; backup: string | null } | null;
 };
 
 function failLoad(s: StoreImpl, message: string): void {
@@ -147,11 +166,16 @@ function readStored(s: StoreImpl): void {
   try {
     plain = s.codec.decrypt(cipher);
   } catch (err) {
-    if (err instanceof LegacyCipherError) {
-      // 旧版 safeStorage 密文：先留备份；Windows 的 DPAPI 仍可解，createSecretStore 会再试一次迁移
-      setAsideLegacy(s.file);
-      s.legacy = cipher;
+    if (err instanceof UnreadableSecretFile) {
+      const backup = setAsideUnreadable(s.file);
       s.values = {};
+      if (looksLikeLegacyCipher(cipher)) {
+        // 旧版 safeStorage 密文：备份已留，能否迁回由 migrateLegacy 决定（r64 起用异步 API）
+        s.legacy = { cipher, backup };
+        return;
+      }
+      // 不是 JSON 也不是旧版密文（空文件、BOM、乱码）：按“内容无法识别”处理，绝不冒充旧密钥迁移
+      logger().warn("app", "密钥文件内容无法识别，已备份并重置", { backup });
       return;
     }
     failLoad(s, `密钥文件解密失败（原文件已保留）：${err instanceof Error ? err.message : String(err)}`);
@@ -165,7 +189,7 @@ function readStored(s: StoreImpl): void {
 }
 
 function persist(s: StoreImpl): void {
-  if (!s.codec.available()) throw new Error("系统密钥存储不可用，无法保存密钥");
+  if (!s.codec.available()) throw new Error("本机私有密钥文件不可写，无法保存密钥");
   const body: { version: 2 } & Partial<Record<SecretId, string>> = { version: 2 };
   for (const id of SECRET_IDS) {
     const value = s.values[id];
@@ -178,31 +202,9 @@ function persist(s: StoreImpl): void {
   }
 }
 
-export function createSecretStore(input: {
-  file: string;
-  codec: SecretCodec;
-  /**
-   * r45c：旧版 safeStorage 密文的一次性迁移钩子。macOS 上 safeStorage 绑 cdhash 并会弹钥匙串授权，
-   * 生产只在 Windows（DPAPI，换签名仍可解）提供；失败保持“备份 + 重置”的旧行为。
-   */
-  legacyDecrypt?: (cipher: Buffer) => string;
-}): SecretStore {
+export function createSecretStore(input: { file: string; codec: SecretCodec }): SecretStore {
   const store: StoreImpl = { file: input.file, codec: input.codec, values: {}, loadError: null, legacy: null };
   readStored(store);
-  if (store.legacy !== null && input.legacyDecrypt !== undefined) {
-    try {
-      const migrated = parseSecretPlain(input.legacyDecrypt(store.legacy));
-      store.values = migrated;
-      persist(store);
-      store.legacy = null;
-      logger().info("app", "旧版系统加密密钥已迁移到本地密钥文件", { keys: Object.keys(migrated) });
-    } catch (err) {
-      // 旧密文解不开：备份文件已在 .legacy-*，用户在设置页重新填写一次即可；日志里留下原因
-      logger().warn("app", "旧版系统加密密钥无法迁移，已保留备份并重置", {
-        reason: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
   return {
     available() {
       return store.codec.available();
@@ -235,6 +237,33 @@ export function createSecretStore(input: {
     },
     error() {
       return store.loadError;
+    },
+    async migrateLegacy(decrypt) {
+      const legacy = store.legacy;
+      if (legacy === null) return "none";
+      store.legacy = null;
+      if (decrypt === null) {
+        // macOS：钥匙串绑 cdhash，重装后只会弹授权框（r44 的决定），只留备份与一条 WARN
+        logger().warn("app", "旧版系统加密密钥无法自动迁移，已保留备份", {
+          backup: legacy.backup,
+          platform: process.platform,
+        });
+        return "failed";
+      }
+      try {
+        const migrated = parseSecretPlain(await decrypt(legacy.cipher));
+        store.values = migrated;
+        persist(store);
+        logger().info("app", "旧版系统加密密钥已迁移到本地密钥文件", { keys: Object.keys(migrated) });
+        return "migrated";
+      } catch (err) {
+        // 旧密文解不开：备份文件已在 .legacy-*，用户在设置页重新填写一次即可；日志里留下原因
+        logger().warn("app", "旧版系统加密密钥无法迁移，已保留备份", {
+          backup: legacy.backup,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+        return "failed";
+      }
     },
   };
 }

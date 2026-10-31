@@ -1644,18 +1644,19 @@ app.on("will-quit", () => {
 void app.whenReady().then(async () => {
   startup("whenReady 进入");
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 本地模型检测（r37）
-  // r45c：Windows 上旧版 safeStorage 密文是 DPAPI（随用户、不随签名），升级后仍能解；
+  // r64：Windows 上旧版 safeStorage 密文是 DPAPI（随用户、不随签名），仍能解，改用异步 API
+  // （Electron 45 弃用了同步的 isEncryptionAvailable / decryptString）；没有旧密文时这里什么都不做。
   // macOS 的钥匙串绑定 cdhash，重装后只会弹授权框，保持 r44 的“备份 + 重置”。
-  const legacyDecrypt =
-    process.platform === "win32" && safeStorage.isEncryptionAvailable()
-      ? (cipher: Buffer) => safeStorage.decryptString(cipher)
-      : undefined;
   secretStore = createSecretStore({
     file: join(app.getPath("userData"), "secrets.bin"),
     codec: electronCodec,
-    ...(legacyDecrypt !== undefined ? { legacyDecrypt } : {}),
   });
-  startup("secretStore 创建完成", { legacyDecrypt: legacyDecrypt !== undefined });
+  const legacyMigration = await secretStore.migrateLegacy(
+    process.platform === "win32"
+      ? async (cipher: Buffer) => (await safeStorage.decryptStringAsync(cipher)).result
+      : null,
+  );
+  startup("secretStore 创建完成", { legacyMigration });
   registerLogSecrets();
   credentialTxError = replayCredentialTransaction({
     userData: app.getPath("userData"),
