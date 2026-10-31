@@ -53,6 +53,11 @@ jobs:
       - name: Package (NSIS)
         run: bun run --cwd apps/desktop package:win
 
+      # #89：安装后属性页读的就是 win-unpacked/Video Notes.exe 的版本资源，
+      # 公司名/产品名/版权/版本号不符合 app-metadata.ts 就在这里失败，不把坏包传上去。
+      - name: Verify exe metadata
+        run: bun run --cwd apps/desktop check:win-metadata
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
