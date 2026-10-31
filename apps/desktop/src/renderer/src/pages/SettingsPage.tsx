@@ -783,7 +783,7 @@ export function SettingsPage() {
             </div>
             {!llm.keyStorageAvailable ? (
               <span className="vn-hint" data-testid="settings-llm-key-no-storage">
-                系统密钥存储不可用，无法保存新的 key
+                本机私有密钥文件不可写，无法保存新的 key
               </span>
             ) : llm.keySource === "env" ? (
               <span className="vn-hint" data-testid="settings-llm-key-env">
@@ -1024,12 +1024,12 @@ function KeyRow({
         </span>
       ) : hasKey ? (
         <span className="vn-hint" data-testid={`${testId}-saved`}>
-          已保存（本机私有密钥文件 0600），可粘贴新 key 覆盖
+          已保存（本机私有密钥文件，仅当前用户可读），可粘贴新 key 覆盖
         </span>
       ) : null}
       {keyStorageAvailable ? null : (
         <span className="vn-hint" data-testid={`${testId}-no-storage`}>
-          系统密钥存储不可用，请用环境变量配置密钥
+          本机私有密钥文件不可写，请用环境变量配置密钥
         </span>
       )}
     </div>

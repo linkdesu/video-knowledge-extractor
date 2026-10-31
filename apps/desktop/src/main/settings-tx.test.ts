@@ -130,10 +130,11 @@ describe("commitCredentialUpdate", () => {
       clear: () => undefined,
       all: () => [],
       error: () => null,
+      migrateLegacy: async () => "none",
     };
     expect(() =>
       commitCredentialUpdate({ ...w, secretStore: store, settingsPatch: {}, secret: { id: "asr", patch: { apiKey: "x" } } }),
-    ).toThrow("系统密钥存储不可用");
+    ).toThrow("本机私有密钥文件不可写，请用环境变量");
     expect(() => readFileSync(pendingPath(w), "utf8")).toThrow();
   });
 
