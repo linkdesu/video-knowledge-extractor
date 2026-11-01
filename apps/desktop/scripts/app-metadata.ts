@@ -1,5 +1,5 @@
 /**
- * Windows 版本资源（exe 属性页）里本应用的自述信息（r67 / #89）。
+ * Windows 版本资源（exe 属性页）里本应用的自述信息（r67 / #89，设计记录见 ADR-0043）。
  *
  * electron-builder 的 `CompanyName` **只**来自 staging package.json 的 `author.name`
  * （app-builder-lib `AppInfo.companyName` 的实现），没提供时它根本不写这个键，
