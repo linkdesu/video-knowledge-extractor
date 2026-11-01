@@ -519,10 +519,18 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
             </button>
           </div>
         </div>
-        <p className="vn-lab-summary" data-testid="lab-summary">
+        <p
+          className="vn-lab-summary"
+          data-testid="lab-summary"
+          title={
+            summary === null
+              ? undefined
+              : "主播簇（段级）：主播锚点区间覆盖的不同簇数；A/B 人数为 assignSpeakers 后的最终说话簇数；过滤行：整行仅含语气词或标点且时长≤阈值，空文本行已在组装时剔除；差异行含说话人映射不同、簇合并与单侧过滤"
+          }
+        >
           {summary === null
             ? "导入一个样本开始对比"
-            : `A ${summary.speakersA} 人 / B ${summary.speakersB} 人｜主播簇 ${summary.hostA ?? "—"}→${summary.hostB ?? "—"}｜过滤 ${summary.filteredLines} 行 ${summary.filteredSeconds}s｜两方案不同 ${summary.diffLines} 行`}
+            : `A ${summary.speakersA} 人 / B ${summary.speakersB} 人｜主播簇（段级） ${summary.hostA ?? "—"}→${summary.hostB ?? "—"}｜过滤 ${summary.filteredLines} 行 ${summary.filteredSeconds}s｜两方案不同 ${summary.diffLines} 行`}
         </p>
         {progress !== null ? (
           <p className="vn-lab-progress" data-testid="lab-progress">

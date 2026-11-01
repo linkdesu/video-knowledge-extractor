@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { assembleLines, hostClusterCount } from "./lines";
 import { readMarks, writeMarks } from "./sample-store";
 import { devLabEnabled } from "./gate";
+import { buildRows, filterRows, summarize } from "../../shared/lab-view";
+import type { LabConfig } from "../../shared/lab";
 
 describe("Lab 字幕行组装", () => {
   test("同簇 gap<=0.6s 合并；不足 3s 的说话人并入邻居", () => {
@@ -56,6 +58,60 @@ describe("Lab 字幕行组装", () => {
     expect(hostClusterCount([{ start: 0, end: 4 }], segments, [0, 0, 0])).toBe(1);
     expect(hostClusterCount([{ start: 0, end: 4 }], segments, [3, 7, 0])).toBe(2);
     expect(hostClusterCount([], segments, [0, 0, 0])).toBeNull();
+  });
+
+  test("空文本行被丢弃：不进字幕行，也不计入说话人统计", () => {
+    const assembled = assembleLines({
+      labels: [0, 1],
+      segments: [
+        { start: 0, end: 6, speaker: 0 },
+        { start: 7, end: 10.5, speaker: 1 },
+      ],
+      // 第一段没有任何段级文本（ASR 没解出字），组装时应当整行丢弃。
+      texts: [{ start: 7, end: 10.5, text: "第二句" }],
+      silences: [],
+    });
+    expect(assembled.lines.map((l) => l.text)).toEqual(["第二句"]);
+    expect(assembled.lines.every((l) => l.text.trim() !== "")).toBe(true);
+    const withLines = assembled.speakers.filter((s) => s.lines > 0);
+    expect(withLines).toHaveLength(1);
+    expect(withLines[0]?.seconds).toBe(3.5);
+    expect(withLines[0]?.sampleStarts).toEqual([7]);
+  });
+
+  test("组装后的方案：摘要「过滤 N 行」与「仅已过滤」行数相等", () => {
+    const assembled = assembleLines({
+      labels: [0, 0, 1, 1],
+      segments: [
+        { start: 0, end: 4, speaker: 0 },
+        { start: 5, end: 5.4, speaker: 0 },
+        { start: 6, end: 10, speaker: 1 },
+        // 这一段没有任何段级文本：组装时应整行丢弃，不能出现在 rows 或摘要里。
+        { start: 11, end: 14, speaker: 1 },
+      ],
+      texts: [
+        { start: 0, end: 4, text: "第一句" },
+        { start: 5, end: 5.4, text: "嗯" },
+        { start: 6, end: 10, text: "第二句" },
+      ],
+      silences: [],
+    });
+    const meta = {
+      speakers: assembled.speakers.length,
+      k: 2,
+      picked: "sil" as const,
+      silhouette: null,
+      bicK: null,
+      seeds: null,
+      hostClusters: null,
+    };
+    const configA: LabConfig = { name: "baseline", meta, speakers: assembled.speakers, lines: assembled.lines };
+    const configB: LabConfig = { name: "refine_filter", meta, speakers: assembled.speakers, lines: assembled.lines };
+    const rows = buildRows(configA, configB, 1);
+    const summary = summarize(configA, configB, 1);
+    expect(rows.map((r) => r.line.text)).toEqual(["第一句", "嗯", "第二句"]);
+    expect(summary.filteredLines).toBe(1);
+    expect(filterRows(rows, "filtered", null)).toHaveLength(summary.filteredLines);
   });
 });
 

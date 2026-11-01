@@ -109,10 +109,13 @@ export function createLabWorkerHost(options: LabWorkerHostOptions): LabWorkerHos
             return;
           }
           if (outcome !== null) return;
-          outcome =
-            msg.type === "error"
-              ? { ok: false, error: new Error(`${msg.message ?? "Lab 导入失败"}${msg.stack === undefined ? "" : `\n${msg.stack}`}`) }
-              : { ok: true };
+          if (msg.type === "error") {
+            // 界面 toast 只展示正文：堆栈单独进日志，否则 `at ...lab-worker.js` 会拼进用户可见的 Error.message。
+            options.log("warn", "Lab 导入失败", { key: message.id, stack: msg.stack });
+            outcome = { ok: false, error: new Error(msg.message ?? "Lab 导入失败") };
+          } else {
+            outcome = { ok: true };
+          }
           // 回执 + 兜底：worker 收到 ack 自己 exit；万一下不来（原生线程卡住）也在宽限期后 kill。
           try {
             proc.postMessage(JSON.stringify({ type: "ack" } satisfies LabWorkerAck));

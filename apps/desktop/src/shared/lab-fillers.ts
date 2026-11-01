@@ -25,6 +25,7 @@ export function normalizeFillerText(raw: string): string {
 
 /**
  * 是否"只有语气词"。空文本/纯标点 → filler=true（时长条件由调用方判断）。
+ * 空文本行在 assembleLines 组装阶段已丢弃，所以这里实际只会命中纯标点行。
  * 贪心最长匹配；任何未匹配字符 → 不是语气词（保守，避免误删「不行」「三百块」「对用」）。
  */
 export function classifyFillerText(raw: string): boolean {

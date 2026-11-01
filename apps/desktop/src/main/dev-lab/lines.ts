@@ -30,12 +30,16 @@ export function assembleLines(input: {
   const labelled = input.segments.map((seg, i) => ({ start: seg.start, end: seg.end, speaker: input.labels[i] ?? 0 }));
   const spans = buildSpans(labelled).flatMap((span) => splitSpan(span, input.silences, MAX_SPAN_SECONDS));
   const assigned = assignSpeakers(spans);
-  const lines: LabLine[] = assigned.utterances.map((u) => ({
-    start: u.start,
-    end: u.end,
-    speakerId: u.speakerId,
-    text: composeText(input.texts, u.start, u.end),
-  }));
+  // 空文本行直接丢弃（正式管线同样丢弃）：ASR 没解出字的片段若留着，Lab 会多出一条空白行，
+  // 摘要的「过滤 N 行」还会把它算成语气词。丢弃后再统计说话人，秒数/行数/样例起点与可见行一致。
+  const lines: LabLine[] = assigned.utterances
+    .map((u) => ({
+      start: u.start,
+      end: u.end,
+      speakerId: u.speakerId,
+      text: composeText(input.texts, u.start, u.end),
+    }))
+    .filter((line) => line.text.trim() !== "");
   const totals = new Map<string, { seconds: number; lines: number; starts: { start: number; seconds: number }[] }>();
   for (const line of lines) {
     const entry = totals.get(line.speakerId) ?? { seconds: 0, lines: 0, starts: [] };

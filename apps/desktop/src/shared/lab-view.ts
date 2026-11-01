@@ -50,10 +50,15 @@ export type LabRow = LineAlignment & {
 };
 
 export type LabSummary = {
+  /** 方案 A 的说话人数（assignSpeakers 之后的生产口径）。 */
   speakersA: number;
+  /** 方案 B 的说话人数（同上）。 */
   speakersB: number;
+  /** 主播簇（段级口径）：锚点区间覆盖到的不同簇数；样本无锚点时为 null。 */
   hostA: number | null;
+  /** 主播簇（段级口径），同上。 */
   hostB: number | null;
+  /** 整行语气词且时长 <= 阈值的行数；空文本行在组装阶段已丢弃，不计入。 */
   filteredLines: number;
   filteredSeconds: number;
   diffLines: number;
@@ -66,6 +71,8 @@ export type LabSummary = {
 /**
  * 摘要：说话人数取方案 meta（assignSpeakers 之后），过滤量与差异量按当前阈值现算。
  * `filteredOnly` 为 false 时（B 方案不含 filter）过滤量恒为 0。
+ * `filteredLines` 与「仅已过滤」筛选同源：都数 B 方案里整行语气词的行，因此两处行数必然相等。
+ * 空文本行在 assembleLines 组装阶段已经丢弃，不会走到这里被当成语气词。
  */
 export function summarize(configA: LabConfig, configB: LabConfig, thresholdSeconds: number): LabSummary {
   const filterB = configB.name === "refine_filter";
@@ -156,7 +163,7 @@ export function buildRows(
   });
 }
 
-/** 筛选器：只影响可见行，不影响摘要。 */
+/** 筛选器：只影响可见行，不影响摘要。「仅已过滤」数出的行数与摘要 `filteredLines` 相等（同一批 B 行、同一判定）。 */
 export function filterRows(rows: LabRow[], filter: LabFilter, speakerId: string | null): LabRow[] {
   if (filter === "diff") return rows.filter((r) => r.diff);
   if (filter === "filtered") return rows.filter((r) => r.filler);
