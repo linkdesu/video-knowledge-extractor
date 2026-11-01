@@ -1,6 +1,6 @@
 {
   "name": "vnote",
-  "version": "0.1.25",
+  "version": "0.1.28",
   "private": true,
   "type": "module",
   "bin": {
