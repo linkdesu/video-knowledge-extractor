@@ -90,7 +90,41 @@ export function summarizeFfmpegArgs(args: string[]): FfmpegSummary {
 // Electron 取消提取时要杀掉 worker 里还在跑的 ffmpeg/ffprobe；close 后移除
 const activeChildren = new Set<ChildProcess>();
 
-/** 杀掉所有尚未 close 的子进程（SIGKILL）；用于取消提取。 */
+/**
+ * Bun.spawn 的最小结构。故意不写 `Bun` 全局命名空间：core 也被 desktop 的 renderer
+ * tsconfig（只有 DOM lib、没有 bun types）拉进来编译，引用 Bun 命名空间会让那边 typecheck 红。
+ */
+type BunByteReader = {
+  getReader(): {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+    releaseLock?(): void;
+  };
+};
+
+type BunChild = {
+  readonly exitCode: number | null;
+  readonly signalCode: string | null;
+  readonly exited: Promise<number>;
+  readonly stdout: BunByteReader;
+  readonly stderr: BunByteReader;
+  kill(signal?: string): void;
+};
+
+type BunRuntime = {
+  spawn(cmd: string[], options: { stdin: "ignore"; stdout: "pipe"; stderr: "pipe" }): BunChild;
+};
+
+/**
+ * Bun 运行时（CLI / bun test）有 `Bun.spawn`；Electron 主进程没有。
+ * core 也被 desktop 的 renderer tsconfig（DOM lib、无 bun types）编译，不能写 `Bun` 命名空间，
+ * 所以从 globalThis 上按结构类型取（Reflect.get 返回 any，这是唯一一次断言，只取 spawn）。
+ */
+const bunRuntime = Reflect.get(globalThis, "Bun") as BunRuntime | undefined;
+
+// Bun 路径的子进程（取消时同样要杀）
+const activeBunChildren = new Set<BunChild>();
+
+/** 杀掉所有尚未结束的子进程（SIGKILL）；用于取消提取。 */
 export function killActiveChildren(): void {
   for (const child of [...activeChildren]) {
     try {
@@ -98,6 +132,137 @@ export function killActiveChildren(): void {
     } catch {
       // 已退出的进程 kill 会抛 ESRCH，忽略
     }
+  }
+  for (const proc of [...activeBunChildren]) {
+    try {
+      if (proc.exitCode === null) proc.kill("SIGKILL");
+    } catch {
+      // 已退出的进程 kill 会抛 ESRCH，忽略
+    }
+  }
+}
+
+/** ffmpeg 用 \r 刷新进度行：按 \r 与 \n 切行，逐行回调（转码进度解析 time=）。 */
+function stderrLineSplitter(onLine: ((line: string) => void) | undefined): (chunk: string) => void {
+  let pending = "";
+  return (chunk) => {
+    if (onLine === undefined) return;
+    pending += chunk;
+    let at = pending.search(/[\r\n]/);
+    while (at !== -1) {
+      const line = pending.slice(0, at);
+      pending = pending.slice(at + 1);
+      if (line !== "") onLine(line);
+      at = pending.search(/[\r\n]/);
+    }
+  };
+}
+
+/** 读完一条管道并解码成 UTF-8；每块原文交给 onChunk（stderr 的逐行回调用）。 */
+async function readUtf8(stream: BunByteReader, onChunk?: (chunk: string) => void): Promise<string> {
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done || value === undefined) break;
+    const chunk = decoder.decode(value, { stream: true });
+    text += chunk;
+    onChunk?.(chunk);
+  }
+  const tail = decoder.decode();
+  text += tail;
+  onChunk?.(tail);
+  return text;
+}
+
+/** Node/Electron 路径：node:child_process，收齐两条管道后按 close 收尾。 */
+async function spawnWithNode(
+  file: string,
+  args: string[],
+  opts: {
+    label: string;
+    onStderrLine?: (line: string) => void;
+    logSpawnFailure: (reason: string) => void;
+  },
+): Promise<ProcResult> {
+  const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+  if (child.stdout === null || child.stderr === null) {
+    // 进程能建但管道没建成（资源耗尽的一种形态）：同样要落日志，否则诊断里只剩一句「启动失败」
+    opts.logSpawnFailure("子进程管道不可用");
+    throw new Error(`${opts.label}: 子进程管道不可用`);
+  }
+
+  let stdout = "";
+  let stderr = "";
+  const splitStderr = stderrLineSplitter(opts.onStderrLine);
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+    splitStderr(chunk);
+  });
+
+  activeChildren.add(child);
+  const code = await new Promise<number>((resolveCode, rejectCode) => {
+    child.once("error", (err) => {
+      activeChildren.delete(child);
+      // spawn 失败（ENOENT / EAGAIN 等）以前只 reject 不写日志：诊断里看不出「起不来」，
+      // 只有一声没有上下文的启动失败（r62 / #79）。这里补一条 ERROR，带上命令与 errno。
+      const errno = (err as NodeJS.ErrnoException).code ?? "unknown";
+      opts.logSpawnFailure(`${errno} ${err.message}`);
+      rejectCode(new Error(`${opts.label} 启动失败: ${errno === "ENOENT" ? `命令不存在: ${file}` : err.message}`));
+    });
+    child.once("close", (exitCode) => {
+      activeChildren.delete(child);
+      resolveCode(exitCode ?? 1);
+    });
+  });
+  return { stdout, stderr, code };
+}
+
+/**
+ * Bun 路径：Bun.spawn。
+ *
+ * bun 的 `node:child_process` 实现在 macOS 高负载下会在 `spawn()` 栈内就把 `exit`/`close`
+ * 发掉（oven-sh/bun#45483：kqueue 的 `EVFILT_PROC` 注册在 fork 后约 1 ms 才做，短命子进程
+ * 已被 reap，`ReportUnwatchedExit` 在 `Bun.spawn()` 返回前跑完 onExit），两条管道的数据也
+ * 已被消费。之后附着的监听器永远收不到，`run()` 就永远不 settle —— #92 的 30 s 超时。
+ * `Bun.spawn` 没有这条路径（上游对照 0/300），且 `exited` 是 promise：即使进程在 spawn
+ * 期间已退出，它也已经 resolved，管道数据仍可读。
+ */
+async function spawnWithBun(
+  cmd: string[],
+  opts: {
+    label: string;
+    onStderrLine?: (line: string) => void;
+    logSpawnFailure: (reason: string) => void;
+  },
+): Promise<ProcResult> {
+  const runtime = bunRuntime;
+  if (runtime === undefined) throw new Error("Bun 运行时不可用");
+  let proc: BunChild;
+  try {
+    proc = runtime.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  } catch (err) {
+    const errno = (err as NodeJS.ErrnoException).code ?? "unknown";
+    opts.logSpawnFailure(`${errno} ${(err as Error).message}`);
+    throw new Error(`${opts.label} 启动失败: ${errno === "ENOENT" ? `命令不存在: ${cmd[0]}` : (err as Error).message}`);
+  }
+  activeBunChildren.add(proc);
+  try {
+    const splitStderr = stderrLineSplitter(opts.onStderrLine);
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      readUtf8(proc.stdout),
+      readUtf8(proc.stderr, splitStderr),
+    ]);
+    return { stdout, stderr, code };
+  } finally {
+    activeBunChildren.delete(proc);
   }
 }
 
@@ -125,54 +290,17 @@ export async function run(
       label,
     });
   }
-  const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
-  if (child.stdout === null || child.stderr === null) {
-    // 进程能建但管道没建成（资源耗尽的一种形态）：同样要落日志，否则诊断里只剩一句「启动失败」
-    log.error(mod, "命令启动失败", { cmd: file, reason: "子进程管道不可用", label });
-    throw new Error(`${label}: 子进程管道不可用`);
-  }
-
-  let stdout = "";
-  let stderr = "";
-  // ffmpeg 用 \r 刷新进度行：按 \r 与 \n 切行，逐行回调（转码进度解析 time=）
-  let pendingLine = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk: string) => {
-    stderr += chunk;
-    if (opts.onStderrLine === undefined) return;
-    pendingLine += chunk;
-    let at = pendingLine.search(/[\r\n]/);
-    while (at !== -1) {
-      const line = pendingLine.slice(0, at);
-      pendingLine = pendingLine.slice(at + 1);
-      if (line !== "") opts.onStderrLine(line);
-      at = pendingLine.search(/[\r\n]/);
-    }
-  });
-
-  activeChildren.add(child);
-  const code = await new Promise<number>((resolveCode, rejectCode) => {
-    child.once("error", (err) => {
-      activeChildren.delete(child);
-      // spawn 失败（ENOENT / EAGAIN 等）以前只 reject 不写日志：诊断里看不出「起不来」，
-      // 只有一声没有上下文的启动失败（r62 / #79）。这里补一条 ERROR，带上命令与 errno。
-      log.error(mod, "命令启动失败", {
-        cmd: file,
-        reason: `${(err as NodeJS.ErrnoException).code ?? "unknown"} ${err.message}`,
-        label,
-        durationMs: Date.now() - startedAt,
-      });
-      rejectCode(new Error(`${label} 启动失败: ${(err as NodeJS.ErrnoException).code === "ENOENT" ? `命令不存在: ${file}` : err.message}`));
-    });
-    child.once("close", (exitCode) => {
-      activeChildren.delete(child);
-      resolveCode(exitCode ?? 1);
-    });
-  });
+  const logSpawnFailure = (reason: string) => {
+    log.error(mod, "命令启动失败", { cmd: file, reason, label, durationMs: Date.now() - startedAt });
+  };
+  const spawnOpts = { label, onStderrLine: opts.onStderrLine, logSpawnFailure };
+  // CLI 跑在 bun 下；Electron 主进程是 Node。两条路径只差「怎么起进程」，
+  // 后面的 CRLF 归一、日志与错误格式完全共用。
+  const result =
+    bunRuntime === undefined ? await spawnWithNode(file, args, spawnOpts) : await spawnWithBun(cmd, spawnOpts);
+  let stdout = result.stdout;
+  let stderr = result.stderr;
+  const code = result.code;
   // Windows 子进程管道输出 CRLF；统一成 LF，下游解析（tar 清单、ffprobe JSON、silencedetect）只看到 LF
   stdout = stdout.replace(/\r\n/g, "\n");
   stderr = stderr.replace(/\r\n/g, "\n");
