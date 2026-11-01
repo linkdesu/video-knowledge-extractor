@@ -1,6 +1,6 @@
-# ADR-0042: exe 版本资源的产品信息由 app-metadata 单一来源决定，并在构建产物上校验
+# ADR-0043: exe 版本资源的产品信息由 app-metadata 单一来源决定，并在构建产物上校验
 
-- 状态：已接受（r67 / issue #89）
+- 状态：已接受（r67 / issue #89）。编号原为 0042，与 r66 的 ADR-0042（lab 缓存发布竞争收敛）撞号，2026-11-02 改为 0043。
 - 相关：ADR-0041（exe 版本资源随 package 版本）、r63（安装包缓存内容核对）、`apps/desktop/scripts/app-metadata.ts`
 
 ## 背景
