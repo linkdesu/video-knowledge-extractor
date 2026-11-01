@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { createMockEndpoint } from "../core/test-http";
 import type { ModelBundle } from "./catalog";
 import { downloadBundle, downloadModels, recoverModelDir, type DownloadLogLine, type FetchImpl } from "./download";
 import { verifyBundle } from "./verify";
@@ -89,36 +90,38 @@ type MockOptions = {
   seen?: string[];
 };
 
+/**
+ * 整个进程一个 mock origin（`../core/test-http`，r65 / #84）：每例只换 handler 与状态；
+ * 不再每例新起/停掉 `Bun.serve`（满载下偶发复用到已关连接，报 socket closed）。
+ */
+const mock = createMockEndpoint();
+
 function startMockServer(options: MockOptions) {
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (req) => {
-      options.seen?.push(new URL(req.url).pathname);
-      const range = req.headers.get("range");
-      if (range !== null) options.seenRanges.push(range);
-      options.onRequest?.(req);
-      const headers = new Headers();
-      if (options.etag !== undefined) headers.set("ETag", options.etag);
-      if (options.ignoreRange) {
-        headers.set("Content-Length", String(options.state.payload.length));
-        return new Response(streamFromBytes(options.state.payload), { status: 200, headers });
-      }
-      if (range !== null) {
-        const match = range.match(/^bytes=(\d+)-$/);
-        const requestedStart = match !== null ? Number(match[1]) : 0;
-        const start = options.force206Start !== undefined ? options.force206Start : requestedStart;
-        if (start >= options.state.payload.length) {
-          headers.set("Content-Range", `bytes */${options.state.payload.length}`);
-          return new Response(null, { status: 416, headers });
-        }
-        headers.set("Content-Range", `bytes ${start}-${options.state.payload.length - 1}/${options.state.payload.length}`);
-        headers.set("Content-Length", String(options.state.payload.length - start));
-        return new Response(streamFromBytes(options.state.payload.slice(start)), { status: 206, headers });
-      }
+  mock.setHandler(async (req) => {
+    options.seen?.push(new URL(req.url).pathname);
+    const range = req.headers.get("range");
+    if (range !== null) options.seenRanges.push(range);
+    options.onRequest?.(req);
+    const headers = new Headers();
+    if (options.etag !== undefined) headers.set("ETag", options.etag);
+    if (options.ignoreRange) {
       headers.set("Content-Length", String(options.state.payload.length));
       return new Response(streamFromBytes(options.state.payload), { status: 200, headers });
-    },
+    }
+    if (range !== null) {
+      const match = range.match(/^bytes=(\d+)-$/);
+      const requestedStart = match !== null ? Number(match[1]) : 0;
+      const start = options.force206Start !== undefined ? options.force206Start : requestedStart;
+      if (start >= options.state.payload.length) {
+        headers.set("Content-Range", `bytes */${options.state.payload.length}`);
+        return new Response(null, { status: 416, headers });
+      }
+      headers.set("Content-Range", `bytes ${start}-${options.state.payload.length - 1}/${options.state.payload.length}`);
+      headers.set("Content-Length", String(options.state.payload.length - start));
+      return new Response(streamFromBytes(options.state.payload.slice(start)), { status: 206, headers });
+    }
+    headers.set("Content-Length", String(options.state.payload.length));
+    return new Response(streamFromBytes(options.state.payload), { status: 200, headers });
   });
   const fetchImpl: FetchImpl = async (url, init) => {
     const res = await fetch(url, init);
@@ -126,7 +129,9 @@ function startMockServer(options: MockOptions) {
     if (body === null) throw new Error("mock 响应没有 body");
     return { status: res.status, headers: res.headers, body: body as ReadableStream<Uint8Array> };
   };
-  return { port: server.port, close: () => server.stop(true), fetchImpl, setPayload: (payload: Uint8Array) => { options.state.payload = payload; }, seen: options.seen ?? [] };
+  // 共享 server 不在用例结束时停：close 只是把 handler 摘掉，避免迟到的请求被下一个用例的 handler 接住
+  const close = () => mock.setHandler(() => new Response("mock 已关闭", { status: 410 }));
+  return { base: mock.url, close, fetchImpl, setPayload: (payload: Uint8Array) => { options.state.payload = payload; }, seen: options.seen ?? [] };
 }
 
 /** 预置一个已下载一半的 .part 与 sidecar（url 指向 mock 服务器，续传才会打到它）。 */
@@ -143,7 +148,7 @@ describe("downloadBundle", () => {
     const content = "single-file-model-content";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, etag: "etag-1", seenRanges: [] });
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     const states: string[] = [];
     try {
       const status = await downloadBundle(modelDir, bundle, {
@@ -168,9 +173,9 @@ describe("downloadBundle", () => {
     const modelDir = join(root, "models");
     const content = "01234567890123456789";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, seenRanges: [] });
-    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const status = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl });
       expect(readFileSync(join(modelDir, "model.onnx"), "utf8")).toBe(content);
@@ -185,9 +190,9 @@ describe("downloadBundle", () => {
     const modelDir = join(root, "models");
     const content = "01234567890123456789";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, force206Start: 5, seenRanges: [] });
-    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const failed = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl }).catch((e: unknown) => e);
       expect(failed).toBeInstanceOf(Error);
@@ -204,9 +209,9 @@ describe("downloadBundle", () => {
     const modelDir = join(root, "models");
     const content = "fresh-content-rewritten";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, ignoreRange: true, seenRanges: [] });
-    seedPart(modelDir, "speaker-embedding", "stale-stale-stale-stale", `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", "stale-stale-stale-stale", `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const status = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl });
       expect(readFileSync(join(modelDir, "model.onnx"), "utf8")).toBe(content);
@@ -221,9 +226,9 @@ describe("downloadBundle", () => {
     const modelDir = join(root, "models");
     const content = "already-complete";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, seenRanges: [] });
-    seedPart(modelDir, "speaker-embedding", content, `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", content, `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const status = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl });
       expect(readFileSync(join(modelDir, "model.onnx"), "utf8")).toBe(content);
@@ -239,9 +244,9 @@ describe("downloadBundle", () => {
     const content = "full-file-content-here";
     // .part 长度 >= 总长但内容不同（Range 起点 >= 总长，服务端回 416，候选 hash 校验失败）
     const server = startMockServer({ state: { payload: new TextEncoder().encode(content) }, seenRanges: [] });
-    seedPart(modelDir, "speaker-embedding", content + "extra", `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", content + "extra", `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const first = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl }).catch((e: unknown) => e);
       expect(first).toBeInstanceOf(Error);
@@ -263,7 +268,7 @@ describe("downloadBundle", () => {
     const bad = "bad-model-payload";
     const server = startMockServer({ state: { payload: new TextEncoder().encode(bad) }, seenRanges: [] });
     const bundle = singleFileBundle("model.onnx", good);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     try {
       const first = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl }).catch((e: unknown) => e);
       expect(first).toBeInstanceOf(Error);
@@ -286,7 +291,7 @@ describe("downloadBundle", () => {
     const files = { "model.onnx": "archive-model-content", "tokens.txt": "1 tok\n" };
     const { bundle, archive } = archiveBundleFixture(root, "pkg", files);
     const server = startMockServer({ state: { payload: new Uint8Array(readFileSync(archive)) }, seenRanges: [] });
-    if (bundle.source.kind === "tar.bz2") bundle.source.url = `http://127.0.0.1:${server.port}/model.tar.bz2`;
+    if (bundle.source.kind === "tar.bz2") bundle.source.url = `${server.base}/model.tar.bz2`;
     try {
       const status = await downloadBundle(modelDir, bundle, { fetchImpl: server.fetchImpl });
       expect(readFileSync(join(modelDir, "pkg/model.onnx"), "utf8")).toBe("archive-model-content");
@@ -322,7 +327,7 @@ describe("downloadBundle", () => {
         if (auth !== null) seenAuth.push(auth);
       },
     });
-    if (bundle.source.kind === "tar.bz2") bundle.source.url = `http://127.0.0.1:${server.port}/model.tar.bz2`;
+    if (bundle.source.kind === "tar.bz2") bundle.source.url = `${server.base}/model.tar.bz2`;
     // 分片发送 + 注入 Authorization 头：证明日志管线看不到密钥
     const fetchImpl: FetchImpl = async (url, init) => {
       const headers = new Headers(init?.headers ?? {});
@@ -377,9 +382,9 @@ describe("downloadBundle", () => {
         if (auth !== null) seenAuth.push(auth);
       },
     });
-    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `http://127.0.0.1:${server.port}/model.onnx`);
+    seedPart(modelDir, "speaker-embedding", content.slice(0, 10), `${server.base}/model.onnx`);
     const bundle = singleFileBundle("model.onnx", content);
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     const fetchImpl: FetchImpl = async (url, init) => {
       const headers = new Headers(init?.headers ?? {});
       headers.set("Authorization", fakeAuth);
@@ -414,7 +419,7 @@ describe("downloadBundle", () => {
       onRequest: () => controller.abort(),
     });
     const bundle = singleFileBundle("model.onnx", "0123456789");
-    bundle.source = { kind: "file", url: `http://127.0.0.1:${server.port}/model.onnx`, name: "model.onnx" };
+    bundle.source = { kind: "file", url: `${server.base}/model.onnx`, name: "model.onnx" };
     const states: string[] = [];
     try {
       const failed = await downloadBundle(modelDir, bundle, {
@@ -513,8 +518,8 @@ describe("downloadModels", () => {
       seenRanges: [],
       seen: [],
     });
-    bundle1.source = { kind: "file", url: `http://127.0.0.1:${server.port}/a.onnx`, name: "a.onnx" };
-    if (bundle2.source.kind === "tar.bz2") bundle2.source.url = `http://127.0.0.1:${server.port}/model.tar.bz2`;
+    bundle1.source = { kind: "file", url: `${server.base}/a.onnx`, name: "a.onnx" };
+    if (bundle2.source.kind === "tar.bz2") bundle2.source.url = `${server.base}/model.tar.bz2`;
     const states: string[] = [];
     const bundleIds: string[] = [];
     try {

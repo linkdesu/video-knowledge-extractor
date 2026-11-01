@@ -13,6 +13,7 @@ import { run } from "../core/exec";
 import { probeVideo } from "../core/audio";
 import { buildDiagnostics } from "../core/diagnostics";
 import { configureLogging, homePathPrefixes, redactHomePaths, runWithTask } from "../core/logger";
+import { createMockEndpoint } from "../core/test-http";
 import { createLocalEngine } from "../asr/local";
 import { createLlmClient } from "../llm/openai";
 import type { Video } from "../core/types";
@@ -113,46 +114,41 @@ describe("三种失败都能从诊断文本里看出来", () => {
 
   test("LLM key 无效：401 日志行带 module、baseUrl、模型名与 status=401，key 不落盘", async () => {
     lines.length = 0;
-    const server = Bun.serve({
-      port: 0,
-      fetch: (req) => {
-        // 回显收到的 Authorization 头：真实网关 401 常见形态（响应体把认证信息写回去），
-        // 让 key 真正进入日志文本，使下面的缺席断言成为脱敏失效时的活守卫
-        const echoed = req.headers.get("authorization") ?? "";
-        return new Response(JSON.stringify({ error: "invalid api key", echoedAuth: echoed }), {
-          status: 401,
-          headers: { "content-type": "application/json" },
-        });
-      },
-    });
-    try {
-      await runWithTask(TASK, async () => {
-        const client = createLlmClient({
-          baseUrl: (llmBaseUrl = server.url.toString().replace(/\/$/, "")),
-          apiKey: FAKE_KEY,
-          model: "test-model",
-        });
-        const err = await client
-          .chat([{ role: "user", content: "hi" }])
-          .then(
-            () => {
-              throw new Error("401 居然成功了");
-            },
-            (e: unknown) => e as Error,
-          );
-        expect(err.message).toContain("401");
-        // 401 不可重试：只发了一次请求（一条 warn 响应行）
-        const warnLine = lines.find((l) => l.includes("WARN") && l.includes(" llm ") && l.includes("status=401")) ?? "";
-        const context = `捕获的日志行（${lines.length} 行）：\n${lines.join("\n")}`;
-        expect(warnLine, context).toContain(server.url.toString().replace(/\/$/, ""));
-        expect(warnLine, context).toContain("test-model");
-        expect(warnLine, context).toContain("invalid api key");
-        // 回显的 key 被 client redact + logger 脱敏后不会出现在任何日志行里
-        expect(lines.join("\n")).not.toContain(FAKE_KEY);
+    // 整个进程一个 mock origin（r65 / #84）：这里只换 handler，不再起停 `Bun.serve`
+    const mock = createMockEndpoint();
+    mock.setHandler((req) => {
+      // 回显收到的 Authorization 头：真实网关 401 常见形态（响应体把认证信息写回去），
+      // 让 key 真正进入日志文本，使下面的缺席断言成为脱敏失效时的活守卫
+      const echoed = req.headers.get("authorization") ?? "";
+      return new Response(JSON.stringify({ error: "invalid api key", echoedAuth: echoed }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
       });
-    } finally {
-      server.stop();
-    }
+    });
+    await runWithTask(TASK, async () => {
+      const client = createLlmClient({
+        baseUrl: (llmBaseUrl = mock.url),
+        apiKey: FAKE_KEY,
+        model: "test-model",
+      });
+      const err = await client
+        .chat([{ role: "user", content: "hi" }])
+        .then(
+          () => {
+            throw new Error("401 居然成功了");
+          },
+          (e: unknown) => e as Error,
+        );
+      expect(err.message).toContain("401");
+      // 401 不可重试：只发了一次请求（一条 warn 响应行）
+      const warnLine = lines.find((l) => l.includes("WARN") && l.includes(" llm ") && l.includes("status=401")) ?? "";
+      const context = `捕获的日志行（${lines.length} 行）：\n${lines.join("\n")}`;
+      expect(warnLine, context).toContain(mock.url);
+      expect(warnLine, context).toContain("test-model");
+      expect(warnLine, context).toContain("invalid api key");
+      // 回显的 key 被 client redact + logger 脱敏后不会出现在任何日志行里
+      expect(lines.join("\n")).not.toContain(FAKE_KEY);
+    });
     // 同上：真实 loopback 请求在满载下也会超过默认 5 s
   }, 30_000);
 

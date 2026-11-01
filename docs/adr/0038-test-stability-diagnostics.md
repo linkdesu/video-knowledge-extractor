@@ -34,6 +34,14 @@ issue #72 的两条偶发红（核心单测偶发 5 s 超时、`notes-run` 的�
 - **测试侧**：依赖真实子进程的用例用 `attemptSpawn()` 把两种情况分开——spawn 失败重试 3 次（每次让出事件循环并真实短等待：等的是操作系统放行进程创建，假时钟推不动），仍起不来就抛「环境连续 N 次无法启动子进程，不是被测行为」；其它错误（ffprobe 真跑了并失败等）原样交给断言。
 - **超时预算**：这类用例显式给 30 s 上限（与本仓库 `notes-run` / `generate-notes` 的真实 ffmpeg 用例一致）。默认 5 s 是共享事件循环上的预算，8 路并行全量时被机器负载吃掉（r62 实测 `5000.00ms` 触顶）；断言不变，卡住仍判失败。
 
+### 5. HTTP mock 整进程一个 origin，用例只换 handler（r65 / #84）
+
+`bun test` 一个进程顺序跑完 core 的 49 个文件；mock 用例原先每例/每文件 `Bun.serve({ port: 0 })` 起停，于是一个进程里不断出现「新 origin → 请求 → `stop(true)` → 短命端口被内核回收」。bun 的 fetch 连接池对这些刚死掉的连接不是同步剔除的（满载时更慢），偶发把下一次请求交给一条已死的连接：`The socket connection was closed unexpectedly`，或者读到残留字节（`Malformed_HTTP_Response`）。修复前 300 次 8/12 路并行全量里命中 5 次，全部落在 volcengine / endpoint 这类 mock 用例上。
+
+- 测试侧统一走 `packages/core/src/core/test-http.ts`：**整个进程只绑一次端口**，`idleTimeout: 0`，直到进程退出都不 `stop`；每个测试文件用 `createMockEndpoint()` 拿带唯一前缀的稳定 URL，用例只 `setHandler()`。请求按前缀路由后剥掉前缀，handler 仍看到用例原本的路径与查询串。
+- 判断标准：**任何新的 mock 用例都不许自己 `Bun.serve`**。单文件「一个 server、用例只复位状态」只解决了端口在同一文件内的复用，跨文件的端口回收仍在，必须走共享端点。
+- 修复后同一脚本三轮 8 路并行 × 20 轮、120 次 core 全量：`socket closed` 0 次；定向复现台（12 进程 × 800 次「起 server→请求→stop」）从 3/9600 降到 0/9600。
+
 ## 后果
 
 - 诊断常开（默认只输出慢项），单次失败自带归因；`VNOTE_TEST_DIAG=0` 可完全静音。
