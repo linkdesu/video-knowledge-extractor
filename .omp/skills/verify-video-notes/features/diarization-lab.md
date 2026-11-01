@@ -14,7 +14,12 @@
 - 同内容去重（r55）：发布成功后删掉 `analysis.sourceHash` 相同、键不同的旧条目（模型 mtime / schema 变了留下的重复），日志 `Lab 缓存：同内容旧条目已删除`；样本列表 `listSamples` 再按内容指纹去重、保留最新一条，所以历史重复也不会在「最近样本」里出现两次。r57 起删旧条目时连带删它的 `marks-<id>.json`。没有 `analysis` 戳的 r53 之前条目既不删也不合并。命中路径不做去重（不删别的 worktree 正在读的目录）。
 - 命中可见与强制重算（r55）：`lab.importPath(path, { force })` 返回 `{ sampleId, hit, reason, hashMs, elapsedMs, sourceHash }`。顶栏状态行 `lab-cache-status`：命中 → `命中缓存 · 12 ms · 未加载模型、未解码音频`（青色）；未命中 → `重新分析 · 3.6 s` / `强制重新生成 · 2.9 s` / `cold 模式重算 · …`（muted，`reason` 在 `title`）。`lab-force`「强制重新生成」按钮对当前样本按 `{ force: true }` 重算并覆盖（无样本或导入中禁用，失败保留旧条目），日志 `reason="forced"`、`forced=true`。
 - 样本切换：顶栏「最近样本」下拉。
-- 方案：A/B 各自可选 `baseline`（sherpa 原始簇）/ `refine`（二次聚类）/ `refine + filter`（整行语气词隐藏）；摘要显示双方说话人数、主播锚点簇数、过滤行数与秒数、两方案不同的行数。
+- 方案：A/B 各自可选 `baseline`（sherpa 原始簇）/ `refine`（二次聚类）/ `refine + filter`（整行语气词隐藏）；摘要（`lab-summary`）显示双方说话人数、主播簇（**段级**口径，见下）、过滤行数与秒数、两方案不同的行数，`title` 写明各数字的口径。
+- **统计口径（r69，界面与本文档同一套定义）**：摘要的四个数字都能用 `window.vnote.lab.load(sampleId)` 的返回值逐项复算，界面不引入第二套统计。
+  - **说话人数 A/B**：`assignSpeakers` 之后的生产口径（`LabConfigMeta.speakers`，即方案最终说话的簇数），不是聚类阶段的 `k`。
+  - **主播簇（段级）**：样本自带主播锚点时，锚点时间区间覆盖到的**不同簇数**（`hostClusterCount`）；样本没有锚点显示 `—`。设计稿里的「5→1」是**生产级**口径（`assignSpeakers` 后主播主簇数），两种口径在同一份数据上可以同时成立（例：段级 `5→2` / 生产级 `5→1`）；本页只给段级口径并在文案与 `title` 标注，评审不要拿它和生产级数字直接比。
+  - **过滤 N 行 / N 秒**：`refine_filter` 方案下「整行只有语气词或标点、且时长 ≤ 阈值」的行。**空文本行在组装 `LabLine` 时就被丢弃**（与正式管线一致），所以它既不出现在行列表，也不计入过滤数；摘要的「过滤 N 行」恒等于筛选器「仅已过滤」的行数。
+  - **两方案不同 N 行**：A/B 说话人对应关系按时间重叠取主映射后，映射到的 B 说话人与该行 B 说话人不一致（或 B 簇合并了 A 的两个簇）即算不同；一侧被过滤而另一侧未被过滤也算不同。
 - 对比时间轴：上下两条色带，每色一个说话人；过滤行灰斜纹；两方案说话人不同的区间在两带之间标红；播放头联动，点色带播放该段。
 - 字幕行：完整列表（时间 / A 说话人 / B 说话人 / 文本 / 状态）；点行定位、高亮、从行首播放；时间轴点击反向定位；跳转框接受 `13:14` 或行号；`Cmd/Ctrl+F` 聚焦搜索；筛选 全部 / 仅差异 / 仅已过滤 / 仅某说话人。
 - 试听：`J`/`K` 上一个/下一个差异并自动播放，空格播放/暂停，`1`/`2` 听同一行在 A/B 方案下的说话人样例；说话人面板 `▶样例` 依次播放该簇最长的三段。
@@ -22,7 +27,18 @@
 - 标记：差异行打「B 对 / A 对 / 都错」，写 `<cacheRoot>/marks-<样本>.json`（r54 起默认共享缓存根），重开仍在。
 - 输入区布局（r52）：`.vn-lab-bar-row` 是一个 4 列网格，拖放提示 `lab-dropzone` 独占首行，最近样本 / 方案 A / 方案 B / 阈值四列等宽（16px gap、底边对齐）；视口 ≤1053px 降成 2×2，≤760px 单列。Select 触发器 `box-sizing: border-box` + `min-width: 0`，长样本名用省略号截断，展开的下拉不越出卡片内容宽。
 - 视图状态保留（r52）：样本、方案 A/B、阈值、页面滚动（`.vn-content`）与字幕行列表滚动写进 `localStorage['vn.lab.view']`（`renderer/src/lib/lab-view-state.ts`，严格白名单 + clamp），导航离开再返回、以及整机重启后都还原来同一屏。
-- 下拉弹层（r52c）：`Select` 的 `role=listbox` 通过 `createPortal` 渲染到 `document.body`，`.vn-select-list.portal` 用 `position: fixed` + 内联锚点几何（`z-index: 55`），打开期间跟随内容区滚动/窗口缩放。留在卡片里会被 `.vn-card` 的 `backdrop-filter` 层叠上下文困住，卡片比弹层矮时下方卡片会盖住第 2 个及以后的选项（r52b 的 G1）。验收要按**命中**判：对每个选项取 `getBoundingClientRect()` 中心做 `elementFromPoint`，断言落点 `closest('[role=option]')` 就是该选项，再用真实鼠标点击并断言触发器文案变成该选项；1280/900/700/520 四档都要测（r52c 证据 `tmp/verify/r52c-hit/hit-*.json`）。
+- 下拉弹层（r52c，r69 起与设置页 `Combobox` 共用 `renderer/src/lib/popover.ts`，见 ADR-0045）：`Select` 的 `role=listbox` 通过 `createPortal` 渲染到 `document.body`，`.vn-select-list.portal` 用 `position: fixed` + 内联锚点几何（`z-index: 55`），打开期间跟随内容区滚动/窗口缩放。留在卡片里会被 `.vn-card` 的 `backdrop-filter` 层叠上下文困住，卡片比弹层矮时下方卡片会盖住第 2 个及以后的选项（r52b 的 G1）。验收要按**命中**判：对每个选项取 `getBoundingClientRect()` 中心做 `elementFromPoint`，断言落点 `closest('[role=option]')` 就是该选项，再用真实鼠标点击并断言触发器文案变成该选项；1280/900/700/520 四档都要测（r52c 证据 `tmp/verify/r52c-hit/hit-*.json`）。
+
+## 数字与门禁（r69）
+
+- **提示文案**：导入失败只弹一行中文原因（`导入失败：<errMessage>`，例如「目录里没有 segtext-*.json，无法作为实验目录加载」）；worker 的 stack 只进日志 `Lab 导入失败` / `{ key, stack }`，不再拼进 `Error.message`，toast 里不会出现 `at …lab-worker.js`。
+- **数字口径**见上文「统计口径」；界面文案必须显式写「主播簇（段级）」，`lab-summary` 的 `title` 重复同一套定义。摘要里的每个数字都能用 `window.vnote.lab.load(sampleId)` 的 `configs`/`meta` 复算，界面不另算一套。
+- **验收台数字门禁**（可复跑，见 `tmp/verify/r69-ui-overlay/lab-consistency.md`）：
+  1. 摘要的「A/B 人数」等于 `configs.*.meta.speakers`；
+  2. 「主播簇（段级）」等于 `configs.*.meta.hostClusters`（无锚点为 `—`）；
+  3. 「过滤 N 行」等于点「仅已过滤」后列表行数，且 B 方案行里空文本行数为 0；
+  4. 「两方案不同 M 行」等于点「仅差异」后列表行数。
+- **视觉门禁口径**：`bun run verify:detect` 判 `primary == 0`（severity error/warning/high），`advisory` 只报告不阻塞；Lab 过滤行的灰斜纹是设计刻意保留的 `repeating-stripes-gradient`，不计为失败。存在 `primary` 或扫描失败即退出码 1。
 
 ## How to get to it (user POV)
 
