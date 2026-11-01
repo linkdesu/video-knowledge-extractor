@@ -30,7 +30,6 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import {
-  assertExeVersionMatches,
   assertVersionBumped,
   assertWorkspaceVersionsMatch,
 } from "../src/main/release-version";
@@ -51,6 +50,12 @@ import {
   type CiArtifact,
   type WindowsBuildRun,
 } from "./win-installer-source";
+import {
+  APP_COMPANY_NAME,
+  APP_COPYRIGHT,
+  APP_PRODUCT_NAME,
+} from "./app-metadata";
+import { judgeExeMetadata } from "./win-exe-metadata";
 
 /** windows-build.yml 里 `actions/upload-artifact` 的名字。 */
 const WIN_ARTIFACT_NAME = "video-notes-windows-installer";
@@ -921,8 +926,8 @@ if ([string]$asarPkg.version -ne $expectedVersion) {
   throw "app.asar 内 package.json 的 version ($($asarPkg.version)) 未匹配 $expectedVersion"
 }
 
-# 校验 4：exe 属性页版本资源（r64）。FileVersion / ProductVersion 由 electron-builder 写入，
-# 只有 win.signAndEditExecutable 打开（默认）才有；这里只读，判定在 TypeScript 侧统一做。
+# 校验 4：exe 属性页的公司名/产品名/版权是 #89 的验收项（含 FileVersion / ProductVersion，r64）。
+# 这里只读回，判定统一在 TypeScript 侧的 judgeExeMetadata 做（内含版本号校验）。
 $targetVersionInfo = (Get-Item -LiteralPath $targetExe).VersionInfo
 $installerVersionInfo = (Get-Item -LiteralPath $installer).VersionInfo
 
@@ -934,6 +939,9 @@ $llmAfter = Get-LlmFingerprint
   uninstallerVersion = $uninstVer
   appExeFileVersion = $targetVersionInfo.FileVersion
   appExeProductVersion = $targetVersionInfo.ProductVersion
+  appExeCompanyName = [string]$targetVersionInfo.CompanyName
+  appExeProductName = [string]$targetVersionInfo.ProductName
+  appExeLegalCopyright = [string]$targetVersionInfo.LegalCopyright
   installerFileVersion = $installerVersionInfo.FileVersion
   desktopShortcutTarget = $wsh.CreateShortcut($shortcuts[0]).TargetPath
   startMenuShortcutTarget = $wsh.CreateShortcut($shortcuts[1]).TargetPath
@@ -957,19 +965,37 @@ $llmAfter = Get-LlmFingerprint
     uninstallerVersion: string;
     appExeFileVersion: string | null;
     appExeProductVersion: string | null;
+    appExeCompanyName: string | null;
+    appExeProductName: string | null;
+    appExeLegalCopyright: string | null;
     installerFileVersion: string | null;
     desktopShortcutTarget: string;
     startMenuShortcutTarget: string;
     llmBefore: { configured: boolean; model: string | null };
     llmAfter: { configured: boolean; model: string | null };
   };
-  assertExeVersionMatches(
-    { fileVersion: parsed.appExeFileVersion, productVersion: parsed.appExeProductVersion },
-    version,
+  // 属性页的公司名/产品名/版权是 #89 的验收项；judgeExeMetadata 内含版本号校验，
+  // 失败直接抛错让安装中止，绝不静默继续。
+  const verdict = judgeExeMetadata(
+    {
+      companyName: parsed.appExeCompanyName === "" ? null : parsed.appExeCompanyName,
+      productName: parsed.appExeProductName === "" ? null : parsed.appExeProductName,
+      legalCopyright: parsed.appExeLegalCopyright === "" ? null : parsed.appExeLegalCopyright,
+      fileVersion: parsed.appExeFileVersion,
+      productVersion: parsed.appExeProductVersion,
+    },
+    {
+      companyName: APP_COMPANY_NAME,
+      productName: APP_PRODUCT_NAME,
+      legalCopyright: APP_COPYRIGHT,
+      version,
+    },
   );
+  if (!verdict.ok) {
+    throw new Error(`exe 属性页元数据校验失败：${verdict.problems.join("；")}`);
+  }
   console.log(
-    `[win] exe 版本资源：FileVersion=${parsed.appExeFileVersion ?? "null"} ProductVersion=${parsed.appExeProductVersion ?? "null"}` +
-      `（安装包 FileVersion=${parsed.installerFileVersion ?? "null"}）`,
+    `[win] exe 版本资源：FileVersion=${parsed.appExeFileVersion ?? "null"} ProductVersion=${parsed.appExeProductVersion ?? "null"} 公司名=${parsed.appExeCompanyName || "null"} 产品名=${parsed.appExeProductName || "null"} 版权=${parsed.appExeLegalCopyright || "null"}（安装包 FileVersion=${parsed.installerFileVersion ?? "null"}）`,
   );
   const llm = assertLlmConfigPreserved(parsed.llmBefore, parsed.llmAfter, "Windows");
   console.log(`[win] LLM 配置：升级前 ${fmtFingerprint(parsed.llmBefore)} → 升级后 ${fmtFingerprint(parsed.llmAfter)}${llm.checked ? "（已校验保留）" : "（升级前未配置，跳过校验）"}`);

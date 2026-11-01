@@ -14,8 +14,11 @@ import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-
-const APP_NAME = "Video Notes";
+import {
+  APP_PRODUCT_NAME,
+  builderMetadataOverrides,
+  stagePackageJson,
+} from "./app-metadata";
 
 const appDir = resolve(import.meta.dirname, "..");
 const releaseDir = join(appDir, "release-win");
@@ -43,19 +46,7 @@ mkdirSync(join(stageDir, "node_modules"), { recursive: true });
 cpSync(join(appDir, "out"), join(stageDir, "out"), { recursive: true, dereference: true });
 writeFileSync(
   join(stageDir, "package.json"),
-  `${JSON.stringify(
-    {
-      name: "video-notes",
-      productName: APP_NAME,
-      version,
-      description: "把长视频变成可按主题阅读的笔记",
-      main: "out/main/index.js",
-      type: "module",
-      private: true,
-    },
-    null,
-    2,
-  )}\n`,
+  `${JSON.stringify(stagePackageJson(version), null, 2)}\n`,
 );
 
 const sherpaDir = realpathSync(dirname(requireFromApp.resolve("sherpa-onnx-node")));
@@ -72,7 +63,7 @@ cpSync(platformDir, join(stageDir, "node_modules", "sherpa-onnx-win-x64"), { rec
 // 2) electron-builder 走 CLI，输出流式透传，方便 CI 直接看到进度
 const child = spawn(
   "node_modules/.bin/electron-builder",
-  ["--win", "nsis", "--x64", "--config", "electron-builder.yml"],
+  ["--win", "nsis", "--x64", "--config", "electron-builder.yml", ...builderMetadataOverrides()],
   { cwd: appDir, stdio: "inherit" },
 );
 const code = await new Promise<number>((resolvePromise) => {
@@ -83,7 +74,7 @@ if (code !== 0) {
 }
 
 // 3) 找到产物 .exe（electron-builder 输出在 release-win/，排除 staging）
-const outExe = join(releaseDir, `${APP_NAME}-${version}-setup.exe`);
+const outExe = join(releaseDir, `${APP_PRODUCT_NAME}-${version}-setup.exe`);
 if (!existsSync(outExe)) {
   const found = readdirSync(releaseDir, { recursive: true, encoding: "utf8" })
     .filter((f) => f.endsWith(".exe") && !(f.split(/[/\\]/)[0] ?? "").startsWith("stage"));
