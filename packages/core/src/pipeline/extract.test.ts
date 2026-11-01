@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LlmClient, LlmEndpoint } from "../core/steps";
+import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
 import type { AsrEngine } from "../asr/engine";
 import type { SpeakerId } from "../core/types";
 import { preflightWavPath, runExtract } from "./extract";
@@ -424,5 +424,71 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+/**
+ * r69: the job overlay reads its step label from `Progress`, so every step must announce
+ * itself before it starts — otherwise the label lags until that step's first callback
+ * (ASR model loading alone takes ~1s; chunking waits for the first model round-trip).
+ */
+describe("runExtract 的步骤开始事件（r69）", () => {
+  const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
+
+  /** Fake engine that emits its own progress before returning the fixed transcript. */
+  function engineWith(chunks: Array<{ index: number; start: number; end: number }>): AsrEngine {
+    return {
+      id: "local",
+      modelId: "stub-model",
+      run: async (input) => {
+        input.onProgress?.({ step: "transcribe", done: 1, total: 1, detail: "stub-engine" });
+        return {
+          transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+          chunks,
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "stub-model",
+        };
+      },
+    };
+  }
+
+  async function runCapturing(chunks: Array<{ index: number; start: number; end: number }>): Promise<Progress[]> {
+    const dir = mkdtemp();
+    const videoPath = join(dir, "clean.ts");
+    makeDecodableTs(videoPath);
+    const progress: Progress[] = [];
+    await runExtract({
+      videoPath,
+      notesRoot: join(dir, "notes"),
+      endpoint,
+      cacheRoot: join(dir, ".cache"),
+      client: fakeClient(),
+      asrEngine: engineWith(chunks),
+      onProgress: (p) => progress.push(p),
+    });
+    return progress;
+  }
+
+  test("转写开始前先发 done 0/0，先于引擎自己发出的任何进度", async () => {
+    const progress = await runCapturing([{ index: 1, start: 0, end: 2 }]);
+    const transcribe = progress.filter((p) => p.step === "transcribe");
+    expect(transcribe.length).toBeGreaterThan(1);
+    expect(transcribe[0]).toEqual({ step: "transcribe", done: 0, total: 0 });
+    const engineIndex = progress.findIndex((p) => p.detail === "stub-engine");
+    expect(engineIndex).toBeGreaterThan(0);
+    expect(progress.indexOf(transcribe[0]!)).toBeLessThan(engineIndex);
+  });
+
+  test("划主题开始前先发 done 0 / chunks.length，先于第一块完成的 done 1", async () => {
+    const chunks = [{ index: 1, start: 0, end: 2 }];
+    const progress = await runCapturing(chunks);
+    const segment = progress.filter((p) => p.step === "segment-topics");
+    expect(segment.length).toBeGreaterThan(1);
+    expect(segment[0]).toEqual({ step: "segment-topics", done: 0, total: chunks.length });
+    const doneIndex = progress.findIndex((p) => p.step === "segment-topics" && p.done === 1);
+    expect(doneIndex).toBeGreaterThan(0);
+    expect(progress.indexOf(segment[0]!)).toBeLessThan(doneIndex);
   });
 });
