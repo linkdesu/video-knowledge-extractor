@@ -7,6 +7,7 @@ import {
   LAB_CACHE_SCHEMA,
   canonicalJson,
   discardEntryDir,
+  fsyncTree,
   hashFile,
   hashSourcePath,
   labAnalysisKey,
@@ -269,6 +270,18 @@ describe("Lab 条目自检与原子发布", () => {
       writeEntryFiles(discarded, key);
       discardEntryDir(discarded);
       expect(existsSync(discarded)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fsyncTree 遇到真错误不静默：错误信息带路径与 errno", () => {
+    const root = tempRoot();
+    try {
+      const missing = join(root, "gone");
+      expect(() => fsyncTree(missing)).toThrow(/读目录失败/);
+      expect(() => fsyncTree(missing)).toThrow(/errno=ENOENT/);
+      expect(() => fsyncTree(missing)).toThrow(/gone/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
