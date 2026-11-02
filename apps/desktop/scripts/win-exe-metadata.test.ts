@@ -99,7 +99,7 @@ describe("judgeExeMetadata：只有本应用的值才算通过", () => {
 
 describe("staging package.json：electron-builder 的 CompanyName 唯一来源", () => {
   test("带 author.name，值等于本应用的公司名（缺了它 exe 会留下 GitHub, Inc.）", () => {
-    const pkg = stagePackageJson("0.1.26");
+    const pkg = stagePackageJson("0.1.26", {});
     expect(pkg.author).toEqual({ name: APP_COMPANY_NAME });
   });
 });
