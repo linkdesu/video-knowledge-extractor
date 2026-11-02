@@ -16,6 +16,18 @@ describe("#98 简短回应语与半截话", () => {
     }
   });
 
+  test("表示同意/确认的实词不删：单独的「可以。」「没问题。」「知道。」「收到。」都保留", () => {
+    expect(isShortReplyLine(line("可以。", 0.8))).toBe(false);
+    expect(isShortReplyLine(line("没问题。", 1))).toBe(false);
+    expect(isShortReplyLine(line("可以，可以。", 1.2))).toBe(false);
+    expect(isShortReplyLine(line("知道。", 0.6))).toBe(false);
+    expect(isShortReplyLine(line("收到。", 0.7))).toBe(false);
+  });
+
+  test("纯语气词仍然删：单独的「嗯。」", () => {
+    expect(isShortReplyLine(line("嗯。", 0.5))).toBe(true);
+  });
+
   test("纯语气词与寒暄仍然算短回应", () => {
     for (const text of ["嗯", "对。", "好的", "OK", "嗯嗯，是啊", "……"]) {
       expect(isShortReplyLine(line(text, 0.8))).toBe(true);
