@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pruneStaleTestTmpDirs, testTmpRunDir } from "./temp-dirs-preload";
+import { pruneStaleTestTmpDirs, testTmpRunDir, tmpRegistry } from "./temp-dirs-preload";
 import { makeSuiteTmpDir, makeTmpDir } from "./temp-dirs";
 
 const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
@@ -10,7 +10,7 @@ const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
 describe("测试进程 TMPDIR 隔离", () => {
   test("bun test 进程的 TMPDIR 指向仓库 tmp/test-<pid>", () => {
     expect(tmpdir()).toBe(testTmpRunDir(repoRoot));
-    expect(tmpdir()).toEndWith(`tmp/test-${process.pid}`);
+    expect(tmpdir()).toEndWith(join("tmp", `test-${process.pid}`));
     expect(existsSync(tmpdir())).toBe(true);
   });
 });
@@ -62,6 +62,20 @@ describe("makeSuiteTmpDir", () => {
   });
 });
 
+describe("未安装 preload", () => {
+  test("makeTmpDir 立刻报错，而不是静默写系统 $TMPDIR", () => {
+    const registry = tmpRegistry();
+    const saved = registry.runDir;
+    registry.runDir = undefined;
+    try {
+      expect(() => makeTmpDir("r71-unisolated-")).toThrow(/未隔离/);
+      expect(() => makeSuiteTmpDir("r71-unisolated-suite-")).toThrow(/未隔离/);
+    } finally {
+      registry.runDir = saved;
+    }
+  });
+});
+
 describe("pruneStaleTestTmpDirs", () => {
   test("删除死进程目录与超龄目录，保留活进程目录和其他条目", () => {
     const parent = makeSuiteTmpDir("r71-prune-");
@@ -75,12 +89,13 @@ describe("pruneStaleTestTmpDirs", () => {
     const nested = join(parent, "notes");
     for (const dir of [dead, live, ancient, foreign, nested]) mkdirSync(dir);
 
-    // pid 被复用：进程还活着但目录已经躺了两天。
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    utimesSync(ancient, twoDaysAgo, twoDaysAgo);
+    // pid 被复用：进程还活着但目录超过年龄上限。
+    const old = new Date(Date.now() - 2 * 60 * 1000);
+    utimesSync(ancient, old, old);
 
     const removed = pruneStaleTestTmpDirs(parent, {
       isAlive: (pid: number) => pid === livePid || pid === ancientPid,
+      maxAgeMs: 60 * 1000,
     });
 
     expect(removed.sort()).toEqual([ancient, dead].sort());

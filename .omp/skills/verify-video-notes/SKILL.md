@@ -329,6 +329,7 @@ Last proven runs: `tmp/verify/r38-regenerate-cache-and-real-e2e/` (the r38 round
 
 - Never `export TMPDIR=…` to work around a test, and never point a test's scratch state at the system temp dir. If a test needs a directory, call `makeTmpDir(prefix)` (deleted after the current test) or `makeSuiteTmpDir(prefix)` (shared fixture for the whole file, deleted when the run ends) from `@video-notes/core/testing` — the rule in `AGENTS.md` forbids bare `mkdtempSync(join(tmpdir(), …))` in tests, because the cleanup hooks are registered once by the preload (bun caches modules across test files, so hooks imported from a test file would only cover the first file).
 - Reproducing a flake: at most 6 runs, at most 2 suites in parallel, no `--watch` and no background loop left behind.
+- Run `bun test` from a package directory (`packages/core`, `apps/desktop`, `apps/cli`) or the repo root. bun reads only the cwd's `bunfig.toml`, so a run started from a deep `src/` subdirectory would skip the preload — `makeTmpDir` then throws `测试临时目录未隔离` instead of silently writing to the system `$TMPDIR`. Avoid `--parallel --no-isolate` and `test.concurrent` for the same reason (one preload evaluation per worker; per-test cleanup would delete a concurrent test's fixture).
 - After a suite, `ls -1d tmp/test-*` must be empty. A leftover directory means a process was killed mid-run; the next preload removes it, so report it instead of deleting system temp state.
 
 ## Cleanup

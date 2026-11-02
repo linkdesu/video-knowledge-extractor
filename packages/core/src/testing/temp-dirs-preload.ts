@@ -18,8 +18,11 @@ import { afterAll, afterEach } from "bun:test";
  *    `pruneStaleTestTmpDirs` 兜住（死 pid 与超龄目录）。
  */
 
-/** 进程被 kill 后留下的目录，超过这个年龄即使 pid 被复用也视为残留。 */
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/**
+ * 活进程目录的兜底年龄：pid 被复用后旧目录可能永远等不到死 pid。
+ * 阈值取得比任何一次测试运行都长得多（7 天），避免把挂起/调试中的进程夹具删掉。
+ */
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const RUN_DIR_NAME = /^test-(\d+)$/;
 
@@ -30,6 +33,8 @@ const RUN_DIR_NAME = /^test-(\d+)$/;
 const REGISTRY = Symbol.for("vnote.test.tmpdirs");
 
 export interface TmpRegistry {
+  /** 本进程独占的运行目录；undefined 表示 preload 未安装（helper 会直接报错）。 */
+  runDir?: string;
   perTest: string[];
   perSuite: string[];
 }
@@ -57,8 +62,8 @@ export function testTmpRunDir(repoRoot: string): string {
 }
 
 /**
- * 清掉 `<repo>/tmp` 下已死进程的 `test-<pid>` 目录。
- * 并发跑测试时活进程的目录一律保留；pid 被复用时靠 mtime 超龄兜底。
+ * 清掉 `<repo>/tmp` 下残留的 `test-<pid>` 目录：死进程的目录直接删；
+ * 活进程的目录只在超过 `maxAgeMs`（默认 7 天）时删，作为 pid 复用的兜底。
  * 返回被删掉的目录（绝对路径）。
  */
 export function pruneStaleTestTmpDirs(tmpParent: string, options: PruneOptions = {}): string[] {
@@ -116,6 +121,7 @@ export function installIsolatedTmpDir(repoRoot: string): string {
   }
 
   const registry = tmpRegistry();
+  registry.runDir = dir;
   afterEach(() => {
     drain(registry.perTest);
   });
