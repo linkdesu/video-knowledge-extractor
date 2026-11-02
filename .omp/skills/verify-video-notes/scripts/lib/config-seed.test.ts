@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeSuiteTmpDir, makeTmpDir } from "../../../../../packages/core/src/testing/tmp";
 import {
   assertPrivateMode,
   buildSecretsJson,
@@ -13,15 +13,9 @@ import {
   writePrivateConfig,
 } from "./config-seed";
 
-const REPO = join(tmpdir(), "vnote-fake-repo-" + process.pid);
+const REPO = makeSuiteTmpDir("vnote-fake-repo-");
 const EXAMPLE = join(REPO, ".omp/skills/verify-video-notes/config/llm.example.json");
 const GOOD = { baseUrl: "https://router.example.net/v1", apiKey: "test-api-key-not-real", model: "mock-model" };
-
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-seed-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 describe("parsePrivateConfig", () => {
   test("收下合法配置并 trim", () => {
@@ -62,7 +56,7 @@ describe("parsePrivateConfig", () => {
 
 describe("loadPrivateConfig", () => {
   test("文件缺失：提示模板路径与三步修复，不出现真实值", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-seed-");
     const path = join(dir, "llm.json");
     expect(() => loadPrivateConfig(path, { repoRoot: REPO, examplePath: EXAMPLE })).toThrow(/缺少私有 LLM 配置/);
     try {
@@ -81,7 +75,7 @@ describe("loadPrivateConfig", () => {
   });
 
   test("坏 JSON 报错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-seed-");
     const path = join(dir, "llm.json");
     writeFileSync(path, "{ not json", { mode: 0o600 });
     expect(() => loadPrivateConfig(path, { repoRoot: REPO, examplePath: EXAMPLE })).toThrow(/不是合法 JSON/);
@@ -91,7 +85,7 @@ describe("loadPrivateConfig", () => {
 describe("seedUserData", () => {
   let userData: string;
   beforeEach(() => {
-    userData = mkdtemp();
+    userData = makeTmpDir("vnote-seed-");
   });
 
   test("写入真实存储格式：settings.json(version 3) + secrets.bin(v2, llm)，均 0600", () => {
@@ -147,7 +141,7 @@ describe("extractPrivateConfig", () => {
 
 describe("权限与私有文件", () => {
   test("writePrivateConfig 落 0600，可被 loadPrivateConfig 读回", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-seed-");
     const path = join(dir, ".config/video-notes-verify/llm.json");
     writePrivateConfig(path, GOOD);
     if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -162,7 +156,7 @@ describe("权限与私有文件", () => {
   });
 
   test("seed 后 settings.json 存在且不是旧文件残留", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-seed-");
     const { settingsPath } = seedUserData(dir, GOOD);
     expect(existsSync(settingsPath)).toBe(true);
   });

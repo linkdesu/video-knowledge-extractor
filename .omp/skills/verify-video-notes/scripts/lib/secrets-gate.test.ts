@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { makeTmpDir } from "../../../../../packages/core/src/testing/tmp";
 import {
   isInside,
   isSecretFile,
@@ -11,6 +11,11 @@ import {
   secretScanFailureMessage,
   winPathInside,
 } from "./secrets-gate";
+
+/** 每个用例一个临时目录；用例结束由 makeTmpDir 的 afterEach 删除。 */
+function withTmpDir(prefix: string, body: (root: string) => void): void {
+  body(makeTmpDir(prefix));
+}
 
 describe("isSecretFile", () => {
   test("认得出密钥库、凭据事务残留与旧格式备份", () => {
@@ -41,8 +46,7 @@ describe("isInside", () => {
   });
 
   test("借目录符号链接指回证据树的 userData 也算在内", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-link-"));
-    try {
+    withTmpDir("secrets-gate-link-", (root) => {
       const evidence = join(root, "tmp/verify");
       mkdirSync(join(evidence, "probe"), { recursive: true });
       // 证据树之外的入口，链接指回证据树内部
@@ -53,14 +57,11 @@ describe("isInside", () => {
       // 不存在的尾巴也要能判（--user-data 常常还不存在）
       expect(isInside(evidence, join(shortcut, "user-data", "deeper"))).toBe(true);
       expect(isInside(evidence, join(root, "elsewhere", "user-data"))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("状态根里的符号链接指向外部时，真实路径判定为越界（r60）", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-link-out-"));
-    try {
+    withTmpDir("secrets-gate-link-out-", (root) => {
       const stateRoot = join(root, "tmp/verify-state");
       mkdirSync(stateRoot, { recursive: true });
       const victim = join(root, "victim");
@@ -69,9 +70,7 @@ describe("isInside", () => {
 
       expect(isInside(stateRoot, join(stateRoot, "r60", "user-data"))).toBe(false);
       expect(isInside(stateRoot, join(stateRoot, "r60"))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -98,8 +97,7 @@ describe("winPathInside", () => {
 
 describe("scanSecretFiles", () => {
   test("递归找到嵌套的密钥文件，忽略普通产物", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-"));
-    try {
+    withTmpDir("secrets-gate-", (root) => {
       mkdirSync(join(root, "r47-final/user-data"), { recursive: true });
       mkdirSync(join(root, "r48/win/user-data"), { recursive: true });
       writeFileSync(join(root, "r47-final/user-data/secrets.bin"), "{}");
@@ -110,14 +108,11 @@ describe("scanSecretFiles", () => {
       const found = scanSecretFiles(root).found.map((path) => relative(root, path));
       expect(found.sort()).toEqual([join("r47-final", "user-data", "secrets.bin"), join("r48", "win", "user-data", "secrets.pending")]);
       expect(scanSecretFiles(root).unreadable).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("指向密钥的符号链接本身算命中", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-link-file-"));
-    try {
+    withTmpDir("secrets-gate-link-file-", (root) => {
       const outside = join(root, "real-secrets.bin");
       writeFileSync(outside, "{}");
       const evidence = join(root, "verify");
@@ -125,14 +120,11 @@ describe("scanSecretFiles", () => {
       symlinkSync(outside, join(evidence, "r49", "secrets.bin"));
 
       expect(scanSecretFiles(evidence).found.map((path) => relative(evidence, path))).toEqual([join("r49", "secrets.bin")]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("目录符号链接继续下钻，且成环不死循环", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-link-dir-"));
-    try {
+    withTmpDir("secrets-gate-link-dir-", (root) => {
       const evidence = join(root, "verify");
       const elsewhere = join(root, "elsewhere");
       mkdirSync(join(elsewhere, "user-data"), { recursive: true });
@@ -143,26 +135,20 @@ describe("scanSecretFiles", () => {
 
       const found = scanSecretFiles(evidence).found.map((path) => relative(evidence, path));
       expect(found).toEqual([join("r49", "profile", "user-data", "secrets.bin")]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("断链的密钥链接仍算命中，不存在的根返回空数组", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-broken-"));
-    try {
+    withTmpDir("secrets-gate-broken-", (root) => {
       symlinkSync(join(root, "gone"), join(root, "secrets.bin"));
       expect(scanSecretFiles(root).found.map((path) => relative(root, path))).toEqual(["secrets.bin"]);
-      expect(scanSecretFiles(join(tmpdir(), "secrets-gate-does-not-exist-12345"))).toEqual({ found: [], unreadable: [] });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+      expect(scanSecretFiles(join(makeTmpDir("secrets-gate-absent-"), "missing"))).toEqual({ found: [], unreadable: [] });
+    });
   });
 
   // r60 漏洞 6：读不了的目录以前被静默跳过，于是门禁报告「干净」——一份读不到的密钥副本等于没查。
   test.skipIf(process.platform === "win32")("读不了的目录不会被当成干净：单独报成 unreadable", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-gate-unreadable-"));
-    try {
+    withTmpDir("secrets-gate-unreadable-", (root) => {
       const locked = join(root, "locked");
       mkdirSync(locked, { recursive: true });
       writeFileSync(join(locked, "secrets.bin"), "{}");
@@ -174,17 +160,14 @@ describe("scanSecretFiles", () => {
       } finally {
         chmodSync(locked, 0o700);
       }
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 });
 
 describe("scanSecretContent", () => {
   // r60 漏洞 2：改名/复制过的密钥文件骗得过文件名规则，内容仍然是密钥。
   test("改名后的密钥副本按内容命中", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-content-"));
-    try {
+    withTmpDir("secrets-content-", (root) => {
       const needle = "sk-live-r60-sentinel-0123456789";
       mkdirSync(join(root, "r60/user-data"), { recursive: true });
       writeFileSync(join(root, "r60/user-data/backup.log"), `llm=${needle}\n`);
@@ -192,26 +175,20 @@ describe("scanSecretContent", () => {
       const scan = scanSecretContent(root, [needle]);
       expect(scan.found.map((path) => relative(root, path))).toEqual([join("r60/user-data/backup.log")]);
       expect(scan.unreadable).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("没有 needle（没有私有配置）时不做内容判定，也不误报", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-content-empty-"));
-    try {
+    withTmpDir("secrets-content-empty-", (root) => {
       writeFileSync(join(root, "app.log"), "nothing secret here\n");
       expect(scanSecretContent(root, [])).toEqual({ found: [], unreadable: [] });
       // 空串 needle 会把每个文件都算命中，必须被忽略
       expect(scanSecretContent(root, [""])).toEqual({ found: [], unreadable: [] });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("符号链接不跟随（不把证据树外的文件读成命中）", () => {
-    const root = mkdtempSync(join(tmpdir(), "secrets-content-link-"));
-    try {
+    withTmpDir("secrets-content-link-", (root) => {
       const needle = "sk-live-r60-link-0123456789";
       const outside = join(root, "outside.log");
       writeFileSync(outside, needle);
@@ -219,9 +196,7 @@ describe("scanSecretContent", () => {
       mkdirSync(evidence, { recursive: true });
       symlinkSync(outside, join(evidence, "alias.log"));
       expect(scanSecretContent(evidence, [needle]).found).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 });
 
