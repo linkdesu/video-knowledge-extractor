@@ -323,6 +323,14 @@ Last proven runs: `tmp/verify/r38-regenerate-cache-and-real-e2e/` (the r38 round
 - **Slices are now one `topic.mp4` per topic (r33).** Each generated topic writes a single concatenated `topic.mp4` (segments cut with 2 s pre-roll, overlaps merged, joined with `-c copy`) plus one `TopicClip` record carrying `segmentOffsets`. The numbered per-segment files (`01-….mp4`, `SLICE_RE`-shaped) only exist in pre-r33 data; on those, the renderer falls back to source playback / multi-clip. Do not assert numbered clip names for r33 runs, and do not treat a `topic.mp4`-only topic directory as incomplete — it is the finished shape.
 - **Diagnostics are copied to the system clipboard and read back with `drive clipboard --save <path>`; the key must never be in them.** `settings-diagnostics-copy` writes the summary to the clipboard, and the read-back is `$V clipboard --save <path>` — `pbpaste` on a mac run, the running app's renderer on a win-gamepc run (`navigator.clipboard.readText()`; **not** `Get-Clipboard` over ssh, which reads Session 0 and sees an empty clipboard because Windows clipboards are per session — measured in r41, the app reported 已复制 5992 字符 while the ssh read returned nothing) — so every assertion runs on the saved file. A pass requires both: the text contains the decisive fact of the failure, and `rg -c <key> <path>` returns `0` (logger scrubs registered secrets before `clipboard.writeText`; ADR-0028). Since r41 `## 错误摘要` also merges the requested task's ERROR records with the same-day global ERROR records from the log tail, so an `ERROR ipc` line cannot be lost while a task is active.
 
+## Running tests: TMPDIR is isolated (r71)
+
+`bun test` in any workspace (`packages/core`, `apps/desktop`, `apps/cli`) or at the repo root is preloaded by that directory's `test-preload.ts`: it publishes `<repo>/tmp/test-<pid>` as `TMPDIR` (plus `TMP`/`TEMP` on Windows), deletes it when the run ends, and sweeps `test-<pid>` directories left by killed processes on the next start. Nothing is written to the system `$TMPDIR` any more — issue #101, where 119 uncollected `mkdtemp` calls once grew it to 109.6 GB.
+
+- Never `export TMPDIR=…` to work around a test, and never point a test's scratch state at the system temp dir. If a test needs a directory, call `makeTmpDir(prefix)` (deleted after the current test) or `makeSuiteTmpDir(prefix)` (shared fixture, deleted after the file) from `@video-notes/core/testing` — the rule in `AGENTS.md` forbids bare `mkdtempSync(join(tmpdir(), …))` in tests.
+- Reproducing a flake: at most 6 runs, at most 2 suites in parallel, no `--watch` and no background loop left behind.
+- After a suite, `ls -1d tmp/test-*` must be empty. A leftover directory means a process was killed mid-run; the next preload removes it, so report it instead of deleting system temp state.
+
 ## Cleanup
 
 ```bash

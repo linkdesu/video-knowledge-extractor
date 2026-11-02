@@ -20,6 +20,13 @@
      - **macOS (`workstation-1`)**：执行 `package:mac` 打包，将最新产物覆盖安装到 `/Applications/Video Notes.app`，清除隔离属性（`xattr -cr`，不改动二进制签名、不触碰系统钥匙串），校验 `Info.plist` 的 `CFBundleShortVersionString` 与当前版本号一致。
      - **Windows (`gamepc`)**：自动获取对应版本的 `Video Notes-<version>-setup.exe`（本地或 GitHub Actions `windows-build.yml` 产物），上传至 `gamepc:D:\code\video-notes\installer\`，先停止正在运行的 `Video Notes.exe` 防止文件锁冲突，再静默安装到标准路径 `D:\code\video-notes\app\Video Notes.exe`，修复桌面与开始菜单快捷方式指向，并校验 `Uninstall Video Notes.exe`、注册表 `DisplayVersion` 及 `resources\app.asar` 版本号完全一致。
 
+## 测试临时目录（r71，issue #101）
+
+- 测试**不得**直接 `mkdtempSync(join(tmpdir(), …))`、拼 `${tmpdir()}/…` 或用 `import.meta.dir` 自建临时目录：一律用 `@video-notes/core/testing` 的 `makeTmpDir(prefix, base?)`（用例级，`afterEach` 自动删除）或 `makeSuiteTmpDir(prefix, base?)`（模块顶层 / `beforeAll` 的共享夹具，整份文件结束才删）。core 内部相对导入 `src/testing/tmp`。
+- 每个包的 `bun test` 由该包 `test-preload.ts` 把 `TMPDIR` 指到 `<repo>/tmp/test-<pid>`，整轮结束删除，并在启动时清掉死进程残留；新增包必须同时提供 `bunfig.toml`（`[test] preload = ["./test-preload.ts"]`）与 `test-preload.ts`，否则会重新污染系统 `$TMPDIR`。
+- 非测试脚本（如 `apps/cli/src/smoke-volc-asr.ts`）可以用 `tmpdir()`，但必须自己在 `finally` 里删掉创建的文件/目录。
+- 批量或反复跑测试：一次 flake 复现上限 6 次、最多 2 个套件并行；不要留 `--watch` 或后台循环。
+
 ## 模型与评审
 
 - agent → 模型映射固定在 `.omp/config.yml`；改映射只改这里，不碰 `~/.omp/agent/config.yml`。
