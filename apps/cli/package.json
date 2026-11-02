@@ -8,7 +8,6 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test --passWithNoTests",
     "vnote": "bun run src/cli.ts"
   },
   "dependencies": {

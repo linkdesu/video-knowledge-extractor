@@ -1,19 +1,21 @@
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll } from "bun:test";
+import { afterAll, afterEach } from "bun:test";
 
 /**
- * 测试进程的 TMPDIR 隔离（#101）。
+ * 测试进程的 TMPDIR 隔离与临时目录清理（#101）。
  *
- * 每个 `bun test` 进程独占 `<repo>/tmp/test-<pid>`，preload 里调用
- * `installIsolatedTmpDir(repoRoot)` 后，`os.tmpdir()` 及其下游的
- * `mkdtempSync(tmpdir(), …)` 全部落在仓库内，不再堆进系统 `$TMPDIR`
- * （历史事故：53 个测试文件 119 处 mkdtemp 从不删除，一度占用 109.6 GB）。
- *
- * `bun test` 不会触发 `process.on("exit")`（实测 1.4.0），所以清理挂在
- * preload 作用域的 `afterAll` 上——它只在整轮测试跑完后执行一次。
- * 进程被 kill / 崩溃时清理不到，由下一次 preload 的 `pruneStaleTestTmpDirs`
- * 兜住（死 pid 与超龄目录）。
+ * 1. 每个 `bun test` 进程独占 `<repo>/tmp/test-<pid>` 作为 TMPDIR；preload 里调用
+ *    `installIsolatedTmpDir(repoRoot)` 后，`os.tmpdir()` 及其下游的
+ *    `mkdtempSync(tmpdir(), …)` 全部落在仓库内，不再堆进系统 `$TMPDIR`
+ *    （历史事故：53 个测试文件 119 处 mkdtemp 从不删除，一度占用 109.6 GB）。
+ * 2. 清理钩子**必须注册在 preload 作用域**：bun 1.4 不重置模块注册表，同一个
+ *    helper 模块只在第一个导入它的测试文件里求值一次，注册在那里的 `afterEach`
+ *    只对那个文件生效——其余文件建的目录会活到整轮结束。preload 的
+ *    `afterEach` 则是全局的，每个用例结束后都执行（实测）。
+ * 3. `bun test` 不会触发 `process.on("exit")`（实测 1.4.0），所以整轮删目录挂在
+ *    preload 的 `afterAll` 上。进程被 kill / 崩溃时清理不到，由下一次 preload 的
+ *    `pruneStaleTestTmpDirs` 兜住（死 pid 与超龄目录）。
  */
 
 /** 进程被 kill 后留下的目录，超过这个年龄即使 pid 被复用也视为残留。 */
@@ -21,10 +23,32 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const RUN_DIR_NAME = /^test-(\d+)$/;
 
+/**
+ * 用例级 / 文件级待删目录的登记表。放在 globalThis 上是因为 helper 模块会被缓存，
+ * preload 与测试文件必须看到同一个数组。
+ */
+const REGISTRY = Symbol.for("vnote.test.tmpdirs");
+
+export interface TmpRegistry {
+  perTest: string[];
+  perSuite: string[];
+}
+
 export interface PruneOptions {
   /** 判定 pid 是否存活；测试注入用。 */
   isAlive?: (pid: number) => boolean;
   maxAgeMs?: number;
+}
+
+/** 取（必要时创建）全局登记表；preload 与 `@video-notes/core/testing` 共用。 */
+export function tmpRegistry(): TmpRegistry {
+  const store = globalThis as typeof globalThis & { [REGISTRY]?: TmpRegistry };
+  let existing = store[REGISTRY];
+  if (existing === undefined) {
+    existing = { perTest: [], perSuite: [] };
+    store[REGISTRY] = existing;
+  }
+  return existing;
 }
 
 /** 本进程独占的测试临时目录：`<repo>/tmp/test-<pid>`。 */
@@ -70,7 +94,8 @@ export function pruneStaleTestTmpDirs(tmpParent: string, options: PruneOptions =
 }
 
 /**
- * 在 preload 里调用：建立本进程独占目录、把 TMPDIR 指过去、注册整轮测试结束后的删除。
+ * 在 preload 里调用：建立本进程独占目录、把 TMPDIR 指过去、注册
+ * 「每个用例结束后删用例级目录 / 整轮结束后删文件级目录与整个运行目录」。
  * 必须在任何测试文件（含其模块顶层）调用 `tmpdir()` 之前执行——preload 就是这个时机。
  */
 export function installIsolatedTmpDir(repoRoot: string): string {
@@ -90,7 +115,13 @@ export function installIsolatedTmpDir(repoRoot: string): string {
     process.env.TEMP = dir;
   }
 
+  const registry = tmpRegistry();
+  afterEach(() => {
+    drain(registry.perTest);
+  });
   afterAll(() => {
+    drain(registry.perTest);
+    drain(registry.perSuite);
     removeQuietly(dir);
   });
   return dir;
@@ -105,6 +136,12 @@ function pidAlive(pid: number): boolean {
   } catch (error) {
     // EPERM = 进程存在但不属于当前用户
     return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function drain(dirs: string[]): void {
+  while (dirs.length > 0) {
+    removeQuietly(dirs.pop()!);
   }
 }
 
