@@ -1,8 +1,8 @@
 # Windows x64 NSIS 打包配置，配合 scripts/package-win.ts 的 staging 目录使用。
 # 仓库没有图标文件，icon 相关键全部省略（electron-builder 26 允许缺省）。
+# productName / copyright 不在这里写：它们与 companyName 一起由 scripts/app-metadata.ts 定义，
+# package-win.ts 以 `-c.productName=… -c.copyright=…` 覆盖，避免两处各写一份（r67 / #89）。
 appId: me.xieal.video-notes
-productName: Video Notes
-copyright: Copyright © 2026 xieal
 
 directories:
   app: release-win/stage

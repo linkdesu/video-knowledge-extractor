@@ -10,6 +10,7 @@
     "start": "electron-vite preview",
     "package:mac": "bun run build && bun scripts/package-mac.ts",
     "package:win": "bun run build && bun scripts/package-win.ts",
+    "check:win-metadata": "bun scripts/check-win-metadata.ts",
     "fetch:ffmpeg": "bun scripts/fetch-ffmpeg.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "bun test --passWithNoTests",
@@ -37,6 +38,7 @@
     "motion": "^14.5.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "resedit": "1.7.2",
     "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.3.3",
     "vite": "^8.3.5"
