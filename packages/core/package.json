@@ -13,6 +13,16 @@
       "types": "./src/storage.ts",
       "import": "./src/storage.ts",
       "default": "./src/storage.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/tmp.ts",
+      "import": "./src/testing/tmp.ts",
+      "default": "./src/testing/tmp.ts"
+    },
+    "./testing/tmp-root": {
+      "types": "./src/testing/tmp-root.ts",
+      "import": "./src/testing/tmp-root.ts",
+      "default": "./src/testing/tmp-root.ts"
     }
   },
   "scripts": {
