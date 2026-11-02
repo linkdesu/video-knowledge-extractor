@@ -108,6 +108,15 @@ describe("Lab 视图计算", () => {
     expect(rows[0]?.mark).toBeNull();
   });
 
+  test("问题类型与 A/B 一样按行起点对齐", () => {
+    const rows = buildRows(A, B, 1, {
+      [labLineKey({ start: 4.6 })]: "overlap_wrong_speaker",
+      [labLineKey({ start: 0 })]: "false_duplicate",
+    });
+    expect(rows[2]?.mark).toBe("overlap_wrong_speaker");
+    expect(rows[0]?.mark).toBe("false_duplicate");
+  });
+
   test("时间格式", () => {
     expect(formatTime(5)).toBe("00:05");
     expect(formatTime(3725)).toBe("1:02:05");

@@ -2,7 +2,7 @@
  * Lab 的纯视图计算（r48）：A/B 行对齐、摘要、筛选、跳转解析。
  * 只被验收台页面使用，不进入正式管线；放在 shared 以便 bun test 直接覆盖。
  */
-import type { LabConfig, LabLine } from "./lab";
+import { isLabMark, type LabConfig, type LabLine, type LabMark } from "./lab";
 import { isFillerLine } from "./lab-fillers";
 
 /** 标记键：行起点毫秒。跨方案重载后同一时间点仍对得上。 */
@@ -46,7 +46,7 @@ export type LabRow = LineAlignment & {
   filler: boolean;
   /** 两方案说话人不同（含 B 侧被过滤而 A 未过滤）。 */
   diff: boolean;
-  mark: "A" | "B" | "both" | null;
+  mark: LabMark | null;
 };
 
 export type LabSummary = {
@@ -158,7 +158,7 @@ export function buildRows(
       ...aligned,
       filler,
       diff: diff || filteredDiff,
-      mark: mark === "A" || mark === "B" || mark === "both" ? mark : null,
+      mark: isLabMark(mark) ? mark : null,
     };
   });
 }
