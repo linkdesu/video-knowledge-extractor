@@ -2,7 +2,7 @@
  * Lab 样本落盘（r48）：只写 `tmp/verify/lab/<id>/`，不碰笔记库。
  * 一个样本目录 = sample.json + audio.wav + segments.json + embeddings.json + segtext.json（+ silences/labels/anchors）。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
 import { isLabMark, type LabMarks, type LabSampleMeta } from "../../shared/lab";
@@ -179,7 +179,11 @@ export function writeMarks(root: string, id: string, marks: LabMarks): LabMarks 
   }
   const clean = normalizeMarks(marks);
   mkdirSync(root, { recursive: true });
-  writeJson(marksPath(root, id), clean);
+  // 人工标注是最不可替代的那份数据：先写同目录临时文件再 rename，崩溃时不会留下半截 JSON。
+  const target = marksPath(root, id);
+  const tmp = `${target}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(clean)}\n`);
+  renameSync(tmp, target);
   return clean;
 }
 

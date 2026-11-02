@@ -2,7 +2,7 @@
  * Lab 的纯视图计算（r48）：A/B 行对齐、摘要、筛选、跳转解析。
  * 只被验收台页面使用，不进入正式管线；放在 shared 以便 bun test 直接覆盖。
  */
-import { isLabMark, type LabConfig, type LabLine, type LabMark } from "./lab";
+import { isLabMark, type LabConfig, type LabLine, type LabMark, type LabMarks } from "./lab";
 import { isFillerLine } from "./lab-fillers";
 
 /** 标记键：行起点毫秒。跨方案重载后同一时间点仍对得上。 */
@@ -140,7 +140,7 @@ export function buildRows(
   configA: LabConfig,
   configB: LabConfig,
   thresholdSeconds: number,
-  marks: Record<string, string> = {},
+  marks: LabMarks = {},
 ): LabRow[] {
   const filterB = configB.name === "refine_filter";
   const { aToB, bToA } = speakerMap(configA.lines, configB.lines);
