@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LabConfig, LabConfigName, LabImportResult, LabLine, LabPayload, LabProgress, LabSampleMeta } from "../../../shared/lab";
-import { LAB_CONFIG_LABEL, LAB_CONFIGS } from "../../../shared/lab";
+import type { LabConfig, LabConfigName, LabImportResult, LabLine, LabMarks, LabPayload, LabProgress, LabSampleMeta } from "../../../shared/lab";
+import { LAB_CONFIG_LABEL, LAB_CONFIGS, LAB_ISSUE_TYPES, LAB_MARK_LABEL } from "../../../shared/lab";
 import {
   buildRows,
   filterRows,
@@ -77,7 +77,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const [search, setSearch] = useState("");
   const [jump, setJump] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [marks, setMarks] = useState<Record<string, "A" | "B" | "both">>({});
+  const [marks, setMarks] = useState<LabMarks>({});
   const [progress, setProgress] = useState<LabProgress | null>(null);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -216,7 +216,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   }, [lab]);
 
   const saveMarksSoon = useCallback(
-    (next: Record<string, "A" | "B" | "both">) => {
+    (next: LabMarks) => {
       setMarks(next);
       if (lab === undefined || sampleId === null) return;
       clearTimeout(markTimer.current);
@@ -658,27 +658,45 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                         </button>
                         {row.diff ? (
                           <span className="vn-lab-marks">
-                            <button
-                              className={`vn-btn sm${row.mark === "B" ? " primary" : ""}`}
-                              data-testid="lab-mark-B"
-                              onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "B" }); }}
-                            >
-                              B 对
-                            </button>
-                            <button
-                              className={`vn-btn sm${row.mark === "A" ? " primary" : ""}`}
-                              data-testid="lab-mark-A"
-                              onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "A" }); }}
-                            >
-                              A 对
-                            </button>
-                            <button
-                              className={`vn-btn sm${row.mark === "both" ? " primary" : ""}`}
-                              data-testid="lab-mark-both"
-                              onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "both" }); }}
-                            >
-                              都错
-                            </button>
+                            <span className="vn-lab-mark-group" role="group" aria-label="谁对">
+                              <span className="vn-lab-mark-label" aria-hidden="true">谁对</span>
+                              <button
+                                className={`vn-btn sm${row.mark === "B" ? " primary" : ""}`}
+                                data-testid="lab-mark-B"
+                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "B" }); }}
+                              >
+                                B 对
+                              </button>
+                              <button
+                                className={`vn-btn sm${row.mark === "A" ? " primary" : ""}`}
+                                data-testid="lab-mark-A"
+                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "A" }); }}
+                              >
+                                A 对
+                              </button>
+                              <button
+                                className={`vn-btn sm${row.mark === "both" ? " primary" : ""}`}
+                                data-testid="lab-mark-both"
+                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "both" }); }}
+                              >
+                                都错
+                              </button>
+                            </span>
+                            <span className="vn-lab-mark-group" role="group" aria-label="问题类型">
+                              <span className="vn-lab-mark-label" aria-hidden="true">问题类型</span>
+                              {LAB_ISSUE_TYPES.map((issueType) => (
+                                <button
+                                  key={issueType}
+                                  className={`vn-btn sm${row.mark === issueType ? " primary" : ""}`}
+                                  data-testid={`lab-mark-${issueType}`}
+                                  title={LAB_MARK_LABEL[issueType]}
+                                  aria-label={LAB_MARK_LABEL[issueType]}
+                                  onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: issueType }); }}
+                                >
+                                  {LAB_MARK_LABEL[issueType]}
+                                </button>
+                              ))}
+                            </span>
                           </span>
                         ) : null}
                       </div>
