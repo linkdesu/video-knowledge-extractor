@@ -25,6 +25,7 @@
 - 测试**不得**直接 `mkdtempSync(join(tmpdir(), …))`、拼 `${tmpdir()}/…` 或用 `import.meta.dir` 自建临时目录：一律用 `@video-notes/core/testing` 的 `makeTmpDir(prefix, base?)`（用例级，`afterEach` 自动删除）或 `makeSuiteTmpDir(prefix, base?)`（模块顶层 / `beforeAll` 的共享夹具，整份文件结束才删）。core 内部相对导入 `src/testing/tmp`。
 - 每个包的 `bun test` 由该包 `test-preload.ts` 把 `TMPDIR` 指到 `<repo>/tmp/test-<pid>`，整轮结束删除，并在启动时清掉死进程残留；新增包必须同时提供 `bunfig.toml`（`[test] preload = ["./test-preload.ts"]`）与 `test-preload.ts`，否则会重新污染系统 `$TMPDIR`。
 - 非测试脚本（如 `apps/cli/src/smoke-volc-asr.ts`）可以用 `tmpdir()`，但必须自己在 `finally` 里删掉创建的文件/目录。
+- 例外：断言「cwd 不在任何仓库内」这类用例（如 `dev-home.test.ts` 的「找不到仓库根」）不能把夹具建在仓库 `tmp/` 下，否则向上查找会命中本仓库根；用 `makeTmpDir(prefix, join(import.meta.dir, "..", "..", …))` 把夹具放到仓库父目录（单个 worktree 的父目录不是 git 仓库），生命周期仍由 helper 管。
 - 批量或反复跑测试：一次 flake 复现上限 6 次、最多 2 个套件并行；不要留 `--watch` 或后台循环。
 
 ## 模型与评审
