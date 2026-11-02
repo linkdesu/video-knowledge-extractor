@@ -66,6 +66,21 @@ describe("Lab 视图计算", () => {
     expect(at1.hostB).toBe(1);
   });
 
+  test("空文本行不计入摘要：过滤行数与「仅已过滤」一致", () => {
+    // 组装阶段已丢弃空文本行，所以这里只有语气词/纯标点行会算进过滤量。
+    const b = config("refine_filter", ["speaker-1"], [
+      { start: 0, end: 4, speakerId: "speaker-1", text: "第一段" },
+      { start: 4, end: 4.4, speakerId: "speaker-1", text: "嗯" },
+      { start: 4.4, end: 4.8, speakerId: "speaker-1", text: "……" },
+      { start: 4.8, end: 14, speakerId: "speaker-1", text: "第三段" },
+    ], 1);
+    const rows = buildRows(A, b, 1);
+    const summary = summarize(A, b, 1);
+    expect(rows.every((r) => r.line.text.trim() !== "")).toBe(true);
+    expect(summary.filteredLines).toBe(2);
+    expect(filterRows(rows, "filtered", null)).toHaveLength(summary.filteredLines);
+  });
+
   test("筛选与搜索", () => {
     const rows = buildRows(A, B, 1, {});
     expect(filterRows(rows, "diff", null)).toHaveLength(1);

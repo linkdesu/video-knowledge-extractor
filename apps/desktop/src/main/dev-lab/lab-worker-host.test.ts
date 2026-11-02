@@ -108,6 +108,42 @@ describe("worker 侧：done 之后等 ack 再退出", () => {
   });
 });
 
+describe("主进程侧：导入失败的错误信息", () => {
+  test("Error.message 只有正文，堆栈单独进 warn 日志", async () => {
+    const logs: { level: string; message: string; fields: Record<string, unknown> | undefined }[] = [];
+    // 闭包里赋值的变量会被 TS 收窄成 null；用对象持有句柄，调用点保持函数类型。
+    const handlers = {
+      message: (_raw: unknown) => {},
+      exit: (_code: number) => {},
+    };
+    const host = createLabWorkerHost({
+      fork: () => ({
+        postMessage: () => {},
+        kill: () => {},
+        on: (event, listener) => {
+          if (event === "message") handlers.message = listener as (raw: unknown) => void;
+          else handlers.exit = listener as (code: number) => void;
+        },
+        stderr: null,
+      }),
+      log: (level, message, fields) => logs.push({ level, message, fields }),
+    });
+    const pending = host.run({ message: RUN, onProgress: () => {} }).catch((err: Error) => err);
+    const stack = "Error: 模型炸了\n    at Object.<anonymous> (/tmp/out/lab-worker.js:114:7)";
+    handlers.message({ type: "error", message: "模型炸了", stack });
+    handlers.exit(0);
+    const error = await pending;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("模型炸了");
+    expect((error as Error).message).not.toContain("\n    at ");
+    const failures = logs.filter((line) => line.message === "Lab 导入失败");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.level).toBe("warn");
+    expect(failures[0]?.fields).toEqual({ key: RUN.id, stack });
+    host.dispose();
+  });
+});
+
 /**
  * 真实子进程。三种行为覆盖三条收尸路径：
  * - cooperative：等 run 指令，回 done，收到 ack 才退（interval 保证事件循环不空）；

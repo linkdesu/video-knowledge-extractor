@@ -14,6 +14,14 @@ import {
 import { createPortal } from "react-dom";
 import { ChevronDown, Eye, EyeOff } from "lucide-react";
 import { comboboxEmptyHint, filterComboboxOptions } from "../../lib/combobox";
+import {
+  anchorOf,
+  clipVerticalBand,
+  computePopoverPlacement,
+  listHeightFor,
+  popoverStyle,
+  type PopoverPlacement,
+} from "../../lib/popover";
 
 // settings-form-3 改造：上游演示页改为设置页 primitives（ADR-0022）；重跑 rbp:vendor 会用上游原文覆盖本文件。
 
@@ -84,7 +92,7 @@ export function Select({
   const [active, setActive] = useState(0);
   // r52c：弹层不再留在卡片里（`.vn-card` 的 backdrop-filter 会自建层叠上下文，把弹层困在卡片下，
   // 且会被 DOM 后面的卡片整块盖住）。改为 portal 到 body + fixed 定位，placement 就是此刻的锚点几何。
-  const [placement, setPlacement] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight?: number } | null>(null);
+  const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const typeahead = useRef({ buffer: "", at: 0 });
@@ -92,35 +100,16 @@ export function Select({
   const selectedIndex = options.findIndex((o) => o.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
 
-  // 可见区域 = 视口 ∩ 各滚动祖先的矩形；body 本身也是滚动容器，必须参与求交。
   const place = useCallback(() => {
     const node = rootRef.current;
-    if (node === null) return null;
-    const box = node.getBoundingClientRect();
-    let top = 0;
-    let bottom = window.innerHeight;
-    let el: HTMLElement | null = node.parentElement;
-    while (el !== null) {
-      const style = window.getComputedStyle(el);
-      if (style.overflowY !== "visible") {
-        const clip = el.getBoundingClientRect();
-        top = Math.max(top, clip.top);
-        bottom = Math.min(bottom, clip.bottom);
-      }
-      el = el.parentElement;
-    }
-    const listHeight = Math.min(options.length * 32 + 10, 264);
-    const roomBelow = bottom - box.bottom;
-    const roomAbove = box.top - top;
-    const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
-    const room = (up ? roomAbove : roomBelow) - 10;
-    const maxHeight = room < listHeight ? Math.max(room, 72) : undefined;
-    return {
-      left: box.left,
-      width: box.width,
-      ...(up ? { bottom: window.innerHeight - box.top + 6 } : { top: box.bottom + 6 }),
-      ...(maxHeight === undefined ? {} : { maxHeight }),
-    };
+    const band = clipVerticalBand(node);
+    if (node === null || band === null) return null;
+    return computePopoverPlacement({
+      anchor: anchorOf(node),
+      band,
+      viewportHeight: window.innerHeight,
+      listHeight: listHeightFor(options.length),
+    });
   }, [options.length]);
 
   const openList = () => {
@@ -265,7 +254,7 @@ export function Select({
               role="listbox"
               tabIndex={-1}
               data-testid={testId !== undefined ? `${testId}-listbox` : undefined}
-              style={{ left: placement.left, width: placement.width, top: placement.top, bottom: placement.bottom, maxHeight: placement.maxHeight }}
+              style={popoverStyle(placement)}
               className="vn-select-list portal"
             >
               {options.map((o, i) => (
@@ -316,8 +305,7 @@ export function Combobox({
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [flip, setFlip] = useState(false);
-  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined);
+  const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
   // r32：只在「打开后用户还在打字」时过滤。每次展开都以全部候选开始，
   // 否则选中一个模型后再次打开只会剩它自己。
   const [query, setQuery] = useState<string | null>(null);
@@ -328,32 +316,23 @@ export function Combobox({
   const visible = filterComboboxOptions(options, query);
   const emptyHint = comboboxEmptyHint(options, query);
 
+  const place = useCallback((optionCount = visible.length) => {
+    const node = rootRef.current;
+    const band = clipVerticalBand(node);
+    if (node === null || band === null) return null;
+    return computePopoverPlacement({
+      anchor: anchorOf(node),
+      band,
+      viewportHeight: window.innerHeight,
+      listHeight: listHeightFor(optionCount),
+    });
+  }, [visible.length]);
+
   const openList = () => {
     window.clearTimeout(blurTimer.current);
     setQuery(null);
-    const node = rootRef.current;
-    if (node !== null) {
-      const box = node.getBoundingClientRect();
-      let top = 0;
-      let bottom = window.innerHeight;
-      let el: HTMLElement | null = node.parentElement;
-      while (el !== null) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY !== "visible") {
-          const clip = el.getBoundingClientRect();
-          top = Math.max(top, clip.top);
-          bottom = Math.min(bottom, clip.bottom);
-        }
-        el = el.parentElement;
-      }
-      const listHeight = Math.min(options.length * 32 + 10, 264);
-      const roomBelow = bottom - box.bottom;
-      const roomAbove = box.top - top;
-      const up = roomBelow < listHeight + 6 && roomAbove > roomBelow;
-      const room = (up ? roomAbove : roomBelow) - 10;
-      setFlip(up);
-      setMaxHeight(room < listHeight ? Math.max(room, 72) : undefined);
-    }
+    const next = place(options.length);
+    if (next !== null) setPlacement(next);
     const selected = options.findIndex((o) => o.value === value);
     setActive(selected >= 0 ? selected : 0);
     setOpen(true);
@@ -376,15 +355,35 @@ export function Combobox({
 
   useEffect(() => {
     if (!open) return;
+    let frame = 0;
+    const reposition = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const next = place();
+        if (next !== null) setPlacement(next);
+      });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, place]);
+
+  useEffect(() => {
+    if (!open) return;
     const node = rootRef.current;
     if (node === null) return;
     const doc = node.ownerDocument;
     if (doc === null) return;
     const onPointer = (e: Event) => {
-      if (!node.contains(e.target as Node)) {
-        window.clearTimeout(blurTimer.current);
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (node.contains(target) || listRef.current?.contains(target) === true) return;
+      window.clearTimeout(blurTimer.current);
+      setOpen(false);
     };
     doc.addEventListener("mousedown", onPointer);
     doc.addEventListener("touchstart", onPointer);
@@ -488,15 +487,15 @@ export function Combobox({
         <ChevronDown size={15} style={{ transform: open ? "rotate(180deg)" : undefined }} />
       </button>
 
-      {open ? (
+      {open && placement !== null ? createPortal(
         <ul
           ref={listRef}
           id={listId}
           role="listbox"
           tabIndex={-1}
           data-testid={testId !== undefined ? `${testId}-listbox` : undefined}
-          style={maxHeight !== undefined ? { maxHeight } : undefined}
-          className={`vn-select-list${flip ? " up" : ""}`}
+          style={popoverStyle(placement)}
+          className="vn-select-list portal"
         >
           {visible.map((o, i) => (
             <li
@@ -525,7 +524,8 @@ export function Combobox({
               {emptyHint}
             </li>
           ) : null}
-        </ul>
+        </ul>,
+        document.body,
       ) : null}
     </div>
   );

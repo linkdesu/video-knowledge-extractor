@@ -253,6 +253,8 @@ The app shell has three navigation keys—`library`, `glossary`, and `settings`�
 - **Do** preserve the single `.dark` renderer theme and `color-scheme: dark` (`index.html:2`; `styles.css:3-4, 28`).
 - **Do** preserve the 100vh shell/aside, the fixed lower-right job overlay, and the job-open content bottom inset (`--vn-job-inset = max(360 | 240 at <=700px tall, bannerHeight + 32)`) (`styles.css:119-140, 248-249`; `monitoring-9.tsx:136-137,184-197`).
 - **Do** use the CSS-defined `--vn-*` palette and cite selector/token sources when extending it (`styles.css:31-49`).
+- **Do** render every dropdown/menu listbox through `createPortal(..., document.body)` with `position: fixed` geometry from `renderer/src/lib/popover.ts` and the single `.vn-select-list.portal` layer (`z-index: 55`), and prove it by hit test, not by screenshot (`elementFromPoint` at each option centre must return that option; a real click must commit). Since r69 both `Select` and the settings 模型名 `Combobox` follow this; ADR-0045 owns the rule.
+- **Do** emit a step-start `Progress` event (`done: 0`) before every pipeline step so the fixed job overlay's step label changes when the step starts, not when its first progress callback lands (ADR-0045 ¶4).
 - **Do** retain the Chinese-only interface and current system font fallbacks (`index.html:2`; `app-shell-1.tsx:8-14`; `styles.css:6-10`).
 
 ### Don't:

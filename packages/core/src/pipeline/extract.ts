@@ -143,6 +143,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
         data.normalized = "none";
         logger().info("ffmpeg", "格式转换跳过", { reason: "容器与编码可直读", formatName: probe.formatName, videoCodec: probe.videoCodec, audioCodec: probe.audioCodec });
       } else {
+        // Announce the step before the first conversion callback (r69): otherwise the
+        // overlay label keeps showing the previous step until ffmpeg reports its first percent.
+        input.onProgress?.({ step: "normalize", done: 0, total: 100, detail: "0%" });
         const normalized = await logger().step("ffmpeg", "格式转换", () =>
           normalizeMedia({
             sourcePath: video.sourcePath,
@@ -178,6 +181,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       logger().info("ffmpeg", "抽取音频完成", { durationMs: Math.round(performance.now() - audioStart), wavBytes: statSync(wavPath).size });
       timings.audio = t();
 
+      // Announce the step before calling the engine (r69): model loading can take seconds,
+      // and the overlay used to sit on the previous step until the engine's first callback.
+      input.onProgress?.({ step: "transcribe", done: 0, total: 0 });
       const run = await logger().step("asr", "转写", () =>
         engine.run({
           video,
@@ -227,6 +233,9 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
 
 
       const topicsStarted = performance.now();
+      // Announce the step before segmenting (r69); the first per-chunk event only lands
+      // after the first model call returns.
+      input.onProgress?.({ step: "segment-topics", done: 0, total: run.chunks.length });
       const { topics } = await logger().step("llm", "划主题", () =>
         segmentTopics({
           transcript,
