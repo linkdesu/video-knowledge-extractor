@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { loadDotenvFiles } from "./env";
 
 const saved: Record<string, string | undefined> = {};

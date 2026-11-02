@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { createLogger } from "./logger";
 import { buildDiagnostics, errorLines, errorRecords } from "./diagnostics";
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ChatMessage, LlmEndpoint, Progress, SegmentTopicsInput } from "../core/steps";
 import { configureLogging } from "../core/logger";
 import { createMockEndpoint } from "../core/test-http";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { segmentTopics } from "./segment-topics";
 import type { SpeakerId, Transcript, Utterance } from "../core/types";
 

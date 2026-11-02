@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import {
   deleteTopicSegment,
   deleteUtterance,

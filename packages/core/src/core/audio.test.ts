@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { AUDIO_UNDECODABLE_ERROR, assertAudioDecodable, parseProbeJson, planChunks } from "./audio";
 import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "./test-media";
 import type { Silence } from "./audio";

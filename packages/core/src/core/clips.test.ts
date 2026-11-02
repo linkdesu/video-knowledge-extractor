@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { clipFileName, concatClips, cutClip, parseClipFileName, planClips, planTopicClip } from "./clips";
 import type { Segment } from "./types";
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { makeTmpDir } from "../../../../../packages/core/src/testing/tmp";
+import { makeTmpDir } from "../../../../../packages/core/src/testing/temp-dirs";
 import {
   isInside,
   isSecretFile,

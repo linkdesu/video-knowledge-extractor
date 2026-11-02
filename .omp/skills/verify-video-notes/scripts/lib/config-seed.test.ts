@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeSuiteTmpDir, makeTmpDir } from "../../../../../packages/core/src/testing/tmp";
+import { makeSuiteTmpDir, makeTmpDir } from "../../../../../packages/core/src/testing/temp-dirs";
 import {
   assertPrivateMode,
   buildSecretsJson,

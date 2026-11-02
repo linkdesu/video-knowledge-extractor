@@ -15,14 +15,14 @@
       "default": "./src/storage.ts"
     },
     "./testing": {
-      "types": "./src/testing/tmp.ts",
-      "import": "./src/testing/tmp.ts",
-      "default": "./src/testing/tmp.ts"
+      "types": "./src/testing/temp-dirs.ts",
+      "import": "./src/testing/temp-dirs.ts",
+      "default": "./src/testing/temp-dirs.ts"
     },
-    "./testing/tmp-root": {
-      "types": "./src/testing/tmp-root.ts",
-      "import": "./src/testing/tmp-root.ts",
-      "default": "./src/testing/tmp-root.ts"
+    "./testing/preload": {
+      "types": "./src/testing/temp-dirs-preload.ts",
+      "import": "./src/testing/temp-dirs-preload.ts",
+      "default": "./src/testing/temp-dirs-preload.ts"
     }
   },
   "scripts": {

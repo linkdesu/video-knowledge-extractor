@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { MODEL_LOCK_FILE } from "./catalog";
 import { acquireModelLock } from "./oplock";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 
 // int32 上限的 pid 在任何平台都不存在（kill(pid, 0) → ESRCH）
 const DEAD_PID = 2147483647;

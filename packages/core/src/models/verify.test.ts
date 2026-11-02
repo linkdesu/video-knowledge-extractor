@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { ModelBundle } from "./catalog";
 import { modelStatus } from "./catalog";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { verifyBundle, verifyModels } from "./verify";
 
 function tempRoot(): string {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { appendTrajectory, readTrajectory, TRAJECTORY_FILE } from "./trajectory";
 import type { TrajectoryEntry } from "./trajectory";
 

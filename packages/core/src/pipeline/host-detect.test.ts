@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { configureLogging } from "../core/logger";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { detectHosts, heuristicHosts, speakerStats } from "./host-detect";
 import type { SpeakerStat } from "./host-detect";
 import type { ChatMessage, LlmClient, LlmEndpoint } from "../core/steps";

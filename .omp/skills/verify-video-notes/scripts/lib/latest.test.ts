@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../../../../../packages/core/src/testing/tmp";
+import { makeTmpDir } from "../../../../../packages/core/src/testing/temp-dirs";
 import { latestPointerProblem, readLatestPointer, writeLatestPointer } from "./latest";
 
 /** 一个临时 verify 根：latest 与若干 run 目录，全部落在 tmp 里；用例结束由 helper 删除。 */

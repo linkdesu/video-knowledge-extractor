@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { projectTopicArtifacts } from "./topic-artifacts";
 import { emptyVideoData } from "./video-data";
 import type { VideoId } from "./types";

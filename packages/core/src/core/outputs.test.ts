@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { sha256, sweepNoteCache } from "./cache";
 import { OUTPUT_MANIFEST, cleanupStaleOutputs, isToolTopicDir, readManifest, sweepStaleTopicDirs, writeManifest } from "./outputs";
 import { writeFileAtomic } from "./paths";

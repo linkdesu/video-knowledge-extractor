@@ -15,7 +15,7 @@ import { createMockEndpoint } from "../core/test-http";
 import { createLocalEngine } from "../asr/local";
 import { createLlmClient } from "../llm/openai";
 import type { Video } from "../core/types";
-import { makeSuiteTmpDir, makeTmpDir } from "../testing/tmp";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 
 const NOW = new Date("2026-10-24T05:00:00.000Z");
 const now = () => NOW;

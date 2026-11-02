@@ -16,7 +16,7 @@
  * 失败时看不到「为什么这条用例被判成文件损坏」这类内部判定）。
  */
 import { join } from "node:path";
-import { installIsolatedTmpDir } from "./src/testing/tmp-root";
+import { installIsolatedTmpDir } from "./src/testing/temp-dirs-preload";
 import { configureLogging } from "./src/core/logger";
 
 // #101：本进程独占 <repo>/tmp/test-<pid> 作为 TMPDIR，整轮结束后删除。

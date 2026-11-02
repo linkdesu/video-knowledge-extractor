@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileS
 import { join } from "node:path";
 import type { LlmClient } from "../core/steps";
 import { configureLogging } from "../core/logger";
-import { makeSuiteTmpDir, makeTmpDir } from "../testing/tmp";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 import { notesTrigger, runNotes, runTopics } from "./notes-run";
 
 const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };

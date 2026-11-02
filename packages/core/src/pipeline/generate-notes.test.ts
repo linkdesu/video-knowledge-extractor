@@ -7,7 +7,7 @@ import { configureLogging } from "../core/logger";
 import { OUTPUT_MANIFEST } from "../core/outputs";
 import type { LlmClient } from "../core/steps";
 import type { CorrectionList, SpeakerId, Transcript, Topic, Utterance, Video } from "../core/types";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { generateNotes, noteSystemPrompt, renderIndexMarkdown, renderTopicMarkdown } from "./generate-notes";
 
 const corrections: CorrectionList = {

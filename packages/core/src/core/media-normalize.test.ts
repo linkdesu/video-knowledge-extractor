@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { decideNormalization, normalizeArgs, normalizeMedia, parseFfmpegTime, targetFileName } from "./media-normalize";
 import type { MediaProbe } from "./media-normalize";
 

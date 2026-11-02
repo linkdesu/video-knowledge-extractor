@@ -5,7 +5,7 @@ import type { AsrRun } from "./engine";
 import type { Progress } from "../core/steps";
 import type { SpeakerId, Video } from "../core/types";
 import { createMockEndpoint } from "../core/test-http";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 
 const SR = 16000;
 const TEST_KEY = "sk-test-key-123";

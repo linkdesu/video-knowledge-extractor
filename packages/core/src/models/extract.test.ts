@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import type { ModelBundle } from "./catalog";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { extractArchive } from "./extract";
 
 function tempRoot(): string {

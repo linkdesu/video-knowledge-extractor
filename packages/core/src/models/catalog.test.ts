@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ModelBundle } from "./catalog";
 import { MODEL_BUNDLES, modelStatus } from "./catalog";
 import { rememberVerified } from "./catalog";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 
 function tempRoot(): string {
   const dir = makeTmpDir("vnote-models-");

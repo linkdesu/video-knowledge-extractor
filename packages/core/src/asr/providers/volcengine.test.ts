@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { readdirSync, writeFileSync } from "node:fs";
 import { createRemoteEngine, createUrlEngine } from "../remote";
 import { createMockEndpoint } from "../../core/test-http";
-import { makeTmpDir } from "../../testing/tmp";
+import { makeTmpDir } from "../../testing/temp-dirs";
 type Req = { url: string; headers: Record<string, string>; body: Buffer };
 type Resp = { status: number; body: string; headers?: Record<string, string> };
 

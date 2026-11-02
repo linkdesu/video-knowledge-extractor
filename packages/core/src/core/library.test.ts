@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { deleteVideo, listLibrary, readLibraryVideo } from "./library";
 import { configureLogging, logFileName } from "./logger";
 import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";

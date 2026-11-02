@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { loadCorrections, parseCorrections, readGlobalCorrections, readVideoCorrections, saveGlobalCorrections, saveVideoCorrections } from "./corrections-io";
 
 function tempRoot(): string {

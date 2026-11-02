@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { makeSuiteTmpDir } from "../testing/tmp";
+import { makeSuiteTmpDir } from "../testing/temp-dirs";
 import { findExecutable, checkPath, collectEnvironment, formatEnvironment } from "./environment";
 
 const tempDir = makeSuiteTmpDir("vnote-env-");

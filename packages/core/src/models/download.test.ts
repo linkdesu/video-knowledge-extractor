@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { createMockEndpoint } from "../core/test-http";
 import type { ModelBundle } from "./catalog";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { downloadBundle, downloadModels, recoverModelDir, type DownloadLogLine, type FetchImpl } from "./download";
 import { verifyBundle } from "./verify";
 

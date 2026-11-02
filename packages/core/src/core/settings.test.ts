@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { makeSuiteTmpDir, makeTmpDir } from "../testing/tmp";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 import {
   SETTINGS_VERSION,
   applyLlmSeed,

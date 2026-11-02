@@ -10,7 +10,7 @@ import { preflightWavPath, runExtract } from "./extract";
 import { AUDIO_UNDECODABLE_ERROR } from "../core/audio";
 import { describeFailure } from "../core/failure-summary";
 import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "../core/test-media";
-import { makeTmpDir } from "../testing/tmp";
+import { makeTmpDir } from "../testing/temp-dirs";
 
 const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
 

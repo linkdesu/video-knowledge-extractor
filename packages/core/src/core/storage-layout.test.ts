@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeSuiteTmpDir, makeTmpDir } from "../testing/tmp";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 import { migrateStorageLayout } from "./storage-layout";
 
 const suiteDir = makeSuiteTmpDir("vnote-storage-layout-");
