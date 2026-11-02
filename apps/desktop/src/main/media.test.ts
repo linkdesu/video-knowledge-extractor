@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeLabUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeLabUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
 // 路径断言走 resolve，Windows 上才会得到同一套盘符与分隔符
@@ -117,37 +117,28 @@ describe("源视频路由", () => {
 
   test("handler 按 url 前缀分发：源路由未登记 videoId → 404；已登记且文件存在 → 200", async () => {
     // r62 / ADR-0038：夹具目录必须每进程唯一，否则并行的两次全量测试会互相删掉对方的产物
-    const tmp = mkdtempSync(join(tmpdir(), "vnote-media-src-"));
-    mkdirSync(tmp, { recursive: true });
+    const tmp = makeTmpDir("vnote-media-src-");
     const realSrc = `${tmp}/src.mp4`;
     writeFileSync(realSrc, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
     const resolveLive = (id: string) => (id === "v1" ? realSrc : undefined);
-    try {
-      const handler = createMediaHandler({ root: () => ROOT, resolveSource: resolveLive, resolveOutputDir: () => undefined });
-      // 未登记的 videoId 只会走源路由（clip 路由永不返回 404），证明分发正确
-      const res = await handler(new Request(encodeSourceUrl("nope")));
-      expect(res.status).toBe(404);
-      // 已登记且文件存在：源路由解析出路径，200 + video/mp4
-      const res2 = await handler(new Request(encodeSourceUrl("v1")));
-      expect(res2.status).toBe(200);
-      expect(res2.headers.get("content-type")).toBe("video/mp4");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const handler = createMediaHandler({ root: () => ROOT, resolveSource: resolveLive, resolveOutputDir: () => undefined });
+    // 未登记的 videoId 只会走源路由（clip 路由永不返回 404），证明分发正确
+    const res = await handler(new Request(encodeSourceUrl("nope")));
+    expect(res.status).toBe(404);
+    // 已登记且文件存在：源路由解析出路径，200 + video/mp4
+    const res2 = await handler(new Request(encodeSourceUrl("v1")));
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get("content-type")).toBe("video/mp4");
   });
 
   test("clip 路由仍按 root 解析并 200 返回", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-media-clip-"));
+    const root = makeTmpDir("vnote-media-clip-");
     mkdirSync(`${root}/vid-1/主题-01`, { recursive: true });
     writeFileSync(`${root}/vid-1/主题-01/clip-1.mp4`, Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
-    try {
-      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: () => undefined });
-      const res = await handler(new Request(encodeClipUrl("vid-1/主题-01/clip-1.mp4")));
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toBe("video/mp4");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: () => undefined });
+    const res = await handler(new Request(encodeClipUrl("vid-1/主题-01/clip-1.mp4")));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
   });
 });
 
@@ -184,52 +175,40 @@ describe("封面路由", () => {
   });
 
   test("handler 封面分支：已登记且文件存在 → 200 全量 + image/jpeg", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-media-cover-"));
+    const root = makeTmpDir("vnote-media-cover-");
     const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/cover.jpg`, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
-    try {
-      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
-      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
-      const res = await handler(new Request(encodeCoverUrl("v1")));
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toBe("image/jpeg");
-      const body = new Uint8Array(await res.arrayBuffer());
-      expect(body.length).toBe(7);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+    const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+    const res = await handler(new Request(encodeCoverUrl("v1")));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(body.length).toBe(7);
   });
 
   test("handler 封面分支：带 Range 头也按 200 全量返回，忽略 Range", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-media-range-"));
+    const root = makeTmpDir("vnote-media-range-");
     const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(`${dir}/cover.jpg`, Buffer.from([1, 2, 3, 4, 5]));
-    try {
-      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
-      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
-      const res = await handler(new Request(encodeCoverUrl("v1"), { headers: { range: "bytes=1-2" } }));
-      expect(res.status).toBe(200);
-      const body = new Uint8Array(await res.arrayBuffer());
-      expect(body.length).toBe(5);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+    const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+    const res = await handler(new Request(encodeCoverUrl("v1"), { headers: { range: "bytes=1-2" } }));
+    expect(res.status).toBe(200);
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(body.length).toBe(5);
   });
 
   test("handler 封面分支：未登记 videoId → 404；文件不存在 → 404", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-media-missing-"));
+    const root = makeTmpDir("vnote-media-missing-");
     const dir = `${root}/vid-1`;
     mkdirSync(dir, { recursive: true });
-    try {
-      const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
-      const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
-      expect((await handler(new Request(encodeCoverUrl("nope")))).status).toBe(404);
-      expect((await handler(new Request(encodeCoverUrl("v1")))).status).toBe(404);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const resolveDir = (id: string) => (id === "v1" ? `${root}/vid-1` : undefined);
+    const handler = createMediaHandler({ root: () => root, resolveSource: () => undefined, resolveOutputDir: resolveDir });
+    expect((await handler(new Request(encodeCoverUrl("nope")))).status).toBe(404);
+    expect((await handler(new Request(encodeCoverUrl("v1")))).status).toBe(404);
   });
 });
 
@@ -267,19 +246,15 @@ describe("Range 解析", () => {
 
 describe("Lab 样本音频 url（r48，只在开发模式注册的 handler 使用）", () => {
   test("合法 id 解析到 <labRoot>/<id>/audio.wav", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vn-lab-audio-"));
-    try {
-      mkdirSync(join(dir, "abc123"), { recursive: true });
-      writeFileSync(join(dir, "abc123", "audio.wav"), "RIFF");
-      const loc = decodeLabUrl("vnote-media://lab/abc123", dir);
-      expect("code" in loc).toBe(false);
-      if ("code" in loc) return;
-      expect(loc.absolutePath).toBe(join(dir, "abc123", "audio.wav"));
-      expect(loc.contentType).toBe("audio/wav");
-      expect(encodeLabUrl("abc123")).toBe("vnote-media://lab/abc123");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vn-lab-audio-");
+    mkdirSync(join(dir, "abc123"), { recursive: true });
+    writeFileSync(join(dir, "abc123", "audio.wav"), "RIFF");
+    const loc = decodeLabUrl("vnote-media://lab/abc123", dir);
+    expect("code" in loc).toBe(false);
+    if ("code" in loc) return;
+    expect(loc.absolutePath).toBe(join(dir, "abc123", "audio.wav"));
+    expect(loc.contentType).toBe("audio/wav");
+    expect(encodeLabUrl("abc123")).toBe("vnote-media://lab/abc123");
   });
 
   test("非法 id / 不存在 / 越界一律拒绝", () => {

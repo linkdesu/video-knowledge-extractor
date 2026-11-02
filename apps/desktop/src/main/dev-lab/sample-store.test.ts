@@ -1,12 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { listSamples } from "./sample-store";
-
-function tempRoot(): string {
-  return mkdtempSync(join(tmpdir(), "vn-lab-samples-"));
-}
 
 function writeSample(
   root: string,
@@ -37,7 +33,7 @@ function writeSample(
 
 describe("Lab 样本列表去重", () => {
   test("同一内容指纹只展示一份，保留最新的条目", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-samples-");
     writeSample(root, "old1", { createdAt: "2026-10-01T00:00:00.000Z", sourceHash: "hash-a" });
     writeSample(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", sourceHash: "hash-a" });
     writeSample(root, "other", { createdAt: "2026-10-20T00:00:00.000Z", sourceHash: "hash-b" });
@@ -45,7 +41,7 @@ describe("Lab 样本列表去重", () => {
   });
 
   test("没有 analysis 戳的旧样本照常展示（无法判定内容指纹）", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-samples-");
     writeSample(root, "legacy", { createdAt: "2026-10-01T00:00:00.000Z" });
     writeSample(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", sourceHash: "hash-a" });
     expect(listSamples(root).map((s) => s.id)).toEqual(["new2", "legacy"]);
