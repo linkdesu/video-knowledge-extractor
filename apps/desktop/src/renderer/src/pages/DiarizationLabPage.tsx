@@ -92,6 +92,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const stopAtRef = useRef<number | null>(null);
   const queueRef = useRef<{ start: number; end: number }[]>([]);
   const markTimer = useRef<number | undefined>(undefined);
+  /** 防抖窗口里还没落盘的标注：切样本 / 卸载时必须 flush，否则这一击静默丢失。 */
+  const pendingMarks = useRef<{ sampleId: string; marks: LabMarks } | null>(null);
   const autoImportRef = useRef<string | null>(null);
   const scrollRef = useRef({ contentScrollTop: storedView.contentScrollTop, rowsScrollTop: storedView.rowsScrollTop });
   const restoreDoneRef = useRef(false);
@@ -102,6 +104,16 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
   const saveView = useCallback(() => {
     writeLabViewState(window.localStorage, { ...viewRef.current, ...scrollRef.current });
   }, []);
+
+  /** 立刻落盘挂起的标注（不等人头算完 300ms）：切样本、卸载都先走这里。 */
+  const flushMarks = useCallback(() => {
+    window.clearTimeout(markTimer.current);
+    markTimer.current = undefined;
+    const pending = pendingMarks.current;
+    pendingMarks.current = null;
+    if (pending === null || lab === undefined) return;
+    void lab.saveMarks(pending.sampleId, pending.marks).catch((err: unknown) => showToast(`保存标记失败：${errMessage(err)}`));
+  }, [lab]);
 
   const reloadSamples = useCallback(async (): Promise<LabSampleMeta[]> => {
     if (lab === undefined) return [];
@@ -114,13 +126,23 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
     async (id: string) => {
       if (lab === undefined) return;
       const loaded = await lab.load(id);
+      // 切样本前先把上一份挂起的 300ms 标注落盘，否则这一击会静默丢掉。
+      flushMarks();
+      let next: LabMarks = {};
+      try {
+        next = await lab.marks(id);
+      } catch (err) {
+        // marks 文件坏了：清空显示 + 提示，别让旧样本的标记挂在新样本上被写回去。
+        showToast(`读取标记失败：${errMessage(err)}`);
+      }
+      // 样本 id 与 marks 一起换，避免「旧样本整份标记 + 新键」写进新样本。
       setSampleId(id);
       setPayload(loaded);
       setSelectedKey(null);
       setCurrentTime(0);
-      setMarks(await lab.marks(id));
+      setMarks(next);
     },
-    [lab],
+    [lab, flushMarks],
   );
 
   // 首次打开：列样本；带 sourcePath 时先导入那个视频。
@@ -200,11 +222,12 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
     restoreDoneRef.current = true;
   }, [payload, storedView.contentScrollTop, storedView.rowsScrollTop]);
 
-  // 卸载（导航离开）时立刻落盘，不等滚动节流。
+  // 卸载（导航离开）时立刻落盘：滚动位置与挂起的标注都不留 300ms 窗口。
   useEffect(() => () => {
     window.clearTimeout(saveTimer.current);
+    flushMarks();
     if (hydrated) saveView();
-  }, [hydrated, saveView]);
+  }, [hydrated, saveView, flushMarks]);
 
   // 导入进度
   useEffect(() => {
@@ -219,9 +242,13 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
     (next: LabMarks) => {
       setMarks(next);
       if (lab === undefined || sampleId === null) return;
-      clearTimeout(markTimer.current);
+      pendingMarks.current = { sampleId, marks: next };
+      window.clearTimeout(markTimer.current);
       markTimer.current = window.setTimeout(() => {
-        void lab.saveMarks(sampleId, next).catch((err: unknown) => showToast(`保存标记失败：${errMessage(err)}`));
+        const pending = pendingMarks.current;
+        pendingMarks.current = null;
+        if (pending === null) return;
+        void lab.saveMarks(pending.sampleId, pending.marks).catch((err: unknown) => showToast(`保存标记失败：${errMessage(err)}`));
       }, 300);
     },
     [lab, sampleId],
@@ -663,23 +690,26 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                               <button
                                 className={`vn-btn sm${row.mark === "B" ? " primary" : ""}`}
                                 data-testid="lab-mark-B"
+                                title={LAB_MARK_LABEL.B}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "B" }); }}
                               >
-                                B 对
+                                {LAB_MARK_LABEL.B}
                               </button>
                               <button
                                 className={`vn-btn sm${row.mark === "A" ? " primary" : ""}`}
                                 data-testid="lab-mark-A"
+                                title={LAB_MARK_LABEL.A}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "A" }); }}
                               >
-                                A 对
+                                {LAB_MARK_LABEL.A}
                               </button>
                               <button
                                 className={`vn-btn sm${row.mark === "both" ? " primary" : ""}`}
                                 data-testid="lab-mark-both"
+                                title={LAB_MARK_LABEL.both}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "both" }); }}
                               >
-                                都错
+                                {LAB_MARK_LABEL.both}
                               </button>
                             </span>
                             <span className="vn-lab-mark-group" role="group" aria-label="问题类型">

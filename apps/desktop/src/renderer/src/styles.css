@@ -1356,7 +1356,7 @@ textarea {
 }
 .vn-lab-row {
   display: grid;
-  grid-template-columns: 46px 72px 72px minmax(80px, 1fr) 54px 34px minmax(148px, auto);
+  grid-template-columns: 46px 72px 72px minmax(80px, 1fr) 54px 34px minmax(148px, 232px);
   gap: 6px;
   align-items: center;
   padding: 6px 8px;
