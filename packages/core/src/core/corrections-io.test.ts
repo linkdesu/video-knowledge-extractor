@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { makeTmpDir } from "../testing/tmp";
 import { loadCorrections, parseCorrections, readGlobalCorrections, readVideoCorrections, saveGlobalCorrections, saveVideoCorrections } from "./corrections-io";
 
 function tempRoot(): string {
-  return mkdtempSync(resolve(tmpdir(), "vnote-corrections-"));
+  return makeTmpDir("vnote-corrections-");
 }
 
 describe("parseCorrections", () => {

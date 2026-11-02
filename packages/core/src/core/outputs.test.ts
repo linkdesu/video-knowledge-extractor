@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -10,8 +9,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { makeTmpDir } from "../testing/tmp";
 import { sha256, sweepNoteCache } from "./cache";
 import { OUTPUT_MANIFEST, cleanupStaleOutputs, isToolTopicDir, readManifest, sweepStaleTopicDirs, writeManifest } from "./outputs";
 import { writeFileAtomic } from "./paths";
@@ -23,7 +22,7 @@ const CLIP = "01-00-13-53-00-16-24.mp4";
 type ManifestEntry = { name: string; topicMdHash: string };
 
 function tempDir(): string {
-  return mkdtempSync(resolve(tmpdir(), "vnote-outputs-"));
+  return makeTmpDir("vnote-outputs-");
 }
 
 function makeToolTopicDir(outputDir: string, name: string, extraFiles: string[] = []): string {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/tmp";
 import {
   configureLogging,
   createLogger,
@@ -114,57 +114,49 @@ describe("runWithTask 任务作用域", () => {
 
 describe("文件写入与 readTaskLog", () => {
   test("追加写日志文件并按 task 过滤、maxLines 从末尾截断", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-"));
-    try {
-      const l = createLogger({ dir, now: () => T0 });
-      l.addSecret("secret-token-1234");
-      const t = l.forTask("8f2a");
-      t.info("app", "第一条", { n: 1 });
-      t.info("app", "第二条", { n: 2 });
-      t.warn("app", "第三条", { n: 3 });
-      t.info("app", "第四条", { n: 4 });
-      // 别的 task 与无 task 的行不应被过滤出来
-      l.forTask("9c1d").info("app", "别的任务");
-      l.info("app", "无任务");
-      expect(l.file()).toBe(join(dir, logFileName(T0)));
-      const all = readTaskLog(dir, "8f2a");
-      expect(all).toHaveLength(4);
-      expect(all[0]).toContain("第一条");
-      for (const line of all) expect(line).toContain("task=8f2a");
-      const capped = readTaskLog(dir, "8f2a", 2);
-      expect(capped).toHaveLength(2);
-      expect(capped[0]).toContain("第三条");
-      expect(capped[1]).toContain("第四条");
-      // 跨文件：另一个日期文件的旧行排在前面
-      const oldDate = new Date("2026-10-22T05:31:02.123Z");
-      writeFileSync(join(dir, logFileName(oldDate)), "2026-10-22T05:31:02.123Z INFO  app task=8f2a 旧的\n");
-      const across = readTaskLog(dir, "8f2a");
-      expect(across[0]).toContain("旧的");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-");
+    const l = createLogger({ dir, now: () => T0 });
+    l.addSecret("secret-token-1234");
+    const t = l.forTask("8f2a");
+    t.info("app", "第一条", { n: 1 });
+    t.info("app", "第二条", { n: 2 });
+    t.warn("app", "第三条", { n: 3 });
+    t.info("app", "第四条", { n: 4 });
+    // 别的 task 与无 task 的行不应被过滤出来
+    l.forTask("9c1d").info("app", "别的任务");
+    l.info("app", "无任务");
+    expect(l.file()).toBe(join(dir, logFileName(T0)));
+    const all = readTaskLog(dir, "8f2a");
+    expect(all).toHaveLength(4);
+    expect(all[0]).toContain("第一条");
+    for (const line of all) expect(line).toContain("task=8f2a");
+    const capped = readTaskLog(dir, "8f2a", 2);
+    expect(capped).toHaveLength(2);
+    expect(capped[0]).toContain("第三条");
+    expect(capped[1]).toContain("第四条");
+    // 跨文件：另一个日期文件的旧行排在前面
+    const oldDate = new Date("2026-10-22T05:31:02.123Z");
+    writeFileSync(join(dir, logFileName(oldDate)), "2026-10-22T05:31:02.123Z INFO  app task=8f2a 旧的\n");
+    const across = readTaskLog(dir, "8f2a");
+    expect(across[0]).toContain("旧的");
   });
 });
 
 describe("pruneOldLogs", () => {
   test("删除超过 7 天的文件，并只保留最新 7 个", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-prune-"));
-    try {
-      // 固定基准日，避免真实时钟落在 7 天边界导致 flaky
-      const now = new Date("2026-10-24T12:00:00Z");
-      const day = (offset: number) => logFileName(new Date(now.getTime() - offset * 86400000));
-      // 12 个日志文件，距今 0~11 天：>7 天的 4 个被天数规则删，第 7 天被数量规则删
-      for (let i = 0; i < 12; i++) writeFileSync(join(dir, day(i)), "x\n");
-      writeFileSync(join(dir, "not-a-log.txt"), "x\n");
-      const removed = pruneOldLogs(dir, 7, now);
-      expect(removed.sort()).toEqual([day(11), day(10), day(9), day(8), day(7)].sort());
-      // 不匹配 LOG_FILE_RE 的文件不被动
-      expect(readFileSync(join(dir, "not-a-log.txt"), "utf8")).toBe("x\n");
-      const logs = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
-      expect(logs).toHaveLength(7);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-prune-");
+    // 固定基准日，避免真实时钟落在 7 天边界导致 flaky
+    const now = new Date("2026-10-24T12:00:00Z");
+    const day = (offset: number) => logFileName(new Date(now.getTime() - offset * 86400000));
+    // 12 个日志文件，距今 0~11 天：>7 天的 4 个被天数规则删，第 7 天被数量规则删
+    for (let i = 0; i < 12; i++) writeFileSync(join(dir, day(i)), "x\n");
+    writeFileSync(join(dir, "not-a-log.txt"), "x\n");
+    const removed = pruneOldLogs(dir, 7, now);
+    expect(removed.sort()).toEqual([day(11), day(10), day(9), day(8), day(7)].sort());
+    // 不匹配 LOG_FILE_RE 的文件不被动
+    expect(readFileSync(join(dir, "not-a-log.txt"), "utf8")).toBe("x\n");
+    const logs = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
+    expect(logs).toHaveLength(7);
   });
 });
 
@@ -189,19 +181,15 @@ describe("redactSecrets", () => {
   });
 
   test("addSecret 后，sink 与文件输出都不含 key（含 argv URL）", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-sec-"));
-    try {
-      const lines: string[] = [];
-      const l = createLogger({ dir, now: () => T0, sink: (s) => lines.push(s) });
-      l.addSecret("super-secret-key-42");
-      l.info("ffmpeg", "执行", { cmd: ["curl", "-X", "POST", "https://api.x.com/v1?api_key=super-secret-key-42"] });
-      expect(lines.join("\n")).not.toContain("super-secret-key-42");
-      const file = readFileSync(l.file()!, "utf8");
-      expect(file).not.toContain("super-secret-key-42");
-      expect(file).toContain("api_key=[redacted]");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-sec-");
+    const lines: string[] = [];
+    const l = createLogger({ dir, now: () => T0, sink: (s) => lines.push(s) });
+    l.addSecret("super-secret-key-42");
+    l.info("ffmpeg", "执行", { cmd: ["curl", "-X", "POST", "https://api.x.com/v1?api_key=super-secret-key-42"] });
+    expect(lines.join("\n")).not.toContain("super-secret-key-42");
+    const file = readFileSync(l.file()!, "utf8");
+    expect(file).not.toContain("super-secret-key-42");
+    expect(file).toContain("api_key=[redacted]");
   });
 });
 
@@ -300,73 +288,61 @@ describe("进程级 logger", () => {
 
 describe("滚动与保留", () => {
   test("maxBytes 超限时滚动出 vnote-YYYY-MM-DD.1.log，每个文件不超阈值", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-roll-"));
-    try {
-      const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
-      for (let i = 0; i < 10; i++) l.info("app", `消息${i}`);
-      const base = logFileName(T0);
-      const files = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
-      expect(files).toContain(rollLogFileName(T0, 1));
-      expect(files).toContain(base);
-      for (const name of files) expect(statSync(join(dir, name)).size).toBeLessThanOrEqual(200);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-roll-");
+    const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
+    for (let i = 0; i < 10; i++) l.info("app", `消息${i}`);
+    const base = logFileName(T0);
+    const files = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
+    expect(files).toContain(rollLogFileName(T0, 1));
+    expect(files).toContain(base);
+    for (const name of files) expect(statSync(join(dir, name)).size).toBeLessThanOrEqual(200);
   });
 
   test("滚动超过 KEEP_FILES 个后只保留最新 7 个", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-keep-"));
-    try {
-      // 同一天反复滚动制造远超 7 个文件，写入时即自动清理
-      const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
-      for (let i = 0; i < 60; i++) l.info("app", `消息${i}`);
-      const remaining = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
-      expect(remaining).toHaveLength(KEEP_FILES);
-      // 活跃文件是该天最新，必须保留
-      expect(remaining).toContain(logFileName(T0));
-      // 保留的是按日期+roll 号最新的 7 个：该天最小编号归档已被删
-      const archived = remaining
-        .filter((n) => n !== logFileName(T0))
-        .map((n) => Number(/\.(\d+)\.log$/.exec(n)![1]));
-      expect(archived.length).toBe(KEEP_FILES - 1);
-      expect(Math.min(...archived)).toBeGreaterThan(1);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-keep-");
+    // 同一天反复滚动制造远超 7 个文件，写入时即自动清理
+    const l = createLogger({ dir, now: () => T0, maxBytes: 200 });
+    for (let i = 0; i < 60; i++) l.info("app", `消息${i}`);
+    const remaining = readdirSync(dir).filter((n) => n.startsWith("vnote-"));
+    expect(remaining).toHaveLength(KEEP_FILES);
+    // 活跃文件是该天最新，必须保留
+    expect(remaining).toContain(logFileName(T0));
+    // 保留的是按日期+roll 号最新的 7 个：该天最小编号归档已被删
+    const archived = remaining
+      .filter((n) => n !== logFileName(T0))
+      .map((n) => Number(/\.(\d+)\.log$/.exec(n)![1]));
+    expect(archived.length).toBe(KEEP_FILES - 1);
+    expect(Math.min(...archived)).toBeGreaterThan(1);
   });
 });
 
 describe("跨滚动文件的读取顺序", () => {
   test("tailLog 与 readTaskLog 按日期+roll 升序，.10 排在 .9 之后", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-order-"));
-    try {
-      const day = "2026-10-24";
-      // 手工构造含两位 roll 号的文件集
-      const names: Array<[string, string]> = [
-        [`vnote-${day}.1.log`, "a-1\n"],
-        [`vnote-${day}.9.log`, "a-9\n"],
-        [`vnote-${day}.10.log`, "a-10\n"],
-        [`vnote-${day}.log`, "a-active\n"],
-        [`vnote-2026-10-23.log`, "old-day\n"],
-      ];
-      for (const [name, content] of names) writeFileSync(join(dir, name), content);
-      const tail = tailLog(dir);
-      expect(tail).toEqual(["old-day", "a-1", "a-9", "a-10", "a-active"]);
-      // 给每条行补上 task= 字段再验一次 readTaskLog
-      for (const [name] of names) {
-        writeFileSync(join(dir, name), `${readFileSync(join(dir, name), "utf8").trimEnd()} task=t1\n`);
-      }
-      const task = readTaskLog(dir, "t1");
-      expect(task).toEqual([
-        "old-day task=t1",
-        "a-1 task=t1",
-        "a-9 task=t1",
-        "a-10 task=t1",
-        "a-active task=t1",
-      ]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    const dir = makeTmpDir("vnote-order-");
+    const day = "2026-10-24";
+    // 手工构造含两位 roll 号的文件集
+    const names: Array<[string, string]> = [
+      [`vnote-${day}.1.log`, "a-1\n"],
+      [`vnote-${day}.9.log`, "a-9\n"],
+      [`vnote-${day}.10.log`, "a-10\n"],
+      [`vnote-${day}.log`, "a-active\n"],
+      [`vnote-2026-10-23.log`, "old-day\n"],
+    ];
+    for (const [name, content] of names) writeFileSync(join(dir, name), content);
+    const tail = tailLog(dir);
+    expect(tail).toEqual(["old-day", "a-1", "a-9", "a-10", "a-active"]);
+    // 给每条行补上 task= 字段再验一次 readTaskLog
+    for (const [name] of names) {
+      writeFileSync(join(dir, name), `${readFileSync(join(dir, name), "utf8").trimEnd()} task=t1\n`);
     }
+    const task = readTaskLog(dir, "t1");
+    expect(task).toEqual([
+      "old-day task=t1",
+      "a-1 task=t1",
+      "a-9 task=t1",
+      "a-10 task=t1",
+      "a-active task=t1",
+    ]);
   });
 });
 

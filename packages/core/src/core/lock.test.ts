@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/tmp";
 import { CACHE_DIRNAME } from "./config";
 import { acquireVideoLock, isVideoLocked, RUN_LOCK_FILE } from "./lock";
 
 // int32 上限的 pid 在任何平台都不存在（kill(pid, 0) → ESRCH）
 const DEAD_PID = 2147483647;
-
-function fixtureDir(): string {
-  const dir = join(tmpdir(), "vnote-lock-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 function newLockPath(dir: string): string {
   return join(dir, RUN_LOCK_FILE);
@@ -33,7 +27,7 @@ function readLockJson(path: string): { pid: number; startedAt?: number; token?: 
 
 describe("acquireVideoLock", () => {
   test("本进程持锁后再次获取抛「视频正在运行（pid N）」，release 后文件消失", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const lock = acquireVideoLock(dir);
     expect(() => acquireVideoLock(dir)).toThrow(`视频正在运行（pid ${process.pid}）`);
     lock.release();
@@ -41,7 +35,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("两次并发获取不会都成功：第一个拿到锁，第二个抛（同进程内用外部写入模拟竞争）", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const lock = acquireVideoLock(dir);
     const content = readLockJson(newLockPath(dir));
     expect(content.pid).toBe(process.pid);
@@ -51,7 +45,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("陈旧锁（进程不存在）可接管：新锁内容是新 pid 与 token，rename 出的 .stale 残骸被清掉", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     writeStaleLock(dir, DEAD_PID);
     const lock = acquireVideoLock(dir);
     const content = readLockJson(newLockPath(dir));
@@ -63,7 +57,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("取锁后锁文件立即是完整 JSON（直接写 fd 并关闭句柄），release 后再次取锁成功", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const first = acquireVideoLock(dir);
     const content = readLockJson(newLockPath(dir));
     expect(content.pid).toBe(process.pid);
@@ -79,7 +73,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("只读残留锁文件可接管并在释放后删除", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     writeFileSync(newLockPath(dir), `${JSON.stringify({ pid: DEAD_PID, startedAt: Date.now(), token: "dead" })}\n`);
     chmodSync(newLockPath(dir), 0o444);
     const lock = acquireVideoLock(dir);
@@ -89,7 +83,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("空锁文件（Windows 上写到一半/句柄未关的残留）可接管", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     writeFileSync(newLockPath(dir), "");
     const lock = acquireVideoLock(dir);
     expect(readLockJson(newLockPath(dir)).pid).toBe(process.pid);
@@ -98,7 +92,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("历史 .stale 残骸在取锁与释放时都被清掉", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const leftover = `${newLockPath(dir)}.stale.${DEAD_PID}.abcdef`;
     writeFileSync(leftover, "old");
     const lock = acquireVideoLock(dir);
@@ -110,7 +104,7 @@ describe("acquireVideoLock", () => {
   });
 
   test("内容损坏的锁文件可接管", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     writeFileSync(newLockPath(dir), "not json\n");
     const lock = acquireVideoLock(dir);
     lock.release();
@@ -118,14 +112,14 @@ describe("acquireVideoLock", () => {
   });
 
   test("release 重复调用不抛", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const lock = acquireVideoLock(dir);
     lock.release();
     expect(() => lock.release()).not.toThrow();
   });
 
   test("锁文件被外部换成别的 token 后 release 不删（只删自己 token 的）", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const lock = acquireVideoLock(dir);
     const first = readLockJson(newLockPath(dir));
     writeFileSync(newLockPath(dir), `${JSON.stringify({ pid: process.pid, startedAt: Date.now(), token: "foreign-token" })}\n`);
@@ -139,7 +133,7 @@ describe("acquireVideoLock", () => {
 
 describe("isVideoLocked", () => {
   test("识别新路径的存活锁", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     const lock = acquireVideoLock(dir);
     expect(isVideoLocked(dir)).toBe(true);
     lock.release();
@@ -147,14 +141,14 @@ describe("isVideoLocked", () => {
   });
 
   test("识别旧路径（.cache/run.lock）的存活锁，防止变更前启动的视频被误判空闲", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     mkdirSync(join(dir, CACHE_DIRNAME), { recursive: true });
     writeFileSync(legacyLockPath(dir), `${JSON.stringify({ pid: process.pid, startedAt: Date.now() })}\n`);
     expect(isVideoLocked(dir)).toBe(true);
   });
 
   test("两条路径都是陈旧锁（死 pid）时不误报锁定", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-lock-");
     writeFileSync(newLockPath(dir), `${JSON.stringify({ pid: DEAD_PID, startedAt: Date.now(), token: "x" })}\n`);
     writeStaleLock(dir, DEAD_PID);
     expect(isVideoLocked(dir)).toBe(false);

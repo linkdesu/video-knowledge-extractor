@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/tmp";
 import { createLogger } from "./logger";
 import { buildDiagnostics, errorLines, errorRecords } from "./diagnostics";
 
 const NOW = new Date("2026-10-24T05:00:00.000Z");
 
 function makeLogDir(): string {
-  return mkdtempSync(join(tmpdir(), "vnote-diag-"));
+  return makeTmpDir("vnote-diag-");
 }
 
 /** 取两个标题之间的区段文本，用于断言具体段落内容。 */
@@ -60,7 +59,6 @@ describe("buildDiagnostics", () => {
       taskId: "task-a",
       taskLabel: "提取 video-x",
     });
-    rmSync(dir, { recursive: true, force: true });
 
     // 头部与结构
     expect(text.startsWith("Video Notes 诊断信息")).toBe(true);
@@ -99,7 +97,6 @@ describe("buildDiagnostics", () => {
       stderrTail: `model file ${modelPath} not found; HTTP status line: HTTP/1.1 502 Bad Gateway`,
     });
     const text = buildDiagnostics({ logDir: dir, environment: [], taskId: "task-a" });
-    rmSync(dir, { recursive: true, force: true });
     const summary = section(text, "错误摘要", "最近任务");
     expect(summary).toContain(modelPath);
     expect(summary).toContain("HTTP/1.1 502 Bad Gateway");
@@ -108,7 +105,7 @@ describe("buildDiagnostics", () => {
 
   test("目录不存在时得到无日志说明且不抛错；无任务时同理", () => {
     const text = buildDiagnostics({
-      logDir: join(tmpdir(), "vnote-diag-missing-does-not-exist"),
+      logDir: join(makeTmpDir("vnote-diag-absent-"), "missing"),
       environment: ["ffmpeg: ffmpeg (missing)"],
       taskId: "task-a",
     });
@@ -129,24 +126,19 @@ describe("buildDiagnostics", () => {
       stack: `Error: 401 Unauthorized key=${KEY}\n    at call (llm.ts:1:1)`,
     });
     const text = buildDiagnostics({ logDir: dir, environment: [], taskId: "task-a" });
-    rmSync(dir, { recursive: true, force: true });
     expect(text).not.toContain(KEY);
     // logger 已把 key 换成 [redacted]，诊断文本保持该性质
     expect(text).toContain("[redacted]");
   });
 
   test("没有任务 id 时退回最近日志尾部，门禁失败也进错误摘要", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-diag-tail-"));
-    try {
-      const log = createLogger({ dir, now: () => new Date("2026-10-24T05:00:00.000Z") });
-      log.error("app", "任务未开始", { kind: "extract", error: "本地 ASR 模型未就绪（识别）" });
-      const text = buildDiagnostics({ logDir: dir, environment: ["modelDir: /m (missing, ?)"], taskId: null });
-      expect(text).toContain("（无任务，以下为最近日志）");
-      expect(text).toContain("本地 ASR 模型未就绪");
-      expect(text.split("## 错误摘要")[1]?.split("## 最近任务")[0]).toContain("ERROR");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vnote-diag-tail-");
+    const log = createLogger({ dir, now: () => new Date("2026-10-24T05:00:00.000Z") });
+    log.error("app", "任务未开始", { kind: "extract", error: "本地 ASR 模型未就绪（识别）" });
+    const text = buildDiagnostics({ logDir: dir, environment: ["modelDir: /m (missing, ?)"], taskId: null });
+    expect(text).toContain("（无任务，以下为最近日志）");
+    expect(text).toContain("本地 ASR 模型未就绪");
+    expect(text.split("## 错误摘要")[1]?.split("## 最近任务")[0]).toContain("ERROR");
   });
 
   test("错误摘要合并全局尾部：无 task= 的全局 ERROR 与被请求任务的 ERROR 都在且不重复", () => {
@@ -161,7 +153,6 @@ describe("buildDiagnostics", () => {
     a.info("app", "task-a 完成");
 
     const text = buildDiagnostics({ logDir: dir, environment: [], taskId: "task-a" });
-    rmSync(dir, { recursive: true, force: true });
 
     // 摘要：全局 IPC 错误与任务错误都在，INFO 不在；任务错误同时出现在任务日志与全局尾部，只能收一次
     const summary = section(text, "错误摘要", "最近任务");
