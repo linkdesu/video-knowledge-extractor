@@ -185,6 +185,23 @@ describe("Lab 缓存淘汰执行", () => {
     expect(ids(root)).toEqual(["marks-new2.json", "new2", "notes.txt"]);
   });
 
+  test("旧格式（A/B/both）与新格式（问题类型）的 marks 都随条目删除", () => {
+    const root = tempRoot();
+    writeEntry(root, "old1", { createdAt: "2026-08-01T00:00:00.000Z", bytes: 10 });
+    writeEntry(root, "new2", { createdAt: "2026-08-02T00:00:00.000Z", bytes: 10 });
+    // 旧标注文件：只有 A/B/both，r74 之前的版本写出来的样子。
+    writeFileSync(join(root, "marks-old1.json"), JSON.stringify({ "1000": "both", "4000": "A" }));
+    // 新标注文件：含三类问题类型。
+    writeFileSync(
+      join(root, "marks-new2.json"),
+      JSON.stringify({ "2000": "A", "6000": "overlap_wrong_speaker", "8000": "backchannel_not_ignored" }),
+    );
+    const result = evictLabCache(root, limits({ maxAgeMs: 30 * DAY }), NOW);
+    expect(result.evict.map((e) => e.id).sort()).toEqual(["new2", "old1"]);
+    expect(result.marks).toBe(2);
+    expect(ids(root)).toEqual([]);
+  });
+
   test("没有任何需要淘汰的条目时不碰磁盘", () => {
     const root = tempRoot();
     writeEntry(root, "aaa1", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
