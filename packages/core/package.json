@@ -1,6 +1,6 @@
 {
   "name": "@video-notes/core",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,6 +13,11 @@
       "types": "./src/storage.ts",
       "import": "./src/storage.ts",
       "default": "./src/storage.ts"
+    },
+    "./short-replies": {
+      "types": "./src/asr/short-replies.ts",
+      "import": "./src/asr/short-replies.ts",
+      "default": "./src/asr/short-replies.ts"
     }
   },
   "scripts": {

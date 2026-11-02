@@ -154,6 +154,8 @@ export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOpti
 // r48 Lab：开发模式验收台直接调用这些分离/组装函数（只读调用，不改管线行为）。
 export { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./asr/utterances";
 export type { UtteranceSpan } from "./asr/utterances";
+export { filterShortReplies, isShortReplyLine, normalizeReplyText, SHORT_REPLY_RULES } from "./asr/short-replies";
+export type { ShortReplyRules } from "./asr/short-replies";
 export { ASR_MAX_UTTERANCE_SECONDS, DIARIZATION_MODEL_ID } from "./core/config";
 export { createTranscriber, resolveModelPaths, readWav, DIARIZATION_TUNING, modelFileSpecs } from "./asr/sherpa";
 export type { DiarizationSegment, Transcriber, ModelRole } from "./asr/sherpa";
