@@ -2,7 +2,7 @@
  * 本地 ASR 引擎：现有 sherpa 实现整体搬入（ADR-0015 §5），行为、缓存键、进度、
  * timings 与原 `transcribeVideo` 一字不改，只多返回 `engine`/`modelId`。
  */
-import { assignSpeakers, buildSpans, splitSpan } from "./utterances";
+import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
 import { ASR_PADDING_SECONDS, DIARIZATION_TUNING, createTranscriber, readWav, resolveModelPaths } from "./sherpa";
 import type { DiarizationSegment, Transcriber } from "./sherpa";
 import { detectSilences, planChunks } from "../core/audio";
@@ -94,7 +94,9 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
         cacheHit,
       });
 
-      const spans = buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS));
+      const spans = resolveCrosstalk(
+        buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS)),
+      );
       const { speakers, utterances } = assignSpeakers(spans);
       timings.diarization = t(performance.now() - d0);
 

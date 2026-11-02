@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assignSpeakers, buildSpans, splitSpan } from "./utterances";
+import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
 import type { UtteranceSpan } from "./utterances";
 
 describe("buildSpans", () => {
@@ -139,5 +139,42 @@ describe("assignSpeakers", () => {
     for (const u of utterances) {
       expect(u.speakerId as string | undefined).toBe("speaker-1");
     }
+  });
+});
+
+describe("resolveCrosstalk", () => {
+  const span = (start: number, end: number, speaker: number): UtteranceSpan => ({ start, end, speaker });
+
+  test("访客的短插话完全落在主播话轮里 → 并入持话轮的一方，主播段不变", () => {
+    const host = span(10, 14, 0);
+    const guest = span(11, 11.3, 1);
+    expect(resolveCrosstalk([host, guest])).toEqual([host]);
+  });
+
+  test("插话本身超过 1s 就不算插话：两人同时说话，两段都留", () => {
+    const host = span(10, 14, 0);
+    const guest = span(11, 12.4, 1);
+    expect(resolveCrosstalk([host, guest])).toEqual([host, guest]);
+  });
+
+  test("部分重叠不猜：两段都留，边界不动", () => {
+    const a = span(10, 12, 0);
+    const b = span(11.5, 14, 1);
+    expect(resolveCrosstalk([a, b])).toEqual([a, b]);
+  });
+
+  test("同一说话人的重叠段不动；输入乱序按 start 排序", () => {
+    const a = span(10, 14, 0);
+    const b = span(11, 11.3, 0);
+    const guest = span(20, 20.3, 1);
+    const host = span(19, 23, 2);
+    expect(resolveCrosstalk([guest, b, host, a])).toEqual([a, b, host]);
+  });
+
+  test("两边都是插话（互相包含不可能）时容差内按包含关系处理", () => {
+    // 0.04s 的边界误差仍视为包含，避免 diarization 边界抖动漏判。
+    const host = span(10, 14, 0);
+    const guest = span(10.04, 10.34, 1);
+    expect(resolveCrosstalk([guest, host])).toEqual([host]);
   });
 });

@@ -48,6 +48,28 @@ export function splitSpan(span: UtteranceSpan, silences: { start: number; end: n
   return pieces;
 }
 
+/**
+ * 抢话归属（r70 / #99）：一段被另一位说话人的话轮整个包住、且自身短到只够一声附和，
+ * 就把它并入持话轮的一方（主播），不再单独成行。
+ * 边界容差 0.05s：diarization 的段边界会抖，差几十毫秒不该漏判。
+ * 只处理「完全包含」：部分重叠分不清谁插谁的话，两段都留。
+ */
+export function resolveCrosstalk(spans: UtteranceSpan[], opts?: { maxInterjectionSeconds?: number }): UtteranceSpan[] {
+  const maxInterjectionSeconds = opts?.maxInterjectionSeconds ?? 1;
+  const tolerance = 0.05;
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  return sorted.filter((span) => {
+    if (span.end - span.start >= maxInterjectionSeconds) return true;
+    return !sorted.some(
+      (other) =>
+        other.speaker !== span.speaker &&
+        other.start <= span.start + tolerance &&
+        other.end >= span.end - tolerance &&
+        other.end - other.start > span.end - span.start,
+    );
+  });
+}
+
 export function assignSpeakers(spans: UtteranceSpan[], opts?: { minSeconds?: number }): { speakers: Speaker[]; utterances: Utterance[] } {
   const minSeconds = opts?.minSeconds ?? 3;
   const sorted = [...spans].sort((a, b) => a.start - b.start);
