@@ -66,9 +66,35 @@ export type LabProgress = {
   detail: string | null;
 };
 
-/** 差异行标记：B 对 / A 对 / 都错。键是行起点毫秒。 */
-export type LabMark = "A" | "B" | "both";
+/**
+ * 差异行标记（r74）。键是行起点毫秒，值是唯一的标记：
+ * A / B / both 回答「谁的说话人对」；三类问题类型换一个角度记 A/B 之外的错因。
+ * 值域只增不减：旧文件里的 A/B/both 原样有效，不需要迁移。
+ */
+export const LAB_MARK_VERDICTS = ["A", "B", "both"] as const;
+export type LabMarkVerdict = (typeof LAB_MARK_VERDICTS)[number];
+
+export const LAB_ISSUE_TYPES = ["overlap_wrong_speaker", "false_duplicate", "backchannel_not_ignored"] as const;
+export type LabIssueType = (typeof LAB_ISSUE_TYPES)[number];
+
+export type LabMark = LabMarkVerdict | LabIssueType;
 export type LabMarks = Record<string, LabMark>;
+
+export const LAB_MARK_LABEL: Record<LabMark, string> = {
+  A: "A 对",
+  B: "B 对",
+  both: "都错",
+  overlap_wrong_speaker: "重叠归错人",
+  false_duplicate: "误判重复",
+  backchannel_not_ignored: "未忽略回应语",
+};
+
+export function isLabMark(value: unknown): value is LabMark {
+  return (
+    typeof value === "string" &&
+    ((LAB_MARK_VERDICTS as readonly string[]).includes(value) || (LAB_ISSUE_TYPES as readonly string[]).includes(value))
+  );
+}
 
 /** 一次导入的缓存结果（r55）：界面据此显示「命中 / 未命中」与耗时。 */
 export type LabImportResult = {
