@@ -182,6 +182,23 @@ describe("Lab 标记落盘", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("非法 marks 容器（null / 数组 / 字符串）直接拒绝，磁盘不动", () => {
+    const dir = marksDir();
+    try {
+      const legacy: LabMarks = { "1000": "B", "2000": "both" };
+      const file = join(dir, "marks-abc123.json");
+      writeFileSync(file, JSON.stringify(legacy));
+      const before = readFileSync(file, "utf8");
+
+      for (const bad of [null, undefined, [], "A", 3] as unknown[]) {
+        expect(() => writeMarks(dir, "abc123", bad as LabMarks)).toThrow();
+      }
+      expect(readFileSync(file, "utf8")).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Lab 开发模式门禁", () => {

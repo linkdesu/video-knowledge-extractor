@@ -169,7 +169,14 @@ export function readMarks(root: string, id: string): LabMarks {
   return normalizeMarks(readJson<unknown>(marksPath(root, id)));
 }
 
+/**
+ * 写整份标注。入参是「超集覆盖」语义，所以先拒绝非法容器（IPC 那头没有运行时类型）：
+ * null / 数组 / 字符串被归一成 `{}` 会把已有标注整份清空，宁可抛错留给界面显示「保存标记失败」。
+ */
 export function writeMarks(root: string, id: string, marks: LabMarks): LabMarks {
+  if (marks === null || typeof marks !== "object" || Array.isArray(marks)) {
+    throw new Error("marks 必须是「行起点毫秒 → 标记」的对象，拒绝用非法值覆盖已有标注");
+  }
   const clean = normalizeMarks(marks);
   mkdirSync(root, { recursive: true });
   writeJson(marksPath(root, id), clean);
