@@ -1,4 +1,4 @@
-# ADR-0046: Windows 安装包的 asar 用白名单门禁，staging 必须声明运行时依赖
+# ADR-0047: Windows 安装包的 asar 用白名单门禁，staging 必须声明运行时依赖
 
 - 状态：已接受（r72 / issue #96）
 - 相关：ADR-0028（Windows 打包）、ADR-0043（在产物上判定）、`apps/desktop/scripts/asar-manifest.ts`、`apps/desktop/electron-builder.yml`
