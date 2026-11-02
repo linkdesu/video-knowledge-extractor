@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelBundle } from "./catalog";
 import { MODEL_BUNDLES, modelStatus } from "./catalog";
 import { rememberVerified } from "./catalog";
+import { makeTmpDir } from "../testing/tmp";
 
 function tempRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "vnote-models-"));
+  const dir = makeTmpDir("vnote-models-");
   mkdirSync(join(dir, "models"), { recursive: true });
   return dir;
 }

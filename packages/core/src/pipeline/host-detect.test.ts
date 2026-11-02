@@ -1,7 +1,6 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 import { configureLogging } from "../core/logger";
+import { makeTmpDir } from "../testing/tmp";
 import { detectHosts, heuristicHosts, speakerStats } from "./host-detect";
 import type { SpeakerStat } from "./host-detect";
 import type { ChatMessage, LlmClient, LlmEndpoint } from "../core/steps";
@@ -11,7 +10,7 @@ const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-se
 
 /** 每次用新的临时缓存目录：固定路径会让上一轮的文件变成命中，测试互相污染。 */
 function tempCacheDir(): string {
-  return mkdtempSync(`${tmpdir()}/host-detect-`);
+  return makeTmpDir("host-detect-");
 }
 
 const SPK1: Speaker = { id: "spk-1" as SpeakerId, name: "说话人1", color: "#f00" };

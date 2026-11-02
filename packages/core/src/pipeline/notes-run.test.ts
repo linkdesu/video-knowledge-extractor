@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { LlmClient } from "../core/steps";
 import { configureLogging } from "../core/logger";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/tmp";
 import { notesTrigger, runNotes, runTopics } from "./notes-run";
 
 const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
@@ -15,7 +15,7 @@ const endpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-m
  * 1.4 s、十几条叠起来就能把别的文件里毫秒级用例判成超时（`test-preload.ts` 会打出这种停顿）。
  * 所以生成走异步 `Bun.spawn`，用例里只做一次 `copyFileSync`。
  */
-const fixtureRoot = mkdtempSync(join(tmpdir(), "vnote-notes-run-fixtures-"));
+const fixtureRoot = makeSuiteTmpDir("vnote-notes-run-fixtures-");
 const fixtureSources = new Map<string, string>();
 
 async function encodeSource(kind: "mp4" | "m4a", seconds: number): Promise<void> {
@@ -39,10 +39,6 @@ beforeAll(async () => {
   // 连续两次 windows-build 都在此被判 5002 ms 超时）；这是真实 ffmpeg 重活，显式放宽，
   // 与 ADR-0038「真实 ffmpeg 重活保留显式 timeout」一致。
 }, 120_000);
-
-afterAll(() => {
-  rmSync(fixtureRoot, { recursive: true, force: true });
-});
 
 /** 把预生成的源片拷进用例目录；没预生成就立刻报错，而不是同步编码冻住循环。 */
 function copyFixture(kind: "mp4" | "m4a", seconds: number, dest: string): void {
@@ -127,7 +123,7 @@ function topicRecord(o: {
 
 describe("runNotes", () => {
   test("空 topicIds 拒绝", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-empty-"));
+    const out = makeTmpDir("rn-empty-");
     makeVideo(out, (d) => {
       d.transcript = { speakers: [], utterances: [{ start: 0, end: 30, speakerId: "s1", text: "x" }] };
       d.topics = [topicRecord({ id: "t", title: "T", segments: [{ start: 0, end: 30 }], dirName: "t" })];
@@ -136,7 +132,7 @@ describe("runNotes", () => {
   });
 
   test("整批进度按 n/m 报：两个主题各生成一次，total 是本批主题数而不是 1", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-batch-progress-"));
+    const out = makeTmpDir("rn-batch-progress-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -172,7 +168,7 @@ describe("runNotes", () => {
   }, 30000);
 
   test("done 主题被跳过（mtime 不变），其余生成 topic.mp4（带 segmentOffsets），index.md 保留全部主题", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-main-"));
+    const out = makeTmpDir("rn-main-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -249,7 +245,7 @@ describe("runNotes", () => {
   }, 30000);
 
   test("导入后的 proposed 状态：全部未生成时生成；子集确认只动未 done 的主题", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-proposed-"));
+    const out = makeTmpDir("rn-proposed-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -282,7 +278,7 @@ describe("runNotes", () => {
   });
 
   test("force: done 主题被重新生成（topic.mp4 与 topic.md 重写，状态 done，noteCount 1）", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-force-"));
+    const out = makeTmpDir("rn-force-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -326,7 +322,7 @@ describe("runNotes", () => {
   });
 
   test("force 重新生成不读磁盘缓存：每次都真实请求模型，cacheHits 为空，轨迹每条都有真实 rawText", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-force-cache-"));
+    const out = makeTmpDir("rn-force-cache-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -366,7 +362,7 @@ describe("runNotes", () => {
   }, 30000);
 
   test("done 主题不带 force：产物齐全时队列为空，明确报错，产物原样", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-skip-"));
+    const out = makeTmpDir("rn-skip-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -406,7 +402,7 @@ describe("runNotes", () => {
   });
 
   test("成功生成后清 speakerChangedAt（force 重生成 done 主题）", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-speaker-"));
+    const out = makeTmpDir("rn-speaker-");
     makeVideo(out, (d) => {
       d.speakerChangedAt = "2026-10-01T00:00:00.000Z";
       d.transcript = {
@@ -436,7 +432,7 @@ describe("runNotes", () => {
 describe("runTopics", () => {
   test("从存盘分块重建主题，同名主题分到不同目录，拼接成 topic.mp4 并删旧编号切片", async () => {
     // 每进程唯一目录（r59）：固定 `/tmp/rt-main` 会让并发的两次测试进程互抢 `.vnote-run.lock`
-    const out = mkdtempSync(join(tmpdir(), "rt-main-"));
+    const out = makeTmpDir("rt-main-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -523,7 +519,7 @@ describe("runTopics", () => {
 
 describe("中断结算（runToken 与锁内结算）", () => {
   test("runNotes 普通失败：done 主题保持 done，失败主题 failed+补写 elapsed，token 清 null，锁释放", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-fail-"));
+    const out = makeTmpDir("rn-fail-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -574,7 +570,7 @@ describe("中断结算（runToken 与锁内结算）", () => {
   });
 
   test("done 主题缺 topic.mp4（界面 needs-rerun）：被重新生成；产物齐全时拒绝「没有需要生成的主题」", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-rerun-"));
+    const out = makeTmpDir("rn-rerun-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -614,7 +610,7 @@ describe("中断结算（runToken 与锁内结算）", () => {
   });
 
   test("runTopics 失败：划主题成功后逐主题生成失败，结算后磁盘终态", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rt-fail-"));
+    const out = makeTmpDir("rt-fail-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],
@@ -661,7 +657,7 @@ describe("中断结算（runToken 与锁内结算）", () => {
 
 describe("术语表合并（全局 + 单视频）", () => {
   test("两份词表都进提示词与字幕替换，冲突项单视频优先，诊断日志记条数", async () => {
-    const root = mkdtempSync(join(tmpdir(), "rn-glossary-"));
+    const root = makeTmpDir("rn-glossary-");
     const out = join(root, "vid-1");
     writeFileSync(
       join(root, "corrections.json"),
@@ -719,7 +715,7 @@ describe("术语表合并（全局 + 单视频）", () => {
 
 describe("runTopics 术语表接线", () => {
   test("划主题提示词与字幕用合并词表，单视频优先，日志记 topics 条数", async () => {
-    const root = mkdtempSync(join(tmpdir(), "rt-glossary-"));
+    const root = makeTmpDir("rt-glossary-");
     const out = join(root, "vid-1");
     writeFileSync(
       join(root, "corrections.json"),
@@ -793,7 +789,7 @@ describe("runTopics 术语表接线", () => {
 
 describe("主播与提示词接线（r46）", () => {
   test("runNotes 把文档主播与提示词覆盖一起传进要点提示词", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-hosts-"));
+    const out = makeTmpDir("rn-hosts-");
     makeVideo(out, (d) => {
       d.transcript = {
         speakers: [
@@ -843,7 +839,7 @@ describe("notesTrigger", () => {
 });
 describe("纯音频源（无视频轨）", () => {
   test("切片只保留音轨、拼接成功，topic.md 与 video.json 照常落盘", async () => {
-    const out = mkdtempSync(join(tmpdir(), "rn-audio-"));
+    const out = makeTmpDir("rn-audio-");
     makeAudioVideo(out, (d) => {
       d.transcript = {
         speakers: [{ id: "s1", name: "说话人1", color: "#000" }],

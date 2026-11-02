@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { cacheKey, cachePath, hashJson, sha256 } from "../core/cache";
 import { configureLogging } from "../core/logger";
 import { OUTPUT_MANIFEST } from "../core/outputs";
 import type { LlmClient } from "../core/steps";
 import type { CorrectionList, SpeakerId, Transcript, Topic, Utterance, Video } from "../core/types";
+import { makeTmpDir } from "../testing/tmp";
 import { generateNotes, noteSystemPrompt, renderIndexMarkdown, renderTopicMarkdown } from "./generate-notes";
 
 const corrections: CorrectionList = {
@@ -289,7 +289,7 @@ function makeGenerateNotesFixture(): {
   utterances: Utterance[];
   cacheDir: string;
 } {
-  const root = mkdtempSync(join(tmpdir(), "vnote-notes-"));
+  const root = makeTmpDir("vnote-notes-");
   const out = join(root, "out");
   mkdirSync(out, { recursive: true });
   const cacheDir = join(out, ".cache");
@@ -355,7 +355,7 @@ describe("generateNotes 要点缓存", () => {
 
   // 真实源文件：重新生成要拿到成功结果（cacheHits、轨迹、topic.md 覆写都只有在成功路径上才有）
   function makeRealSourceFixture(prefix: string): { input: Parameters<typeof generateNotes>[0] } {
-    const root = mkdtempSync(join(tmpdir(), prefix));
+    const root = makeTmpDir(prefix);
     const out = join(root, "out");
     mkdirSync(out, { recursive: true });
     const src = join(root, "src.mp4");
@@ -509,7 +509,7 @@ describe("generateNotes 中断", () => {
 
 describe("generateNotes 单文件主题切片（r33）", () => {
   test("part + concat 成 topic.mp4，记录 segmentOffsets，删旧编号切片", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-topicmp4-"));
+    const root = makeTmpDir("vnote-topicmp4-");
     const out = join(root, "out");
     mkdirSync(out, { recursive: true });
     // 真 60 秒源：段 [10,20] 前移 2s 后 union [8,20]，偏移 10-8=2
@@ -562,7 +562,7 @@ describe("generateNotes 单文件主题切片（r33）", () => {
 
 describe("generateNotes 无时间段主题", () => {
   test("零段主题拒绝生成：抛「没有可切片的时间段」，不写 topic.md", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-emptyseg-"));
+    const root = makeTmpDir("vnote-emptyseg-");
     const out = join(root, "out");
     mkdirSync(out, { recursive: true });
     const src = join(root, "src.mp4");
@@ -598,7 +598,7 @@ describe("generateNotes 无时间段主题", () => {
 
 describe("generateNotes 重新生成的 topic.md 格式", () => {
   test("needs-rerun 主题重新生成：topic.md 按当前 renderTopicMarkdown 格式覆盖旧正文", async () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-refmt-"));
+    const root = makeTmpDir("vnote-refmt-");
     const out = join(root, "out");
     mkdirSync(out, { recursive: true });
     const src = join(root, "src.mp4");
@@ -679,7 +679,7 @@ describe("generateNotes 模型输出格式错误", () => {
   });
 
   test("合法 JSON 对象 + 空 keyPoints 数组仍是成功：要点为空，不报错", async () => {
-    const root2 = mkdtempSync(join(tmpdir(), "vnote-okempty-"));
+    const root2 = makeTmpDir("vnote-okempty-");
     const out2 = join(root2, "out");
     mkdirSync(out2, { recursive: true });
     const src2 = join(root2, "src.mp4");

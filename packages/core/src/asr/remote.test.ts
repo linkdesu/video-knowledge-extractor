@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 import { createAsrEngine } from "./engine";
 import type { AsrRun } from "./engine";
 import type { Progress } from "../core/steps";
 import type { SpeakerId, Video } from "../core/types";
 import { createMockEndpoint } from "../core/test-http";
+import { makeTmpDir } from "../testing/tmp";
 
 const SR = 16000;
 const TEST_KEY = "sk-test-key-123";
@@ -14,7 +13,7 @@ const TEST_MODEL = "whisper-mock";
 
 /** 每个测试自建临时目录（ADR-0015 约定），不依赖 process.env 顺序。 */
 function freshDir(): string {
-  return mkdtempSync(join(tmpdir(), "vnote-remote-"));
+  return makeTmpDir("vnote-remote-");
 }
 
 /**

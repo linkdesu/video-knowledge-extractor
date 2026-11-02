@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import type { ModelBundle } from "./catalog";
+import { makeTmpDir } from "../testing/tmp";
 import { importModels } from "./import";
 
 function tempRoot(): string {
-  return mkdtempSync(join(tmpdir(), "vnote-models-import-"));
+  return makeTmpDir("vnote-models-import-");
 }
 
 function sha256Of(content: string): string {

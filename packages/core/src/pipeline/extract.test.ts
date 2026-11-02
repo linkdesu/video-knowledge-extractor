@@ -10,14 +10,9 @@ import { preflightWavPath, runExtract } from "./extract";
 import { AUDIO_UNDECODABLE_ERROR } from "../core/audio";
 import { describeFailure } from "../core/failure-summary";
 import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "../core/test-media";
+import { makeTmpDir } from "../testing/tmp";
 
 const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
-
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-extract-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 /** 用 ffmpeg 生成一段 2 秒的彩色条视频 + 静音音频（probe 与抽音都走真 ffmpeg）。 */
 function makeMp4(path: string): void {
@@ -60,7 +55,7 @@ describe("runExtract 的火山标准版预检（ADR-0016 §6）", () => {
   }
 
   test("标准版 + 本地视频在 probeVideo 之前拒绝，不建目录、不做文件工作", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const notesRoot = join(dir, "notes");
     const cacheRoot = join(dir, "cache");
     const userData = join(dir, "user-data");
@@ -86,7 +81,7 @@ describe("runExtract 的火山标准版预检（ADR-0016 §6）", () => {
   });
 
   test("极速版不被预检拒绝：失败点后移到读源文件", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const notesRoot = join(dir, "notes");
     const cacheRoot = join(dir, "cache");
     await withEnv({ VNOTE_HOME: notesRoot, VNOTE_USER_DATA: join(dir, "user-data") }, async () => {
@@ -109,7 +104,7 @@ describe("runExtract 的火山标准版预检（ADR-0016 §6）", () => {
  */
 describe("runExtract 的音轨可解码预检", () => {
   test("坏音轨 ts：建目录前失败，错误是可操作中文", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "undecodable.ts");
     makeUndecodableAacTs(videoPath);
     const notesRoot = join(dir, "notes");
@@ -133,7 +128,7 @@ describe("runExtract 的音轨可解码预检", () => {
   });
 
   test("没有音频流的视频：保留 ffmpeg 原始失败，摘要仍是「没有可用的音视频轨道」", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "silent.mp4");
     makeVideoOnlyMp4(videoPath);
     const err = await runExtract({
@@ -149,7 +144,7 @@ describe("runExtract 的音轨可解码预检", () => {
   });
 
   test("干净 .ts 不被预检误杀：照常走完导入", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "clean.ts");
     makeDecodableTs(videoPath);
     const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
@@ -181,8 +176,8 @@ describe("runExtract 的音轨可解码预检", () => {
   test("音轨预检的临时 wav 每次唯一：同一 runToken 的并发导入不会互删产物", async () => {
     // r59：旧路径只带 taskId，同一 token 的两次运行写同一个 wav 并在 finally 里互删，
     // 另一侧因此被判「音轨无法解码」。两个不同目录 + 同一 token 的并发导入必须先红后绿。
-    const dirA = mkdtemp();
-    const dirB = mkdtemp();
+    const dirA = makeTmpDir("vnote-extract-");
+    const dirB = makeTmpDir("vnote-extract-");
     const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
     const engine: AsrEngine = {
       id: "local",
@@ -231,7 +226,7 @@ describe("runExtract 的音轨可解码预检", () => {
  */
 describe("runExtract 的 onPrepared 顺序与中断结算", () => {
   test("token 取锁后、写主题前落盘；onPrepared 在抽音前触发；失败结算后 token 清 null", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "in.mp4");
     makeMp4(videoPath);
     const cacheRoot = join(dir, ".cache");
@@ -284,7 +279,7 @@ describe("runExtract 的 onPrepared 顺序与中断结算", () => {
  */
 describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
   test("proposed 落盘、封面存在、不生成笔记与 index.md", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "in.mp4");
     makeMp4(videoPath);
     const cacheRoot = join(dir, ".cache");
@@ -338,7 +333,7 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
   });
 
   test("timings 保留 ASR 引擎的分项真实值，不被一个总耗时覆写", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "in.mp4");
     makeMp4(videoPath);
     const asrTimings = { readWave: 1.25, silence: 2.5, diarization: 3.75, asr: 4.5, total: 5.25 };
@@ -377,7 +372,7 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
   });
 
   test("重导入：清掉工具自有的旧主题目录并删旧 index.md", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "in.mp4");
     makeMp4(videoPath);
     const cacheRoot = join(dir, ".cache");
@@ -455,7 +450,7 @@ describe("runExtract 的步骤开始事件（r69）", () => {
   }
 
   async function runCapturing(chunks: Array<{ index: number; start: number; end: number }>): Promise<Progress[]> {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-extract-");
     const videoPath = join(dir, "clean.ts");
     makeDecodableTs(videoPath);
     const progress: Progress[] = [];
