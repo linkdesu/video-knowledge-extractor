@@ -134,9 +134,26 @@ describe("run", () => {
     expect(result.stdout).toContain("hi");
   });
 
+  test("极短命子进程连续 60 次都能拿到退出码与 stderr（r68 / #92）", async () => {
+    // #92：bun 的 node:child_process 在 macOS 高负载下会把 'exit'/'close' 在 spawn() 栈内 emit 掉
+    // （oven-sh/bun#45483：kqueue EVFILT_PROC 注册慢于短命子进程退出，onExit 在 spawn() 返回前跑完），
+    // 之后附着的监听器永远收不到、管道输出也已被消费 → run() 不 settle，坏视频用例 30 s 超时。
+    // 修复后 Bun 运行时改走 Bun.spawn（exec.ts 的 spawnWithBun，ADR-0044），这里锁「连续短命子进程都能收尾」。
+    // 注意：这是契约冒烟，不是 #45483 的复现台——复现需要 60 个单 spawn 测试文件 + 满载，
+    // 证据见 tmp/verify/r68-ffprobe-timeout/（修复前 round 18 有 2/60 不 settle）。
+    for (let i = 0; i < 60; i++) {
+      const result = await run([NODE, "-e", "process.stderr.write('fast-err\\n'); process.exit(7)"], {
+        label: `极短命命令 #${i}`,
+        allowFail: true,
+      });
+      expect(result.code).toBe(7);
+      expect(result.stderr).toContain("fast-err");
+    }
+  }, 20_000);
+
   test("killActiveChildren 杀掉等待中的命令，以非零结束", async () => {
-    // 真实定时器例外：长 setTimeout 只是让子进程存活到被 SIGKILL，等待的是 close 事件而非固定时长
-    // run 内 activeChildren.add 在首个 await 前同步执行，spawn 后即可杀
+    // 真实定时器例外：长 setTimeout 只是让子进程存活到被 SIGKILL，等待的是进程结束而非固定时长
+    // run 内把子进程登记进 activeChildren / activeBunChildren 在首个 await 前同步执行，spawn 后即可杀
     const pending = run([NODE, "-e", "setTimeout(() => {}, 5000)"], { label: "等待中的命令" });
     killActiveChildren();
     const err = await pending.then(() => undefined).catch((e: Error) => e);

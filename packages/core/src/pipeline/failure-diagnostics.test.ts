@@ -4,7 +4,6 @@
  * createLocalEngine），最后对 buildDiagnostics 做一次聚合断言。
  */
 import { describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,7 +85,11 @@ describe("三种失败都能从诊断文本里看出来", () => {
   test("坏视频：ffprobe 失败的日志行带 module、输入路径、退出码与真实 stderr 尾部", async () => {
     lines.length = 0;
     const mp4 = join(dir, "corrupt.mp4");
-    writeFileSync(mp4, randomBytes(200));
+    // 截断的 MP4（ftyp 头 + 垃圾）：ffprobe 必然按 mov/mp4 报「moov atom not found」并 exit 1。
+    // 以前用 randomBytes(200)：随机字节偶尔会被探成合法 lrc（format=lrc、无时长），ffprobe exit 0，
+    // 走不到「命令失败」这条被测路径（r68 高负载验收实测 1/160 命中）。
+    const ftyp = Buffer.from("000000206674797069736f6d0000020069736f6d69736f32617663316d703431", "hex");
+    writeFileSync(mp4, Buffer.concat([ftyp, Buffer.alloc(160, 0x41)]));
     await runWithTask(TASK, async () => {
       const probe = await attemptSpawn("坏视频 ffprobe", () => probeVideo(mp4));
       // 坏视频必须探测失败；探测成功说明夹具不再是「坏视频」
