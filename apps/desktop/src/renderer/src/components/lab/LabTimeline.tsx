@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { LabConfig, LabLine } from "../../../../shared/lab";
 import { formatTime, labLineKey, type LabRow } from "../../../../shared/lab-view";
-import { isFillerLine } from "../../../../shared/lab-fillers";
+import { isShortReplyLine, SHORT_REPLY_RULES } from "@video-notes/core/short-replies";
 
 /** A/B 对比时间轴：两条色带 + 差异竖线 + 播放头；可缩放、横向拖动。 */
 export function LabTimeline({
@@ -40,7 +40,7 @@ export function LabTimeline({
     <div className="vn-lab-band" data-testid={testId}>
       <span className="vn-lab-band-label">{label}</span>
       {config.lines.map((line, i) => {
-        const filtered = config.name === "refine_filter" && isFillerLine(line, threshold);
+        const filtered = config.name === "refine_filter" && isShortReplyLine(line, { ...SHORT_REPLY_RULES, maxSeconds: threshold });
         return (
           <button
             key={`${testId}-${labLineKey(line)}`}
