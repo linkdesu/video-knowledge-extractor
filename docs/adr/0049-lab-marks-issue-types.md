@@ -56,3 +56,12 @@ issue #100：`LabMarks = Record<string, "A" | "B" | "both">` 只能回答「谁�
 - `apps/desktop/src/main/dev-lab/cache-maintenance.test.ts`：淘汰时新旧两种内容的 `marks-*.json` 都随条目删除。
 - `tmp/verify/r74-label-issue-types/`：隔离 Lab 缓存下的真实 Electron 验收（旧值文件 → 界面 → 点击问题类型 → 文件与读回；79 条旧文件；防抖窗口内切样本/卸载不丢标记；布局实测；`detect` primary 0、`doctor` healthy）。
 - `.omp/skills/verify-video-notes/features/diarization-lab.md`：验收要点同步 6 个标记与 testid。
+
+## r75 修订（界面打磨，issue #102）
+
+- 值域、磁盘格式、`normalizeMarks`/原子写、防抖与切样本 flush 全部不变；本轮只改差异行标记区的呈现与键鼠语义。
+- 标记区由「两排同款按钮」改为一个 `role="radiogroup"`：六个选项 `role="radio"` + `aria-checked`，内部两个 `role="group"`（谁对 / 问题类型）中间用 1px 竖线分隔；roving tabindex + `←↑→↓` 在组内循环选中。互斥在语义上第一次被表达出来（此前是两个并列 `role="group"`）。
+- 选项独立成 `.vn-lab-mark`（高 26px、圆角 6px、字号 12px），不再复用 `.vn-btn`：选中态是 violet 半透明底 + violet 边框 + `#c4b5fd` 文本，不再与「仅差异」等动作按钮共用 `.primary` 实心紫；`focus-visible` 有 2px 外环（`.vn-btn` 因 `all: unset` 原本没有可见焦点）。
+- 组标签槽固定 48px、右对齐，两簇左缘在所有差异行同一 x；视口 ≤900px 时第二簇折行、竖线换横线。
+- §3 的行高/宽度实测被本轮取代：差异行 84px → 77px（1280×828），字幕文本列仍是 370px；非差异行 45px 不变。
+- 证据：`tmp/verify/r75-issue-type-ui/`（六种标记点击落盘、重启读回、旧格式 `{"3400":"B","12100":"both","30900":"A"}` 原样显示且 md5 不变、750/980px 无横向溢出与裁切、`detect` primary 0、`doctor` healthy）。
