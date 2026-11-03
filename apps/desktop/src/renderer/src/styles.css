@@ -1403,7 +1403,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 6px 12px;
+  gap: 6px 0;
   min-width: 0;
 }
 .vn-lab-mark-group {
@@ -1414,14 +1414,64 @@ textarea {
   gap: 4px;
   min-width: 0;
 }
+.vn-lab-mark-group + .vn-lab-mark-group {
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+}
 .vn-lab-mark-label {
+  flex: 0 0 48px;
+  width: 48px;
   color: var(--vn-dim);
   font-size: 11px;
+  letter-spacing: 0.02em;
+  text-align: right;
   white-space: nowrap;
 }
-.vn-lab-marks .vn-btn.sm {
+.vn-lab-mark {
+  box-sizing: border-box;
+  display: inline-flex;
   flex: 0 0 auto;
-  padding: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vn-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.16s, border-color 0.16s, color 0.16s;
+}
+.vn-lab-mark:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--vn-fg);
+}
+.vn-lab-mark[aria-checked="true"] {
+  border-color: rgba(139, 92, 246, 0.55);
+  background: rgba(139, 92, 246, 0.18);
+  color: #c4b5fd;
+  font-weight: 500;
+}
+.vn-lab-mark[aria-checked="true"]:hover {
+  background: rgba(139, 92, 246, 0.24);
+}
+.vn-lab-mark:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.6);
+  outline-offset: 1px;
+}
+@media (max-width: 900px) {
+  .vn-lab-mark-group + .vn-lab-mark-group {
+    flex-basis: 100%;
+    margin-left: 0;
+    padding-top: 6px;
+    padding-left: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    border-left: 0;
+  }
 }
 .vn-lab-row > .vn-btn.sm {
   width: 34px;

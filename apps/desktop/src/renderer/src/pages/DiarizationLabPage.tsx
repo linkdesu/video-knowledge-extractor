@@ -382,6 +382,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
         event.preventDefault();
         moveDiff(-1);
       } else if (event.key === " ") {
+        // 焦点在按钮/标记选项上时，Space 属于控件自己（radio 的选中、按钮的激活）。
+        if (tag === "BUTTON") return;
         event.preventDefault();
         const audio = audioRef.current;
         if (audio === null) return;
@@ -662,7 +664,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                         tabIndex={0}
                         onClick={() => selectRow(row, true)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") selectRow(row, true);
+                          // 行内还有 ▶ 与标记 radiogroup：它们的 Enter/Space 不能被行吞掉。
+                          if (e.key === "Enter" && e.target === e.currentTarget) selectRow(row, true);
                         }}
                       >
                         <span className="vn-lab-time">{formatTime(row.line.start)}</span>
@@ -684,11 +687,34 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                           ▶
                         </button>
                         {row.diff ? (
-                          <span className="vn-lab-marks">
+                          <span
+                            className="vn-lab-marks"
+                            role="radiogroup"
+                            aria-label="差异行标记"
+                            onKeyDown={(e) => {
+                              const direction = e.key === "ArrowRight" || e.key === "ArrowDown"
+                                ? 1
+                                : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+                              if (direction === 0 || !(e.target instanceof HTMLButtonElement)) return;
+                              const options = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]'));
+                              const current = options.indexOf(e.target);
+                              if (current === -1) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const next = options[(current + direction + options.length) % options.length];
+                              next?.focus();
+                              next?.click();
+                            }}
+                          >
                             <span className="vn-lab-mark-group" role="group" aria-label="谁对">
                               <span className="vn-lab-mark-label" aria-hidden="true">谁对</span>
                               <button
-                                className={`vn-btn sm${row.mark === "B" ? " primary" : ""}`}
+                                type="button"
+                                className="vn-lab-mark"
+                                role="radio"
+                                aria-checked={row.mark === "B"}
+                                aria-label={LAB_MARK_LABEL.B}
+                                tabIndex={row.mark === null || row.mark === "B" ? 0 : -1}
                                 data-testid="lab-mark-B"
                                 title={LAB_MARK_LABEL.B}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "B" }); }}
@@ -696,7 +722,12 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                                 {LAB_MARK_LABEL.B}
                               </button>
                               <button
-                                className={`vn-btn sm${row.mark === "A" ? " primary" : ""}`}
+                                type="button"
+                                className="vn-lab-mark"
+                                role="radio"
+                                aria-checked={row.mark === "A"}
+                                aria-label={LAB_MARK_LABEL.A}
+                                tabIndex={row.mark === "A" ? 0 : -1}
                                 data-testid="lab-mark-A"
                                 title={LAB_MARK_LABEL.A}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "A" }); }}
@@ -704,7 +735,12 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                                 {LAB_MARK_LABEL.A}
                               </button>
                               <button
-                                className={`vn-btn sm${row.mark === "both" ? " primary" : ""}`}
+                                type="button"
+                                className="vn-lab-mark"
+                                role="radio"
+                                aria-checked={row.mark === "both"}
+                                aria-label={LAB_MARK_LABEL.both}
+                                tabIndex={row.mark === "both" ? 0 : -1}
                                 data-testid="lab-mark-both"
                                 title={LAB_MARK_LABEL.both}
                                 onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "both" }); }}
@@ -717,7 +753,11 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                               {LAB_ISSUE_TYPES.map((issueType) => (
                                 <button
                                   key={issueType}
-                                  className={`vn-btn sm${row.mark === issueType ? " primary" : ""}`}
+                                  type="button"
+                                  className="vn-lab-mark"
+                                  role="radio"
+                                  aria-checked={row.mark === issueType}
+                                  tabIndex={row.mark === issueType ? 0 : -1}
                                   data-testid={`lab-mark-${issueType}`}
                                   title={LAB_MARK_LABEL[issueType]}
                                   aria-label={LAB_MARK_LABEL[issueType]}
