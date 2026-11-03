@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { deleteVideo, listLibrary, readLibraryVideo } from "./library";
 import { configureLogging, logFileName } from "./logger";
 import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { SpeakerId, TopicId, VideoId } from "./types";
 
 function fixture(): { root: string; id: string } {
-  const root = mkdtemp();
+  const root = makeTmpDir("vnote-library-");
   const videoDir = join(root, "视频一");
   const topicA = join(videoDir, "前段");
   const topicB = join(videoDir, "后段");
@@ -32,12 +32,6 @@ function fixture(): { root: string; id: string } {
     }),
   );
   return { root, id };
-}
-
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-library-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
 }
 
 describe("listLibrary", () => {
@@ -64,7 +58,7 @@ describe("listLibrary", () => {
   });
 
   test("无 index.json 时返回空列表", () => {
-    const root = join(tmpdir(), "vnote-empty-" + Date.now());
+    const root = makeTmpDir("vnote-empty-");
     expect(listLibrary(root)).toEqual([]);
   });
 });
@@ -506,10 +500,10 @@ describe("卡片状态：proposed / pending-confirm / partial", () => {
 
 describe("deleteVideo", () => {
   function deleteFixture(): { root: string; cacheRoot: string; ids: [string, string]; source: string } {
-    const root = mkdtemp();
-    const cacheRoot = join(mkdtemp(), "cache");
+    const root = makeTmpDir("vnote-library-");
+    const cacheRoot = join(makeTmpDir("vnote-library-"), "cache");
     mkdirSync(cacheRoot, { recursive: true });
-    const source = join(tmpdir(), "vnote-source-" + Date.now() + ".mp4");
+    const source = join(makeTmpDir("vnote-source-"), "source.mp4");
     writeFileSync(source, "source-bytes");
     for (const [i, title] of [["vid-aaa1", "视频一"], ["vid-bbb2", "视频二"]] as const) {
       const dir = join(root, title);
@@ -552,7 +546,7 @@ describe("deleteVideo", () => {
     const readonlyFile = join(nested, "只读.txt");
     writeFileSync(readonlyFile, "ro");
     chmodSync(readonlyFile, 0o444);
-    const logDir = mkdtemp();
+    const logDir = makeTmpDir("vnote-library-");
     configureLogging({ dir: logDir });
     expect(deleteVideo(root, cacheRoot, ids[0])).toBe(true);
     expect(existsSync(outputDir)).toBe(false);
@@ -572,10 +566,10 @@ describe("deleteVideo", () => {
   });
 
   test("越界 outputDir 抛错且不删任何东西", () => {
-    const root = mkdtemp();
-    const cacheRoot = join(mkdtemp(), "cache");
+    const root = makeTmpDir("vnote-library-");
+    const cacheRoot = join(makeTmpDir("vnote-library-"), "cache");
     mkdirSync(cacheRoot, { recursive: true });
-    const outside = mkdtemp();
+    const outside = makeTmpDir("vnote-library-");
     writeFileSync(join(outside, "keep.txt"), "keep");
     writeFileSync(
       join(root, "index.json"),

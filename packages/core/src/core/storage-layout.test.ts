@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 import { migrateStorageLayout } from "./storage-layout";
 
-const suiteDir = mkdtempSync(join(tmpdir(), "vnote-storage-layout-"));
+const suiteDir = makeSuiteTmpDir("vnote-storage-layout-");
 beforeAll(() => {
   process.env.VNOTE_USER_DATA = suiteDir;
 });
@@ -13,7 +13,7 @@ afterAll(() => {
 });
 
 function fixture(): { home: string; dataRoot: string; env: Record<string, string | undefined> } {
-  const root = mkdtempSync(join(suiteDir, "vnote-layout-"));
+  const root = makeTmpDir("vnote-layout-", suiteDir);
   const home = join(root, "home");
   const dataRoot = join(root, "data");
   mkdirSync(home, { recursive: true });

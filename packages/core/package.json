@@ -13,6 +13,21 @@
       "types": "./src/storage.ts",
       "import": "./src/storage.ts",
       "default": "./src/storage.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/temp-dirs.ts",
+      "import": "./src/testing/temp-dirs.ts",
+      "default": "./src/testing/temp-dirs.ts"
+    },
+    "./testing/preload": {
+      "types": "./src/testing/temp-dirs-preload.ts",
+      "import": "./src/testing/temp-dirs-preload.ts",
+      "default": "./src/testing/temp-dirs-preload.ts"
+    },
+    "./short-replies": {
+      "types": "./src/asr/short-replies.ts",
+      "import": "./src/asr/short-replies.ts",
+      "default": "./src/asr/short-replies.ts"
     }
   },
   "scripts": {

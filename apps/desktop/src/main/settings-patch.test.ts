@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveSettings } from "@video-notes/core";
+import { makeTmpDir } from "@video-notes/core/testing";
 import type { SettingsPatch } from "../shared/ipc";
 import { buildSettingsPatch } from "./settings-patch";
 
@@ -18,7 +18,7 @@ let prevUserData: string | undefined;
 beforeEach(() => {
   prevHome = process.env.VNOTE_HOME;
   prevUserData = process.env.VNOTE_USER_DATA;
-  envDir = mkdtempSync(join(tmpdir(), "vnote-settings-env-"));
+  envDir = makeTmpDir("vnote-settings-env-");
   process.env.VNOTE_HOME = join(envDir, "home");
   process.env.VNOTE_USER_DATA = join(envDir, "user-data");
 });
@@ -28,7 +28,6 @@ afterEach(() => {
   else process.env.VNOTE_HOME = prevHome;
   if (prevUserData === undefined) delete process.env.VNOTE_USER_DATA;
   else process.env.VNOTE_USER_DATA = prevUserData;
-  rmSync(envDir, { recursive: true, force: true });
 });
 
 describe("buildSettingsPatch 白名单重建 + updateSettings 落盘", () => {
@@ -109,55 +108,47 @@ describe("buildSettingsPatch 白名单重建 + updateSettings 落盘", () => {
   });
 
   test("updateSettings 落盘链路：v3 各块落盘，deep merge 不覆盖未传字段", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-settings-"));
+    const dir = makeTmpDir("vnote-settings-");
     const file = join(dir, "settings.json");
-    try {
-      // LLM 已由 updateLlm 写入；通用设置 patch 不得改动它
-      saveSettings(file, { llm: { baseUrl: "https://llm.test/v1", model: "gpt-x" } });
-      const patch: SettingsPatch = {
-        asr: {
-          provider: "volcengine",
-          openai: { baseUrl: "https://asr.test/v1", model: "qwen3-asr" },
-          volcengine: { mode: "standard", authMode: "appAccessKey" },
-        },
-      };
-      const settings = saveSettings(file, buildSettingsPatch(patch));
-      const raw = JSON.parse(readFileSync(file, "utf8"));
-      expect(raw.llm).toEqual({ baseUrl: "https://llm.test/v1", model: "gpt-x" });
-      expect(raw.asr).toEqual({
+    // LLM 已由 updateLlm 写入；通用设置 patch 不得改动它
+    saveSettings(file, { llm: { baseUrl: "https://llm.test/v1", model: "gpt-x" } });
+    const patch: SettingsPatch = {
+      asr: {
         provider: "volcengine",
         openai: { baseUrl: "https://asr.test/v1", model: "qwen3-asr" },
         volcengine: { mode: "standard", authMode: "appAccessKey" },
-      });
-      expect(settings.llm).toEqual({ baseUrl: "https://llm.test/v1", model: "gpt-x" });
-      expect(settings.asr.provider).toBe("volcengine");
-      expect(settings.asr.openai).toEqual({ baseUrl: "https://asr.test/v1", model: "qwen3-asr" });
-      expect(settings.asr.volcengine).toEqual({ mode: "standard", authMode: "appAccessKey" });
+      },
+    };
+    const settings = saveSettings(file, buildSettingsPatch(patch));
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    expect(raw.llm).toEqual({ baseUrl: "https://llm.test/v1", model: "gpt-x" });
+    expect(raw.asr).toEqual({
+      provider: "volcengine",
+      openai: { baseUrl: "https://asr.test/v1", model: "qwen3-asr" },
+      volcengine: { mode: "standard", authMode: "appAccessKey" },
+    });
+    expect(settings.llm).toEqual({ baseUrl: "https://llm.test/v1", model: "gpt-x" });
+    expect(settings.asr.provider).toBe("volcengine");
+    expect(settings.asr.openai).toEqual({ baseUrl: "https://asr.test/v1", model: "qwen3-asr" });
+    expect(settings.asr.volcengine).toEqual({ mode: "standard", authMode: "appAccessKey" });
 
-      // 未传字段不被覆盖（deep merge）
-      const after = saveSettings(file, buildSettingsPatch({ asr: { volcengine: { mode: "flash" } } }));
-      expect(after.asr.volcengine.mode).toBe("flash");
-      expect(after.asr.volcengine.authMode).toBe("appAccessKey");
-      expect(after.asr.openai.model).toBe("qwen3-asr");
-      expect(after.asr.provider).toBe("volcengine");
-      expect(after.llm.model).toBe("gpt-x");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    // 未传字段不被覆盖（deep merge）
+    const after = saveSettings(file, buildSettingsPatch({ asr: { volcengine: { mode: "flash" } } }));
+    expect(after.asr.volcengine.mode).toBe("flash");
+    expect(after.asr.volcengine.authMode).toBe("appAccessKey");
+    expect(after.asr.openai.model).toBe("qwen3-asr");
+    expect(after.asr.provider).toBe("volcengine");
+    expect(after.llm.model).toBe("gpt-x");
   });
 
   test("非法枚举在写盘前被拒绝，settings.json 保持不变", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-settings-"));
+    const dir = makeTmpDir("vnote-settings-");
     const file = join(dir, "settings.json");
-    try {
-      saveSettings(file, { asr: { provider: "openai" } });
-      const before = readFileSync(file, "utf8");
-      expect(() =>
-        buildSettingsPatch({ asr: { volcengine: { mode: "bad" } } } as unknown as SettingsPatch),
-      ).toThrow("asr.volcengine.mode");
-      expect(readFileSync(file, "utf8")).toBe(before);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    saveSettings(file, { asr: { provider: "openai" } });
+    const before = readFileSync(file, "utf8");
+    expect(() =>
+      buildSettingsPatch({ asr: { volcengine: { mode: "bad" } } } as unknown as SettingsPatch),
+    ).toThrow("asr.volcengine.mode");
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
 });

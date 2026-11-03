@@ -1,9 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readdirSync, writeFileSync } from "node:fs";
 import { createRemoteEngine, createUrlEngine } from "../remote";
 import { createMockEndpoint } from "../../core/test-http";
+import { makeTmpDir } from "../../testing/temp-dirs";
 type Req = { url: string; headers: Record<string, string>; body: Buffer };
 type Resp = { status: number; body: string; headers?: Record<string, string> };
 
@@ -62,13 +61,13 @@ afterAll(() => {
 function freshEnv(): void {
   for (const k of ["VNOTE_HOME", "VNOTE_USER_DATA"]) {
     if (!(k in savedEnv)) savedEnv[k] = process.env[k];
-    process.env[k] = mkdtempSync(join(tmpdir(), `vnote-${k.toLowerCase()}-`));
+    process.env[k] = makeTmpDir(`vnote-${k.toLowerCase()}-`);
   }
 }
 
 /** 每个测试自建临时目录（ADR-0015 约定）。 */
 function freshDir(): string {
-  return mkdtempSync(join(tmpdir(), "vnote-volc-"));
+  return makeTmpDir("vnote-volc-");
 }
 
 /**

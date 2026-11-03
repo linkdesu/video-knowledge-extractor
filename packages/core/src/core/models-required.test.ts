@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { checkModels, type RequiredModel, type RequiredModelId } from "./models-required";
 
 const ASR_MODEL = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
@@ -9,12 +9,6 @@ const ASR_TOKENS = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "
 const DIARIZATION = join("sherpa-onnx-pyannote-segmentation-3-0", "model.onnx");
 const SPEAKER = "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
 const PUNCTUATION = join("sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12", "model.onnx");
-
-function fixtureDir(): string {
-  const dir = join(tmpdir(), "vnote-models-required-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 function writeModel(dir: string, relativePath: string): void {
   const p = join(dir, relativePath);
@@ -24,7 +18,7 @@ function writeModel(dir: string, relativePath: string): void {
 
 describe("checkModels", () => {
   test("只有分离文件时：分离就绪，其余缺失，整体未就绪，asr 两个文件都进 missing", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-models-required-");
     writeModel(dir, DIARIZATION);
     const check = checkModels(dir);
     expect(check.modelDir).toBe(dir);
@@ -47,7 +41,7 @@ describe("checkModels", () => {
   });
 
   test("补齐全部文件后：四组全就绪，整体 ready 为 true", () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-models-required-");
     writeModel(dir, DIARIZATION);
     writeModel(dir, ASR_MODEL);
     writeModel(dir, ASR_TOKENS);

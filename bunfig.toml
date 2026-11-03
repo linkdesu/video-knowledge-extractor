@@ -1,0 +1,3 @@
+[test]
+# #101：仓库根 `bun test`（test:tools 等）同样使用进程独占 TMPDIR，跑完删除。
+preload = ["./test-preload.ts"]

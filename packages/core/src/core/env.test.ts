@@ -1,11 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { loadDotenvFiles } from "./env";
 
 const saved: Record<string, string | undefined> = {};
-const tempDirs: string[] = [];
 function withEnv(partial: Record<string, string | undefined>, fn: () => void): void {
   const keys = Object.keys(partial);
   for (const key of keys) saved[key] = process.env[key];
@@ -30,19 +29,12 @@ afterAll(() => {
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("VNOTE_TEST_")) delete process.env[key];
   }
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
-
-function tempDir(): string {
-  const dir = mkdtempSync(`${tmpdir()}/vnote-env-`);
-  tempDirs.push(dir);
-  return dir;
-}
 
 describe("loadDotenvFiles", () => {
   test("shell 已有的变量不被覆盖", () => {
-    const cwd = tempDir();
-    const root = tempDir();
+    const cwd = makeTmpDir("vnote-env-");
+    const root = makeTmpDir("vnote-env-");
     writeFileSync(`${cwd}/.env`, "VNOTE_TEST_CWD=from-cwd\nSHELL_VAR=from-file\n");
     writeFileSync(`${root}/.env`, "VNOTE_TEST_ROOT=from-root\n");
     withEnv({ SHELL_VAR: "from-shell" }, () => {
@@ -55,8 +47,8 @@ describe("loadDotenvFiles", () => {
   });
 
   test("两份 .env 定义同名变量时 cwd 赢", () => {
-    const cwd = tempDir();
-    const root = tempDir();
+    const cwd = makeTmpDir("vnote-env-");
+    const root = makeTmpDir("vnote-env-");
     writeFileSync(`${cwd}/.env`, "VNOTE_TEST_PRIO=from-cwd\n");
     writeFileSync(`${root}/.env`, "VNOTE_TEST_PRIO=from-root\n");
     withEnv({ VNOTE_TEST_PRIO: undefined }, () => {
@@ -66,8 +58,8 @@ describe("loadDotenvFiles", () => {
   });
 
   test("cwd .env 里的 VNOTE_HOME 决定第二份文件路径", () => {
-    const cwd = tempDir();
-    const root = tempDir();
+    const cwd = makeTmpDir("vnote-env-");
+    const root = makeTmpDir("vnote-env-");
     mkdirSync(join(root, "inner"));
     writeFileSync(join(cwd, ".env"), `VNOTE_HOME=${join(root, "inner")}\n`);
     writeFileSync(join(root, "inner", ".env"), "VNOTE_TEST_INNER=inner-only\n");
@@ -82,15 +74,15 @@ describe("loadDotenvFiles", () => {
   });
 
   test("文件缺失不报错，返回空", () => {
-    const cwd = tempDir();
-    const root = tempDir();
+    const cwd = makeTmpDir("vnote-env-");
+    const root = makeTmpDir("vnote-env-");
     withEnv({ VNOTE_HOME: undefined }, () => {
       expect(loadDotenvFiles({ cwd, resolveRoot: () => root })).toEqual([]);
     });
   });
 
   test("去重：cwd 与 root 是同一文件时只加载一次", () => {
-    const cwd = tempDir();
+    const cwd = makeTmpDir("vnote-env-");
     writeFileSync(join(cwd, ".env"), "VNOTE_TEST_SAME=once\n");
     withEnv({ VNOTE_HOME: undefined }, () => {
       expect(loadDotenvFiles({ cwd, resolveRoot: () => cwd })).toEqual([join(cwd, ".env")]);
