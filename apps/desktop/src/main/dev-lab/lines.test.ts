@@ -163,3 +163,23 @@ describe("assembleLines 抢话归属（r70 / #104：短插话并入主播）", (
     expect(lines[0]?.end).toBe(14);
   });
 });
+
+describe("assembleLines 说话人证据（分离簇号 ≠ 整理标签：两套编号不同）", () => {
+  test("短插话的文本不会拼回主播行：证据取整理后的 labels，不是分离段的原始簇号", () => {
+    // 真实数据里两套编号是分开的：分离模型给主播 raw 3、插话者 raw 0；二次聚类整理成主播 0、插话者 1。
+    // 文本行与 segments 一一对应，说话人证据必须读 labels[i]；拿 seg.speaker 去比 span.speaker 会错配，
+    // 让插话文本凭「说话人对得上」抢过它自己那段（插话 0.25s、两段重叠等长），再拼进主播行。
+    const { lines } = assembleLines({
+      labels: [0, 1],
+      segments: [seg(0, 10, 3), seg(4, 4.25, 0)],
+      texts: [
+        { start: 0, end: 10, text: "那我读完先去读了再说。" },
+        { start: 4, end: 4.25, text: "好的话。" },
+      ],
+      silences: [],
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.text).toBe("那我读完先去读了再说。");
+    expect(lines.map((line) => line.text).join("")).not.toContain("好的话");
+  });
+});

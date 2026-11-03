@@ -58,7 +58,10 @@ export function assembleLines(input: {
   // 归属先落在被拆出的原始 span 上，再看它有没有被抢话规则并走（并走时下标为 -1）：被并入的插话段的
   // 文本随之丢弃——抢话处的音频已经算在持话轮者的行里（正式管线解码那段音频同样会带到），再拼一遍就是复制。
   const lineOfSpan = rawSpans.map((span) => spans.indexOf(span));
-  const rowSpeakers = input.texts.length === input.segments.length ? input.segments.map((seg) => seg.speaker) : [];
+  // 说话人证据必须与 span 的编号同源：span 的 speaker 来自 `labels`（二次聚类整理后的标签），
+  // 这里读 `seg.speaker`（分离模型的原始簇号）就会拿两套编号互相比，证据错配——插话文本凭假匹配
+  // 抢进主播行（r73c 回归：15:37「好的话。」又拼回主播行）。
+  const rowSpeakers = input.texts.length === input.segments.length ? input.segments.map((_, i) => input.labels[i]) : [];
   const owners = textOwners(input.texts, rawSpans, rowSpeakers);
   const textByLine = new Map<number, string[]>();
   input.texts.forEach((row, i) => {
