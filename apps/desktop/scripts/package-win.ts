@@ -44,10 +44,6 @@ if (!existsSync(join(appDir, "out/main/index.js"))) {
 rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(join(stageDir, "node_modules"), { recursive: true });
 cpSync(join(appDir, "out"), join(stageDir, "out"), { recursive: true, dereference: true });
-writeFileSync(
-  join(stageDir, "package.json"),
-  `${JSON.stringify(stagePackageJson(version), null, 2)}\n`,
-);
 
 const sherpaDir = realpathSync(dirname(requireFromApp.resolve("sherpa-onnx-node")));
 const platformDir = join(dirname(sherpaDir), "sherpa-onnx-win-x64");
@@ -59,6 +55,18 @@ if (!existsSync(platformDir)) {
 }
 cpSync(sherpaDir, join(stageDir, "node_modules", "sherpa-onnx-node"), { recursive: true, dereference: true });
 cpSync(platformDir, join(stageDir, "node_modules", "sherpa-onnx-win-x64"), { recursive: true, dereference: true });
+
+// stage 的 package.json 必须写出这份依赖清单（#96）：electron-builder 收集依赖时先读它，
+// 空清单会让它回退到 apps/desktop，把 workspace 源码、测试与构建日志一起打进 asar。
+// 版本号从真正被复制的那两个包读取，不在这里另写一份常量。
+const runtimeDependencies = {
+  "sherpa-onnx-node": packageVersion(join(sherpaDir, "package.json")),
+  "sherpa-onnx-win-x64": packageVersion(join(platformDir, "package.json")),
+};
+writeFileSync(
+  join(stageDir, "package.json"),
+  `${JSON.stringify(stagePackageJson(version, runtimeDependencies), null, 2)}\n`,
+);
 
 // 2) electron-builder 走 CLI，输出流式透传，方便 CI 直接看到进度
 const child = spawn(
