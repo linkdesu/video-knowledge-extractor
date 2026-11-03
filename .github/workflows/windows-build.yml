@@ -58,6 +58,11 @@ jobs:
       - name: Verify exe metadata
         run: bun run --cwd apps/desktop check:win-metadata
 
+      # #96：app.asar 只允许运行时文件（out/**、package.json、两个 sherpa 包）。
+      # 多带源码/测试/快照/构建日志/其它平台原生包都会在这里失败，不把坏包传上去。
+      - name: Verify app.asar contents
+        run: bun run --cwd apps/desktop check:app-asar
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:

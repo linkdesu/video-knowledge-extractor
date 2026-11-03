@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { assembleLines, hostClusterCount } from "./lines";
 import { readMarks, writeMarks } from "./sample-store";
 import { devLabEnabled } from "./gate";
@@ -117,16 +117,12 @@ describe("Lab 字幕行组装", () => {
 
 describe("Lab 标记落盘", () => {
   test("只保留合法键与值，读回一致", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vn-lab-marks-"));
-    try {
-      const saved = writeMarks(dir, "abc123", { "1000": "B", "2500": "both", bad: "A", "3000": "x" as never });
-      expect(saved).toEqual({ "1000": "B", "2500": "both" });
-      expect(readMarks(dir, "abc123")).toEqual({ "1000": "B", "2500": "both" });
-      expect(JSON.parse(readFileSync(join(dir, "marks-abc123.json"), "utf8"))).toEqual({ "1000": "B", "2500": "both" });
-      expect(readMarks(dir, "missing")).toEqual({});
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = makeTmpDir("vn-lab-marks-");
+    const saved = writeMarks(dir, "abc123", { "1000": "B", "2500": "both", bad: "A", "3000": "x" as never });
+    expect(saved).toEqual({ "1000": "B", "2500": "both" });
+    expect(readMarks(dir, "abc123")).toEqual({ "1000": "B", "2500": "both" });
+    expect(JSON.parse(readFileSync(join(dir, "marks-abc123.json"), "utf8"))).toEqual({ "1000": "B", "2500": "both" });
+    expect(readMarks(dir, "missing")).toEqual({});
   });
 });
 

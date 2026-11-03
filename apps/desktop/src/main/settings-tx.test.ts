@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { createSecretStore, plainFileCodec, type SecretCodec, type SecretStore } from "./secrets";
 import { commitCredentialUpdate, replayCredentialTransaction } from "./settings-tx";
 
@@ -26,7 +26,7 @@ type World = {
 };
 
 function makeWorld(): World {
-  const dir = mkdtempSync(join(tmpdir(), "vnote-tx-"));
+  const dir = makeTmpDir("vnote-tx-");
   const settingsFile = join(dir, "settings.json");
   writeFileSync(settingsFile, JSON.stringify({ version: 2, notesRoot: dir }));
   return {
@@ -60,7 +60,7 @@ let prevUserData: string | undefined;
 beforeEach(() => {
   prevHome = process.env.VNOTE_HOME;
   prevUserData = process.env.VNOTE_USER_DATA;
-  envDir = mkdtempSync(join(tmpdir(), "vnote-tx-env-"));
+  envDir = makeTmpDir("vnote-tx-env-");
   process.env.VNOTE_HOME = join(envDir, "home");
   process.env.VNOTE_USER_DATA = join(envDir, "user-data");
 });
@@ -70,7 +70,6 @@ afterEach(() => {
   else process.env.VNOTE_HOME = prevHome;
   if (prevUserData === undefined) delete process.env.VNOTE_USER_DATA;
   else process.env.VNOTE_USER_DATA = prevUserData;
-  rmSync(envDir, { recursive: true, force: true });
 });
 
 describe("commitCredentialUpdate", () => {

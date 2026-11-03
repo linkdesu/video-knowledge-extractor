@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { projectTopicArtifacts } from "./topic-artifacts";
 import { emptyVideoData } from "./video-data";
 import type { VideoId } from "./types";
 
 function makeData(topics: Array<Record<string, unknown>>): { outputDir: string; data: Parameters<typeof projectTopicArtifacts>[0] } {
-  const outputDir = mkdtempSync(join(tmpdir(), "vnote-artifacts-"));
+  const outputDir = makeTmpDir("vnote-artifacts-");
   const data = emptyVideoData({ id: "v1" as VideoId, title: "v", sourcePath: "/s.mp4", durationSeconds: 60, outputDir });
   data.topics = topics as never;
   return { outputDir, data };

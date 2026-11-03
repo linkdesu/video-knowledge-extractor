@@ -1,8 +1,8 @@
 /**
- * 把一组标签组装成 Lab 字幕行（r48）：复用 core 的 buildSpans → splitSpan → assignSpeakers，
- * 文本由段级解码结果按时间拼接；不复制也不修改正式管线。
+ * 把一组标签组装成 Lab 字幕行（r48）：复用 core 的 buildSpans → splitSpan → resolveCrosstalk →
+ * assignSpeakers，文本由段级解码结果按时间归属；不复制也不修改正式管线。
  */
-import { assignSpeakers, buildSpans, splitSpan } from "@video-notes/core";
+import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "@video-notes/core";
 import type { DiarizationSegment } from "@video-notes/core";
 import type { LabConfigName, LabLine, LabSpeaker } from "../../shared/lab";
 
@@ -10,35 +10,31 @@ export type LabTextRow = { start: number; end: number; text: string };
 
 const MAX_SPAN_SECONDS = 30;
 
-/** 重叠判定的容差：只擦过边界的文本行不算与这一行有交集（吸收 diarization 的边界抖动）。 */
+/** 重叠判定的容差：只擦过边界的文本行不算与这一段有交集（吸收 diarization 的边界抖动）。 */
 const OWNER_MARGIN = 0.02;
 
 /**
- * 每段文本只归属一行（#97）：判重只用两种证据，文字像不像不参与。
- * - 时间：取重叠秒数最多的那一行；重叠不超过 `OWNER_MARGIN` 的行没有资格。
- * - 说话人：重叠等长时（一段文本被两行完整覆盖，抢话处常见）回它自己的说话人那行；
- *   说话人未知时退到起点更贴近文本行的那一行。
+ * 每段文本只归属一段 span（#97 + r70 / #99）：一段文本只有一个归属，文字像不像不参与判定。
+ * - 时间：取重叠秒数最多的那段；重叠不超过 `OWNER_MARGIN` 的没有资格。
+ * - 说话人：重叠等长时（一段文本被两段完整覆盖，抢话处常见）回它自己的说话人那段。说话人取自文本行
+ *   所属分离段的标签——segtext.rows 与 segments 一一对应（analysis-cache 按此校验行数）。
+ * - 起点：说话人证据打平时（标签未知，或文本行只有一份而分离段有多段）取起点更贴近文本行的那段。
  * 旧口径「有一点时间交集就拼进来」会把同一句话拼进两行——听声音是两句不同的话，看起来却重复。
  */
-function textOwners(
-  rows: LabTextRow[],
-  lines: { start: number; end: number; speakerId: string }[],
-  rowSpeakers: (string | undefined)[],
-): number[] {
+function textOwners(rows: LabTextRow[], spans: { start: number; end: number; speaker: number }[], rowSpeakers: (number | undefined)[]): number[] {
   return rows.map((row, r) => {
     let owner = -1;
     let bestOverlap = 0;
     let bestSpeaker = false;
     let bestOffset = Infinity;
-    lines.forEach((line, i) => {
-      const overlap = Math.min(line.end, row.end) - Math.max(line.start, row.start);
+    spans.forEach((span, i) => {
+      const overlap = Math.min(span.end, row.end) - Math.max(span.start, row.start);
       if (overlap <= OWNER_MARGIN) return;
-      const sameSpeaker = rowSpeakers[r] !== undefined && rowSpeakers[r] === line.speakerId;
-      const offset = Math.abs(line.start - row.start);
+      const sameSpeaker = rowSpeakers[r] !== undefined && rowSpeakers[r] === span.speaker;
+      const offset = Math.abs(span.start - row.start);
       const better =
         overlap > bestOverlap + 1e-9 ||
-        (Math.abs(overlap - bestOverlap) <= 1e-9 &&
-          (sameSpeaker !== bestSpeaker ? sameSpeaker : sameSpeaker && offset < bestOffset));
+        (Math.abs(overlap - bestOverlap) <= 1e-9 && (sameSpeaker !== bestSpeaker ? sameSpeaker : offset < bestOffset));
       if (!better) return;
       owner = i;
       bestOverlap = overlap;
@@ -56,26 +52,24 @@ export function assembleLines(input: {
   silences: { start: number; end: number }[];
 }): { lines: LabLine[]; speakers: LabSpeaker[] } {
   const labelled = input.segments.map((seg, i) => ({ start: seg.start, end: seg.end, speaker: input.labels[i] ?? 0 }));
-  const spans = buildSpans(labelled).flatMap((span) => splitSpan(span, input.silences, MAX_SPAN_SECONDS));
+  const rawSpans = buildSpans(labelled).flatMap((span) => splitSpan(span, input.silences, MAX_SPAN_SECONDS));
+  const spans = resolveCrosstalk(rawSpans);
   const assigned = assignSpeakers(spans);
-  // 文本行与分离段一一对应（segtext.rows 由 worker 按 segments 顺序写出），以此取得「这段文本是谁说的」。
-  const labelToSpeaker = new Map<number, string>();
-  spans.forEach((span, i) => {
-    const utterance = assigned.utterances[i];
-    if (utterance !== undefined) labelToSpeaker.set(span.speaker, utterance.speakerId);
-  });
-  const rowSpeakers =
-    input.texts.length === input.segments.length
-      ? input.segments.map((seg) => labelToSpeaker.get(seg.speaker))
-      : [];
-  const owners = textOwners(input.texts, assigned.utterances, rowSpeakers);
-  const textsByLine = new Map<number, string[]>();
+  // 归属先落在被拆出的原始 span 上，再看它有没有被抢话规则并走（并走时下标为 -1）：被并入的插话段的
+  // 文本随之丢弃——抢话处的音频已经算在持话轮者的行里（正式管线解码那段音频同样会带到），再拼一遍就是复制。
+  const lineOfSpan = rawSpans.map((span) => spans.indexOf(span));
+  const rowSpeakers = input.texts.length === input.segments.length ? input.segments.map((seg) => seg.speaker) : [];
+  const owners = textOwners(input.texts, rawSpans, rowSpeakers);
+  const textByLine = new Map<number, string[]>();
   input.texts.forEach((row, i) => {
-    const owner = owners[i];
+    const spanIndex = owners[i];
+    if (spanIndex === undefined || spanIndex < 0) return;
+    const line = lineOfSpan[spanIndex];
+    if (line === undefined || line < 0) return;
     const text = row.text.trim();
-    if (owner === undefined || owner < 0 || text === "") return;
-    const list = textsByLine.get(owner);
-    if (list === undefined) textsByLine.set(owner, [text]);
+    if (text === "") return;
+    const list = textByLine.get(line);
+    if (list === undefined) textByLine.set(line, [text]);
     else list.push(text);
   });
   // 空文本行直接丢弃（正式管线同样丢弃）：ASR 没解出字的片段若留着，Lab 会多出一条空白行，
@@ -85,7 +79,7 @@ export function assembleLines(input: {
       start: u.start,
       end: u.end,
       speakerId: u.speakerId,
-      text: (textsByLine.get(i) ?? []).join(""),
+      text: (textByLine.get(i) ?? []).join(""),
     }))
     .filter((line) => line.text.trim() !== "");
   const totals = new Map<string, { seconds: number; lines: number; starts: { start: number; seconds: number }[] }>();

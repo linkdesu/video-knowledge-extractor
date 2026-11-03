@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { CACHE_DIRNAME } from "./config";
 import {
   VIDEO_DATA_VERSION,
@@ -18,12 +18,6 @@ import {
 } from "./video-data";
 import type { SpeakerId, TopicId, Video, VideoId } from "./types";
 
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-videodata-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 function makeVideo(dir: string): Video {
   return {
     id: "vid-0001" as VideoId,
@@ -36,7 +30,7 @@ function makeVideo(dir: string): Video {
 
 describe("video.json 文档", () => {
   test("写后读回往返一致，updatedAt 被盖上", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const data: VideoData = {
       ...emptyVideoData(video),
@@ -84,12 +78,12 @@ describe("video.json 文档", () => {
   });
 
   test("文件缺失返回 undefined", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     expect(readVideoData(dir)).toBeUndefined();
   });
 
   test("规范化字段往返：originalPath / mediaPath / normalized，旧文档缺失为 null", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const written = writeVideoData(dir, {
       ...emptyVideoData(video),
@@ -117,7 +111,7 @@ describe("video.json 文档", () => {
   });
 
   test("mediaPath 只接受数据目录内的 mp4/mp3，越界或别的扩展名拒绝", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     for (const bad of ["../x.mp4", "/abs/media.mp4", "sub/media.mp4", "media.mkv"]) {
       writeVideoData(dir, { ...emptyVideoData(video), mediaPath: bad });
@@ -126,21 +120,21 @@ describe("video.json 文档", () => {
   });
 
   test("版本不符抛出指明文件与版本的错误", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), version: 9 as 1 });
     expect(() => readVideoData(dir)).toThrow(/video\.json|version 应为 1/);
   });
 
   test("非数组 topics 被拒绝", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), topics: "不是数组" } as unknown as VideoData);
     expect(() => readVideoData(dir)).toThrow(/不是数组/);
   });
 
   test("非字符串字段（title）被拒绝", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const base = emptyVideoData(video);
     writeVideoData(dir, {
@@ -166,13 +160,13 @@ describe("video.json 文档", () => {
   });
 
   test("损坏 JSON 被拒绝", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(join(dir, "video.json"), "{ not json");
     expect(() => readVideoData(dir)).toThrow(/video\.json/);
   });
 
   test("clips 缺 segmentOffsets 读回为 []，非法值被过滤", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const base = emptyVideoData(video);
     writeVideoData(
@@ -209,7 +203,7 @@ describe("video.json 文档", () => {
 
 describe("状态归一", () => {
   test("generating 且没有存活 run.lock → failed + 上次生成已中断", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const base = emptyVideoData(video);
     base.topics = [
@@ -237,7 +231,7 @@ describe("状态归一", () => {
   });
 
   test("generating 且 run.lock 存活（本进程持锁）→ 保持 generating", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const base = emptyVideoData(video);
     base.topics = [
@@ -267,7 +261,7 @@ describe("状态归一", () => {
 
 describe("旧目录迁移", () => {
   test("从 topic.md 与切片文件名重建：标题、时间段、要点、切片、状态 done", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const topicDir = join(dir, "主题-a");
     mkdirSync(topicDir, { recursive: true });
     writeFileSync(
@@ -317,7 +311,7 @@ describe("旧目录迁移", () => {
   });
 
   test("3 秒前移切片：切片起点早于段起点，segmentIndexes 仍按覆盖规则命中该段", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const topicDir = join(dir, "主题-b");
     mkdirSync(topicDir, { recursive: true });
     writeFileSync(join(topicDir, "topic.md"), "# T\n\n### [00:00:10 - 00:00:20](01-00-00-07-00-00-20.mp4)\n");
@@ -336,7 +330,7 @@ describe("旧目录迁移", () => {
   });
 
   test("没有时间段标题：用切片范围近似 segments 并记 error", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const topicDir = join(dir, "主题-c");
     mkdirSync(topicDir, { recursive: true });
     writeFileSync(join(topicDir, "topic.md"), "# T\n\n## 要点\n- 要点一\n");
@@ -350,7 +344,7 @@ describe("旧目录迁移", () => {
   });
 
   test("loadVideoData：没有 video.json 时走迁移且不回写", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const topicDir = join(dir, "主题-a");
     mkdirSync(topicDir, { recursive: true });
     writeFileSync(join(topicDir, "topic.md"), "# 旧标题\n\n## 要点\n- 要点一\n\n## 正文\n\n### [00:00:10 - 00:00:20](01-00-00-07-00-00-20.mp4)\n");
@@ -383,7 +377,7 @@ function topicWith(status: string, extra: Partial<Record<string, unknown>> = {})
 
 describe("附加字段（resolution/asrEngine/runToken）", () => {
   test("旧文档缺三个字段读回为 null", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(
       join(dir, "video.json"),
       JSON.stringify({
@@ -406,7 +400,7 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
   });
 
   test("非法 resolution 形状报错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), resolution: { width: -1, height: 10 } } as unknown as VideoData);
     expect(() => readVideoData(dir)).toThrow(/宽高/);
@@ -415,21 +409,21 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
   });
 
   test("非法 asrEngine 报错并列出全部合法值", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), asrEngine: "cloud" } as unknown as VideoData);
     expect(() => readVideoData(dir)).toThrow(/local 或 openai 或 volcengine/);
   });
 
   test("旧文档的 remote 读成 openai", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, { ...emptyVideoData(video), asrEngine: "remote" } as unknown as VideoData);
     expect(readVideoData(dir)!.asrEngine).toBe("openai");
   });
 
   test("三个新值往返一致（非 null 值）", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     for (const engine of ["local", "openai", "volcengine"] as const) {
       const d = emptyVideoData(video);
@@ -445,11 +439,11 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
   });
 
   test("emptyVideoData 与迁移文档的三个字段默认 null", () => {
-    const video = makeVideo(mkdtemp());
+    const video = makeVideo(makeTmpDir("vnote-videodata-"));
     expect(emptyVideoData(video).resolution).toBeNull();
     expect(emptyVideoData(video).asrEngine).toBeNull();
     expect(emptyVideoData(video).runToken).toBeNull();
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     mkdirSync(join(dir, "前段"), { recursive: true });
     writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
     const migrated = migrateVideoData(dir, makeVideo(dir));
@@ -461,7 +455,7 @@ describe("附加字段（resolution/asrEngine/runToken）", () => {
 
 describe("hasVideo（r42）", () => {
   test("hasVideo 写后读回往返一致（false 与 true）", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     const d = emptyVideoData(video);
     d.hasVideo = false;
@@ -472,7 +466,7 @@ describe("hasVideo（r42）", () => {
   });
 
   test("旧文档缺 hasVideo 读回为 null", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(
       join(dir, "video.json"),
       JSON.stringify({
@@ -488,7 +482,7 @@ describe("hasVideo（r42）", () => {
   });
 
   test("hasVideo 非布尔值读回报错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(
       join(dir, "video.json"),
       JSON.stringify({
@@ -505,8 +499,8 @@ describe("hasVideo（r42）", () => {
   });
 
   test("emptyVideoData 与迁移文档的 hasVideo 默认 null", () => {
-    expect(emptyVideoData(makeVideo(mkdtemp())).hasVideo).toBeNull();
-    const dir = mkdtemp();
+    expect(emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))).hasVideo).toBeNull();
+    const dir = makeTmpDir("vnote-videodata-");
     mkdirSync(join(dir, "前段"), { recursive: true });
     writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
     expect(migrateVideoData(dir, makeVideo(dir)).hasVideo).toBeNull();
@@ -515,13 +509,13 @@ describe("hasVideo（r42）", () => {
 
 describe("projectRunState", () => {
   test("有活锁原样返回（同一对象）", () => {
-    const d: VideoData = { ...emptyVideoData(makeVideo(mkdtemp())), topics: [topicWith("generating")] as never[] };
+    const d: VideoData = { ...emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))), topics: [topicWith("generating")] as never[] };
     expect(projectRunState(d, { locked: true })).toBe(d);
   });
 
   test("无活锁 generating/queued → failed（不动其余字段），done/failed 不变", () => {
     const d: VideoData = {
-      ...emptyVideoData(makeVideo(mkdtemp())),
+      ...emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))),
       topics: [
         topicWith("generating", { startedAt: "2026-01-01T00:00:00Z", elapsedSeconds: 7, error: "old" }) as never,
         topicWith("queued") as never,
@@ -543,14 +537,14 @@ describe("projectRunState", () => {
   });
 
   test("无中断状态时返回同一对象", () => {
-    const d: VideoData = { ...emptyVideoData(makeVideo(mkdtemp())), topics: [topicWith("done")] as never[] };
+    const d: VideoData = { ...emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))), topics: [topicWith("done")] as never[] };
     expect(projectRunState(d, { locked: false })).toBe(d);
   });
 });
 
 describe("说话人合并字段（r35）", () => {
   test("mergedInto/customName 写后读回一致", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const data = emptyVideoData(makeVideo(dir));
     data.transcript.speakers = [
       { id: "sp1" as SpeakerId, name: "张三", color: "#f00", customName: true },
@@ -567,7 +561,7 @@ describe("说话人合并字段（r35）", () => {
   });
 
   test("旧文档缺字段读回为空（不报错）；非法形状被拒绝", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(
       join(dir, "video.json"),
       JSON.stringify({
@@ -599,7 +593,7 @@ describe("说话人合并字段（r35）", () => {
 
 describe("失败记录（r35）", () => {
   test("failure 写后读回一致；旧文档缺失与坏形状读回 null", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const data = emptyVideoData(makeVideo(dir));
     data.failure = { message: "API key 无效", at: "2026-10-20T08:00:00.000Z" };
     writeVideoData(dir, data);
@@ -626,7 +620,7 @@ describe("失败记录（r35）", () => {
   });
 
   test("recordVideoFailure 落盘带 ISO 时间；文档缺失时 no-op 不抛错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeVideoData(dir, emptyVideoData(makeVideo(dir)));
     recordVideoFailure(dir, "LLM 未配置");
     const d = readVideoData(dir)!;
@@ -637,7 +631,7 @@ describe("失败记录（r35）", () => {
   });
 
   test("clearVideoFailure 只清非 null 记录：无记录时不动磁盘", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const video = makeVideo(dir);
     writeVideoData(dir, emptyVideoData(video));
     const before = readFileSync(join(dir, "video.json"), "utf8");
@@ -654,7 +648,7 @@ describe("主播字段（r46）", () => {
   const SPK2 = { id: "spk-2" as SpeakerId, name: "说话人2", color: "#0f0" };
 
   test("旧文档没有 hosts / hostSource：读回 [] 与 null，不报错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     writeFileSync(
       join(dir, "video.json"),
       JSON.stringify({
@@ -672,7 +666,7 @@ describe("主播字段（r46）", () => {
   });
 
   test("hosts / hostSource 写后读回一致（auto 与 manual）", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     for (const source of ["auto", "manual"] as const) {
       const data = emptyVideoData(makeVideo(dir));
       data.transcript = { speakers: [SPK2], utterances: [] };
@@ -685,7 +679,7 @@ describe("主播字段（r46）", () => {
   });
 
   test("坏形状宽容：非数组读回 []，未知 id 与重复项丢弃，未知来源读回 null", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-videodata-");
     const data = emptyVideoData(makeVideo(dir));
     data.transcript = { speakers: [SPK2], utterances: [] };
     writeVideoData(dir, data);
@@ -707,9 +701,9 @@ describe("主播字段（r46）", () => {
   });
 
   test("emptyVideoData 与迁移文档默认 [] / null", () => {
-    expect(emptyVideoData(makeVideo(mkdtemp())).hosts).toEqual([]);
-    expect(emptyVideoData(makeVideo(mkdtemp())).hostSource).toBeNull();
-    const dir = mkdtemp();
+    expect(emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))).hosts).toEqual([]);
+    expect(emptyVideoData(makeVideo(makeTmpDir("vnote-videodata-"))).hostSource).toBeNull();
+    const dir = makeTmpDir("vnote-videodata-");
     mkdirSync(join(dir, "前段"), { recursive: true });
     writeFileSync(join(dir, "前段", "topic.md"), "# 旧标题\n\n正文\n");
     const migrated = migrateVideoData(dir, makeVideo(dir));

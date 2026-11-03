@@ -20,6 +20,15 @@
      - **macOS (`workstation-1`)**：执行 `package:mac` 打包，将最新产物覆盖安装到 `/Applications/Video Notes.app`，清除隔离属性（`xattr -cr`，不改动二进制签名、不触碰系统钥匙串），校验 `Info.plist` 的 `CFBundleShortVersionString` 与当前版本号一致。
      - **Windows (`gamepc`)**：自动获取对应版本的 `Video Notes-<version>-setup.exe`（本地或 GitHub Actions `windows-build.yml` 产物），上传至 `gamepc:D:\code\video-notes\installer\`，先停止正在运行的 `Video Notes.exe` 防止文件锁冲突，再静默安装到标准路径 `D:\code\video-notes\app\Video Notes.exe`，修复桌面与开始菜单快捷方式指向，并校验 `Uninstall Video Notes.exe`、注册表 `DisplayVersion` 及 `resources\app.asar` 版本号完全一致。
 
+## 测试临时目录（r71，issue #101）
+
+- 测试**不得**直接 `mkdtempSync(join(tmpdir(), …))`、拼 `${tmpdir()}/…` 或用 `import.meta.dir` 自建临时目录：一律用 `@video-notes/core/testing` 的 `makeTmpDir(prefix, base?)`（用例级，`afterEach` 自动删除）或 `makeSuiteTmpDir(prefix, base?)`（模块顶层 / `beforeAll` 的共享夹具，整轮测试结束才删；清理钩子在 preload 里全局注册，别在测试文件里自己注册）。core 内部相对导入 `src/testing/temp-dirs`。
+- 每个包的 `bun test` 由该包 `test-preload.ts` 把 `TMPDIR` 指到 `<repo>/tmp/test-<pid>`，整轮结束删除，并在启动时清掉死进程残留；新增包必须同时提供 `bunfig.toml`（`[test] preload = ["./test-preload.ts"]`）与 `test-preload.ts`，否则会重新污染系统 `$TMPDIR`。
+- **必须从包目录或仓库根跑 `bun test`**：bun 只读 cwd 的 `bunfig.toml`，不向上查找；从 `src/` 深层目录跑不会加载 preload，此时 `makeTmpDir` 会直接抛「测试临时目录未隔离」而不是静默写系统临时目录。同理不要用 `--parallel --no-isolate`（worker 复用会让 preload 只求值一次），也不要 `test.concurrent`（用例级目录按用例结束清理，并发用例会互删）。
+- 非测试脚本（如 `apps/cli/src/smoke-volc-asr.ts`）可以用 `tmpdir()`，但必须自己在 `finally` 里删掉创建的文件/目录。
+- 例外：断言「cwd 不在任何仓库内」这类用例（如 `dev-home.test.ts` 的「找不到仓库根」）不能把夹具建在仓库 `tmp/` 下，否则向上查找会命中本仓库根；用 `makeTmpDir(prefix, join(import.meta.dir, "..", "..", …))` 把夹具放到仓库父目录（单个 worktree 的父目录不是 git 仓库），生命周期仍由 helper 管。这类目录不在 `pruneStaleTestTmpDirs` 的扫描范围内，进程被 kill 时需要手动清。
+- 批量或反复跑测试：一次 flake 复现上限 6 次、最多 2 个套件并行；不要留 `--watch` 或后台循环。
+
 ## 模型与评审
 
 - agent → 模型映射固定在 `.omp/config.yml`；改映射只改这里，不碰 `~/.omp/agent/config.yml`。

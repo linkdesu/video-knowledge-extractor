@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { probeLabEntry } from "./analysis-cache";
 
 const CACHE_MODULE = resolve(import.meta.dir, "analysis-cache.ts");
@@ -41,7 +41,7 @@ type StartedChild = { tag: string; errPath: string; child: { exited: Promise<num
 
 /**
  * 等所有子进程退出，另加一道兜底：bun:test 的超时不会杀子进程，孤儿 writer 会继续往
- * 用例 finally 删掉的目录里写，把超时现场搞得更难读。兜底只做「到点先杀再等」，
+ * 用例结束后删掉的目录里写，把超时现场搞得更难读。兜底只做「到点先杀再等」，
  * 真实计时控件在这里没有意义（被测行为就是真实子进程与调度）。
  */
 async function awaitChildren(spawned: StartedChild[]): Promise<number[]> {
@@ -105,32 +105,23 @@ function describeFailures(results: ChildResult[]): string {
   return bad.map((result) => `[writer ${result.tag} exit=${result.code}] ${result.stderr}`).join("\n");
 }
 
-function sandbox(): { root: string; cleanup(): void } {
-  const root = mkdtempSync(join(tmpdir(), "vn-lab-race-"));
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
-}
-
 describe("跨进程并发发布同一个键", () => {
   test("两个进程同时写：键路径上永远是某一方的完整条目，没人崩", async () => {
-    const box = sandbox();
-    try {
-      const script = join(box.root, "writer.mjs");
-      writeFileSync(script, writerScript());
-      const results = await runChildren(script, box.root, ["aaaa", "bbbb"], 25, 10000);
-      expect(describeFailures(results)).toBe("");
-      expect(results.map((result) => result.code)).toEqual([0, 0]);
+    const root = makeTmpDir("vn-lab-race-");
+    const script = join(root, "writer.mjs");
+    writeFileSync(script, writerScript());
+    const results = await runChildren(script, root, ["aaaa", "bbbb"], 25, 10000);
+    expect(describeFailures(results)).toBe("");
+    expect(results.map((result) => result.code)).toEqual([0, 0]);
 
-      const payload = readFileSync(join(box.root, KEY, "payload.txt"), "utf8");
-      // 键路径上只可能是某一方写完整的那份（4 KB 全是一个 tag），绝无混写/半截。
-      expect(payload).toHaveLength(4096);
-      expect(payload).toMatch(/^(aaaa|bbbb)+$/);
-      expect(new Set(payload.match(/aaaa|bbbb/g) ?? []).size).toBe(1);
-      // 条目不完整时 probe 会按 miss 处理，这里没有 sample.json，所以是 sample。
-      expect(probeLabEntry(box.root, KEY, "dir").reason).toBe("sample");
-      expect(existsSync(join(box.root, KEY, "payload.txt"))).toBe(true);
-    } finally {
-      box.cleanup();
-    }
+    const payload = readFileSync(join(root, KEY, "payload.txt"), "utf8");
+    // 键路径上只可能是某一方写完整的那份（4 KB 全是一个 tag），绝无混写/半截。
+    expect(payload).toHaveLength(4096);
+    expect(payload).toMatch(/^(aaaa|bbbb)+$/);
+    expect(new Set(payload.match(/aaaa|bbbb/g) ?? []).size).toBe(1);
+    // 条目不完整时 probe 会按 miss 处理，这里没有 sample.json，所以是 sample。
+    expect(probeLabEntry(root, KEY, "dir").reason).toBe("sample");
+    expect(existsSync(join(root, KEY, "payload.txt"))).toBe(true);
   }, 30000);
 
   // r66 / #85：8 路并行全量下偶发「有一个 writer 退出 1」。竞争窗口在「把别人的条目挪走」
@@ -138,28 +129,20 @@ describe("跨进程并发发布同一个键", () => {
   // 撞到就立刻失败（失败信息带 errno）。轮数固定、每轮工作量小，保证满负载下也不会把用例拖到超时。
   test("多路进程连续多轮抢同一个键：没有进程因竞争退出非 0", async () => {
     const tags = ["aaaa", "bbbb", "cccc", "dddd"];
-    const box = sandbox();
-    const script = join(box.root, "writer.mjs");
+    const root = makeTmpDir("vn-lab-race-");
+    const script = join(root, "writer.mjs");
     writeFileSync(script, writerScript());
     const failures: string[] = [];
     const rounds = 2;
-    try {
-      for (let round = 1; round <= rounds && failures.length === 0; round++) {
-        const roundRoot = mkdtempSync(join(box.root, `round-${round}-`));
-        try {
-          const results = await runChildren(script, roundRoot, tags, 100, 4000);
-          const detail = describeFailures(results);
-          if (detail !== "") failures.push(`round ${round}:\n${detail}`);
-          // 每一轮结束时键路径都必须是某一方的完整条目（rename 不能留下半截）。
-          const payload = readFileSync(join(roundRoot, KEY, "payload.txt"), "utf8");
-          expect(payload).toHaveLength(4096);
-          expect(new Set(payload.match(/aaaa|bbbb|cccc|dddd/g) ?? []).size).toBe(1);
-        } finally {
-          rmSync(roundRoot, { recursive: true, force: true });
-        }
-      }
-    } finally {
-      box.cleanup();
+    for (let round = 1; round <= rounds && failures.length === 0; round++) {
+      const roundRoot = makeTmpDir(`round-${round}-`, root);
+      const results = await runChildren(script, roundRoot, tags, 100, 4000);
+      const detail = describeFailures(results);
+      if (detail !== "") failures.push(`round ${round}:\n${detail}`);
+      // 每一轮结束时键路径都必须是某一方的完整条目（rename 不能留下半截）。
+      const payload = readFileSync(join(roundRoot, KEY, "payload.txt"), "utf8");
+      expect(payload).toHaveLength(4096);
+      expect(new Set(payload.match(/aaaa|bbbb|cccc|dddd/g) ?? []).size).toBe(1);
     }
     expect(failures).toEqual([]);
   }, 60000);
