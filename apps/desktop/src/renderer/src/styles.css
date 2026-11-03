@@ -1356,7 +1356,7 @@ textarea {
 }
 .vn-lab-row {
   display: grid;
-  grid-template-columns: 46px 72px 72px minmax(80px, 1fr) 54px 34px 148px;
+  grid-template-columns: 46px 72px 72px minmax(0, 1fr) 54px 34px;
   gap: 6px;
   align-items: center;
   padding: 6px 8px;
@@ -1399,11 +1399,28 @@ textarea {
   white-space: nowrap;
 }
 .vn-lab-marks {
+  grid-column: 1 / -1;
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.vn-lab-mark-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+.vn-lab-mark-label {
+  color: var(--vn-dim);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .vn-lab-marks .vn-btn.sm {
+  flex: 0 0 auto;
   padding: 6px;
 }
 .vn-lab-row > .vn-btn.sm {

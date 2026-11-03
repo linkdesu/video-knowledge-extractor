@@ -2,10 +2,10 @@
  * Lab 样本落盘（r48）：只写 `tmp/verify/lab/<id>/`，不碰笔记库。
  * 一个样本目录 = sample.json + audio.wav + segments.json + embeddings.json + segtext.json（+ silences/labels/anchors）。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
-import type { LabMarks, LabSampleMeta } from "../../shared/lab";
+import { isLabMark, type LabMarks, type LabSampleMeta } from "../../shared/lab";
 import type { LabAnalysisStamp } from "./analysis-cache";
 import type { EmbeddingRow } from "./refine";
 
@@ -151,23 +151,39 @@ export function marksPath(root: string, id: string): string {
   return join(root, `marks-${id}.json`);
 }
 
-export function readMarks(root: string, id: string): LabMarks {
-  const raw = readJson<LabMarks>(marksPath(root, id));
+/**
+ * 把磁盘上的 marks 归一成 `LabMarks`。r48 起就是「行起点毫秒 → 标记」的扁平 map，
+ * r74 只扩了值域（A/B/both + 三类问题类型），所以旧文件不需要迁移：合法值原样返回。
+ * 键必须是毫秒时间戳，值必须是已知标记；认不出的条目跳过，绝不改写已有标记。
+ */
+export function normalizeMarks(raw: unknown): LabMarks {
   const out: LabMarks = {};
-  if (raw === null || typeof raw !== "object") return out;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw)) {
-    if (value === "A" || value === "B" || value === "both") out[key] = value;
+    if (/^\d+$/.test(key) && isLabMark(value)) out[key] = value;
   }
   return out;
 }
 
+export function readMarks(root: string, id: string): LabMarks {
+  return normalizeMarks(readJson<unknown>(marksPath(root, id)));
+}
+
+/**
+ * 写整份标注。入参是「超集覆盖」语义，所以先拒绝非法容器（IPC 那头没有运行时类型）：
+ * null / 数组 / 字符串被归一成 `{}` 会把已有标注整份清空，宁可抛错留给界面显示「保存标记失败」。
+ */
 export function writeMarks(root: string, id: string, marks: LabMarks): LabMarks {
-  const clean: LabMarks = {};
-  for (const [key, value] of Object.entries(marks)) {
-    if (/^\d+$/.test(key) && (value === "A" || value === "B" || value === "both")) clean[key] = value;
+  if (marks === null || typeof marks !== "object" || Array.isArray(marks)) {
+    throw new Error("marks 必须是「行起点毫秒 → 标记」的对象，拒绝用非法值覆盖已有标注");
   }
+  const clean = normalizeMarks(marks);
   mkdirSync(root, { recursive: true });
-  writeJson(marksPath(root, id), clean);
+  // 人工标注是最不可替代的那份数据：先写同目录临时文件再 rename，崩溃时不会留下半截 JSON。
+  const target = marksPath(root, id);
+  const tmp = `${target}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(clean)}\n`);
+  renameSync(tmp, target);
   return clean;
 }
 

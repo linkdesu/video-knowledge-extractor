@@ -24,7 +24,7 @@
 - 字幕行：完整列表（时间 / A 说话人 / B 说话人 / 文本 / 状态）；点行定位、高亮、从行首播放；时间轴点击反向定位；跳转框接受 `13:14` 或行号；`Cmd/Ctrl+F` 聚焦搜索；筛选 全部 / 仅差异 / 仅已过滤 / 仅某说话人。
 - 试听：`J`/`K` 上一个/下一个差异并自动播放，空格播放/暂停，`1`/`2` 听同一行在 A/B 方案下的说话人样例；说话人面板 `▶样例` 依次播放该簇最长的三段。
 - 阈值滑块：0.6–1.5s，纯客户端重算，不触发 IPC、不重新聚类。
-- 标记：差异行打「B 对 / A 对 / 都错」，写 `<cacheRoot>/marks-<样本>.json`（r54 起默认共享缓存根），重开仍在。
+- 标记（r74）：差异行分两组打标——「谁对」= `B 对` / `A 对` / `都错`（`lab-mark-B` / `lab-mark-A` / `lab-mark-both`），「问题类型」= `重叠归错人` / `误判重复` / `未忽略回应语`（`lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored`）。一行只有一个标记，值域见 `shared/lab.ts` 的 `LAB_MARK_LABEL`；写 `<cacheRoot>/marks-<样本>.json`（r54 起默认共享缓存根），重开仍在。旧文件（只有 `A`/`B`/`both`）不需要迁移，读路径不改写磁盘。
 - 输入区布局（r52）：`.vn-lab-bar-row` 是一个 4 列网格，拖放提示 `lab-dropzone` 独占首行，最近样本 / 方案 A / 方案 B / 阈值四列等宽（16px gap、底边对齐）；视口 ≤1053px 降成 2×2，≤760px 单列。Select 触发器 `box-sizing: border-box` + `min-width: 0`，长样本名用省略号截断，展开的下拉不越出卡片内容宽。
 - 视图状态保留（r52）：样本、方案 A/B、阈值、页面滚动（`.vn-content`）与字幕行列表滚动写进 `localStorage['vn.lab.view']`（`renderer/src/lib/lab-view-state.ts`，严格白名单 + clamp），导航离开再返回、以及整机重启后都还原来同一屏。
 - 下拉弹层（r52c，r69 起与设置页 `Combobox` 共用 `renderer/src/lib/popover.ts`，见 ADR-0045）：`Select` 的 `role=listbox` 通过 `createPortal` 渲染到 `document.body`，`.vn-select-list.portal` 用 `position: fixed` + 内联锚点几何（`z-index: 55`），打开期间跟随内容区滚动/窗口缩放。留在卡片里会被 `.vn-card` 的 `backdrop-filter` 层叠上下文困住，卡片比弹层矮时下方卡片会盖住第 2 个及以后的选项（r52b 的 G1）。验收要按**命中**判：对每个选项取 `getBoundingClientRect()` 中心做 `elementFromPoint`，断言落点 `closest('[role=option]')` 就是该选项，再用真实鼠标点击并断言触发器文案变成该选项；1280/900/700/520 四档都要测（r52c 证据 `tmp/verify/r52c-hit/hit-*.json`）。
@@ -70,7 +70,7 @@ $V snapshot r54-lab-dev
 
 - `lab-progress` 显示导入阶段（抽音频 / 分离 / 嵌入 / 段级解码）；导入期间不要另开 Lab 导入，也不要同时跑生成任务（本机模型严格串行，主进程会拒绝）。
 - 阈值验证：`$V eval "performance.now()"` 前后各读一次过滤行数，或直接断言 `lab-summary` 文本在两个阈值下不同。
-- 标记持久化：打完 `lab-mark-B` 后 `down` + 新 run id 复用同一 `--home` 与旧 run 的 userData（`--user-data tmp/verify-state/<旧 run>/user-data`，r50 起 userData 不在证据目录里），重开页面断言按钮仍高亮。
+- 标记持久化：打完 `lab-mark-B`（或任一问题类型，如 `lab-mark-false_duplicate`）后 `down` + 新 run id 复用同一 `--home` 与旧 run 的 userData（`--user-data tmp/verify-state/<旧 run>/user-data`，r50 起 userData 不在证据目录里），重开页面断言按钮仍高亮；同时断言 `marks-<样本>.json` 里只多了这一个键、旧键原样。
 - 视图状态保留（r52）：改样本/A/B/阈值并真实滚轮滚动后，`$V click '[data-testid=nav-library]'` → `nav-lab`，断言四值与两处 `scrollTop` 复原；再 `down` + 新 run id 复用同一 userData，重开后同样断言。`localStorage['vn.lab.view']` 是唯一真相源，`down` 只在 `user-data/Local Storage` 为空时才剪掉它。
 - 打包版证明：`verify.ts up --app "/Applications/Video Notes.app" --no-build`，断言 `nav-lab` 不存在、`window.vnote.lab === undefined`、`vnote-media://lab/<id>` 的 fetch 直接失败（协议 handler 未注册，返回 ERR_FAILED 而不是 404）。
 

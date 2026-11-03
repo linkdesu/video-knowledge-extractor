@@ -3,7 +3,7 @@
  * 只被验收台页面使用，不进入正式管线；放在 shared 以便 bun test 直接覆盖。
  */
 import { isShortReplyLine, SHORT_REPLY_RULES } from "@video-notes/core/short-replies";
-import type { LabConfig, LabLine } from "./lab";
+import { isLabMark, type LabConfig, type LabLine, type LabMark, type LabMarks } from "./lab";
 
 /** 标记键：行起点毫秒。跨方案重载后同一时间点仍对得上。 */
 export function labLineKey(line: { start: number }): string {
@@ -46,7 +46,7 @@ export type LabRow = LineAlignment & {
   filler: boolean;
   /** 两方案说话人不同（含 B 侧被过滤而 A 未过滤）。 */
   diff: boolean;
-  mark: "A" | "B" | "both" | null;
+  mark: LabMark | null;
 };
 
 export type LabSummary = {
@@ -140,7 +140,7 @@ export function buildRows(
   configA: LabConfig,
   configB: LabConfig,
   thresholdSeconds: number,
-  marks: Record<string, string> = {},
+  marks: LabMarks = {},
 ): LabRow[] {
   const filterB = configB.name === "refine_filter";
   const { aToB, bToA } = speakerMap(configA.lines, configB.lines);
@@ -158,7 +158,7 @@ export function buildRows(
       ...aligned,
       filler,
       diff: diff || filteredDiff,
-      mark: mark === "A" || mark === "B" || mark === "both" ? mark : null,
+      mark: isLabMark(mark) ? mark : null,
     };
   });
 }

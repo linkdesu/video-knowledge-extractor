@@ -142,6 +142,10 @@ _Avoid_: 密钥库、safeStorage、token 存储
 开发模式验收台（Lab）把一份音视频或实验目录算出的全套产物（`segments`/`embeddings`/`segtext`/`silences`/`audio.wav`）按「源内容指纹 + 规范化分析参数」的键存成一个目录，键即样本 id。命中时只读 JSON 与音频，不加载模型、不 fork worker；条目不自洽（缺文件、坏 JSON、行数不符、没有 RIFF/WAVE 头）就按未命中重算（ADR-0034）。
 _Avoid_: 样本库、模型缓存
 
+**Lab 标注**（`Lab mark`）：
+验收台里对一条差异行的人工判断，每行只有一个，存在 `<缓存根>/marks-<样本>.json` 的扁平 map 里（键是该行起点的毫秒）。值分两组：`A` / `B` / `both` 回答「谁的说话人对」；`overlap_wrong_speaker` / `false_duplicate` / `backchannel_not_ignored` 记 A/B 之外的错因（重叠归错人、误判重复、未忽略的回应语），与 A/B 互斥。值域只增不减，旧文件不需要迁移（ADR-0049）。
+_Avoid_: 评分、gold label、正确答案、标记（单独一个「标记」指 UI 按钮）
+
 **Lab 缓存模式**（`--lab-cache=shared|isolated|cold`）：
 Lab 缓存根的三种用法。`shared`（默认）读写用户级共享目录（`~/.cache/video-notes/lab-cache`，所有 worktree 共用）；`isolated` 每次启动新建一个空临时目录，只读写它，绝不碰共享缓存（QA/verify 默认）；`cold` 仍用共享目录但不读旧条目，强制全量重算并把结果写回。发布走「临时目录 + fsync + 整目录 rename」，两个 worktree 同时写同一个键只会留下某一方的完整条目（ADR-0035）。
 _Avoid_: 缓存开关、缓存开关参数
