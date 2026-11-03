@@ -15,7 +15,10 @@ export const APP_DESCRIPTION = "把长视频变成可按主题阅读的笔记";
 export const APP_COPYRIGHT = "Copyright © 2026 xieal";
 
 /** `release-win/stage/package.json`：electron-builder 读取应用元数据的唯一来源。 */
-export function stagePackageJson(version: string): Record<string, unknown> {
+export function stagePackageJson(
+  version: string,
+  dependencies: Record<string, string>,
+): Record<string, unknown> {
   return {
     name: "video-notes",
     productName: APP_PRODUCT_NAME,
@@ -27,6 +30,10 @@ export function stagePackageJson(version: string): Record<string, unknown> {
     main: "out/main/index.js",
     type: "module",
     private: true,
+    // #96：必须写出运行时依赖。electron-builder 的依赖收集先看 app 目录（= stage），
+    // dependencies 为空时它会「no node modules found」后退回 apps/desktop，
+    // 把 workspace 的 @video-notes/core/src/**（含测试、快照、.turbo 日志）和 dotenv 一起打进 asar。
+    dependencies,
   };
 }
 

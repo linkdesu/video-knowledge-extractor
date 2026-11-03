@@ -1,9 +1,8 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 import type { ChatMessage, LlmEndpoint, Progress, SegmentTopicsInput } from "../core/steps";
 import { configureLogging } from "../core/logger";
 import { createMockEndpoint } from "../core/test-http";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { segmentTopics } from "./segment-topics";
 import type { SpeakerId, Transcript, Utterance } from "../core/types";
 
@@ -17,7 +16,7 @@ let received: Received[] = [];
 
 /** 每次用新的临时缓存目录：固定路径会让上一轮的文件变成命中，测试互相污染。 */
 function tempCacheDir(): string {
-  return mkdtempSync(`${tmpdir()}/seg-topics-`);
+  return makeTmpDir("seg-topics-");
 }
 let endpoint: LlmEndpoint = { baseUrl: "", apiKey: "k-test", model: "m-test" };
 

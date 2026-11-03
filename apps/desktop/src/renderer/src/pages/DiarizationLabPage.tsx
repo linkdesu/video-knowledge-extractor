@@ -502,7 +502,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
           </label>
           <label className="vn-lab-control vn-lab-threshold">
             <span className="vn-lab-threshold-head">
-              <span>语气词阈值</span>
+              <span>短回应阈值</span>
               <span className="vn-lab-threshold-value">{threshold.toFixed(1)}s</span>
             </span>
             <span className="vn-lab-threshold-track">
@@ -552,7 +552,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
           title={
             summary === null
               ? undefined
-              : "主播簇（段级）：主播锚点区间覆盖的不同簇数；A/B 人数为 assignSpeakers 后的最终说话簇数；过滤行：整行仅含语气词或标点且时长≤阈值，空文本行已在组装时剔除；差异行含说话人映射不同、簇合并与单侧过滤"
+              : "主播簇（段级）：主播锚点区间覆盖的不同簇数；A/B 人数为 assignSpeakers 后的最终说话簇数；过滤行：整行是语气词、回应语（明白了/听得到吗）或半截话（你就但是）且时长≤阈值，空文本行已在组装时剔除；差异行含说话人映射不同、簇合并与单侧过滤"
           }
         >
           {summary === null

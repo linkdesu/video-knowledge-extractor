@@ -2,8 +2,8 @@
  * Lab 的纯视图计算（r48）：A/B 行对齐、摘要、筛选、跳转解析。
  * 只被验收台页面使用，不进入正式管线；放在 shared 以便 bun test 直接覆盖。
  */
+import { isShortReplyLine, SHORT_REPLY_RULES } from "@video-notes/core/short-replies";
 import { isLabMark, type LabConfig, type LabLine, type LabMark, type LabMarks } from "./lab";
-import { isFillerLine } from "./lab-fillers";
 
 /** 标记键：行起点毫秒。跨方案重载后同一时间点仍对得上。 */
 export function labLineKey(line: { start: number }): string {
@@ -79,7 +79,7 @@ export function summarize(configA: LabConfig, configB: LabConfig, thresholdSecon
   let filteredLines = 0;
   let filteredSeconds = 0;
   for (const line of configB.lines) {
-    if (filterB && isFillerLine(line, thresholdSeconds)) {
+    if (filterB && isShortReplyLine(line, { ...SHORT_REPLY_RULES, maxSeconds: thresholdSeconds })) {
       filteredLines += 1;
       filteredSeconds += line.end - line.start;
     }
@@ -146,9 +146,9 @@ export function buildRows(
   const { aToB, bToA } = speakerMap(configA.lines, configB.lines);
   return alignLines(configB.lines, configA.lines).map((aligned) => {
     const { line } = aligned;
-    const filler = filterB && isFillerLine(line, thresholdSeconds);
+    const filler = filterB && isShortReplyLine(line, { ...SHORT_REPLY_RULES, maxSeconds: thresholdSeconds });
     // 同一时间点上 A 侧也被过滤时不算差异：两边都当它不存在。
-    const aFiller = configA.name === "refine_filter" && isFillerLine(line, thresholdSeconds);
+    const aFiller = configA.name === "refine_filter" && isShortReplyLine(line, { ...SHORT_REPLY_RULES, maxSeconds: thresholdSeconds });
     const mapped = aligned.aSpeakerId === null ? null : aToB.get(aligned.aSpeakerId) ?? aligned.aSpeakerId;
     const merged = aligned.aSpeakerId !== null && bToA.get(line.speakerId) !== aligned.aSpeakerId;
     const diff = mapped !== null && (mapped !== line.speakerId || merged);

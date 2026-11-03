@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { clipFileName, concatClips, cutClip, parseClipFileName, planClips, planTopicClip } from "./clips";
 import type { Segment } from "./types";
 
@@ -134,7 +133,7 @@ function streamTypes(path: string): string[] {
 
 describe("cutClip（真实 ffmpeg）", () => {
   test("纯音频源：输出只有 audio 轨，容器保持 mp4", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const dir = makeTmpDir("vnote-cut-");
     const src = join(dir, "src.m4a");
     execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=6", "-c:a", "aac", src], { stdio: "pipe" });
     const out = join(dir, "part.mp4");
@@ -143,7 +142,7 @@ describe("cutClip（真实 ffmpeg）", () => {
   });
 
   test("有视频轨源：输出含 video 与 audio 两轨（回归）", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const dir = makeTmpDir("vnote-cut-");
     const src = join(dir, "src.mp4");
     execFileSync(
       "ffmpeg",
@@ -156,7 +155,7 @@ describe("cutClip（真实 ffmpeg）", () => {
   });
 
   test("concatClips 纯音频：两 part 流拷贝拼接后只有 audio 轨", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-concat-"));
+    const dir = makeTmpDir("vnote-concat-");
     const src = join(dir, "src.m4a");
     execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=6", "-c:a", "aac", src], { stdio: "pipe" });
     const a = join(dir, "a.mp4");
@@ -169,7 +168,7 @@ describe("cutClip（真实 ffmpeg）", () => {
   });
 
   test("已存在的非空切片幂等短路", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-cut-"));
+    const dir = makeTmpDir("vnote-cut-");
     const out = join(dir, "part.mp4");
     execFileSync("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=d=2", "-c:a", "aac", out], { stdio: "pipe" });
     // 源缺失也不该报错：短路在读源之前

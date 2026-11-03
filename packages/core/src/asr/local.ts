@@ -2,7 +2,8 @@
  * 本地 ASR 引擎：现有 sherpa 实现整体搬入（ADR-0015 §5），行为、缓存键、进度、
  * timings 与原 `transcribeVideo` 一字不改，只多返回 `engine`/`modelId`。
  */
-import { assignSpeakers, buildSpans, splitSpan } from "./utterances";
+import { filterShortReplies } from "./short-replies";
+import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
 import { ASR_PADDING_SECONDS, DIARIZATION_TUNING, createTranscriber, readWav, resolveModelPaths } from "./sherpa";
 import type { DiarizationSegment, Transcriber } from "./sherpa";
 import { detectSilences, planChunks } from "../core/audio";
@@ -94,7 +95,9 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
         cacheHit,
       });
 
-      const spans = buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS));
+      const spans = resolveCrosstalk(
+        buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS)),
+      );
       const { speakers, utterances } = assignSpeakers(spans);
       timings.diarization = t(performance.now() - d0);
 
@@ -178,10 +181,10 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       }
       timings.asr = t(performance.now() - a0);
 
-      const transcript = {
-        speakers,
-        utterances: utterances.filter((u) => u.text !== ""),
-      };
+      // 短回应/半截话（#98）不单独成行：进了转写就会被当成一句独立发言去归属和总结。
+      const kept = filterShortReplies(utterances);
+      logger().info("asr", "短回应过滤", { dropped: utterances.length - kept.length, kept: kept.length });
+      const transcript = { speakers, utterances: kept };
       timings.total = t(performance.now() - t0);
       logger().info("asr", "本地 ASR 完成", {
         utterances: transcript.utterances.length,

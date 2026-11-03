@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { decideNormalization, normalizeArgs, normalizeMedia, parseFfmpegTime, targetFileName } from "./media-normalize";
 import type { MediaProbe } from "./media-normalize";
 
@@ -106,12 +106,6 @@ describe("parseFfmpegTime", () => {
 });
 
 describe("normalizeMedia（真 ffmpeg）", () => {
-  function mkdtemp(): string {
-    const dir = join(tmpdir(), "vnote-normalize-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-    mkdirSync(dir, { recursive: true });
-    return dir;
-  }
-
   function makeTs(dir: string): string {
     const file = join(dir, "src.ts");
     execFileSync(
@@ -144,7 +138,7 @@ describe("normalizeMedia（真 ffmpeg）", () => {
   }
 
   test("ts(h264+aac) → media.mp4 流拷贝，产物可被 ffprobe 读回", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-normalize-");
     const src = makeTs(dir);
     const percents: number[] = [];
     const decision = decideNormalization({ extension: ".ts", formatName: "mpegts", hasVideo: true, videoCodec: "h264", audioCodec: "aac" });
@@ -161,7 +155,7 @@ describe("normalizeMedia（真 ffmpeg）", () => {
   });
 
   test("flac 纯音频 → media.mp3（libmp3lame）", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-normalize-");
     const src = join(dir, "src.flac");
     execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "flac", src], { stdio: "pipe" });
     const decision = decideNormalization({ extension: ".flac", formatName: "flac", hasVideo: false, videoCodec: null, audioCodec: "flac" });
@@ -174,7 +168,7 @@ describe("normalizeMedia（真 ffmpeg）", () => {
   });
 
   test("wmv(wmv2+wmav2) → media.mp4 全转码（探测结果驱动决策）", async () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-normalize-");
     const src = join(dir, "src.wmv");
     execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=128x80:d=2", "-f", "lavfi", "-i", "sine=d=2", "-c:v", "wmv2", "-c:a", "wmav2", "-shortest", "-f", "asf", src], { stdio: "pipe" });
     const detected = probeFile(src, ".wmv");

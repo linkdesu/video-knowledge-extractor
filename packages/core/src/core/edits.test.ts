@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import {
   deleteTopicSegment,
   deleteUtterance,
@@ -19,12 +19,6 @@ import { emptyVideoData, readVideoData, writeVideoData } from "./video-data";
 import type { TopicRecord, VideoData } from "./video-data";
 import { renderTopicMarkdown } from "./render";
 import type { SpeakerId, TopicId, Video } from "./types";
-
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-edits-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 /** 写一个外部活 pid 的锁：编辑命令应据此拒绝（pid 1 恒存活且不是本进程，避免 pid 复用歧义）。 */
 function holdLock(dir: string): void {
@@ -56,7 +50,7 @@ function topic(overrides: Partial<TopicRecord> = {}): TopicRecord {
 }
 
 function makeFixture(speakers: { id: string; name: string; color: string }[] = [{ id: "sp1", name: "说话人1", color: "#f00" }]): { dir: string; data: VideoData } {
-  const dir = mkdtemp();
+  const dir = makeTmpDir("vnote-edits-");
   const video: Video = {
     id: "vid-0001" as never,
     title: "测试视频",
@@ -110,10 +104,6 @@ function makeFixture(speakers: { id: string; name: string; color: string }[] = [
   }
   writeVideoData(dir, data);
   return { dir, data };
-}
-
-function videoDir(): string {
-  return mkdtemp();
 }
 
 function legacyData(dir: string, topics: TopicRecord[]): VideoData {
@@ -176,7 +166,7 @@ describe("deleteTopicSegment", () => {
     expect(out.topics[0]!.segments).toEqual([{ start: 120, end: 130 }]);
     expect(existsSync(join(dir, "topic-a", "01-00-00-12-00-00-18.mp4"))).toBe(true);
     // 切片只覆盖被删段 → 丢弃；覆盖保留段 → 下标从 1 重映射为 0
-    const dir2 = videoDir();
+    const dir2 = makeTmpDir("vnote-edits-");
     const data = {
       ...emptyVideoData({ id: "vid-0001" as never, title: "t", sourcePath: "s", durationSeconds: 1, outputDir: dir2 }),
     };
@@ -198,7 +188,7 @@ describe("deleteTopicSegment", () => {
   });
 
   test("删段同步收窄 segmentOffsets（单文件 topic.mp4 切片）", () => {
-    const dir = videoDir();
+    const dir = makeTmpDir("vnote-edits-");
     const data = {
       ...emptyVideoData({ id: "vid-0001" as never, title: "t", sourcePath: "s", durationSeconds: 1, outputDir: dir }),
     };
@@ -218,7 +208,7 @@ describe("deleteTopicSegment", () => {
   });
 
   test("只剩一段时拒绝删除", () => {
-    const dir = videoDir();
+    const dir = makeTmpDir("vnote-edits-");
     const data = {
       ...emptyVideoData({ id: "vid-0001" as never, title: "t", sourcePath: "s", durationSeconds: 1, outputDir: dir }),
     };
@@ -229,7 +219,7 @@ describe("deleteTopicSegment", () => {
   });
 
   test("无字幕（迁移文档）拒绝删段", () => {
-    const dir = videoDir();
+    const dir = makeTmpDir("vnote-edits-");
     legacyData(dir, [topic({ segments: [{ start: 1, end: 2 }, { start: 3, end: 4 }] })]);
     expect(() => deleteTopicSegment(dir, "topic-1", 0)).toThrow("该视频需要重新转写后才能编辑结构");
   });
@@ -266,7 +256,7 @@ describe("mergeTopics", () => {
   });
 
   test("gap 恰好 0.5s 不合并，0.49s 合并", () => {
-    const dir = videoDir();
+    const dir = makeTmpDir("vnote-edits-");
     const data = {
       ...emptyVideoData({ id: "vid-0001" as never, title: "t", sourcePath: "s", durationSeconds: 1, outputDir: dir }),
     };
@@ -290,7 +280,7 @@ describe("mergeTopics", () => {
   });
 
   test("无字幕（迁移文档）拒绝合并", () => {
-    const dir = videoDir();
+    const dir = makeTmpDir("vnote-edits-");
     legacyData(dir, [
       topic({ id: "a" as TopicId }),
       topic({ id: "b" as TopicId, segments: [{ start: 1, end: 2 }] }),
@@ -393,7 +383,7 @@ describe("settleRunWhileLocked（锁内结算）", () => {
   });
 
   test("文档缺失不写", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-edits-");
     expect(settleRunWhileLocked(dir, "tok-abc", "m")).toBe(false);
   });
 });

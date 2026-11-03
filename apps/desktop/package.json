@@ -1,6 +1,6 @@
 {
   "name": "@video-notes/desktop",
-  "version": "0.1.33",
+  "version": "0.1.35",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -11,6 +11,7 @@
     "package:mac": "bun run build && bun scripts/package-mac.ts",
     "package:win": "bun run build && bun scripts/package-win.ts",
     "check:win-metadata": "bun scripts/check-win-metadata.ts",
+    "check:app-asar": "bun scripts/check-app-asar.ts",
     "fetch:ffmpeg": "bun scripts/fetch-ffmpeg.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "bun test --passWithNoTests",

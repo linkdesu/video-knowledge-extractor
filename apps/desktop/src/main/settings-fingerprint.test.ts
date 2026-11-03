@@ -1,14 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { assertLlmConfigPreserved, readLlmConfigFingerprint } from "./settings-fingerprint";
-
-function mkdtemp(): string {
-  const dir = join(tmpdir(), "vnote-fingerprint-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 function writeUserData(dir: string, settings: unknown, secrets: unknown): void {
   writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
@@ -17,19 +11,19 @@ function writeUserData(dir: string, settings: unknown, secrets: unknown): void {
 
 describe("readLlmConfigFingerprint", () => {
   test("settings.llm.baseUrl + secrets.llm 都在才算配齐", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-fingerprint-");
     writeUserData(dir, { version: 3, llm: { baseUrl: "https://x/v1", model: "m" } }, { version: 2, llm: "k" });
     expect(readLlmConfigFingerprint(dir)).toEqual({ configured: true, model: "m" });
   });
 
   test("只有 baseUrl、没有 key：不算配齐", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-fingerprint-");
     writeUserData(dir, { version: 3, llm: { baseUrl: "https://x/v1" } }, { version: 2 });
     expect(readLlmConfigFingerprint(dir)).toEqual({ configured: false, model: null });
   });
 
   test("文件缺失/坏 JSON/旧版密文：不算配齐，不抛错", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-fingerprint-");
     expect(readLlmConfigFingerprint(dir)).toEqual({ configured: false, model: null });
     writeFileSync(join(dir, "settings.json"), "{bad");
     writeFileSync(join(dir, "secrets.bin"), "\u0001legacy-bytes");
@@ -37,7 +31,7 @@ describe("readLlmConfigFingerprint", () => {
   });
 
   test("模型名回传但绝不回带 baseUrl/key", () => {
-    const dir = mkdtemp();
+    const dir = makeTmpDir("vnote-fingerprint-");
     writeUserData(dir, { version: 3, llm: { baseUrl: "https://secret.example/v1", model: "m" } }, { version: 2, llm: "k" });
     const out = readLlmConfigFingerprint(dir);
     expect(Object.keys(out).sort()).toEqual(["configured", "model"]);

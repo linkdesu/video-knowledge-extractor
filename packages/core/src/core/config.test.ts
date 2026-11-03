@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { asrEnv, cacheRoot, dataRoot, envValue, llmEnv, llmCredentialsFromEnv, modelDir, notesRoot } from "./config";
 
 beforeAll(() => {
@@ -94,7 +94,7 @@ describe("modelDir", () => {
   });
 
   test("<数据根>/models 缺失且旧目录存在时回落到旧目录", () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-config-modeldir-"));
+    const root = makeTmpDir("vnote-config-modeldir-");
     const home = join(root, "home");
     const legacy = join(home, ".cache", "video-notes", "models");
     mkdirSync(legacy, { recursive: true });
@@ -104,7 +104,7 @@ describe("modelDir", () => {
   });
 
   test("<数据根>/models 存在时优先于旧目录", () => {
-    const root = mkdtempSync(join(tmpdir(), "vnote-config-modeldir-"));
+    const root = makeTmpDir("vnote-config-modeldir-");
     const home = join(root, "home");
     const legacy = join(home, ".cache", "video-notes", "models");
     mkdirSync(legacy, { recursive: true });

@@ -4,8 +4,7 @@
  * createLocalEngine），最后对 buildDiagnostics 做一次聚合断言。
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as nextTurn, setTimeout as delay } from "node:timers/promises";
 import { run } from "../core/exec";
@@ -16,6 +15,7 @@ import { createMockEndpoint } from "../core/test-http";
 import { createLocalEngine } from "../asr/local";
 import { createLlmClient } from "../llm/openai";
 import type { Video } from "../core/types";
+import { makeSuiteTmpDir, makeTmpDir } from "../testing/temp-dirs";
 
 const NOW = new Date("2026-10-24T05:00:00.000Z");
 const now = () => NOW;
@@ -27,8 +27,8 @@ const TASK = "task-fail-1";
 // 401 用例记录 mock 的 baseUrl，供聚合断言复用
 let llmBaseUrl = "";
 const FIRST_MISSING = join("sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25", "model.int8.onnx");
-// configureLogging 没有 undefined 复位：每个测试把单例指向自己的新临时目录即可，
-const dir = mkdtempSync(join(tmpdir(), "vnote-faildiag-"));
+// configureLogging 没有 undefined 复位：整份文件共用一个日志目录，用例都往同一处写
+const dir = makeSuiteTmpDir("vnote-faildiag-");
 const lines: string[] = [];
 const lg = configureLogging({ dir, level: "info", now, sink: (l) => lines.push(l) });
 // worker 启动时对 endpoint key 做 addSecret（apps/desktop extract-worker）；这里同样登记，
@@ -157,7 +157,7 @@ describe("三种失败都能从诊断文本里看出来", () => {
 
   test("模型文件缺失：错误消息与日志行都点名缺失的模型路径", async () => {
     lines.length = 0;
-    const modelDir = mkdtempSync(join(tmpdir(), "vnote-nomodel-"));
+    const modelDir = makeTmpDir("vnote-nomodel-");
     const wavPath = join(dir, "silent-1s.wav");
     const wav = await attemptSpawn("生成静音 wav", () =>
       run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "pcm_s16le", wavPath], {
@@ -165,7 +165,7 @@ describe("三种失败都能从诊断文本里看出来", () => {
       }),
     );
     if (!wav.ok) throw wav.error;
-    const cacheDir = mkdtempSync(join(tmpdir(), "vnote-nocache-"));
+    const cacheDir = makeTmpDir("vnote-nocache-");
     const video: Video = {
       id: "v-fail" as Video["id"],
       title: "silent",

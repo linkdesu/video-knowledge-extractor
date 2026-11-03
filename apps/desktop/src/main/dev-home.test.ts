@@ -1,15 +1,21 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 
-const tmp: string[] = [];
-
 function fixture(name: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `vnote-devhome-${name}-`));
-  tmp.push(dir);
-  return dir;
+  return makeTmpDir(`vnote-devhome-${name}-`);
+}
+
+/**
+ * 「cwd 不在任何仓库内」的用例不能把夹具建在仓库 tmp 下——resolveDevHome 会一路向上
+ * 找到本仓库根。夹具放在仓库的父目录（单个 worktree 的父目录不是 git 仓库）。
+ */
+const outsideRepoBase = join(import.meta.dir, "..", "..", "..", "..", "..");
+
+function outsideRepoFixture(name: string): string {
+  return makeTmpDir(`vnote-devhome-${name}-`, outsideRepoBase);
 }
 
 function repoFixture(): string {
@@ -19,10 +25,6 @@ function repoFixture(): string {
   writeFileSync(join(root, "apps/desktop/package.json"), "{}");
   return root;
 }
-
-afterEach(() => {
-  for (const dir of tmp.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
 
 describe("resolveDevHome", () => {
   test("未打包且 cwd 是仓库根：返回 tmp/dev-home 三段", () => {
@@ -48,7 +50,7 @@ describe("resolveDevHome", () => {
   });
 
   test("找不到仓库根：返回 null", () => {
-    const bare = fixture("bare");
+    const bare = outsideRepoFixture("bare");
     expect(resolveDevHome({ isPackaged: false, cwd: bare, env: {} })).toBeNull();
   });
 
@@ -63,7 +65,7 @@ describe("resolveDevHome", () => {
   });
 
   test("只有 turbo.json 没有 apps/desktop/package.json：不是仓库根", () => {
-    const root = fixture("notrepo");
+    const root = outsideRepoFixture("notrepo");
     writeFileSync(join(root, "turbo.json"), "{}");
     mkdirSync(join(root, "apps", "desktop"), { recursive: true });
     expect(resolveDevHome({ isPackaged: false, cwd: root, env: {} })).toBeNull();
