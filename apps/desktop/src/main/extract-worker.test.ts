@@ -1,16 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeSuiteTmpDir } from "@video-notes/core/testing";
 import { parseAsr, parseStart } from "./extract-worker";
 
 // 临时 VNOTE_HOME / VNOTE_USER_DATA：本测试不写盘，但保持与其它 main 测试一致的隔离约定
-let envDir: string | undefined;
 let prevHome: string | undefined;
 let prevUserData: string | undefined;
 
 beforeAll(() => {
-  envDir = mkdtempSync(join(tmpdir(), "vnote-worker-"));
+  const envDir = makeSuiteTmpDir("vnote-worker-");
   prevHome = process.env.VNOTE_HOME;
   prevUserData = process.env.VNOTE_USER_DATA;
   process.env.VNOTE_HOME = join(envDir, "home");
@@ -18,7 +16,6 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  if (envDir !== undefined) rmSync(envDir, { recursive: true, force: true });
   if (prevHome === undefined) delete process.env.VNOTE_HOME;
   else process.env.VNOTE_HOME = prevHome;
   if (prevUserData === undefined) delete process.env.VNOTE_USER_DATA;

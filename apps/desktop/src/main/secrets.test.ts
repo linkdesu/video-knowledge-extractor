@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configureLogging, type LogEntry } from "@video-notes/core";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { createSecretStore, plainFileCodec, type SecretCodec } from "./secrets";
 
 /** 假 codec：base64「加密」，可注入解密失败，覆盖往返、坏密文、权限、clear，不依赖 Electron。 */
@@ -20,7 +20,7 @@ function fakeCodec(decryptError: string | null = null): SecretCodec {
 }
 
 function tempFile(): string {
-  return join(mkdtempSync(join(tmpdir(), "vnote-secrets-")), "secrets.bin");
+  return join(makeTmpDir("vnote-secrets-"), "secrets.bin");
 }
 
 /** 密钥库测试不读设置文件，但仍按 ADR-0016 §12 把进程环境指向临时目录并在结束时恢复。 */
@@ -31,7 +31,7 @@ let prevUserData: string | undefined;
 beforeEach(() => {
   prevHome = process.env.VNOTE_HOME;
   prevUserData = process.env.VNOTE_USER_DATA;
-  envDir = mkdtempSync(join(tmpdir(), "vnote-secrets-env-"));
+  envDir = makeTmpDir("vnote-secrets-env-");
   process.env.VNOTE_HOME = join(envDir, "home");
   process.env.VNOTE_USER_DATA = join(envDir, "user-data");
 });
@@ -41,7 +41,6 @@ afterEach(() => {
   else process.env.VNOTE_HOME = prevHome;
   if (prevUserData === undefined) delete process.env.VNOTE_USER_DATA;
   else process.env.VNOTE_USER_DATA = prevUserData;
-  rmSync(envDir, { recursive: true, force: true });
 });
 
 describe("createSecretStore", () => {

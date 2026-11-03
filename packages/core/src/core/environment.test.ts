@@ -1,12 +1,11 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { makeSuiteTmpDir } from "../testing/temp-dirs";
 import { findExecutable, checkPath, collectEnvironment, formatEnvironment } from "./environment";
 
-const tempDir = mkdtempSync(join(tmpdir(), "vnote-env-"));
+const tempDir = makeSuiteTmpDir("vnote-env-");
 const fakeEnv: NodeJS.ProcessEnv = { HOME: "/home/tester" };
-afterAll(() => rmSync(tempDir, { recursive: true, force: true }));
 
 describe("findExecutable", () => {
   test("PATH（本机分隔符）里找到真实文件返回绝对路径", () => {

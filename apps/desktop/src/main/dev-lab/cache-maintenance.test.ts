@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import {
   LAB_CACHE_LIMITS,
   evictLabCache,
@@ -12,10 +12,6 @@ import {
 } from "./cache-maintenance";
 
 const DAY = 24 * 60 * 60 * 1000;
-
-function tempRoot(): string {
-  return mkdtempSync(join(tmpdir(), "vn-lab-evict-"));
-}
 
 /**
  * 造一个条目：`<root>/<key>/sample.json` + 一个指定大小的 payload.bin。
@@ -84,7 +80,7 @@ describe("Lab 缓存上限配置", () => {
 
 describe("Lab 缓存淘汰计划", () => {
   test("超过条数上限时淘汰最旧的条目，保留最新的 N 条", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "bbb2", { createdAt: "2026-10-20T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "ccc3", { createdAt: "2026-10-25T00:00:00.000Z", bytes: 10 });
@@ -95,7 +91,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("超过字节上限时按最旧优先淘汰，直到总量回到上限内", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 400 });
     writeEntry(root, "bbb2", { createdAt: "2026-10-10T00:00:00.000Z", bytes: 400 });
     writeEntry(root, "ccc3", { createdAt: "2026-10-20T00:00:00.000Z", bytes: 400 });
@@ -108,7 +104,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("超过存活时间的条目先按时间淘汰，即使总量没超", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "old1", { createdAt: "2026-08-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
     const plan = planLabEviction(root, limits({ maxAgeMs: 30 * DAY }), NOW);
@@ -117,7 +113,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("protect 里的条目（刚发布的键）永不淘汰", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "keep", { createdAt: "2026-01-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "drop", { createdAt: "2026-02-01T00:00:00.000Z", bytes: 10 });
     const plan = planLabEviction(root, limits({ maxEntries: 1 }), NOW, ["keep"]);
@@ -125,7 +121,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("`.tmp`、非条目目录与 marks 文件都不参与淘汰", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10 });
     mkdirSync(join(root, ".tmp", "aaa1-xyz"), { recursive: true });
     writeFileSync(join(root, ".tmp", "aaa1-xyz", "payload.bin"), Buffer.alloc(4096));
@@ -139,7 +135,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("上限全为 0 时一个都不淘汰", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2020-01-01T00:00:00.000Z", bytes: 10 });
     const plan = planLabEviction(root, limits({}), NOW);
     expect(plan.evict).toEqual([]);
@@ -147,7 +143,7 @@ describe("Lab 缓存淘汰计划", () => {
   });
 
   test("没有 createdAt 的旧条目按目录 mtime 计算年龄", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     const dir = join(root, "legacy");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "payload.bin"), Buffer.alloc(4));
@@ -160,7 +156,7 @@ describe("Lab 缓存淘汰计划", () => {
 
 describe("Lab 缓存淘汰执行", () => {
   test("真的删掉被淘汰的目录与它的 marks，保留其余目录与 marks", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "bbb2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
     writeFileSync(join(root, "marks-aaa1.json"), JSON.stringify({ "1000": "B" }));
@@ -173,7 +169,7 @@ describe("Lab 缓存淘汰执行", () => {
   });
 
   test("淘汰后不留孤儿 marks：每个 marks-*.json 仍指向存在的条目", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "old1", { createdAt: "2026-08-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
     writeFileSync(join(root, "marks-old1.json"), JSON.stringify({ "1000": "both" }));
@@ -186,7 +182,7 @@ describe("Lab 缓存淘汰执行", () => {
   });
 
   test("没有任何需要淘汰的条目时不碰磁盘", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
     writeFileSync(join(root, "marks-aaa1.json"), "{}");
     const result = evictLabCache(root, limits({ maxEntries: 10 }), NOW);
@@ -199,7 +195,7 @@ describe("Lab 缓存淘汰执行", () => {
 
 describe("相同内容指纹只存一份", () => {
   test("删掉同 sourceHash 的旧键条目，保留刚发布的键", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "old1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     writeEntry(root, "other", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-b" });
@@ -209,7 +205,7 @@ describe("相同内容指纹只存一份", () => {
   });
 
   test("没有 analysis 戳的旧条目不动（无法判定内容指纹）", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "legacy", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10 });
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     expect(removeDuplicateSources(root, "hash-a", "new2")).toEqual([]);
@@ -217,7 +213,7 @@ describe("相同内容指纹只存一份", () => {
   });
 
   test("删掉的旧键条目的 marks 一起删，保留键与其它条目的 marks 不动", () => {
-    const root = tempRoot();
+    const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "old1", { createdAt: "2026-10-01T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-a" });
     writeEntry(root, "other", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10, sourceHash: "hash-b" });

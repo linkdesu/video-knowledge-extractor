@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { createMockEndpoint } from "../core/test-http";
 import type { ModelBundle } from "./catalog";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { downloadBundle, downloadModels, recoverModelDir, type DownloadLogLine, type FetchImpl } from "./download";
 import { verifyBundle } from "./verify";
 
 function tempRoot(): string {
-  const dir = mkdtempSync(join(tmpdir(), "vnote-models-dl-"));
+  const dir = makeTmpDir("vnote-models-dl-");
   mkdirSync(join(dir, "models"), { recursive: true });
   return dir;
 }

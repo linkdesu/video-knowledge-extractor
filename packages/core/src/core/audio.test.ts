@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { AUDIO_UNDECODABLE_ERROR, assertAudioDecodable, parseProbeJson, planChunks } from "./audio";
 import { makeDecodableTs, makeUndecodableAacTs, makeVideoOnlyMp4 } from "./test-media";
 import type { Silence } from "./audio";
@@ -219,12 +219,8 @@ describe("parseProbeJson", () => {
 });
 
 describe("assertAudioDecodable（容器可读、音轨不可解码的预检）", () => {
-  function fixtureDir(): string {
-    return mkdtempSync(join(tmpdir(), "vnote-preflight-"));
-  }
-
   test("坏 AAC 载荷的 mpegts：报可操作中文，临时 wav 不残留", async () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-preflight-");
     const videoPath = join(dir, "undecodable.ts");
     makeUndecodableAacTs(videoPath);
     const wavPath = join(dir, "preflight.wav");
@@ -235,7 +231,7 @@ describe("assertAudioDecodable（容器可读、音轨不可解码的预检）",
   });
 
   test("干净 mpegts 通过预检，临时 wav 被清理", async () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-preflight-");
     const videoPath = join(dir, "clean.ts");
     makeDecodableTs(videoPath);
     const wavPath = join(dir, "preflight.wav");
@@ -244,7 +240,7 @@ describe("assertAudioDecodable（容器可读、音轨不可解码的预检）",
   });
 
   test("ffmpeg 退出 0 但产出不足 0.25 秒：仍判为音轨无法解码", async () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-preflight-");
     const videoPath = join(dir, "too-short.ts");
     makeDecodableTs(videoPath, 0.1);
     const err = await assertAudioDecodable(videoPath, join(dir, "preflight.wav")).catch((e) => e);
@@ -252,7 +248,7 @@ describe("assertAudioDecodable（容器可读、音轨不可解码的预检）",
   });
 
   test("没有音频流的视频：原样上抛 ffmpeg 错误，不误报成音轨损坏", async () => {
-    const dir = fixtureDir();
+    const dir = makeTmpDir("vnote-preflight-");
     const videoPath = join(dir, "silent.mp4");
     makeVideoOnlyMp4(videoPath);
     const wavPath = join(dir, "preflight.wav");

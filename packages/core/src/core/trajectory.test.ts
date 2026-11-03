@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeTmpDir } from "../testing/temp-dirs";
 import { appendTrajectory, readTrajectory, TRAJECTORY_FILE } from "./trajectory";
 import type { TrajectoryEntry } from "./trajectory";
 
@@ -26,7 +26,7 @@ function entry(runId: string, n: number): TrajectoryEntry {
 
 describe("trajectory", () => {
   test("干净目录第一次 append：history 一条，latest 指向它", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-traj-"));
+    const dir = makeTmpDir("vnote-traj-");
     const e = entry("run-1", 1);
     const file = appendTrajectory(dir, { topicId: "t1", topicTitle: "主题A" }, e);
     expect(file.history.length).toBe(1);
@@ -38,7 +38,7 @@ describe("trajectory", () => {
   });
 
   test("第二、三次 append：history 增到 3，最新在最后，latest 指向它", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-traj-"));
+    const dir = makeTmpDir("vnote-traj-");
     const e1 = entry("run-1", 1);
     const e2 = entry("run-2", 2);
     const e3 = entry("run-3", 3);
@@ -57,7 +57,7 @@ describe("trajectory", () => {
   });
 
   test("已有文件损坏：不抛错，从空历史重新开始", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-traj-"));
+    const dir = makeTmpDir("vnote-traj-");
     writeFileSync(join(dir, TRAJECTORY_FILE), "{not-json");
     const e = entry("run-x", 1);
     const file = appendTrajectory(dir, { topicId: "t1", topicTitle: "主题A" }, e);
@@ -68,7 +68,7 @@ describe("trajectory", () => {
   });
 
   test("写盘内容不含 API 凭据字段名", () => {
-    const dir = mkdtempSync(join(tmpdir(), "vnote-traj-"));
+    const dir = makeTmpDir("vnote-traj-");
     const e = entry("run-1", 1);
     appendTrajectory(dir, { topicId: "t1", topicTitle: "主题A" }, e);
     const text = readFileSync(join(dir, TRAJECTORY_FILE), "utf8");

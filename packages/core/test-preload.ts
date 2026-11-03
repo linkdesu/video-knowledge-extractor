@@ -15,7 +15,13 @@
  * `VNOTE_TEST_DIAG=1` 额外把生产代码的 warn/error 打到 stderr（默认 logger 无 sink，
  * 失败时看不到「为什么这条用例被判成文件损坏」这类内部判定）。
  */
+import { join } from "node:path";
+import { installIsolatedTmpDir } from "./src/testing/temp-dirs-preload";
 import { configureLogging } from "./src/core/logger";
+
+// #101：本进程独占 <repo>/tmp/test-<pid> 作为 TMPDIR，整轮结束后删除。
+// 必须早于任何测试文件（含其模块顶层）调用 tmpdir()，preload 就是这个时机。
+installIsolatedTmpDir(join(import.meta.dir, "..", ".."));
 
 const SLOW_SYNC_MS = 250;
 const LAG_MS = 1000;

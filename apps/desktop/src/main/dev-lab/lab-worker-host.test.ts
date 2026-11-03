@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeSuiteTmpDir } from "@video-notes/core/testing";
 import {
   createLabWorkerHost,
   serveLabWorker,
@@ -10,11 +10,7 @@ import {
   type LabWorkerProcess,
 } from "./lab-worker-host";
 
-const fixtures = mkdtempSync(join(tmpdir(), "vn-lab-worker-"));
-
-afterAll(() => {
-  rmSync(fixtures, { recursive: true, force: true });
-});
+const fixtures = makeSuiteTmpDir("vn-lab-worker-");
 
 type Posted = { type?: string; step?: string };
 

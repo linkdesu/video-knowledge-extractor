@@ -1,0 +1,3 @@
+[test]
+# #101：测试进程独占 <repo>/tmp/test-<pid>，跑完删除，不污染系统 $TMPDIR。
+preload = ["./test-preload.ts"]
