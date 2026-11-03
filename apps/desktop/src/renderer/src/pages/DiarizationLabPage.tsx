@@ -382,6 +382,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
         event.preventDefault();
         moveDiff(-1);
       } else if (event.key === " ") {
+        // 焦点在按钮/标记选项上时，Space 属于控件自己（radio 的选中、按钮的激活）。
+        if (tag === "BUTTON") return;
         event.preventDefault();
         const audio = audioRef.current;
         if (audio === null) return;
@@ -662,7 +664,8 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                         tabIndex={0}
                         onClick={() => selectRow(row, true)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") selectRow(row, true);
+                          // 行内还有 ▶ 与标记 radiogroup：它们的 Enter/Space 不能被行吞掉。
+                          if (e.key === "Enter" && e.target === e.currentTarget) selectRow(row, true);
                         }}
                       >
                         <span className="vn-lab-time">{formatTime(row.line.start)}</span>
@@ -687,7 +690,7 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                           <span
                             className="vn-lab-marks"
                             role="radiogroup"
-                            aria-label="标记问题类型"
+                            aria-label="差异行标记"
                             onKeyDown={(e) => {
                               const direction = e.key === "ArrowRight" || e.key === "ArrowDown"
                                 ? 1

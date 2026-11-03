@@ -25,7 +25,7 @@
 - 试听：`J`/`K` 上一个/下一个差异并自动播放，空格播放/暂停，`1`/`2` 听同一行在 A/B 方案下的说话人样例；说话人面板 `▶样例` 依次播放该簇最长的三段。
 - 阈值滑块：0.6–1.5s，纯客户端重算，不触发 IPC、不重新聚类。
 - 标记（r74，界面 r75）：差异行分两组打标——「谁对」= `B 对` / `A 对` / `都错`（`lab-mark-B` / `lab-mark-A` / `lab-mark-both`），「问题类型」= `重叠归错人` / `误判重复` / `未忽略回应语`（`lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored`）。一行只有一个标记，值域见 `shared/lab.ts` 的 `LAB_MARK_LABEL`；写 `<cacheRoot>/marks-<样本>.json`（r54 起默认共享缓存根），重开仍在。旧文件（只有 `A`/`B`/`both`）不需要迁移，读路径不改写磁盘。
-  - r75 起整条标记区是一个 `role="radiogroup"`（`aria-label="标记问题类型"`），六个选项是 `role="radio"` + `aria-checked`，内部两个 `role="group"` 承载「谁对」/「问题类型」两个簇，中间是 1px 竖线。roving tabindex：无标记时 `lab-mark-B` 是唯一 Tab 停点，有标记时只有选中项进 Tab 顺序；聚焦组内任一选项后 `←/↑/→/↓` 循环移动并立即落盘。
+  - r75 起整条标记区是一个 `role="radiogroup"`（`aria-label="差异行标记"`），六个选项是 `role="radio"` + `aria-checked`，内部两个 `role="group"` 承载「谁对」/「问题类型」两个簇，中间是 1px 竖线。roving tabindex：无标记时 `lab-mark-B` 是唯一 Tab 停点，有标记时只有选中项进 Tab 顺序；聚焦组内任一选项后 `←/↑/→/↓` 循环移动并立即落盘。
   - 视觉：选项是独立类 `.vn-lab-mark`（26px 高、6px 圆角、12px 字号），不再复用 `.vn-btn`；选中态是 violet 底色 + 边框 + `#c4b5fd` 文本（不是 `.primary` 实心），`focus-visible` 有 2px violet 外环。组标签槽固定 48px 右对齐，所以每行两簇的左缘一致。差异行高 77px（r74 为 84px），字幕文本列 1280 视口下仍是 370px；视口 ≤900px 时「问题类型」簇整行折到第二行、竖线换成横线。
   - 验收断言：`document.querySelectorAll('[data-testid^="lab-mark-"]')` 仍是每差异行 6 个；`[aria-checked=true]` 每行最多 1 个；`0` 个标记时 `[role=radio][tabindex="0"]` 每行 1 个。
 - 输入区布局（r52）：`.vn-lab-bar-row` 是一个 4 列网格，拖放提示 `lab-dropzone` 独占首行，最近样本 / 方案 A / 方案 B / 阈值四列等宽（16px gap、底边对齐）；视口 ≤1053px 降成 2×2，≤760px 单列。Select 触发器 `box-sizing: border-box` + `min-width: 0`，长样本名用省略号截断，展开的下拉不越出卡片内容宽。
