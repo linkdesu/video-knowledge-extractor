@@ -34,8 +34,10 @@ export type ShortReplyRules = {
   greetingMaxSeconds: number;
   /** 整行寒暄/连线确认的字数闸门（归一化后）：超过就不是「只打了声招呼」。 */
   greetingMaxChars: number;
-  /** 寒暄、连线确认与听感反馈：整行只由它们（可夹语气词、可带 1–3 字称呼）组成即命中。 */
+  /** 寒暄词（你好/谢谢/早上好…）：整行只由它们与连线确认、语气词组成即命中；称呼只贴在它们前面。 */
   greetings: string[];
+  /** 连线确认与听感反馈（能听见吗/听不懂/你说…）：不接称呼——「我不知道你说」不能被吃成寒暄。 */
+  connectionChecks: string[];
 };
 
 // 单字语气词；末尾的「那」是纯口头转折（「哦，好，那。」整行没有内容），#115 补入。
@@ -45,12 +47,11 @@ const MULTI_FILLERS = [
   "好的", "好吧", "行吧", "对的", "是啊", "对吧", "是吧", "对对", "嗯嗯", "行行", "好好",
 ];
 
-/** 寒暄、连线确认与听感反馈：整行只由它们（可夹语气词、可带 1–3 字称呼）组成即隐藏（#115）。 */
-const GREETINGS = [
-  // 寒暄
-  "哈喽你好", "你好", "哈喽", "嗨", "HELLO", "HI", "早上好", "中午好", "晚上好", "大家好",
-  "谢谢", "多谢", "感谢", "辛苦了",
-  // 连线确认与听感反馈
+/** 寒暄词：整行只由它们（可带 1–3 字称呼、可夹语气词）组成即隐藏（#115）。 */
+const GREETINGS = ["哈喽你好", "你好", "哈喽", "嗨", "HELLO", "HI", "早上好", "中午好", "晚上好", "大家好", "谢谢", "多谢", "感谢", "辛苦了"];
+
+/** 连线确认与听感反馈：与寒暄同属「整行没有内容」，但不接称呼。 */
+const CONNECTION_CHECKS = [
   "能听见吗", "能听到吗", "听得见吗", "听得到吗", "听见吗", "听到吗",
   "能听见", "能听到", "听得见", "听得到", "听不懂", "听不见", "听不到",
   "在吗", "你在吗", "连上了吗", "连上吗", "可以你说", "你说吧", "你说",
@@ -72,6 +73,7 @@ export const SHORT_REPLY_RULES: ShortReplyRules = {
   greetingMaxSeconds: 5,
   greetingMaxChars: 20,
   greetings: [...GREETINGS].sort((a, b) => b.length - a.length),
+  connectionChecks: [...CONNECTION_CHECKS].sort((a, b) => b.length - a.length),
 };
 
 /** 最长优先的收尾助词：回应语后面可以跟这些语气。 */
@@ -126,15 +128,19 @@ function isDangling(norm: string): boolean {
 /** 称呼前缀的最大字数：「汽水」「飞哥」是 2 字，「路飞哥」是 3 字，再长就当成有内容的话。 */
 const ADDRESS_MAX_CHARS = 3;
 
+/** 整行最多容忍几个不成词的字：转写会把词截断（「以可以你说」的「以」、「能听见吗？可。」的「可」）。 */
+const MAX_STRAY_CHARS = 1;
+
 /**
  * 整行是否只由寒暄、连线确认与语气词组成（#115）：逐段贪心最长匹配，语气词可夹在任意位置，
- * 称呼只允许 1–3 个字紧贴在寒暄/连线确认词前面。整行必须被吃完，且至少含一个寒暄/连线确认词——
- * 纯语气词行仍走 `maxSeconds` 闸门，Lab 的阈值滑块才有意义。
+ * 称呼只允许 1–3 个字紧贴在寒暄词前面。整行必须被吃完（最多剩 1 个残字），
+ * 且至少含一个寒暄/连线确认词——纯语气词行仍走 `maxSeconds` 闸门，Lab 的阈值滑块才有意义。
  */
 function isGreeting(norm: string, rules: ShortReplyRules): boolean {
   if (norm === "") return false;
   let i = 0;
   let greetingHit = false;
+  let stray = 0;
   while (i < norm.length) {
     const filler = rules.fillers.find((t) => norm.startsWith(t, i));
     if (filler !== undefined) {
@@ -147,17 +153,26 @@ function isGreeting(norm: string, rules: ShortReplyRules): boolean {
       greetingHit = true;
       continue;
     }
-    let advanced = false;
+    const check = rules.connectionChecks.find((t) => norm.startsWith(t, i));
+    if (check !== undefined) {
+      i += check.length;
+      greetingHit = true;
+      continue;
+    }
+    let addressed = false;
     const maxAddress = Math.min(ADDRESS_MAX_CHARS, norm.length - i - 1);
     for (let length = maxAddress; length >= 1; length -= 1) {
       const hit = rules.greetings.find((t) => norm.startsWith(t, i + length));
       if (hit === undefined) continue;
       i += length + hit.length;
       greetingHit = true;
-      advanced = true;
+      addressed = true;
       break;
     }
-    if (!advanced) return false;
+    if (addressed) continue;
+    stray += 1;
+    if (stray > MAX_STRAY_CHARS) return false;
+    i += 1;
   }
   return greetingHit;
 }

@@ -95,12 +95,20 @@ describe("#115 整行寒暄与连线确认", () => {
     }
   });
 
+  test("转写截断的残尾（1 个字）仍算寒暄；剩 2 个字以上按有内容保留", () => {
+    // 正式转写里这条被截成「可」，Lab 样本里是「以可以你说」
+    expect(isShortReplyLine(line("路飞哥，你好，能听见吗？可。", 2.77))).toBe(true);
+    expect(isShortReplyLine(line("能听见吗？可以", 1.5))).toBe(false);
+    expect(isShortReplyLine(line("你好，我们", 1.2))).toBe(false);
+  });
+
   test("寒暄后面跟着内容就整行保留", () => {
     for (const text of [
       "你好，我想问一下你对农业的看法。",
       "谢谢你的建议。",
       "飞哥你好，我想问个问题。",
       "听不懂你在说什么。",
+      "我不知道你说。",
       "大家好，我是主播。",
     ]) {
       expect({ text, hidden: isShortReplyLine(line(text, 3)) }).toEqual({ text, hidden: false });
@@ -122,8 +130,8 @@ describe("#115 整行寒暄与连线确认", () => {
   test("规则仍集中在一处：寒暄与连线确认词表在 SHORT_REPLY_RULES 里", () => {
     expect(SHORT_REPLY_RULES.greetings).toContain("你好");
     expect(SHORT_REPLY_RULES.greetings).toContain("谢谢");
-    expect(SHORT_REPLY_RULES.greetings).toContain("能听见吗");
-    expect(SHORT_REPLY_RULES.greetings).toContain("你说");
+    expect(SHORT_REPLY_RULES.connectionChecks).toContain("能听见吗");
+    expect(SHORT_REPLY_RULES.connectionChecks).toContain("你说");
   });
 });
 
