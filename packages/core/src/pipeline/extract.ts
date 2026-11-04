@@ -19,6 +19,7 @@ import { createLlmClient, emptyUsage } from "../llm/openai";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { logger, runWithTask } from "../core/logger";
 import { correctionsFor } from "./notes-run";
+import { filterFillerUtterances } from "./filler-filter";
 import { detectHosts } from "./host-detect";
 import { segmentTopics } from "./segment-topics";
 
@@ -195,6 +196,25 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       for (const [k, v] of Object.entries(run.timings)) timings[k] = v;
       timings.transcribe = t();
 
+      // 短回应（#98）+ 语义空洞短句与寒暄（#109）：规则先行、剩下的短句整批交给模型，落盘前跑一次。
+      // 过滤后的字幕才是后续划主题、生成笔记、重渲染读到的版本；模型失败只保留该批、不打断导入。
+      const fillerStart = performance.now();
+      const filler = await filterFillerUtterances({
+        rows: run.transcript.utterances,
+        endpoint: input.endpoint,
+        client,
+        ...(input.prompts !== undefined ? { prompts: input.prompts } : {}),
+      });
+      timings["filler-filter"] = Math.round((performance.now() - fillerStart) / 10) / 100;
+      const filteredTranscript = { speakers: run.transcript.speakers, utterances: filler.rows };
+      logger().info("asr", "转写过滤", {
+        droppedByRules: filler.droppedByRules,
+        droppedByLlm: filler.droppedByLlm,
+        batches: filler.batches.length,
+        kept: filler.rows.length,
+        dropped: run.transcript.utterances.length - filler.rows.length,
+      });
+
       // 落 video.json：原始转写（纠错在生成/渲染时应用）+ chunks + asrModel/resolution/asrEngine（token 已在取锁后落盘）
       if (data.importedAt === null) data.importedAt = new Date().toISOString();
       data.asrModel = run.modelId;
@@ -202,14 +222,14 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
       data.sourceBytes = sourceBytes;
       data.chunks = run.chunks;
-      data.transcript = run.transcript;
+      data.transcript = filteredTranscript;
       data.topics = [];
       writeVideoData(video.outputDir, data);
 
       const corrections: CorrectionList = correctionsFor(video.outputDir, "extract");
-      const corrected = applyCorrections(corrections, run.transcript.utterances);
-      logger().info("app", "字幕纠错应用", { stage: "extract", utterances: corrected.length, changed: countCorrectionsHits(corrections, run.transcript.utterances) });
-      const transcript = { speakers: run.transcript.speakers, utterances: corrected };
+      const corrected = applyCorrections(corrections, filteredTranscript.utterances);
+      logger().info("app", "字幕纠错应用", { stage: "extract", utterances: corrected.length, changed: countCorrectionsHits(corrections, filteredTranscript.utterances) });
+      const transcript = { speakers: filteredTranscript.speakers, utterances: corrected };
 
       // 主播识别（r46）：只看说话人统计与示例发言，不依赖主题；失败或答非所问只记 warn，不影响导入
       const hostStarted = performance.now();

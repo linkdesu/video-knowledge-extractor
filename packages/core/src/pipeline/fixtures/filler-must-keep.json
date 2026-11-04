@@ -1,0 +1,138 @@
+{
+  "source": "r76b QA 报告 §2.4（/Volumes/Data/code/video-notes/tmp/report/r76b-verify.md），两段真实录音、真实 LLM 稳定误删的 16 条",
+  "note": "任何一条被空洞短句过滤丢掉都是回归。长录音 rows 来自 .ts（343 行），6 分钟录音来自 r46-luffy-interview-6min.m4a（67 行）；start/end 为秒。",
+  "recordings": {
+    "long": "自己造船的路飞（装逼中）_...2026-01-27_205719.ts",
+    "m4a": "r46-luffy-interview-6min.m4a"
+  },
+  "rows": [
+    {
+      "recording": "long",
+      "start": 930.57,
+      "end": 933.14,
+      "speaker": "speaker-2",
+      "text": "OK好的好的，很本质。",
+      "why": "含评价「很本质」，不是纯寒暄"
+    },
+    {
+      "recording": "long",
+      "start": 937.71,
+      "end": 940.98,
+      "speaker": "speaker-5",
+      "text": "好的好的，那我读完先先去读了再说。",
+      "why": "#104 已修点；说明接下来要做什么"
+    },
+    {
+      "recording": "long",
+      "start": 941.01,
+      "end": 944.06,
+      "speaker": "speaker-3",
+      "text": "好，然后再谢谢谢谢喜欢愿意读书的人。",
+      "why": "对观众的真实表态"
+    },
+    {
+      "recording": "long",
+      "start": 130.53,
+      "end": 130.99,
+      "speaker": "speaker-2",
+      "text": "听懂了吗？",
+      "why": "r70c 点名应保留的现场确认提问"
+    },
+    {
+      "recording": "long",
+      "start": 195.81,
+      "end": 196.79,
+      "speaker": "speaker-8",
+      "text": "太吵了。",
+      "why": "r70c 点名应保留；环境问题反馈"
+    },
+    {
+      "recording": "long",
+      "start": 207.46,
+      "end": 208.14,
+      "speaker": "speaker-1",
+      "text": "更吵了。",
+      "why": "环境反馈的递进"
+    },
+    {
+      "recording": "long",
+      "start": 205.86,
+      "end": 207.04,
+      "speaker": "speaker-1",
+      "text": "现好了吗？",
+      "why": "r70c 的「好了吗？」同型，状态确认"
+    },
+    {
+      "recording": "long",
+      "start": 106.01,
+      "end": 107.82,
+      "speaker": "speaker-2",
+      "text": "听不清是吧，我再给你们说一下。",
+      "why": "「我再重说一遍」是承诺"
+    },
+    {
+      "recording": "long",
+      "start": 1442.27,
+      "end": 1443.27,
+      "speaker": "speaker-2",
+      "text": "你那里声音没有了。",
+      "why": "故障描述，不是寒暄"
+    },
+    {
+      "recording": "long",
+      "start": 1446.1,
+      "end": 1447.18,
+      "speaker": "speaker-2",
+      "text": "你那里没声音呢？",
+      "why": "故障描述，不是寒暄"
+    },
+    {
+      "recording": "m4a",
+      "start": 245.87,
+      "end": 249.36,
+      "speaker": "speaker-2",
+      "text": "一些你的欧洲，你在西班牙，我有很喜欢东，但是很贵，我觉得。",
+      "why": "真实内容（欧洲/西班牙/价格贵），曾被判「识别乱码」"
+    },
+    {
+      "recording": "m4a",
+      "start": 250.08,
+      "end": 254.38,
+      "speaker": "speaker-2",
+      "text": "呃，那没关系，那无所谓嗯，小赛的埃塞俄比亚火腿。",
+      "why": "真实内容（埃塞俄比亚火腿），曾被判「识别乱码」"
+    },
+    {
+      "recording": "m4a",
+      "start": 255.21,
+      "end": 259.28,
+      "speaker": "speaker-2",
+      "text": "呃，那OK我记一下我三十六个月的帕玛生姿势。",
+      "why": "真实内容（36 个月帕尔马火腿），曾被判「识别乱码」"
+    },
+    {
+      "recording": "m4a",
+      "start": 265.96,
+      "end": 268.31,
+      "speaker": "speaker-1",
+      "text": "沟的火腿是吧？不不不小，何赛五沟，我不吃。",
+      "why": "真实内容（不吃这种火腿），曾被判「识别乱码」"
+    },
+    {
+      "recording": "m4a",
+      "start": 197.45,
+      "end": 203.17,
+      "speaker": "speaker-1",
+      "text": "我吵吗？你那边非，那我那我把蓝牙关了，等了我一半半分钟。",
+      "why": "真实动作说明（关蓝牙）"
+    },
+    {
+      "recording": "m4a",
+      "start": 158.79,
+      "end": 160.11,
+      "speaker": "speaker-2",
+      "text": "是他们卖的问题啊。",
+      "why": "判断句"
+    }
+  ]
+}

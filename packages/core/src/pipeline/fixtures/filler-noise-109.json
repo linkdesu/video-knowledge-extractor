@@ -1,0 +1,9 @@
+{
+  "source": "#109 点名的空洞短句，取长录音 .ts 里对应的真实转写行（r76b 证据 raw-transcript.json）",
+  "note": "这些行在收紧候选闸门、改提示词之后仍然必须被模型丢弃；「OK，OK OK。」由规则删除，不进请求。",
+  "rows": [
+    { "start": 33.29, "end": 34.69, "speaker": "speaker-9", "text": "HELL喽你好。" },
+    { "start": 640.72, "end": 641.7, "speaker": "speaker-11", "text": "嗯，喂，你好。" },
+    { "start": 642.7, "end": 645.16, "speaker": "speaker-5", "text": "啊，你好，你好，能听见吗？" }
+  ]
+}

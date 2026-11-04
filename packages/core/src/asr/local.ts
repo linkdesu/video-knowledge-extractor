@@ -2,7 +2,6 @@
  * 本地 ASR 引擎：现有 sherpa 实现整体搬入（ADR-0015 §5），行为、缓存键、进度、
  * timings 与原 `transcribeVideo` 一字不改，只多返回 `engine`/`modelId`。
  */
-import { filterShortReplies } from "./short-replies";
 import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
 import { ASR_PADDING_SECONDS, DIARIZATION_TUNING, createTranscriber, readWav, resolveModelPaths } from "./sherpa";
 import type { DiarizationSegment, Transcriber } from "./sherpa";
@@ -181,10 +180,9 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       }
       timings.asr = t(performance.now() - a0);
 
-      // 短回应/半截话（#98）不单独成行：进了转写就会被当成一句独立发言去归属和总结。
-      const kept = filterShortReplies(utterances);
-      logger().info("asr", "短回应过滤", { dropped: utterances.length - kept.length, kept: kept.length });
-      const transcript = { speakers, utterances: kept };
+      // 短回应/半截话（#98）与语义空洞短句（#109）的过滤集中在 pipeline 的 filterFillerUtterances：
+      // 在落盘前统一跑一次，远程 ASR 与模型判定才都覆盖到，不再在这里先过滤一遍。
+      const transcript = { speakers, utterances };
       timings.total = t(performance.now() - t0);
       logger().info("asr", "本地 ASR 完成", {
         utterances: transcript.utterances.length,

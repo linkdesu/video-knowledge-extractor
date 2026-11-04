@@ -173,6 +173,68 @@ describe("runExtract 的音轨可解码预检", () => {
     expect(existsSync(join(r.video.outputDir, "video.json"))).toBe(true);
   });
 
+  test("空洞短句在落盘前被模型批量剔掉：video.json 里的字幕已经过滤，有内容的一行保留", async () => {
+    const dir = makeTmpDir("vnote-extract-");
+    const videoPath = join(dir, "clean.ts");
+    makeDecodableTs(videoPath);
+    const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "stub-model",
+      run: async () => ({
+        transcript: {
+          speakers: [speaker],
+          utterances: [
+            { start: 0, end: 0.8, speakerId: speaker.id, text: "哈LL喽你好。" },
+            { start: 1, end: 3.4, speakerId: speaker.id, text: "好的话。" },
+            { start: 4, end: 30, speakerId: speaker.id, text: "这里是一整段讲解，说明怎么把素材整理成笔记并补上时间戳和术语。" },
+          ],
+        },
+        chunks: [{ index: 1, start: 0, end: 30 }],
+        timings: {},
+        cacheHits: [],
+        engine: "local",
+        modelId: "stub-model",
+      }),
+    };
+    const fillerRequests: string[] = [];
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages, opts) => {
+        const system = messages.find((m) => m.role === "system")?.content ?? "";
+        if (system.includes("视频字幕清洗器")) {
+          fillerRequests.push(system);
+          return JSON.stringify({ drop: [1] });
+        }
+        if (!opts?.json) throw new Error("需要 json");
+        return JSON.stringify({
+          topics: [{ title: "foo", summary: "s", segments: [{ start: 0, end: 30 }] }],
+          keyPoints: ["要点"],
+        });
+      },
+    };
+    const r = await runExtract({
+      videoPath,
+      notesRoot: join(dir, "notes"),
+      endpoint,
+      cacheRoot: join(dir, ".cache"),
+      client,
+      asrEngine: engine,
+      runToken: "tok-filler",
+    });
+    // 规则放过「哈LL喽你好。」，模型这一批只有两条候选（长句不进请求），一次请求就判完
+    expect(fillerRequests).toHaveLength(1);
+    expect(fillerRequests[0]).toContain("1. 哈LL喽你好。");
+    expect(fillerRequests[0]).not.toContain("这里是一整段讲解");
+    const saved = JSON.parse(readFileSync(join(r.video.outputDir, "video.json"), "utf8")) as {
+      transcript: { utterances: { text: string }[] };
+    };
+    expect(saved.transcript.utterances.map((u) => u.text)).toEqual([
+      "好的话。",
+      "这里是一整段讲解，说明怎么把素材整理成笔记并补上时间戳和术语。",
+    ]);
+  });
+
   test("音轨预检的临时 wav 每次唯一：同一 runToken 的并发导入不会互删产物", async () => {
     // r59：旧路径只带 taskId，同一 token 的两次运行写同一个 wav 并在 finally 里互删，
     // 另一侧因此被判「音轨无法解码」。两个不同目录 + 同一 token 的并发导入必须先红后绿。
