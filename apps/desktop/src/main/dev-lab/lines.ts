@@ -2,7 +2,7 @@
  * 把一组标签组装成 Lab 字幕行（r48）：复用 core 的 buildSpans → splitSpan → resolveCrosstalk →
  * assignSpeakers，文本由段级解码结果按时间归属；不复制也不修改正式管线。
  */
-import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "@video-notes/core";
+import { assignSpeakers, buildSpans, dedupeOverlappingLines, resolveCrosstalk, splitSpan } from "@video-notes/core";
 import type { DiarizationSegment } from "@video-notes/core";
 import type { LabConfigName, LabLine, LabSpeaker } from "../../shared/lab";
 
@@ -63,14 +63,17 @@ export function assembleLines(input: {
   });
   // 空文本行直接丢弃（正式管线同样丢弃）：ASR 没解出字的片段若留着，Lab 会多出一条空白行，
   // 摘要的「过滤 N 行」还会把它算成语气词。丢弃后再统计说话人，秒数/行数/样例起点与可见行一致。
-  const lines: LabLine[] = assigned.utterances
-    .map((u, i) => ({
-      start: u.start,
-      end: u.end,
-      speakerId: u.speakerId,
-      text: (textBySpan.get(i) ?? []).join(""),
-    }))
-    .filter((line) => line.text.trim() !== "");
+  // 最后一步去掉重叠回声造成的重复行（#97）：与正式管线共用 core 的同一条规则。
+  const lines: LabLine[] = dedupeOverlappingLines(
+    assigned.utterances
+      .map((u, i) => ({
+        start: u.start,
+        end: u.end,
+        speakerId: u.speakerId,
+        text: (textBySpan.get(i) ?? []).join(""),
+      }))
+      .filter((line) => line.text.trim() !== ""),
+  );
   const totals = new Map<string, { seconds: number; lines: number; starts: { start: number; seconds: number }[] }>();
   for (const line of lines) {
     const entry = totals.get(line.speakerId) ?? { seconds: 0, lines: 0, starts: [] };
