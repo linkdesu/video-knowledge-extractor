@@ -7,7 +7,7 @@
  */
 import { sha256 } from "./cache";
 
-export type PromptId = "segment-chunk" | "segment-merge" | "note-key-points" | "host-detect";
+export type PromptId = "segment-chunk" | "segment-merge" | "note-key-points" | "host-detect" | "filler-filter";
 
 export type PromptVariable = { name: string; description: string };
 
@@ -90,6 +90,34 @@ hosts 里的 id 必须来自给定的说话人列表，原样复制，不要编�
 {{SPEAKERS}}
 {{LANGUAGE_HINT}}`;
 
+/**
+ * 语义空洞短句过滤（r76 / #109）的默认提示词：一次看一整批带编号的短句，只回要丢弃的编号。
+ * 「拿不准就保留」是硬要求——误删有内容的句子比留下一句寒暄糟得多。
+ * r76c：不再把「识别乱码/转写质量差」当丢弃类别（r76b QA 用它一次删掉 6 分钟录音里 20 秒的火腿对话），
+ * 并把现场确认、状态反馈这类「很短但有事」的句子写成显式保留项。
+ */
+const FILLER_FILTER_TEMPLATE = `你是视频字幕清洗器。下面是从视频转写里挑出来的短句，每行一个编号。
+只挑出「删掉不丢任何信息」的句子，用于从字幕里删掉。
+
+可以丢弃的只有下面三类，而且整句只能是这类词本身（可以重复、带语气词和标点，不能有别的内容）：
+- 纯问候与接通寒暄：哈喽、你好、喂、喂喂、能听见吗、听得到吗、在吗——整句只有问候和接通确认。
+- 纯语气词或重复的空口头应答：嗯、啊、哦、对对、好的好的、明白明白、OK OK。
+- 半截口头语：你就但是、然后、这个那个。
+
+下面这些一律保留，即使很短、即使有错字：
+- 带事实、数字、时间、人物、地点、物品、价格的句子。
+- 提问、请求、指令、建议、观点、评价、承诺（只是确认线路接通的除外）。
+- 现场状态与连线反馈：听不清、太吵了、更吵了、你那里声音没有了、没声音、卡了、我关蓝牙、我再给你们说一下、听懂了吗、好了吗、现好了吗。
+- 转写质量差、有错字或串词，但能看出在说具体的事：这是识别的问题，不是空话，照样保留。
+- 拿不准的一律保留。
+
+转写有没有错不是删除理由：只有整句完全属于上面三类才可以丢弃。
+只输出 JSON，不要解释，不要用代码块包裹：{"drop":[number]}
+drop 里只放要丢弃的句子编号，编号必须来自下面的列表；没列出的句子一律保留，没有要舍弃的就输出 {"drop":[]}。
+drop 的元素也可以写成 {"index":number,"reason":string}，reason 用不超过 10 个字说明理由。
+句子列表：
+{{SENTENCES}}`;
+
 /** 顺序即界面上展示的顺序。 */
 export const PROMPT_SPECS: readonly PromptSpec[] = [
   {
@@ -137,6 +165,17 @@ export const PROMPT_SPECS: readonly PromptSpec[] = [
     ],
     defaultTemplate: HOST_DETECT_TEMPLATE,
     outputContract: { marker: '{"hosts"', hint: '输出格式：{"hosts":[string]}' },
+  },
+  {
+    id: "filler-filter",
+    title: "空洞短句过滤",
+    description:
+      "把规则过滤剩下的短句按批交给模型，只回要丢弃的编号；保存时必须保留输出格式 {\"drop\":[…]}。",
+    variables: [
+      { name: "SENTENCES", description: "一批带编号的短句，每行「序号. 文本」；编号从 1 开始、批内连续。" },
+    ],
+    defaultTemplate: FILLER_FILTER_TEMPLATE,
+    outputContract: { marker: '{"drop"', hint: '输出格式：{"drop":[number]}' },
   },
 ];
 
