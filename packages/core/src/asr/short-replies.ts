@@ -38,6 +38,7 @@ export type ShortReplyRules = {
   greetings: string[];
 };
 
+// 单字语气词；末尾的「那」是纯口头转折（「哦，好，那。」整行没有内容），#115 补入。
 const SINGLE_FILLERS = "嗯恩呃额啊呀哦噢喔唉哎诶欸哈呵嘿嗨喂对好是行中嗷那";
 const MULTI_FILLERS = [
   "OKAY", "OKOK", "OK", "哈哈", "呵呵", "嘿嘿", "嘻嘻", "呜呜",
