@@ -235,6 +235,60 @@ describe("runExtract 的音轨可解码预检", () => {
     ]);
   });
 
+  test("重叠段的重复字幕在落盘前去掉：只留长句，文字不同的重叠行两行都留", async () => {
+    const dir = makeTmpDir("vnote-extract-");
+    const videoPath = join(dir, "clean.ts");
+    makeDecodableTs(videoPath);
+    const speaker = { id: "sp1" as SpeakerId, name: "说话人1", color: "#6aa9ff" };
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "stub-model",
+      run: async () => ({
+        transcript: {
+          speakers: [speaker],
+          utterances: [
+            { start: 0, end: 30, speakerId: speaker.id, text: "今天我们聊聊怎么整理素材。" },
+            // 回声重复：与长句整段重叠，文字是长句的一部分
+            { start: 20, end: 22, speakerId: speaker.id, text: "怎么整理素材。" },
+            // 真重叠：时间重叠，但说的是另一句话
+            { start: 28, end: 29.5, speakerId: speaker.id, text: "我不同意这个说法。" },
+          ],
+        },
+        chunks: [{ index: 1, start: 0, end: 30 }],
+        timings: {},
+        cacheHits: [],
+        engine: "local",
+        modelId: "stub-model",
+      }),
+    };
+    const client: LlmClient = {
+      model: endpoint.model,
+      chat: async (messages, opts) => {
+        const system = messages.find((m) => m.role === "system")?.content ?? "";
+        // 规则过滤后的短句不进模型判定，保住它们只是为了确认去重没有误删
+        if (system.includes("视频字幕清洗器")) return JSON.stringify({ drop: [] });
+        if (!opts?.json) throw new Error("需要 json");
+        return JSON.stringify({
+          topics: [{ title: "foo", summary: "s", segments: [{ start: 0, end: 30 }] }],
+          keyPoints: ["要点"],
+        });
+      },
+    };
+    const r = await runExtract({
+      videoPath,
+      notesRoot: join(dir, "notes"),
+      endpoint,
+      cacheRoot: join(dir, ".cache"),
+      client,
+      asrEngine: engine,
+      runToken: "tok-overlap-dedup",
+    });
+    const saved = JSON.parse(readFileSync(join(r.video.outputDir, "video.json"), "utf8")) as {
+      transcript: { utterances: { text: string }[] };
+    };
+    expect(saved.transcript.utterances.map((u) => u.text)).toEqual(["今天我们聊聊怎么整理素材。", "我不同意这个说法。"]);
+  });
+
   test("音轨预检的临时 wav 每次唯一：同一 runToken 的并发导入不会互删产物", async () => {
     // r59：旧路径只带 taskId，同一 token 的两次运行写同一个 wav 并在 finally 里互删，
     // 另一侧因此被判「音轨无法解码」。两个不同目录 + 同一 token 的并发导入必须先红后绿。
