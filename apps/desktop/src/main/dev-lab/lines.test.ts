@@ -42,7 +42,7 @@ describe("assembleLines 文本归属", () => {
 });
 
 describe("assembleLines 抢话归属", () => {
-  test("短插话并入持话轮的一方：不单独成行，文本也不复制进那一行", () => {
+  test("短插话不并进长句、文本不复制：插话单独成行，长句边界不变（#114）", () => {
     const { lines } = assembleLines({
       labels: [0, 1],
       segments: [seg(10, 14, 0), seg(11, 11.3, 1)],
@@ -52,10 +52,29 @@ describe("assembleLines 抢话归属", () => {
       ],
       silences: [],
     });
-    expect(lines.length).toBe(1);
-    expect(lines[0]?.text).toBe("主播讲完了一整句");
-    expect(lines[0]?.start).toBe(10);
-    expect(lines[0]?.end).toBe(14);
+    expect(lines.map((l) => [l.start, l.end, l.text])).toEqual([
+      [10, 14, "主播讲完了一整句"],
+      [11, 11.3, "嗯"],
+    ]);
+  });
+
+  test("有内容的短插话同样单独成行，归属与说话人判断都不受影响（#114）", () => {
+    const { lines, speakers } = assembleLines({
+      labels: [0, 1],
+      segments: [seg(10, 14, 0), seg(11, 11.3, 1)],
+      texts: [
+        { start: 10, end: 14, text: "主播讲完了一整句" },
+        { start: 11, end: 11.3, text: "放大" },
+      ],
+      silences: [],
+    });
+    expect(lines.map((l) => [l.start, l.end, l.text])).toEqual([
+      [10, 14, "主播讲完了一整句"],
+      [11, 11.3, "放大"],
+    ]);
+    // 0.3s 的插话说话人不成说话人：插话行归持话轮的一方。
+    expect(speakers.length).toBe(1);
+    expect(lines[1]?.speakerId).toBe(lines[0]?.speakerId);
   });
 });
 

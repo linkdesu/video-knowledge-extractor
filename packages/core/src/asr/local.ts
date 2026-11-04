@@ -2,7 +2,7 @@
  * 本地 ASR 引擎：现有 sherpa 实现整体搬入（ADR-0015 §5），行为、缓存键、进度、
  * timings 与原 `transcribeVideo` 一字不改，只多返回 `engine`/`modelId`。
  */
-import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
+import { assignSpeakers, buildSpans, splitCrosstalk, splitSpan } from "./utterances";
 import { ASR_PADDING_SECONDS, DIARIZATION_TUNING, createTranscriber, readWav, resolveModelPaths } from "./sherpa";
 import type { DiarizationSegment, Transcriber } from "./sherpa";
 import { detectSilences, planChunks } from "../core/audio";
@@ -94,10 +94,12 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
         cacheHit,
       });
 
-      const spans = resolveCrosstalk(
+      const { spans, interjections } = splitCrosstalk(
         buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS)),
       );
-      const { speakers, utterances } = assignSpeakers(spans);
+      // 插话（#114）单独成行但不参与说话人投票：有内容的靠 filterFillerUtterances 之前的解码留成一行，
+      // 纯语气词的由同一条过滤隐藏。
+      const { speakers, utterances } = assignSpeakers(spans, { interjections });
       timings.diarization = t(performance.now() - d0);
 
       let done = 0;
@@ -187,6 +189,7 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       logger().info("asr", "本地 ASR 完成", {
         utterances: transcript.utterances.length,
         speakers: speakers.length,
+        interjections: interjections.length,
         cacheHit: cacheHits.length > 0,
         timings,
       });
