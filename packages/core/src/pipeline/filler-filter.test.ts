@@ -124,7 +124,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     expect(result.droppedByLlm).toBe(0);
     expect(result.batches[0]?.error).toContain("端点 500");
     expect(lines.join("\n")).toContain("填充语过滤跳过本批");
-    expect(lines.join("\n")).toContain("sk-secret-test".length > 0 ? "batchSize=2" : "");
+    expect(lines.join("\n")).toContain("batchSize=2");
     expect(lines.join("\n")).not.toContain("sk-secret-test");
   });
 
