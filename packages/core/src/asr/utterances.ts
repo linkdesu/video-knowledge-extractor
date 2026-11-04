@@ -49,30 +49,76 @@ export function splitSpan(span: UtteranceSpan, silences: { start: number; end: n
 }
 
 /**
- * 抢话归属（r70 / #99）：一段被另一位说话人的话轮整个包住、且自身短到只够一声附和，
- * 就把它并入持话轮的一方（主播），不再单独成行。
- * 边界容差 0.05s：diarization 的段边界会抖，差几十毫秒不该漏判。
+ * 抢话归属（r70 / #99，r80 / #114）：一段被另一位说话人的话轮整个包住、且自身短到只够一声附和，
+ * 就是「插话」。边界容差 0.05s：diarization 的段边界会抖，差几十毫秒不该漏判。
  * 只处理「完全包含」：部分重叠分不清谁插谁的话，两段都留。
+ *
+ * 插话分两步用：`splitCrosstalk` 把它们从说话人投票里摘出来（不参与 assignSpeakers 的时长统计与编号），
+ * 再由 assignSpeakers 单独排成一行——有内容的插话落盘成行，纯语气词的插话由 `filterFillerUtterances` 隐藏。
  */
-export function resolveCrosstalk(spans: UtteranceSpan[], opts?: { maxInterjectionSeconds?: number }): UtteranceSpan[] {
-  const maxInterjectionSeconds = opts?.maxInterjectionSeconds ?? 1;
-  const tolerance = 0.05;
-  const sorted = [...spans].sort((a, b) => a.start - b.start);
-  return sorted.filter((span) => {
-    if (span.end - span.start >= maxInterjectionSeconds) return true;
-    return !sorted.some(
-      (other) =>
-        other.speaker !== span.speaker &&
-        other.start <= span.start + tolerance &&
-        other.end >= span.end - tolerance &&
-        other.end - other.start > span.end - span.start,
-    );
-  });
+export const CROSSTALK_TOLERANCE_SECONDS = 0.05;
+export const MAX_INTERJECTION_SECONDS = 1;
+
+function isEnclosedInterjection(
+  span: UtteranceSpan,
+  sorted: readonly UtteranceSpan[],
+  maxInterjectionSeconds: number,
+): boolean {
+  if (span.end - span.start >= maxInterjectionSeconds) return false;
+  return sorted.some(
+    (other) =>
+      other.speaker !== span.speaker &&
+      other.start <= span.start + CROSSTALK_TOLERANCE_SECONDS &&
+      other.end >= span.end - CROSSTALK_TOLERANCE_SECONDS &&
+      other.end - other.start > span.end - span.start,
+  );
 }
 
-export function assignSpeakers(spans: UtteranceSpan[], opts?: { minSeconds?: number }): { speakers: Speaker[]; utterances: Utterance[] } {
-  const minSeconds = opts?.minSeconds ?? 3;
-  const sorted = [...spans].sort((a, b) => a.start - b.start);
+/** 行序：起点、终点、簇号依次比较。assignSpeakers 的输出与输入 span 因此一一对齐（Lab 按此对文本）。 */
+export function compareSpans(a: UtteranceSpan, b: UtteranceSpan): number {
+  return a.start - b.start || a.end - b.end || a.speaker - b.speaker;
+}
+
+export type CrosstalkSplit = {
+  /** 参与说话人判断的段（插话已摘出）。 */
+  spans: UtteranceSpan[];
+  /** 被长段完全包住的短插话，按 start 排序。 */
+  interjections: UtteranceSpan[];
+};
+
+export function splitCrosstalk(spans: UtteranceSpan[], opts?: { maxInterjectionSeconds?: number }): CrosstalkSplit {
+  const maxInterjectionSeconds = opts?.maxInterjectionSeconds ?? MAX_INTERJECTION_SECONDS;
+  const sorted = [...spans].sort(compareSpans);
+  const voting: UtteranceSpan[] = [];
+  const interjections: UtteranceSpan[] = [];
+  for (const span of sorted) {
+    if (isEnclosedInterjection(span, sorted, maxInterjectionSeconds)) interjections.push(span);
+    else voting.push(span);
+  }
+  return { spans: voting, interjections };
+}
+
+/** 只留参与说话人判断的段（r70 的旧调用面）：插话不进投票，行由 assignSpeakers 单独排。 */
+export function resolveCrosstalk(spans: UtteranceSpan[], opts?: { maxInterjectionSeconds?: number }): UtteranceSpan[] {
+  return splitCrosstalk(spans, opts).spans;
+}
+
+export type AssignSpeakersOptions = {
+  minSeconds?: number;
+  /**
+   * 被长段完全包住的短插话（#114）：单独排成一行，但不参与下面的时长统计、说话人保留与编号。
+   * 行归属：插话所属簇本身是保留说话人就归它，否则归包住它的那一行（持话轮的一方）。
+   */
+  interjections?: readonly UtteranceSpan[];
+};
+
+export function assignSpeakers(
+  spans: UtteranceSpan[],
+  opts: AssignSpeakersOptions = {},
+): { speakers: Speaker[]; utterances: Utterance[] } {
+  const minSeconds = opts.minSeconds ?? 3;
+  const interjections = opts.interjections ?? [];
+  const sorted = [...spans].sort(compareSpans);
 
   const totals = new Map<number, number>();
   for (const s of sorted) totals.set(s.speaker, (totals.get(s.speaker) ?? 0) + (s.end - s.start));
@@ -117,6 +163,26 @@ export function assignSpeakers(spans: UtteranceSpan[], opts?: { minSeconds?: num
 
   const ids = new Map(order.map((id, i) => [id, `speaker-${i + 1}` as SpeakerId]));
 
+  /** 插话归谁：所属簇仍是保留说话人就用它，否则归包住它的那一行（持话轮的一方）。 */
+  const assignedBySpan = new Map<UtteranceSpan, number>();
+  sorted.forEach((span, i) => {
+    const row = mapped[i];
+    if (row !== undefined) assignedBySpan.set(span, row.speaker);
+  });
+  const interjectionOwner = (span: UtteranceSpan): number => {
+    if (kept.has(span.speaker)) return span.speaker;
+    let owner: UtteranceSpan | undefined;
+    for (const other of sorted) {
+      if (other.start > span.start + CROSSTALK_TOLERANCE_SECONDS) break;
+      if (other.end < span.end - CROSSTALK_TOLERANCE_SECONDS) continue;
+      if (other.end - other.start <= span.end - span.start) continue;
+      if (owner === undefined || other.end - other.start > owner.end - owner.start) owner = other;
+    }
+    const ownerSpeaker = owner === undefined ? undefined : assignedBySpan.get(owner);
+    return ownerSpeaker ?? assign(span);
+  };
+  const interjectionRows = interjections.map((span) => ({ ...span, speaker: interjectionOwner(span) }));
+
   const speakers: Speaker[] = order.map((id, i) => {
     const color = PALETTE[i % PALETTE.length];
     if (color === undefined) throw new Error(`调色板越界：${i}`);
@@ -124,7 +190,7 @@ export function assignSpeakers(spans: UtteranceSpan[], opts?: { minSeconds?: num
     if (speakerId === undefined) throw new Error(`说话人编号缺失：${id}`);
     return { id: speakerId, name: `说话人${i + 1}`, color };
   });
-  const utterances: Utterance[] = mapped.map((s) => {
+  const utterances: Utterance[] = [...mapped, ...interjectionRows].sort(compareSpans).map((s) => {
     const speakerId = ids.get(s.speaker);
     if (speakerId === undefined) throw new Error(`说话人编号缺失：${s.speaker}`);
     return { start: s.start, end: s.end, speakerId, text: "" };

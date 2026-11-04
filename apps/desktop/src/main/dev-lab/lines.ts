@@ -1,8 +1,9 @@
 /**
- * 把一组标签组装成 Lab 字幕行（r48）：复用 core 的 buildSpans → splitSpan → resolveCrosstalk →
+ * 把一组标签组装成 Lab 字幕行（r48）：复用 core 的 buildSpans → splitSpan → splitCrosstalk →
  * assignSpeakers，文本由段级解码结果按时间归属；不复制也不修改正式管线。
+ * 被长段包住的短插话（#114）与正式管线一样单独成行，纯语气词的由方案 B 的过滤隐藏。
  */
-import { assignSpeakers, buildSpans, dedupeOverlappingLines, resolveCrosstalk, splitSpan } from "@video-notes/core";
+import { assignSpeakers, buildSpans, compareSpans, dedupeOverlappingLines, splitCrosstalk, splitSpan } from "@video-notes/core";
 import type { DiarizationSegment } from "@video-notes/core";
 import type { LabConfigName, LabLine, LabSpeaker } from "../../shared/lab";
 
@@ -42,21 +43,22 @@ export function assembleLines(input: {
 }): { lines: LabLine[]; speakers: LabSpeaker[] } {
   const labelled = input.segments.map((seg, i) => ({ start: seg.start, end: seg.end, speaker: input.labels[i] ?? 0 }));
   const rawSpans = buildSpans(labelled).flatMap((span) => splitSpan(span, input.silences, MAX_SPAN_SECONDS));
-  const spans = resolveCrosstalk(rawSpans);
-  const kept = new Set(spans);
-  const assigned = assignSpeakers(spans);
-  // 文本先按时间贴到原始 span 上；贴到被并入的那个插话段的文本随之丢弃——抢话处的音频已经算在
-  // 持话轮者的行里（正式管线解码那段音频同样会带到），再拼一遍就成了复制。
+  const { spans, interjections } = splitCrosstalk(rawSpans);
+  const assigned = assignSpeakers(spans, { interjections });
+  // assignSpeakers 按 compareSpans 排行：插话与投票段合并后同一顺序，文本据此逐行对齐。
+  const lineSpans = [...spans, ...interjections].sort(compareSpans);
+  // 文本先按时间贴到原始 span 上；抢话处的插话段现在是自己的一行（#114），长句那一行不再拼它的文本。
   const textOwner = ownerOf(input.texts, rawSpans);
   const textBySpan = new Map<number, string[]>();
   input.texts.forEach((row, i) => {
     const spanIndex = textOwner[i];
     if (spanIndex === undefined || spanIndex < 0) return;
     const span = rawSpans[spanIndex];
-    if (span === undefined || !kept.has(span)) return;
+    if (span === undefined) return;
     const text = row.text.trim();
     if (text === "") return;
-    const key = spans.indexOf(span);
+    const key = lineSpans.indexOf(span);
+    if (key < 0) return;
     const list = textBySpan.get(key) ?? [];
     list.push(text);
     textBySpan.set(key, list);

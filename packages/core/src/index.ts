@@ -152,8 +152,8 @@ export type { Silence } from "./core/audio";
 export { createAsrEngine } from "./asr/engine";
 export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOptions } from "./asr/engine";
 // r48 Lab：开发模式验收台直接调用这些分离/组装函数（只读调用，不改管线行为）。
-export { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./asr/utterances";
-export type { UtteranceSpan } from "./asr/utterances";
+export { assignSpeakers, buildSpans, compareSpans, resolveCrosstalk, splitCrosstalk, splitSpan } from "./asr/utterances";
+export type { AssignSpeakersOptions, CrosstalkSplit, UtteranceSpan } from "./asr/utterances";
 export { filterShortReplies, isShortReplyLine, normalizeReplyText, SHORT_REPLY_RULES } from "./asr/short-replies";
 export type { ShortReplyRules } from "./asr/short-replies";
 export { dedupeOverlappingLines, OVERLAP_DEDUP_RULES } from "./asr/overlap-dedup";

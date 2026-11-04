@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { assignSpeakers, buildSpans, resolveCrosstalk, splitSpan } from "./utterances";
+import { assignSpeakers, buildSpans, resolveCrosstalk, splitCrosstalk, splitSpan } from "./utterances";
 import type { UtteranceSpan } from "./utterances";
+import type { SpeakerId } from "../core/types";
 
 describe("buildSpans", () => {
   test("gap 0.5s（<= 0.6）同说话人合并成一段", () => {
@@ -176,5 +177,52 @@ describe("resolveCrosstalk", () => {
     const host = span(10, 14, 0);
     const guest = span(10.04, 10.34, 1);
     expect(resolveCrosstalk([guest, host])).toEqual([host]);
+  });
+});
+
+describe("被长段包住的短插话（#114）", () => {
+  const span = (start: number, end: number, speaker: number): UtteranceSpan => ({ start, end, speaker });
+
+  test("splitCrosstalk 把插话单独交出来，投票用的 spans 与 resolveCrosstalk 完全一致", () => {
+    const host = span(10, 14, 0);
+    const guest = span(11, 11.3, 1);
+    const parts = splitCrosstalk([guest, host]);
+    expect(parts.spans).toEqual(resolveCrosstalk([guest, host]));
+    expect(parts.interjections).toEqual([guest]);
+  });
+
+  test("插话单独成行，归到持话轮的一方；长句起止不变", () => {
+    const host = span(10, 14, 0);
+    const guest = span(11, 11.3, 1);
+    const { utterances } = assignSpeakers([host], { interjections: [guest] });
+    expect(utterances).toEqual([
+      { start: 10, end: 14, speakerId: "speaker-1" as SpeakerId, text: "" },
+      { start: 11, end: 11.3, speakerId: "speaker-1" as SpeakerId, text: "" },
+    ]);
+  });
+
+  test("插话不参与说话人判断：说话人数量/编号/其他行归属与没有插话时完全一致", () => {
+    // 说话人 2 只在插话里出现 0.3s：没有插话时它根本不成说话人。
+    const spans = [span(0, 30, 0), span(30, 36, 1)];
+    const guest = span(21, 21.3, 2);
+    const base = assignSpeakers(spans);
+    const withInterjection = assignSpeakers(spans, { interjections: [guest] });
+    expect(withInterjection.speakers).toEqual(base.speakers);
+    const strip = (rows: { start: number; end: number; speakerId: string }[]) =>
+      rows.map((u) => ({ start: u.start, end: u.end, speakerId: u.speakerId }));
+    expect(strip(withInterjection.utterances)).toEqual([
+      ...strip(base.utterances).slice(0, 1),
+      { start: 21, end: 21.3, speakerId: "speaker-1" },
+      ...strip(base.utterances).slice(1),
+    ]);
+  });
+
+  test("插话所属簇本身是保留说话人时，这一行归它自己，且不改变说话人排序", () => {
+    const spans = [span(0, 30, 0), span(40, 50, 1)];
+    const guest = span(10, 10.3, 1);
+    const { speakers, utterances } = assignSpeakers(spans, { interjections: [guest] });
+    expect(speakers.map((s) => s.id as string)).toEqual(["speaker-1", "speaker-2"]);
+    const line = utterances.find((u) => u.start === 10);
+    expect(line?.speakerId as string).toBe("speaker-2");
   });
 });
