@@ -6,6 +6,8 @@ r70 处理两单验收反馈（#99、#98），都指向同一件事：字幕行�
 
 已接受（accepted）。判定顺序与 `buildSpans → splitSpan → resolveCrosstalk → assignSpeakers` 的约定补充 [ADR-0029](./0029-r35-polish-speaker-merge-and-failure-loop.md) 的说话人合并规则；Lab 组装口径补充 [ADR-0037](./0037-lab-worker-serialization-and-marks-cleanup.md)。
 
+r80 起「插话整段丢弃」被 [ADR-0053](./0053-r80-enclosed-interjections.md) 取代：插话仍不参与说话人判断，但会单独成行，纯语气词的由填充语过滤隐藏。
+
 ## 背景数字
 
 「自己造船的路飞」样本（1843s，410 个分离段，Link 标注 78 点：68 点标 B 正确、10 点标「都错」）上重算方案 B（refine，silhouette 选 k=7）：
