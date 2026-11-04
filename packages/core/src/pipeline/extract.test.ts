@@ -152,7 +152,7 @@ describe("runExtract 的音轨可解码预检", () => {
       id: "local",
       modelId: "stub-model",
       run: async () => ({
-        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] },
         chunks: [{ index: 1, start: 0, end: 2 }],
         timings: {},
         cacheHits: [],
@@ -185,9 +185,10 @@ describe("runExtract 的音轨可解码预检", () => {
         transcript: {
           speakers: [speaker],
           utterances: [
-            { start: 0, end: 0.8, speakerId: speaker.id, text: "哈LL喽你好。" },
-            { start: 1, end: 3.4, speakerId: speaker.id, text: "好的话。" },
-            { start: 4, end: 30, speakerId: speaker.id, text: "这里是一整段讲解，说明怎么把素材整理成笔记并补上时间戳和术语。" },
+            { start: 0, end: 0.8, speakerId: speaker.id, text: "汽水你好。" },
+            { start: 1, end: 2, speakerId: speaker.id, text: "哈LL喽你号。" },
+            { start: 3, end: 5.4, speakerId: speaker.id, text: "好的话。" },
+            { start: 6, end: 30, speakerId: speaker.id, text: "这里是一整段讲解，说明怎么把素材整理成笔记并补上时间戳和术语。" },
           ],
         },
         chunks: [{ index: 1, start: 0, end: 30 }],
@@ -222,9 +223,10 @@ describe("runExtract 的音轨可解码预检", () => {
       asrEngine: engine,
       runToken: "tok-filler",
     });
-    // 规则放过「哈LL喽你好。」，模型这一批只有两条候选（长句不进请求），一次请求就判完
+    // 「汽水你好。」由规则阶段删掉、不进请求；模型这一批只剩两条候选（长句不进请求），一次请求就判完
     expect(fillerRequests).toHaveLength(1);
-    expect(fillerRequests[0]).toContain("1. 哈LL喽你好。");
+    expect(fillerRequests[0]).toContain("1. 哈LL喽你号。");
+    expect(fillerRequests[0]).not.toContain("汽水你好");
     expect(fillerRequests[0]).not.toContain("这里是一整段讲解");
     const saved = JSON.parse(readFileSync(join(r.video.outputDir, "video.json"), "utf8")) as {
       transcript: { utterances: { text: string }[] };
@@ -299,7 +301,7 @@ describe("runExtract 的音轨可解码预检", () => {
       id: "local",
       modelId: "stub-model",
       run: async () => ({
-        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] },
         chunks: [{ index: 1, start: 0, end: 2 }],
         timings: {},
         cacheHits: [],
@@ -401,7 +403,7 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
     const cacheRoot = join(dir, ".cache");
 
     const asrFetch = (async (_url: string) => {
-      return new Response(JSON.stringify({ text: "你好", segments: [{ start: 0, end: 2, text: "你好" }] }), {
+      return new Response(JSON.stringify({ text: "这里是一整段有内容的讲解，说明怎么整理素材。", segments: [{ start: 0, end: 2, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -458,7 +460,7 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
       id: "local",
       modelId: "stub-model",
       run: async () => ({
-        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+        transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] },
         chunks: [{ index: 1, start: 0, end: 2 }],
         timings: { ...asrTimings },
         cacheHits: [],
@@ -493,7 +495,7 @@ describe("runExtract 成功路径：写 proposed 后停在笔记之前", () => {
     makeMp4(videoPath);
     const cacheRoot = join(dir, ".cache");
     const asrFetch = (async (_url: string) => {
-      return new Response(JSON.stringify({ text: "你好", segments: [{ start: 0, end: 2, text: "你好" }] }), {
+      return new Response(JSON.stringify({ text: "这里是一整段有内容的讲解，说明怎么整理素材。", segments: [{ start: 0, end: 2, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -554,7 +556,7 @@ describe("runExtract 的步骤开始事件（r69）", () => {
       run: async (input) => {
         input.onProgress?.({ step: "transcribe", done: 1, total: 1, detail: "stub-engine" });
         return {
-          transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "你好" }] },
+          transcript: { speakers: [speaker], utterances: [{ start: 0, end: 2, speakerId: speaker.id, text: "这里是一整段有内容的讲解，说明怎么整理素材。" }] },
           chunks,
           timings: {},
           cacheHits: [],
