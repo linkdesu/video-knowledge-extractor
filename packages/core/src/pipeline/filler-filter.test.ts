@@ -94,7 +94,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
   test("规则先行：短回应不进请求；太长或太久的行也不进请求", async () => {
     const rows = [
       line("嗯。", 0.5),
-      line("主播讲了一整段有信息量的话，这里故意写长一点超过二十四个字，确保不会进请求。", 3),
+      line("主播讲了一整段有信息量的话，这里故意写长一点超过十二个字，确保不会进请求。", 3),
       line("这是一句持续很久但字数很少的话", 12),
       line("哈LL喽你好。", 0.9),
     ];
@@ -107,7 +107,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     const result = await filterFillerUtterances({ rows, endpoint, client: rec.client });
     expect(rec.calls).toHaveLength(1);
     expect(result.droppedByRules).toBe(1);
-    expect(result.rows.map((r) => r.text)).toEqual(["主播讲了一整段有信息量的话，这里故意写长一点超过二十四个字，确保不会进请求。", "这是一句持续很久但字数很少的话"]);
+    expect(result.rows.map((r) => r.text)).toEqual(["主播讲了一整段有信息量的话，这里故意写长一点超过十二个字，确保不会进请求。", "这是一句持续很久但字数很少的话"]);
   });
 
   test("模型失败：该批不过滤、记日志、流程继续", async () => {
@@ -148,7 +148,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     const lines = captureLogs();
     const rows = [line("哈LL喽你好。", 0.9), line("三百块。", 1), line("嗯，喂，你好。", 1.2)];
     const rec = recorder(() =>
-      JSON.stringify({ drop: [{ index: 1, reason: "识别乱码" }, { index: 3, reason: "寒暄与连线确认" }] }),
+      JSON.stringify({ drop: [{ index: 1, reason: "纯问候" }, { index: 3, reason: "纯问候与接通寒暄" }] }),
     );
     await filterFillerUtterances({ rows, endpoint, client: rec.client });
     const line0 = lines.find((l) => l.includes("填充语过滤批次"));
@@ -157,8 +157,8 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     expect(line0).toContain("drop=[1,3]");
     expect(line0).toContain("rows=[1,3]");
     expect(line0).toContain("哈LL喽你好。");
-    expect(line0).toContain("识别乱码");
-    expect(line0).toContain("寒暄与连线确认");
+    expect(line0).toContain("纯问候");
+    expect(line0).toContain("纯问候与接通寒暄");
     // 不把整份提示词写进日志
     expect(lines.join("\n")).not.toContain("你是视频字幕清洗器");
   });

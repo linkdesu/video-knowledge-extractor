@@ -26,9 +26,14 @@ export const FILLER_BATCH_SIZE = 40;
 /**
  * 交给模型的候选行上界：仍然是「短句」才值得判语义空洞。
  * 更长的行多半有内容，直接保留、不进请求（也顺带压住提示词体积）。
+ *
+ * 8 秒 / 24 字太宽（r76b QA 用真实模型在真实录音上误删 16 条，其中 9 条正是这个宽度放进来的：
+ * 4:05–4:37 的四行火腿对话 17–24 字、5.7 秒的「关蓝牙」说明、3 秒级的表态句）。收到 2.5 秒 / 12 字：
+ * - 上界只留真正「一句短话」，#109 要删的三行噪声（1.40s/7 字、0.98s/4 字、2.46s/9 字）都还在里面；
+ * - 现场确认的极短句（「听懂了吗？」3 字 0.46 秒）仍然进请求，靠提示词保留——闸门只挡长度，不替模型判内容。
  */
-const CANDIDATE_MAX_SECONDS = 8;
-const CANDIDATE_MAX_CHARS = 24;
+export const FILLER_CANDIDATE_MAX_SECONDS = 2.5;
+export const FILLER_CANDIDATE_MAX_CHARS = 12;
 
 /** 日志里每条丢弃文本的截断长度，避免一整行日志被长句撑爆。 */
 const LOG_TEXT_CHARS = 40;
@@ -117,7 +122,7 @@ export async function filterFillerUtterances<T extends { start: number; end: num
   // 候选：规则没删掉、且仍然够短（归一化字数与时长双闸门）；更长的行多半有内容，不进请求。
   const candidates = kept
     .map((row, position) => ({ row, position }))
-    .filter(({ row }) => row.end - row.start <= CANDIDATE_MAX_SECONDS && normalizeReplyText(row.text).length <= CANDIDATE_MAX_CHARS);
+    .filter(({ row }) => row.end - row.start <= FILLER_CANDIDATE_MAX_SECONDS && normalizeReplyText(row.text).length <= FILLER_CANDIDATE_MAX_CHARS);
 
   const finish = (rows: T[], droppedByLlm: number, batches: FillerBatchLog[]): FillerFilterResult<T> => {
     log.info("asr", "填充语过滤完成", {
