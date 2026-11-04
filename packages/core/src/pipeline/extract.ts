@@ -20,6 +20,7 @@ import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { logger, runWithTask } from "../core/logger";
 import { correctionsFor } from "./notes-run";
 import { filterFillerUtterances } from "./filler-filter";
+import { dedupeOverlappingLines } from "../asr/overlap-dedup";
 import { detectHosts } from "./host-detect";
 import { segmentTopics } from "./segment-topics";
 
@@ -196,11 +197,14 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       for (const [k, v] of Object.entries(run.timings)) timings[k] = v;
       timings.transcribe = t();
 
+      // 重叠段去重（#97）：回声或分离模型重叠检测会把同一句话解成两行，先按「时间重叠 + 文字被包住」丢掉短段。
+      // 规则实现在 core 的 dedupeOverlappingLines，Lab 组装调用同一个函数。
+      const deduped = dedupeOverlappingLines(run.transcript.utterances);
       // 短回应（#98）+ 语义空洞短句与寒暄（#109）：规则先行、剩下的短句整批交给模型，落盘前跑一次。
       // 过滤后的字幕才是后续划主题、生成笔记、重渲染读到的版本；模型失败只保留该批、不打断导入。
       const fillerStart = performance.now();
       const filler = await filterFillerUtterances({
-        rows: run.transcript.utterances,
+        rows: deduped,
         endpoint: input.endpoint,
         client,
         ...(input.prompts !== undefined ? { prompts: input.prompts } : {}),
@@ -208,6 +212,7 @@ export async function runExtract(input: ExtractInput): Promise<ExtractResult> {
       timings["filler-filter"] = Math.round((performance.now() - fillerStart) / 10) / 100;
       const filteredTranscript = { speakers: run.transcript.speakers, utterances: filler.rows };
       logger().info("asr", "转写过滤", {
+        droppedOverlaps: run.transcript.utterances.length - deduped.length,
         droppedByRules: filler.droppedByRules,
         droppedByLlm: filler.droppedByLlm,
         batches: filler.batches.length,

@@ -58,3 +58,45 @@ describe("assembleLines 抢话归属", () => {
     expect(lines[0]?.end).toBe(14);
   });
 });
+
+describe("assembleLines 重叠段去重（#97）", () => {
+  test("时间重叠 ≥50% 且短句文字被长句包住：只留长句", () => {
+    const { lines } = assembleLines({
+      labels: [0, 1],
+      segments: [seg(0, 10, 0), seg(4, 6, 1)],
+      texts: [
+        { start: 0, end: 10, text: "今天我们聊聊怎么整理素材。" },
+        { start: 4, end: 6, text: "怎么整理素材。" },
+      ],
+      silences: [],
+    });
+    expect(lines.map((l) => l.text)).toEqual(["今天我们聊聊怎么整理素材。"]);
+    expect(lines.map((l) => l.start)).toEqual([0]);
+  });
+
+  test("时间重叠但两句文字不同：两行都保留", () => {
+    const { lines } = assembleLines({
+      labels: [0, 1],
+      segments: [seg(0, 10, 0), seg(4, 6, 1)],
+      texts: [
+        { start: 0, end: 10, text: "今天我们聊聊怎么整理素材。" },
+        { start: 4, end: 6, text: "我不同意这个说法。" },
+      ],
+      silences: [],
+    });
+    expect(lines.map((l) => l.text)).toEqual(["今天我们聊聊怎么整理素材。", "我不同意这个说法。"]);
+  });
+
+  test("文字相同但时间重叠不足 50%：两行都保留", () => {
+    const { lines } = assembleLines({
+      labels: [0, 1],
+      segments: [seg(0, 10, 0), seg(9.5, 11.5, 1)],
+      texts: [
+        { start: 0, end: 10, text: "今天我们聊聊怎么整理素材。" },
+        { start: 9.5, end: 11.5, text: "怎么整理素材。" },
+      ],
+      silences: [],
+    });
+    expect(lines.map((l) => l.text)).toEqual(["今天我们聊聊怎么整理素材。", "怎么整理素材。"]);
+  });
+});
