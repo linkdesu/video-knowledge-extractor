@@ -13,6 +13,7 @@ import {
   LAB_IPC,
   type LabConfig,
   type LabConfigMeta,
+  type LabMarks,
   type LabConfigName,
   type LabImportOptions,
   type LabImportResult,
@@ -40,7 +41,7 @@ import { createLabWorkerHost, type LabRunMessage, type LabWorkerProcess } from "
 import { migrateLegacyEntries } from "./legacy-migrate";
 import { assembleLines, hostClusterCount } from "./lines";
 import { refineSegments } from "./refine";
-import { isLabSampleId, listSamples, readMarks, readSample, marksPath, writeMarks } from "./sample-store";
+import { annotationsPath, isLabSampleId, listSamples, readMarks, readSample, writeMarks } from "./sample-store";
 
 export { devLabEnabled } from "./gate";
 
@@ -326,9 +327,10 @@ export function createLabRuntime(options: LabRuntimeOptions) {
       if (!isLabSampleId(sampleId)) throw new Error("非法的样本 id");
       return readMarks(root, sampleId);
     });
-    ipcMain.handle(LAB_IPC.marksSet, (_e: IpcMainInvokeEvent, sampleId: string, marks: Record<string, string>) => {
+    ipcMain.handle(LAB_IPC.marksSet, (_e: IpcMainInvokeEvent, sampleId: string, marks: unknown) => {
       if (!isLabSampleId(sampleId)) throw new Error("非法的样本 id");
-      const saved = writeMarks(root, sampleId, marks as Parameters<typeof writeMarks>[2]);
+      // IPC 那头没有运行时类型：整份容器交给 writeMarks 校验并归一（旧标量也能收）。
+      const saved = writeMarks(root, sampleId, marks as LabMarks);
       return saved;
     });
   };
@@ -339,7 +341,7 @@ export function createLabRuntime(options: LabRuntimeOptions) {
     running = null;
   };
 
-  return { register, dispose, load, importPath, liveWorkers: host.live, marksPath: (id: string) => marksPath(root, id) };
+  return { register, dispose, load, importPath, liveWorkers: host.live, annotationsPath: (id: string) => annotationsPath(root, id) };
 }
 
 export type LabRuntime = {
@@ -349,7 +351,8 @@ export type LabRuntime = {
   importPath(sourcePath: string, options?: LabImportOptions): Promise<LabImportResult>;
   /** 当前活着的 worker 数（验收：连续未命中后必须回到 0）。 */
   liveWorkers(): number;
-  marksPath(sampleId: string): string;
+  /** r77 起标注写在 `annotations-<id>.json`（r48 的 `marks-<id>.json` 只读不改）。 */
+  annotationsPath(sampleId: string): string;
 };
 
 export type LabSample = LabSampleMeta;

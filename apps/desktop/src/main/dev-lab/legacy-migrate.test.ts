@@ -54,6 +54,7 @@ describe("旧分支目录 → 共享目录的搬运", () => {
     writeEntry(box.legacy, r48, { createdAt: "r48", analysis: false });
     writeEntry(box.shared, key, { createdAt: "shared", analysis: true });
     writeFileSync(join(box.legacy, `marks-${legacyOnly}.json`), JSON.stringify({ "1": "B" }));
+    writeFileSync(join(box.legacy, `annotations-${legacyOnly}.json`), JSON.stringify({ "3": { speaker: "speaker-1" } }));
     writeFileSync(join(box.legacy, `marks-${key}.json`), JSON.stringify({ "2": "A" }));
     // 半截目录：没有 sample.json，不能搬。
     mkdirSync(join(box.legacy, "cccccccccccccccccccccccccccccccc"), { recursive: true });
@@ -61,7 +62,7 @@ describe("旧分支目录 → 共享目录的搬运", () => {
     const summary = migrateLegacyEntries({ legacyRoot: box.legacy, root: box.shared });
     expect(summary.copied.sort()).toEqual([legacyOnly, r48].sort());
     expect(summary.skipped).toBe(1);
-    expect(summary.marks).toBe(1);
+    expect(summary.marks).toBe(2);
     expect(summary.failed).toEqual([]);
 
     // 共享里已有的条目仍是共享那份
@@ -70,6 +71,10 @@ describe("旧分支目录 → 共享目录的搬运", () => {
     // r48 旧条目也搬过来了（没有 analysis 但它自己有 id，列表与加载都还能用）
     expect(existsSync(join(box.shared, r48, "sample.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(box.shared, `marks-${legacyOnly}.json`), "utf8"))).toEqual({ "1": "B" });
+    // r77 的记录文件也要跟着条目搬过去，否则新界面上一条标注都看不到
+    expect(JSON.parse(readFileSync(join(box.shared, `annotations-${legacyOnly}.json`), "utf8"))).toEqual({
+      "3": { speaker: "speaker-1" },
+    });
     // 已有条目的 marks 不覆盖
     expect(existsSync(join(box.shared, `marks-${key}.json`))).toBe(false);
 

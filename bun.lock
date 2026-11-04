@@ -12,7 +12,7 @@
     },
     "apps/cli": {
       "name": "vnote",
-      "version": "0.1.23",
+      "version": "0.1.36",
       "bin": {
         "vnote": "./src/cli.ts",
       },
@@ -22,7 +22,7 @@
     },
     "apps/desktop": {
       "name": "@video-notes/desktop",
-      "version": "0.1.23",
+      "version": "0.1.36",
       "dependencies": {
         "@video-notes/core": "workspace:*",
         "sherpa-onnx-node": "1.13.8",
@@ -52,13 +52,16 @@
     },
     "packages/core": {
       "name": "@video-notes/core",
-      "version": "0.1.23",
+      "version": "0.1.36",
       "dependencies": {
         "dotenv": "^18.0.8",
         "sherpa-onnx-node": "1.13.8",
       },
     },
   },
+  "trustedDependencies": [
+    "electron",
+  ],
   "packages": {
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
 

@@ -1356,10 +1356,10 @@ textarea {
 }
 .vn-lab-row {
   display: grid;
-  grid-template-columns: 46px 72px 72px minmax(0, 1fr) 54px 34px;
+  grid-template-columns: 46px 72px 72px minmax(0, 1fr) minmax(76px, 104px) 54px 34px;
   gap: 6px;
   align-items: center;
-  padding: 6px 8px;
+  padding: 2px 8px;
   border-radius: 8px;
   cursor: pointer;
   font-size: 12px;
@@ -1398,11 +1398,30 @@ textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.vn-lab-note {
+  overflow: hidden;
+  color: var(--vn-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vn-lab-note.empty {
+  color: var(--vn-dim);
+}
 .vn-lab-marks {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-start;
+  gap: 6px 0;
+  min-width: 0;
+}
+.vn-lab-mark-radios {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px 0;
   min-width: 0;
 }
@@ -1427,6 +1446,39 @@ textarea {
   letter-spacing: 0.02em;
   text-align: right;
   white-space: nowrap;
+}
+.vn-lab-speaker-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+}
+.vn-lab-speaker-label {
+  flex-basis: 60px;
+  width: 60px;
+}
+.vn-lab-speaker-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 142px;
+  min-width: 0;
+}
+.vn-lab-speaker-select .vn-lab-dot {
+  flex: 0 0 10px;
+}
+.vn-lab-speaker-select .vn-select-wrap {
+  flex: 1 1 auto;
+}
+.vn-lab-speaker-select .vn-select-trigger {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
 }
 .vn-lab-mark {
   box-sizing: border-box;
@@ -1464,7 +1516,8 @@ textarea {
   outline-offset: 1px;
 }
 @media (max-width: 900px) {
-  .vn-lab-mark-group + .vn-lab-mark-group {
+  .vn-lab-mark-group + .vn-lab-mark-group,
+  .vn-lab-speaker-control {
     flex-basis: 100%;
     margin-left: 0;
     padding-top: 6px;
@@ -1474,7 +1527,9 @@ textarea {
   }
 }
 .vn-lab-row > .vn-btn.sm {
+  box-sizing: border-box;
   width: 34px;
+  height: 24px;
   padding-right: 0;
   padding-left: 0;
 }

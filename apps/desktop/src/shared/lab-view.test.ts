@@ -102,19 +102,40 @@ describe("Lab 视图计算", () => {
     expect(rowIndexAt(rows, -2)).toBe(0);
   });
 
-  test("标记按行起点毫秒对齐", () => {
-    const rows = buildRows(A, B, 1, { [labLineKey({ start: 4.6 })]: "B" });
+  test("标注按行起点毫秒对齐", () => {
+    const rows = buildRows(A, B, 1, { [labLineKey({ start: 4.6 })]: { mark: "B" } });
     expect(rows[2]?.mark).toBe("B");
     expect(rows[0]?.mark).toBeNull();
   });
 
   test("问题类型与 A/B 一样按行起点对齐", () => {
     const rows = buildRows(A, B, 1, {
-      [labLineKey({ start: 4.6 })]: "overlap_wrong_speaker",
-      [labLineKey({ start: 0 })]: "false_duplicate",
+      [labLineKey({ start: 4.6 })]: { mark: "overlap_wrong_speaker" },
+      [labLineKey({ start: 0 })]: { mark: "false_duplicate" },
     });
     expect(rows[2]?.mark).toBe("overlap_wrong_speaker");
     expect(rows[0]?.mark).toBe("false_duplicate");
+  });
+
+  test("实际说话人贴在行上，与谁对各自独立；一致行也能只有说话人", () => {
+    const rows = buildRows(A, B, 1, {
+      [labLineKey({ start: 0 })]: { speaker: "speaker-2" },
+      [labLineKey({ start: 4.6 })]: { mark: "A", speaker: "speaker-1" },
+    });
+    // 第 0 行两方案一致（diff=false），仍可以记下「实际是别人」。
+    expect(rows[0]?.diff).toBe(false);
+    expect(rows[0]?.speaker).toBe("speaker-2");
+    expect(rows[0]?.mark).toBeNull();
+    expect(rows[2]?.mark).toBe("A");
+    expect(rows[2]?.speaker).toBe("speaker-1");
+    expect(rows[1]?.speaker).toBeNull();
+  });
+
+  test("旧格式标量标注仍能贴到行上（磁盘无需迁移）", () => {
+    const legacy = { [labLineKey({ start: 4.6 })]: "B" } as unknown as Parameters<typeof buildRows>[3];
+    const rows = buildRows(A, B, 1, legacy);
+    expect(rows[2]?.mark).toBe("B");
+    expect(rows[2]?.speaker).toBeNull();
   });
 
   test("时间格式", () => {

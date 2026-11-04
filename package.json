@@ -1,15 +1,19 @@
 {
   "name": "video-notes",
-  "version": "0.1.36",
+  "version": "0.1.38",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.0",
+  "trustedDependencies": [
+    "electron"
+  ],
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
     "design:prototype": "bun .omp/skills/verify-video-notes/scripts/verify.ts prototype",
+    "postinstall": "bun apps/desktop/scripts/ensure-electron.ts",
     "install:local": "bun run apps/desktop/scripts/install-local.ts",
     "test": "turbo run test && bun run test:tools",
     "test:tools": "bun test ./.omp/skills/verify-video-notes/scripts",
