@@ -3,7 +3,7 @@
  * 只被验收台页面使用，不进入正式管线；放在 shared 以便 bun test 直接覆盖。
  */
 import { isShortReplyLine, SHORT_REPLY_RULES } from "@video-notes/core/short-replies";
-import { isLabMark, type LabConfig, type LabLine, type LabMark, type LabMarks } from "./lab";
+import { normalizeMark, type LabConfig, type LabLine, type LabMark, type LabMarks } from "./lab";
 
 /** 标记键：行起点毫秒。跨方案重载后同一时间点仍对得上。 */
 export function labLineKey(line: { start: number }): string {
@@ -47,6 +47,8 @@ export type LabRow = LineAlignment & {
   /** 两方案说话人不同（含 B 侧被过滤而 A 未过滤）。 */
   diff: boolean;
   mark: LabMark | null;
+  /** 人工记下的实际说话人（`speaker-<n>`）；未标注为 null。 */
+  speaker: string | null;
 };
 
 export type LabSummary = {
@@ -135,7 +137,7 @@ export function speakerMap(aLines: LabLine[], bLines: LabLine[]): {
   };
 }
 
-/** B 方案的行按当前阈值判语气词、与 A 对齐、算差异、贴标记。 */
+/** B 方案的行按当前阈值判语气词、与 A 对齐、算差异、贴标注。 */
 export function buildRows(
   configA: LabConfig,
   configB: LabConfig,
@@ -153,12 +155,13 @@ export function buildRows(
     const merged = aligned.aSpeakerId !== null && bToA.get(line.speakerId) !== aligned.aSpeakerId;
     const diff = mapped !== null && (mapped !== line.speakerId || merged);
     const filteredDiff = filler !== aFiller;
-    const mark = marks[labLineKey(line)];
+    const note = normalizeMark(marks[labLineKey(line)]);
     return {
       ...aligned,
       filler,
       diff: diff || filteredDiff,
-      mark: isLabMark(mark) ? mark : null,
+      mark: note?.mark ?? null,
+      speaker: note?.speaker ?? null,
     };
   });
 }

@@ -1,19 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { makeTmpDir } from "@video-notes/core/testing";
 import { assembleLines, hostClusterCount } from "./lines";
 import { readMarks, writeMarks } from "./sample-store";
 import { devLabEnabled } from "./gate";
 import { buildRows, filterRows, summarize } from "../../shared/lab-view";
-import type { LabConfig, LabMarks } from "../../shared/lab";
-
-/** 测试临时目录落在工作树的 `tmp/`（已忽略），每个用例用完即删。 */
-const TMP_ROOT = join(import.meta.dirname, "../../../../../tmp");
-
-function marksDir(): string {
-  mkdirSync(TMP_ROOT, { recursive: true });
-  return mkdtempSync(join(TMP_ROOT, "vn-lab-marks-"));
-}
+import type { LabConfig, LabMark, LabMarks } from "../../shared/lab";
 
 describe("Lab 字幕行组装", () => {
   test("同簇 gap<=0.6s 合并；不足 3s 的说话人并入邻居", () => {
@@ -122,82 +115,98 @@ describe("Lab 字幕行组装", () => {
   });
 });
 
-describe("Lab 标记落盘", () => {
-  test("只保留合法键与值，读回一致", () => {
-    const dir = marksDir();
-    try {
-      const saved = writeMarks(dir, "abc123", { "1000": "B", "2500": "both", bad: "A", "3000": "x" as never });
-      expect(saved).toEqual({ "1000": "B", "2500": "both" });
-      expect(readMarks(dir, "abc123")).toEqual({ "1000": "B", "2500": "both" });
-      expect(JSON.parse(readFileSync(join(dir, "marks-abc123.json"), "utf8"))).toEqual({ "1000": "B", "2500": "both" });
-      expect(readMarks(dir, "missing")).toEqual({});
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+describe("Lab 行标注落盘", () => {
+  test("记录形状：标记与实际说话人分两个字段，非法字段单独丢弃", () => {
+    const dir = makeTmpDir("vn-lab-marks-");
+    const saved = writeMarks(dir, "abc123", {
+      "1000": { mark: "B", speaker: "speaker-1" },
+      "2500": { mark: "both" },
+      "3000": { speaker: "speaker-2" },
+      "4000": {},
+      bad: { mark: "A" },
+      "5000": { mark: "x" as never, speaker: "bob" },
+    });
+    const expected: LabMarks = {
+      "1000": { mark: "B", speaker: "speaker-1" },
+      "2500": { mark: "both" },
+      "3000": { speaker: "speaker-2" },
+    };
+    expect(saved).toEqual(expected);
+    expect(readMarks(dir, "abc123")).toEqual(expected);
+    // r77：记录写进 annotations-<id>.json，r48 的 marks-<id>.json 一个字节都不碰。
+    expect(JSON.parse(readFileSync(join(dir, "annotations-abc123.json"), "utf8"))).toEqual(expected);
+    expect(existsSync(join(dir, "marks-abc123.json"))).toBe(false);
+    expect(readMarks(dir, "missing")).toEqual({});
   });
 
-  test("旧格式（A/B/both）加载后原标记不变，读路径不写盘", () => {
-    const dir = marksDir();
-    try {
-      const legacy: LabMarks = {};
-      for (let i = 0; i < 78; i++) legacy[String(1000 * (i + 1))] = (["A", "B", "both"] as const)[i % 3] ?? "A";
-      const file = join(dir, "marks-abc123.json");
-      const raw = JSON.stringify(legacy);
-      writeFileSync(file, raw);
+  test("旧格式（r48–r76 的 marks 单标记字符串）照常读成记录，读路径不写盘", () => {
+    const dir = makeTmpDir("vn-lab-marks-");
+    const legacy: Record<string, string> = {};
+    const values = ["A", "B", "both", "overlap_wrong_speaker", "backchannel_not_ignored"];
+    for (let i = 0; i < 78; i++) legacy[String(1000 * (i + 1))] = values[i % values.length] ?? "A";
+    const file = join(dir, "marks-abc123.json");
+    const raw = JSON.stringify(legacy);
+    writeFileSync(file, raw);
 
-      const loaded = readMarks(dir, "abc123");
-      expect(Object.keys(loaded)).toHaveLength(78);
-      expect(loaded).toEqual(legacy);
-      // 旧文件不用手工处理，也不会在读的时候被改写。
-      expect(readFileSync(file, "utf8")).toBe(raw);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const loaded = readMarks(dir, "abc123");
+    expect(Object.keys(loaded)).toHaveLength(78);
+    expect(loaded["1000"]).toEqual({ mark: "A" });
+    expect(loaded["2000"]).toEqual({ mark: "B" });
+    expect(loaded["5000"]).toEqual({ mark: "backchannel_not_ignored" });
+    // 旧文件不用手工处理，也不会在读的时候被改写。
+    expect(readFileSync(file, "utf8")).toBe(raw);
+    expect(existsSync(join(dir, "annotations-abc123.json"))).toBe(false);
   });
 
-  test("新增的问题类型可保存并读回", () => {
-    const dir = marksDir();
-    try {
-      const marks = { "1000": "overlap_wrong_speaker", "2000": "false_duplicate", "3000": "backchannel_not_ignored" } as const;
-      expect(writeMarks(dir, "abc123", marks)).toEqual(marks);
-      expect(readMarks(dir, "abc123")).toEqual(marks);
-      expect(JSON.parse(readFileSync(join(dir, "marks-abc123.json"), "utf8"))).toEqual(marks);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  test("在旧标注上补记实际说话人：旧标记一条不丢，旧文件保持原字节", () => {
+    const dir = makeTmpDir("vn-lab-marks-");
+    const legacy: Record<string, LabMark> = {};
+    for (let i = 0; i < 78; i++) legacy[String(1000 * (i + 1))] = (["A", "B", "both"] as const)[i % 3] ?? "A";
+    const file = join(dir, "marks-abc123.json");
+    const raw = JSON.stringify(legacy);
+    writeFileSync(file, raw);
+
+    const merged: LabMarks = { ...readMarks(dir, "abc123"), "99000": { speaker: "speaker-3" } };
+    const saved = writeMarks(dir, "abc123", merged);
+    expect(Object.keys(saved)).toHaveLength(79);
+    for (const [key, value] of Object.entries(legacy)) expect(saved[key]).toEqual({ mark: value });
+    expect(saved["99000"]).toEqual({ speaker: "speaker-3" });
+    expect(readMarks(dir, "abc123")).toEqual(saved);
+    // 旧文件降级仍可读：新记录只落在 annotations，旧 marks 字节完全不变。
+    expect(readFileSync(file, "utf8")).toBe(raw);
   });
 
-  test("在旧标注上补记问题类型：旧标记一条不丢", () => {
-    const dir = marksDir();
-    try {
-      const legacy: LabMarks = {};
-      for (let i = 0; i < 78; i++) legacy[String(1000 * (i + 1))] = (["A", "B", "both"] as const)[i % 3] ?? "A";
-      writeFileSync(join(dir, "marks-abc123.json"), JSON.stringify(legacy));
+  test("annotations 文件存在即权威快照：旧的 marks 内容不再叠加", () => {
+    const dir = makeTmpDir("vn-lab-marks-");
+    writeFileSync(join(dir, "marks-abc123.json"), JSON.stringify({ "1000": "A", "2000": "B" }));
+    writeMarks(dir, "abc123", { "1000": { mark: "both" } });
+    // 2000 是在记录文件生成之后被清掉的那一条：旧 marks 不能把它复活。
+    expect(readMarks(dir, "abc123")).toEqual({ "1000": { mark: "both" } });
+  });
 
-      const merged: LabMarks = { ...readMarks(dir, "abc123"), "99000": "false_duplicate" };
-      const saved = writeMarks(dir, "abc123", merged);
-      expect(saved).toEqual({ ...legacy, "99000": "false_duplicate" });
-      expect(readMarks(dir, "abc123")).toEqual({ ...legacy, "99000": "false_duplicate" });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  test("annotations 文件损坏时读报错、写拒绝，绝不退回旧文件覆盖新记录", () => {
+    const dir = makeTmpDir("vn-lab-marks-");
+    writeFileSync(join(dir, "marks-abc123.json"), JSON.stringify({ "1000": "A" }));
+    const broken = "{ 这不是 JSON";
+    writeFileSync(join(dir, "annotations-abc123.json"), broken);
+    expect(() => readMarks(dir, "abc123")).toThrow();
+    // 界面读失败时是空状态，此时保存等于把可修复的标注抹掉：必须拒绝。
+    expect(() => writeMarks(dir, "abc123", { "2000": { mark: "B" } })).toThrow(/已损坏/);
+    expect(readFileSync(join(dir, "annotations-abc123.json"), "utf8")).toBe(broken);
   });
 
   test("非法 marks 容器（null / 数组 / 字符串）直接拒绝，磁盘不动", () => {
-    const dir = marksDir();
-    try {
-      const legacy: LabMarks = { "1000": "B", "2000": "both" };
-      const file = join(dir, "marks-abc123.json");
-      writeFileSync(file, JSON.stringify(legacy));
-      const before = readFileSync(file, "utf8");
+    const dir = makeTmpDir("vn-lab-marks-");
+    writeFileSync(join(dir, "marks-abc123.json"), JSON.stringify({ "1000": "B" }));
+    writeMarks(dir, "abc123", { "1000": { mark: "both" }, "2000": { mark: "A" } });
+    const marksBefore = readFileSync(join(dir, "marks-abc123.json"), "utf8");
+    const annotationsBefore = readFileSync(join(dir, "annotations-abc123.json"), "utf8");
 
-      for (const bad of [null, undefined, [], "A", 3] as unknown[]) {
-        expect(() => writeMarks(dir, "abc123", bad as LabMarks)).toThrow();
-      }
-      expect(readFileSync(file, "utf8")).toBe(before);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    for (const bad of [null, undefined, [], "A", 3] as unknown[]) {
+      expect(() => writeMarks(dir, "abc123", bad as LabMarks)).toThrow();
     }
+    expect(readFileSync(join(dir, "marks-abc123.json"), "utf8")).toBe(marksBefore);
+    expect(readFileSync(join(dir, "annotations-abc123.json"), "utf8")).toBe(annotationsBefore);
   });
 });
 

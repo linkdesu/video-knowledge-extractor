@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
-import { isLabMark, type LabMarks, type LabSampleMeta } from "../../shared/lab";
+import { normalizeMark, type LabMarks, type LabSampleMeta } from "../../shared/lab";
 import type { LabAnalysisStamp } from "./analysis-cache";
 import type { EmbeddingRow } from "./refine";
 
@@ -151,36 +151,60 @@ export function marksPath(root: string, id: string): string {
   return join(root, `marks-${id}.json`);
 }
 
+/** r77 的行标注记录：`{ "<行起点毫秒>": { mark?, speaker? } }`。与 r48 的 marks 分开存。 */
+export function annotationsPath(root: string, id: string): string {
+  return join(root, `annotations-${id}.json`);
+}
+
 /**
- * 把磁盘上的 marks 归一成 `LabMarks`。r48 起就是「行起点毫秒 → 标记」的扁平 map，
- * r74 只扩了值域（A/B/both + 三类问题类型），所以旧文件不需要迁移：合法值原样返回。
- * 键必须是毫秒时间戳，值必须是已知标记；认不出的条目跳过，绝不改写已有标记。
+ * 把磁盘上的标注归一成 `LabMarks`。r48 起是「行起点毫秒 → 标注」的扁平 map：
+ * r74 扩了标记值域（A/B/both + 三类问题类型），r77 把单个标记字符串换成
+ * `{ mark?, speaker? }` 记录 —— 旧字符串由 `normalizeMark` 读成 `{ mark }`。
+ * 键必须是毫秒时间戳，值必须是能认出的记录；认不出的条目跳过，绝不改写已有标注。
  */
 export function normalizeMarks(raw: unknown): LabMarks {
   const out: LabMarks = {};
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw)) {
-    if (/^\d+$/.test(key) && isLabMark(value)) out[key] = value;
+    const note = normalizeMark(value);
+    if (/^\d+$/.test(key) && note !== null) out[key] = note;
   }
   return out;
 }
 
+/**
+ * 读一整份标注（ADR-0050）：
+ * - `annotations-<id>.json` 存在 → 它就是完整快照（首次保存时已把旧 marks 的全部内容并入）；
+ *   解析失败直接抛，让界面提示「读取标记失败」，绝不悄悄退回旧文件 —— 否则下一次保存会用旧内容盖掉新记录。
+ * - 否则读 r48 的 `marks-<id>.json`：旧标量照常归一成记录，读路径不改写磁盘。
+ */
 export function readMarks(root: string, id: string): LabMarks {
+  const records = annotationsPath(root, id);
+  if (existsSync(records)) return normalizeMarks(JSON.parse(readFileSync(records, "utf8")) as unknown);
   return normalizeMarks(readJson<unknown>(marksPath(root, id)));
 }
 
 /**
  * 写整份标注。入参是「超集覆盖」语义，所以先拒绝非法容器（IPC 那头没有运行时类型）：
  * null / 数组 / 字符串被归一成 `{}` 会把已有标注整份清空，宁可抛错留给界面显示「保存标记失败」。
+ * 只写 `annotations-<id>.json`：r48 的 `marks-<id>.json` 只读不改，旧安装降级时仍能看到自己那份。
  */
 export function writeMarks(root: string, id: string, marks: LabMarks): LabMarks {
   if (marks === null || typeof marks !== "object" || Array.isArray(marks)) {
-    throw new Error("marks 必须是「行起点毫秒 → 标记」的对象，拒绝用非法值覆盖已有标注");
+    throw new Error("marks 必须是「行起点毫秒 → 标注记录」的对象，拒绝用非法值覆盖已有标注");
   }
   const clean = normalizeMarks(marks);
   mkdirSync(root, { recursive: true });
+  const target = annotationsPath(root, id);
+  // 目标存在却读不出来时拒绝写入：界面此时是空状态，写下去等于把可修复的人工标注整份抹掉。
+  if (existsSync(target)) {
+    try {
+      JSON.parse(readFileSync(target, "utf8"));
+    } catch {
+      throw new Error(`${target} 已损坏，先修好或删除它再保存（拒绝覆盖已有标注）`);
+    }
+  }
   // 人工标注是最不可替代的那份数据：先写同目录临时文件再 rename，崩溃时不会留下半截 JSON。
-  const target = marksPath(root, id);
   const tmp = `${target}.tmp-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(clean)}\n`);
   renameSync(tmp, target);

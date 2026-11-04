@@ -13,7 +13,7 @@
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isLabSampleId, marksPath } from "./sample-store";
+import { annotationsPath, isLabSampleId, marksPath } from "./sample-store";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -156,15 +156,19 @@ export function planLabEviction(
 }
 
 /**
- * 删一个条目：目录 + 跟着它的 `marks-<id>.json`（r57 / #74）。条目一没，标注在界面上永远读不到，
- * 留着只是孤儿文件。返回是否连带删掉了一个 marks 文件。抛错时调用方决定记 `failed` 还是留到下一轮。
+ * 删一个条目：目录 + 跟着它的标注文件（`marks-<id>.json` 与 r77 的 `annotations-<id>.json`）。
+ * 条目一没，标注在界面上永远读不到，留着只是孤儿文件。返回是否连带删掉了标注文件。
+ * 抛错时调用方决定记 `failed` 还是留到下一轮。
  */
 function removeEntry(root: string, id: string): boolean {
   rmSync(join(root, id), { recursive: true, force: true });
-  const marks = marksPath(root, id);
-  if (!existsSync(marks)) return false;
-  rmSync(marks, { force: true });
-  return true;
+  let removed = false;
+  for (const path of [marksPath(root, id), annotationsPath(root, id)]) {
+    if (!existsSync(path)) continue;
+    rmSync(path, { force: true });
+    removed = true;
+  }
+  return removed;
 }
 
 /** 执行淘汰；删不掉的条目留在磁盘上、记进 `failed`，不能因为一次失败中断。 */

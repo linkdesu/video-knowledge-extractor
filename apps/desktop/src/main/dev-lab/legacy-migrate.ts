@@ -60,18 +60,21 @@ export function migrateLegacyEntries(input: { legacyRoot: string; root: string }
       summary.failed.push({ key, reason: err instanceof Error ? err.message : String(err) });
       continue;
     }
-    // marks 只跟着搬过去的条目走；目标已有 marks（另一分支打过标记）就不覆盖。
-    const marksFrom = join(input.legacyRoot, `marks-${key}.json`);
-    const marksTo = join(input.root, `marks-${key}.json`);
-    if (!existsSync(marksFrom) || existsSync(marksTo)) continue;
-    try {
-      mkdirSync(input.root, { recursive: true });
-      copyFileSync(marksFrom, `${marksTo}.tmp-${process.pid}`);
-      renameSync(`${marksTo}.tmp-${process.pid}`, marksTo);
-      summary.marks += 1;
-    } catch {
-      // marks 是人工标注，搬不过去不影响样本；下次启动再试
-      rmSync(`${marksTo}.tmp-${process.pid}`, { force: true });
+    // 标注文件只跟着搬过去的条目走；目标已有同名文件（另一分支打过标记）就不覆盖。
+    // r77 起一行有两条：r48 的 marks 与记录格式的 annotations，两个都要跟着条目走。
+    mkdirSync(input.root, { recursive: true });
+    for (const prefix of ["marks", "annotations"]) {
+      const from = join(input.legacyRoot, `${prefix}-${key}.json`);
+      const to = join(input.root, `${prefix}-${key}.json`);
+      if (!existsSync(from) || existsSync(to)) continue;
+      try {
+        copyFileSync(from, `${to}.tmp-${process.pid}`);
+        renameSync(`${to}.tmp-${process.pid}`, to);
+        summary.marks += 1;
+      } catch {
+        // 标注是人工数据，搬不过去不影响样本；下次启动再试
+        rmSync(`${to}.tmp-${process.pid}`, { force: true });
+      }
     }
   }
   return summary;

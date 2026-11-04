@@ -146,9 +146,13 @@ _Avoid_: 密钥库、safeStorage、token 存储
 开发模式验收台（Lab）把一份音视频或实验目录算出的全套产物（`segments`/`embeddings`/`segtext`/`silences`/`audio.wav`）按「源内容指纹 + 规范化分析参数」的键存成一个目录，键即样本 id。命中时只读 JSON 与音频，不加载模型、不 fork worker；条目不自洽（缺文件、坏 JSON、行数不符、没有 RIFF/WAVE 头）就按未命中重算（ADR-0034）。
 _Avoid_: 样本库、模型缓存
 
-**Lab 标注**（`Lab mark`）：
-验收台里对一条差异行的人工判断，每行只有一个，存在 `<缓存根>/marks-<样本>.json` 的扁平 map 里（键是该行起点的毫秒）。值分两组：`A` / `B` / `both` 回答「谁的说话人对」；`overlap_wrong_speaker` / `false_duplicate` / `backchannel_not_ignored` 记 A/B 之外的错因（重叠归错人、误判重复、未忽略的回应语），与 A/B 互斥。值域只增不减，旧文件不需要迁移（ADR-0049）。
+**Lab 行标注**（`Lab line annotation`）：
+验收台里对一行字幕的人工记录，键是该行起点的毫秒，两个字段各自可空：`mark` 是「谁对 / 问题类型」（`A` / `B` / `both` 回答「谁的说话人对」；`overlap_wrong_speaker` / `false_duplicate` / `backchannel_not_ignored` 记 A/B 之外的错因，与 A/B 互斥）；`speaker` 是这一句的**实际说话人**（本录音说话人列表里的 `speaker-<n>`），与 `mark` 独立——两套方案可能一致却都归错了人。任何行都能标注，不限于差异行。记录写在 `<缓存根>/annotations-<样本>.json`；r48 起的 `<缓存根>/marks-<样本>.json`（值 = 单个标记字符串）保持原样、只读不改，首次保存时其内容并入记录文件（ADR-0050）。
 _Avoid_: 评分、gold label、正确答案、标记（单独一个「标记」指 UI 按钮）
+
+**Lab 实际说话人**（`actual speaker`）：
+一行里人工确认的说话人 id（`speaker-<n>`，取自当前方案 B 的说话人列表）。它不是「谁对」：`A 对` / `B 对` 说的是哪套方案判对了，实际说话人说的是这一句到底是谁说的；清除就是把这个字段从记录里删掉。
+_Avoid_: ground truth 说话人、正确说话人（两者都在暗示自动判定）
 
 **Lab 缓存模式**（`--lab-cache=shared|isolated|cold`）：
 Lab 缓存根的三种用法。`shared`（默认）读写用户级共享目录（`~/.cache/video-notes/lab-cache`，所有 worktree 共用）；`isolated` 每次启动新建一个空临时目录，只读写它，绝不碰共享缓存（QA/verify 默认）；`cold` 仍用共享目录但不读旧条目，强制全量重算并把结果写回。发布走「临时目录 + fsync + 整目录 rename」，两个 worktree 同时写同一个键只会留下某一方的完整条目（ADR-0035）。

@@ -235,8 +235,14 @@ The documented rendered radius scale is the eight distinct literal values below;
 ### Chips / Tags
 `.vn-tag` is a compact, non-wrapping pill: 11px text, 3px 9px padding, 99px radius, subtle border and fill (`styles.css:345-360`). `.ok`, `.warn`, `.err`, and `.accent` supply semantic status colors (`styles.css:361-379`).
 
-### Lab mark options (r75)
-The Diarization Lab's per-row mark strip is one `role="radiogroup"` (`aria-label="差异行标记"`) with two labelled clusters (谁对 / 问题类型) and a 1px `rgba(255,255,255,0.10)` divider; options are `.vn-lab-mark`, 26px high, 6px radius, 12px type, a `rgba(255,255,255,0.10)` border and `--vn-muted` text (`styles.css:1403-1481`; `pages/DiarizationLabPage.tsx:687-766`). Checked state is the recorded fact, not an action: `rgba(139,92,246,0.18)` fill, `rgba(139,92,246,0.55)` border, `#c4b5fd` text, weight 500 — never the primary solid violet. Hover brightens to `rgba(255,255,255,0.06)` with no translate; `:focus-visible` draws a 2px `rgba(139,92,246,0.6)` ring at 1px offset. Both groups share a 48px right-aligned label gutter so their left edges align across rows; at ≤900px the second cluster wraps to its own line and the divider becomes horizontal.
+### Lab mark options (r77)
+Every Diarization Lab row can record two independent facts: one mark and the actual speaker. Diff rows keep the annotation area expanded; a consistent row expands on click or J/K selection. Its unselected, empty state shows the compact `＋ 标注` affordance, while an annotated row shows a single-line `标记 · speaker-N` summary (`lab-note-summary`) in a 76–104px grid column. Collapsed rows stay 28px high so the 460px list remains scannable.
+
+Measured at 1280×828 (`tmp/verify/r77-final/`): the row grid is `46 | 72 | 72 | text | 76–104 | 54 | 34`, so the transcript column is 260px (r75: 370px) and is the cost of the reserved summary column; `.vn-lab-text` carries `title` so a truncated line is still readable on hover. Expanded rows are 92px (r75: 77px, plus 15px for the speaker control), the list never scrolls horizontally (`scrollWidth === clientWidth === 694`), and no speaker cell ellipsizes.
+
+The expanded mark strip contains one `role="radiogroup"` (`aria-label="行标记"`) with two labelled clusters (谁对 / 问题类型) and a 1px `rgba(255,255,255,0.10)` divider. Options are `.vn-lab-mark`, 26px high, 6px radius, 12px type, a `rgba(255,255,255,0.10)` border and `--vn-muted` text. Checked state is the recorded fact, not an action: `rgba(139,92,246,0.18)` fill, `rgba(139,92,246,0.55)` border, `#c4b5fd` text, weight 500 — never the primary solid violet. Hover brightens to `rgba(255,255,255,0.06)` with no translate; `:focus-visible` draws a 2px `rgba(139,92,246,0.6)` ring at 1px offset. Roving tabindex and arrow-key selection persist immediately.
+
+The third cluster is 实际说话人: the existing portal-based `Select` (`lab-speaker-select`, `role="combobox"`, `aria-label="实际说话人"`) lists every speaker in the current B config plus `未标注`. Its 26px trigger uses the same 6px radius and shows the selected speaker id with the same `colorFor` dot as the speaker columns. Choosing `未标注` clears only `speaker` (a `null` patch), never `mark`; choosing a mark never rewrites `speaker`. At ≤900px the issue cluster and speaker cluster wrap to separate lines and their dividers become horizontal.
 
 ### Cards / Containers
 `.vn-card` uses `--vn-panel`, a `--vn-line` border, `--vn-radius` (18px), and `backdrop-filter: blur(16px)`; `.vn-pad` adds 18px 20px internal padding (`styles.css:273-281`).
@@ -284,7 +290,8 @@ Stable `data-testid` hooks observed in the renderer:
 | `player` / `player-unsupported-format` | `components/Player.tsx:67-70, 105-108` |
 | `dropzone` | `rbp/blocks/empty-state-5.tsx:38-44` |
 | `settings-page` | `pages/SettingsPage.tsx:481-484` |
-| `lab-mark-B` / `lab-mark-A` / `lab-mark-both` / `lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored` | `pages/DiarizationLabPage.tsx:687-766` (one `radiogroup` per diff row; the ids repeat per row, so scope the query to the row) |
+| `lab-mark-B` / `lab-mark-A` / `lab-mark-both` / `lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored` | `components/lab/LabRowAnnotations.tsx` (one `radiogroup` per expanded row; ids repeat per row, so scope queries to the row) |
+| `lab-note-summary` / `lab-speaker-select` / `lab-speaker-select-listbox` | `pages/DiarizationLabPage.tsx` and `components/lab/LabRowAnnotations.tsx` (compact per-row summary; actual-speaker trigger and its portal listbox; repeat per row where expanded) |
 
 ## Drift
 

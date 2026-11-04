@@ -198,6 +198,18 @@ describe("Lab 缓存淘汰执行", () => {
     expect(ids(root)).toEqual([]);
   });
 
+  test("r77 的记录文件 annotations-*.json 跟着条目一起删", () => {
+    const root = makeTmpDir("vn-lab-evict-");
+    writeEntry(root, "old1", { createdAt: "2026-08-01T00:00:00.000Z", bytes: 10 });
+    writeEntry(root, "new2", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });
+    writeFileSync(join(root, "annotations-old1.json"), JSON.stringify({ "1000": { mark: "A", speaker: "speaker-1" } }));
+    writeFileSync(join(root, "annotations-new2.json"), JSON.stringify({ "2000": { speaker: "speaker-2" } }));
+    const result = evictLabCache(root, limits({ maxEntries: 1 }), NOW);
+    expect(result.evict.map((e) => e.id)).toEqual(["old1"]);
+    expect(result.marks).toBe(1);
+    expect(ids(root)).toEqual(["annotations-new2.json", "new2"]);
+  });
+
   test("没有任何需要淘汰的条目时不碰磁盘", () => {
     const root = makeTmpDir("vn-lab-evict-");
     writeEntry(root, "aaa1", { createdAt: "2026-10-30T00:00:00.000Z", bytes: 10 });

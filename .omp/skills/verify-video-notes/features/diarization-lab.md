@@ -24,10 +24,15 @@
 - 字幕行：完整列表（时间 / A 说话人 / B 说话人 / 文本 / 状态）；点行定位、高亮、从行首播放；时间轴点击反向定位；跳转框接受 `13:14` 或行号；`Cmd/Ctrl+F` 聚焦搜索；筛选 全部 / 仅差异 / 仅已过滤 / 仅某说话人。
 - 试听：`J`/`K` 上一个/下一个差异并自动播放，空格播放/暂停，`1`/`2` 听同一行在 A/B 方案下的说话人样例；说话人面板 `▶样例` 依次播放该簇最长的三段。
 - 阈值滑块：0.6–1.5s，纯客户端重算，不触发 IPC、不重新聚类。
-- 标记（r74，界面 r75）：差异行分两组打标——「谁对」= `B 对` / `A 对` / `都错`（`lab-mark-B` / `lab-mark-A` / `lab-mark-both`），「问题类型」= `重叠归错人` / `误判重复` / `未忽略回应语`（`lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored`）。一行只有一个标记，值域见 `shared/lab.ts` 的 `LAB_MARK_LABEL`；写 `<cacheRoot>/marks-<样本>.json`（r54 起默认共享缓存根），重开仍在。旧文件（只有 `A`/`B`/`both`）不需要迁移，读路径不改写磁盘。
-  - r75 起整条标记区是一个 `role="radiogroup"`（`aria-label="差异行标记"`），六个选项是 `role="radio"` + `aria-checked`，内部两个 `role="group"` 承载「谁对」/「问题类型」两个簇，中间是 1px 竖线。roving tabindex：无标记时 `lab-mark-B` 是唯一 Tab 停点，有标记时只有选中项进 Tab 顺序；聚焦组内任一选项后 `←/↑/→/↓` 循环移动并立即落盘。
-  - 视觉：选项是独立类 `.vn-lab-mark`（26px 高、6px 圆角、12px 字号），不再复用 `.vn-btn`；选中态是 violet 底色 + 边框 + `#c4b5fd` 文本（不是 `.primary` 实心），`focus-visible` 有 2px violet 外环。组标签槽固定 48px 右对齐，所以每行两簇的左缘一致。差异行高 77px（r74 为 84px），字幕文本列 1280 视口下仍是 370px；视口 ≤900px 时「问题类型」簇整行折到第二行、竖线换成横线。
-  - 验收断言：`document.querySelectorAll('[data-testid^="lab-mark-"]')` 仍是每差异行 6 个；`[aria-checked=true]` 每行最多 1 个；`0` 个标记时 `[role=radio][tabindex="0"]` 每行 1 个。
+- 行标注（r74 起「差异行标记」，r77 起每行一条记录）：**任何行**都能标，不限于差异行。
+  - 「谁对」= `B 对` / `A 对` / `都错`（`lab-mark-B` / `lab-mark-A` / `lab-mark-both`），「问题类型」= `重叠归错人` / `误判重复` / `未忽略回应语`（`lab-mark-overlap_wrong_speaker` / `lab-mark-false_duplicate` / `lab-mark-backchannel_not_ignored`）；两者共用同一条单选轴，一行只有一个 `mark`。值域见 `shared/lab.ts` 的 `LAB_MARK_LABEL`。
+  - 「实际说话人」（r77，`lab-speaker-select`）：从**当前方案 B** 的说话人列表里选 `speaker-<n>`，另有「未标注」清除项。它与 `mark` 是两个独立字段：A/B 都判对（一致行）也可以记下「实际是别人」，清除说话人不影响 `mark`。
+  - 磁盘（ADR-0050）：记录写 `<cacheRoot>/annotations-<样本>.json`（`{ "<行起点毫秒>": { mark?, speaker? } }`，原子 rename，损坏时读报错、写拒绝）；r48 的 `<cacheRoot>/marks-<样本>.json`（值 = 单个标记字符串）**只读不改**，首次保存时整份并入记录文件，降级回旧构建仍能看到旧那份。淘汰条目时两份一起删，旧分支目录搬运时两份都复制。
+  - 展开规则：差异行常驻标记区；一致行在被选中（点击行、`J`/`K`、时间轴定位）时展开同一条；未选中时是一行 28px 紧凑态——空态显示「＋ 标注」，已有标注显示 `标记 · speaker-N` 摘要（`lab-note-summary`）。
+  - r75 的键鼠语义保留：整条标记区是一个 `role="radiogroup"`（`aria-label="行标记"`），六个选项是 `role="radio"` + `aria-checked`，内部两个 `role="group"` 承载「谁对」/「问题类型」，中间 1px 竖线；roving tabindex（无标记时 `lab-mark-B` 是唯一 Tab 停点），`←/↑/→/↓` 循环移动并立即落盘。
+  - 视觉：选项是独立类 `.vn-lab-mark`（26px 高、6px 圆角、12px 字号）；选中态是 violet 底色 + 边框 + `#c4b5fd` 文本（不是 `.primary` 实心），`focus-visible` 有 2px violet 外环；组标签槽 48px 右对齐。r77 实测 1280×828：折叠行 28px、展开行 92px、字幕文本列 260px（r75 为 370px，代价来自常驻的标注摘要列；`.vn-lab-text` 带 `title` 可读全文），列表 `scrollWidth == clientWidth == 694`；900×840 时「问题类型」簇与说话人选择各占一行（展开 138px），`scrollWidth == clientWidth == 608`、文档不横向滚动。
+  - 验收断言：`[data-testid^="lab-mark-"]` 每个**展开行** 6 个；`[aria-checked=true]` 每行最多 1 个；`0` 个标记时 `[role=radio][tabindex="0"]` 每行 1 个；一致行点 `lab-mark-A` 后 `lab.marks(id)` 出现该行 `{ mark: "A" }`，再选说话人后变成 `{ mark: "A", speaker: "speaker-2" }`（两个字段互不覆盖）。
+- 标注兼容（r77 验收口径）：给缓存根塞一份 r74 格式 `marks-<样本>.json`（例如 `{"27600":"A","46000":"both"}`）再打开样本，两行原样显示标记；任一行保存新标注后 `annotations-<样本>.json` 出现且包含旧标记，`marks-<样本>.json` 的 md5 前后一致。reload、`down` + 用同一 `--home`/`--user-data` 重新 `up` 之后标注仍在。
 - 输入区布局（r52）：`.vn-lab-bar-row` 是一个 4 列网格，拖放提示 `lab-dropzone` 独占首行，最近样本 / 方案 A / 方案 B / 阈值四列等宽（16px gap、底边对齐）；视口 ≤1053px 降成 2×2，≤760px 单列。Select 触发器 `box-sizing: border-box` + `min-width: 0`，长样本名用省略号截断，展开的下拉不越出卡片内容宽。
 - 视图状态保留（r52）：样本、方案 A/B、阈值、页面滚动（`.vn-content`）与字幕行列表滚动写进 `localStorage['vn.lab.view']`（`renderer/src/lib/lab-view-state.ts`，严格白名单 + clamp），导航离开再返回、以及整机重启后都还原来同一屏。
 - 下拉弹层（r52c，r69 起与设置页 `Combobox` 共用 `renderer/src/lib/popover.ts`，见 ADR-0045）：`Select` 的 `role=listbox` 通过 `createPortal` 渲染到 `document.body`，`.vn-select-list.portal` 用 `position: fixed` + 内联锚点几何（`z-index: 55`），打开期间跟随内容区滚动/窗口缩放。留在卡片里会被 `.vn-card` 的 `backdrop-filter` 层叠上下文困住，卡片比弹层矮时下方卡片会盖住第 2 个及以后的选项（r52b 的 G1）。验收要按**命中**判：对每个选项取 `getBoundingClientRect()` 中心做 `elementFromPoint`，断言落点 `closest('[role=option]')` 就是该选项，再用真实鼠标点击并断言触发器文案变成该选项；1280/900/700/520 四档都要测（r52c 证据 `tmp/verify/r52c-hit/hit-*.json`）。
@@ -73,7 +78,7 @@ $V snapshot r54-lab-dev
 
 - `lab-progress` 显示导入阶段（抽音频 / 分离 / 嵌入 / 段级解码）；导入期间不要另开 Lab 导入，也不要同时跑生成任务（本机模型严格串行，主进程会拒绝）。
 - 阈值验证：`$V eval "performance.now()"` 前后各读一次过滤行数，或直接断言 `lab-summary` 文本在两个阈值下不同。
-- 标记持久化：打完 `lab-mark-B`（或任一问题类型，如 `lab-mark-false_duplicate`）后 `down` + 新 run id 复用同一 `--home` 与旧 run 的 userData（`--user-data tmp/verify-state/<旧 run>/user-data`，r50 起 userData 不在证据目录里），重开页面断言按钮仍高亮；同时断言 `marks-<样本>.json` 里只多了这一个键、旧键原样。
+- 标注持久化（r77）：一致行也能标——点行展开后点 `lab-mark-B` 或任一问题类型，再用 `lab-speaker-select` 选一个说话人；`down` + 新 run id 复用同一 `--home` 与旧 run 的 userData（`--user-data tmp/verify-state/<旧 run>/user-data`，r50 起 userData 不在证据目录里），重开页面断言摘要与说话人仍显示。同时断言 `annotations-<样本>.json` 里该行是 `{ mark, speaker }`、旧 `marks-<样本>.json` 字节不变（找不到旧文件就跨不过「兼容」这条断言）。
 - 视图状态保留（r52）：改样本/A/B/阈值并真实滚轮滚动后，`$V click '[data-testid=nav-library]'` → `nav-lab`，断言四值与两处 `scrollTop` 复原；再 `down` + 新 run id 复用同一 userData，重开后同样断言。`localStorage['vn.lab.view']` 是唯一真相源，`down` 只在 `user-data/Local Storage` 为空时才剪掉它。
 - 打包版证明：`verify.ts up --app "/Applications/Video Notes.app" --no-build`，断言 `nav-lab` 不存在、`window.vnote.lab === undefined`、`vnote-media://lab/<id>` 的 fetch 直接失败（协议 handler 未注册，返回 ERR_FAILED 而不是 404）。
 

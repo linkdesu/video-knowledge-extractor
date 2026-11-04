@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LabConfig, LabConfigName, LabImportResult, LabLine, LabMarks, LabPayload, LabProgress, LabSampleMeta } from "../../../shared/lab";
-import { LAB_CONFIG_LABEL, LAB_CONFIGS, LAB_ISSUE_TYPES, LAB_MARK_LABEL } from "../../../shared/lab";
+import { LAB_CONFIG_LABEL, LAB_CONFIGS, LAB_MARK_LABEL, mergeMark } from "../../../shared/lab";
 import {
   buildRows,
   filterRows,
@@ -20,6 +20,7 @@ import { LAB_THRESHOLD_MAX, LAB_THRESHOLD_MIN, readLabViewState, writeLabViewSta
 import { errMessage } from "@/lib/format";
 import { showToast } from "@/lib/toast";
 import { LabTimeline } from "@/components/lab/LabTimeline";
+import { LabRowAnnotations } from "@/components/lab/LabRowAnnotations";
 
 function formatElapsed(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)} ms`;
@@ -654,6 +655,10 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                   visible.map((row, i) => {
                     const key = labLineKey(row.line);
                     const status = row.filler ? "已过滤" : row.diff ? "差异" : "一致";
+                    const expanded = row.diff || key === selectedKey;
+                    const noteSummary = [row.mark === null ? null : LAB_MARK_LABEL[row.mark], row.speaker]
+                      .filter((value): value is string => value !== null)
+                      .join(" · ");
                     return (
                       <div
                         key={key}
@@ -673,7 +678,16 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                           {row.aSpeakerId ?? "—"}
                         </span>
                         <span className="vn-lab-sp" style={{ color: colorFor(row.line.speakerId) }}>{row.line.speakerId}</span>
-                        <span className="vn-lab-text">{row.line.text === "" ? "（无文本）" : row.line.text}</span>
+                        <span className="vn-lab-text" title={row.line.text === "" ? undefined : row.line.text}>
+                          {row.line.text === "" ? "（无文本）" : row.line.text}
+                        </span>
+                        <span
+                          className={`vn-lab-note${noteSummary === "" ? " empty" : ""}`}
+                          data-testid="lab-note-summary"
+                          title={noteSummary === "" ? undefined : noteSummary}
+                        >
+                          {noteSummary === "" ? (expanded ? "未标注" : "＋ 标注") : noteSummary}
+                        </span>
                         <span className={`vn-tag ${row.filler ? "warn" : row.diff ? "err" : ""}`}>{status}</span>
                         <button
                           className="vn-btn sm"
@@ -686,88 +700,14 @@ export function DiarizationLabPage({ sourcePath }: { sourcePath?: string }) {
                         >
                           ▶
                         </button>
-                        {row.diff ? (
-                          <span
-                            className="vn-lab-marks"
-                            role="radiogroup"
-                            aria-label="差异行标记"
-                            onKeyDown={(e) => {
-                              const direction = e.key === "ArrowRight" || e.key === "ArrowDown"
-                                ? 1
-                                : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-                              if (direction === 0 || !(e.target instanceof HTMLButtonElement)) return;
-                              const options = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]'));
-                              const current = options.indexOf(e.target);
-                              if (current === -1) return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const next = options[(current + direction + options.length) % options.length];
-                              next?.focus();
-                              next?.click();
-                            }}
-                          >
-                            <span className="vn-lab-mark-group" role="group" aria-label="谁对">
-                              <span className="vn-lab-mark-label" aria-hidden="true">谁对</span>
-                              <button
-                                type="button"
-                                className="vn-lab-mark"
-                                role="radio"
-                                aria-checked={row.mark === "B"}
-                                aria-label={LAB_MARK_LABEL.B}
-                                tabIndex={row.mark === null || row.mark === "B" ? 0 : -1}
-                                data-testid="lab-mark-B"
-                                title={LAB_MARK_LABEL.B}
-                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "B" }); }}
-                              >
-                                {LAB_MARK_LABEL.B}
-                              </button>
-                              <button
-                                type="button"
-                                className="vn-lab-mark"
-                                role="radio"
-                                aria-checked={row.mark === "A"}
-                                aria-label={LAB_MARK_LABEL.A}
-                                tabIndex={row.mark === "A" ? 0 : -1}
-                                data-testid="lab-mark-A"
-                                title={LAB_MARK_LABEL.A}
-                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "A" }); }}
-                              >
-                                {LAB_MARK_LABEL.A}
-                              </button>
-                              <button
-                                type="button"
-                                className="vn-lab-mark"
-                                role="radio"
-                                aria-checked={row.mark === "both"}
-                                aria-label={LAB_MARK_LABEL.both}
-                                tabIndex={row.mark === "both" ? 0 : -1}
-                                data-testid="lab-mark-both"
-                                title={LAB_MARK_LABEL.both}
-                                onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: "both" }); }}
-                              >
-                                {LAB_MARK_LABEL.both}
-                              </button>
-                            </span>
-                            <span className="vn-lab-mark-group" role="group" aria-label="问题类型">
-                              <span className="vn-lab-mark-label" aria-hidden="true">问题类型</span>
-                              {LAB_ISSUE_TYPES.map((issueType) => (
-                                <button
-                                  key={issueType}
-                                  type="button"
-                                  className="vn-lab-mark"
-                                  role="radio"
-                                  aria-checked={row.mark === issueType}
-                                  tabIndex={row.mark === issueType ? 0 : -1}
-                                  data-testid={`lab-mark-${issueType}`}
-                                  title={LAB_MARK_LABEL[issueType]}
-                                  aria-label={LAB_MARK_LABEL[issueType]}
-                                  onClick={(e) => { e.stopPropagation(); saveMarksSoon({ ...marks, [key]: issueType }); }}
-                                >
-                                  {LAB_MARK_LABEL[issueType]}
-                                </button>
-                              ))}
-                            </span>
-                          </span>
+                        {expanded ? (
+                          <LabRowAnnotations
+                            row={row}
+                            speakers={configBValue?.speakers ?? []}
+                            colorFor={colorFor}
+                            onMark={(mark) => saveMarksSoon(mergeMark(marks, key, { mark }))}
+                            onSpeaker={(speaker) => saveMarksSoon(mergeMark(marks, key, { speaker }))}
+                          />
                         ) : null}
                       </div>
                     );
