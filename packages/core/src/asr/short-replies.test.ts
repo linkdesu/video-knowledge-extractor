@@ -74,3 +74,57 @@ describe("#98 简短回应语与半截话", () => {
     expect(normalizeReplyText(" 嗯，对 。")).toBe("嗯对");
   });
 });
+
+describe("#115 整行寒暄与连线确认", () => {
+  /** 路飞标注（2026-11-04 22:35）标成「未忽略回应语」的 9 行：文本与时长都取自 Lab 样本 segtext。 */
+  const annotated = [
+    ["哈LL喽你好。", 1.35],
+    ["汽水你好。", 0.81],
+    ["飞哥，你好，能听见吗？以可以你说。", 3.17],
+    ["好，谢谢谢谢。", 1.13],
+    ["听不懂。", 0.42],
+    ["我听不懂。", 0.6],
+    ["这这怎么说呢？", 1.2],
+    // Lab 样本按段边界量到 1.69s，正式转写里同一行是 1.52s；纯语气词仍走 maxSeconds 闸门。
+    ["哦，好，那。", 1.52],
+  ] as const;
+
+  test("标注里标错的寒暄/连线确认行全部隐藏（含 3.17 秒那行）", () => {
+    for (const [text, seconds] of annotated) {
+      expect({ text, hidden: isShortReplyLine(line(text, seconds)) }).toEqual({ text, hidden: true });
+    }
+  });
+
+  test("寒暄后面跟着内容就整行保留", () => {
+    for (const text of [
+      "你好，我想问一下你对农业的看法。",
+      "谢谢你的建议。",
+      "飞哥你好，我想问个问题。",
+      "听不懂你在说什么。",
+      "大家好，我是主播。",
+    ]) {
+      expect({ text, hidden: isShortReplyLine(line(text, 3)) }).toEqual({ text, hidden: false });
+    }
+  });
+
+  test("「好的话。」与短回应语料里必须保留的行不因为放宽寒暄闸门被删", () => {
+    for (const text of ["好的话。", "现好了吗？", "你那里声音没有了。", "听不清是吧，我再给你们说一下。", "太吵了。", "听懂了吗？"]) {
+      expect({ text, hidden: isShortReplyLine(line(text, 1.5)) }).toEqual({ text, hidden: false });
+    }
+  });
+
+  test("寒暄闸门仍然有上界：更长的行一律当有内容", () => {
+    const longGreeting = "你好你好你好你好你好你好你好你好你好你好你好"; // 21 字，超过 greetingMaxChars
+    expect(isShortReplyLine(line(longGreeting, 2))).toBe(false);
+    expect(isShortReplyLine(line("你好", SHORT_REPLY_RULES.greetingMaxSeconds + 1))).toBe(false);
+  });
+
+  test("规则仍集中在一处：寒暄与连线确认词表在 SHORT_REPLY_RULES 里", () => {
+    expect(SHORT_REPLY_RULES.greetings).toContain("你好");
+    expect(SHORT_REPLY_RULES.greetings).toContain("谢谢");
+    expect(SHORT_REPLY_RULES.greetings).toContain("能听见吗");
+    expect(SHORT_REPLY_RULES.greetings).toContain("你说");
+  });
+});
+
+

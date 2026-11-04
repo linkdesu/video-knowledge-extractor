@@ -79,13 +79,20 @@ describe("r76c：必须保留语料与候选闸门", () => {
     for (const row of shortRows) expect(sent).toContain(row.text.trim());
   });
 
-  test("候选闸门：#109 的三行噪声仍在候选内，收紧闸门不能把要删的也挡在外面", async () => {
+  test("候选闸门：#109 的三行噪声全部被删，且不是靠闸门挡在外面", async () => {
     configureLogging({ level: "error", console: false, sink: () => {} });
     const rec = recorder();
     const result = await filterFillerUtterances({ rows: noise109, endpoint, client: rec.client });
     const sent = rec.prompts.join("\n");
-    for (const row of noise109) expect(sent).toContain(row.text.trim());
-    expect(result.rows).toHaveLength(noise109.length);
+    // #115 起「嗯，喂，你好。」「啊，你好，你好，能听见吗？」由规则阶段删掉；剩下那条 ASR 串词必须进请求。
+    for (const row of noise109) {
+      const byRules = !result.rows.some((kept) => kept.text === row.text);
+      const byLlm = sent.includes(row.text.trim());
+      expect({ text: row.text, dropped: byRules || byLlm }).toEqual({ text: row.text, dropped: true });
+    }
+    expect(result.droppedByRules).toBe(2);
+    expect(result.rows).toHaveLength(noise109.length - 2);
+    expect(sent).toContain("HELL喽你好。");
   });
 
   test("提示词契约：删掉「识别乱码」这一类，且明确列出必须保留的现场/状态句", async () => {
@@ -102,6 +109,8 @@ describe("r76c：必须保留语料与候选闸门", () => {
     expect(prompt).toContain("你那里声音没有了");
     // 拿不准就保留
     expect(prompt).toContain("拿不准");
+    // 表示同意的表态是有内容的（「可以啊。」被模型点掉过，见 #115 复测）
+    expect(prompt).toContain("表示同意、确认、答应的表态");
     // 输出契约不变
     expect(prompt).toContain('{"drop"');
   });
