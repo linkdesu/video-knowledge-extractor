@@ -36,9 +36,9 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
   test("一个句子列表一次请求：绝不每句一次请求", async () => {
     const rows = [
       line("OKKAYK。", 0.8),
-      line("哈LL喽你好。", 0.9),
-      line("嗯，喂，你好。", 1.2),
-      line("呃，你好，你好，能听见吗？", 2.4),
+      line("哈LL喽你号。", 0.9),
+      line("嗯，喂，你号。", 1.2),
+      line("呃，你号，你号，能听见吗？", 2.4),
       line("三百块。", 1),
     ];
     const rec = recorder(() => JSON.stringify({ drop: [1, 2, 3, 4] }));
@@ -47,7 +47,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     expect(rec.calls[0]?.json).toBe(true);
     // 四个空洞短句都在同一份列表里，编号从 1 起
     expect(rec.calls[0]?.system).toContain("1. OKKAYK。");
-    expect(rec.calls[0]?.system).toContain("4. 呃，你好，你好，能听见吗？");
+    expect(rec.calls[0]?.system).toContain("4. 呃，你号，你号，能听见吗？");
     expect(result.rows.map((r) => r.text)).toEqual(["三百块。"]);
     expect(result.droppedByLlm).toBe(4);
   });
@@ -80,7 +80,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
 
   test("有实际内容的短句不被误删（含既有回归用例「好的话。」）", async () => {
     const rows = [
-      line("嗯，喂，你好。", 1.2),
+      line("嗯，喂，你号。", 1.2),
       line("好的话。", 1),
       line("三百块。", 1),
       line("我不同意", 1),
@@ -96,23 +96,26 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
       line("嗯。", 0.5),
       line("主播讲了一整段有信息量的话，这里故意写长一点超过十二个字，确保不会进请求。", 3),
       line("这是一句持续很久但字数很少的话", 12),
-      line("哈LL喽你好。", 0.9),
+      // #115 起整行寒暄也由规则删掉，不进请求
+      line("飞哥，你好，能听见吗？以可以你说。", 3.17),
+      line("那个那个这个这个。", 1.2),
     ];
     const rec = recorder((_call, system) => {
       expect(system).not.toContain("嗯。");
       expect(system).not.toContain("主播讲了一整段");
       expect(system).not.toContain("持续很久");
+      expect(system).not.toContain("飞哥");
       return JSON.stringify({ drop: [1] });
     });
     const result = await filterFillerUtterances({ rows, endpoint, client: rec.client });
     expect(rec.calls).toHaveLength(1);
-    expect(result.droppedByRules).toBe(1);
+    expect(result.droppedByRules).toBe(2);
     expect(result.rows.map((r) => r.text)).toEqual(["主播讲了一整段有信息量的话，这里故意写长一点超过十二个字，确保不会进请求。", "这是一句持续很久但字数很少的话"]);
   });
 
   test("模型失败：该批不过滤、记日志、流程继续", async () => {
     const lines = captureLogs();
-    const rows = [line("哈LL喽你好。", 0.9), line("三百块。", 1)];
+    const rows = [line("哈LL喽你号。", 0.9), line("三百块。", 1)];
     const client: LlmClient = {
       model: endpoint.model,
       chat: async () => {
@@ -120,7 +123,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
       },
     };
     const result = await filterFillerUtterances({ rows, endpoint, client });
-    expect(result.rows.map((r) => r.text)).toEqual(["哈LL喽你好。", "三百块。"]);
+    expect(result.rows.map((r) => r.text)).toEqual(["哈LL喽你号。", "三百块。"]);
     expect(result.droppedByLlm).toBe(0);
     expect(result.batches[0]?.error).toContain("端点 500");
     expect(lines.join("\n")).toContain("填充语过滤跳过本批");
@@ -130,11 +133,11 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
 
   test("返回格式不合法：整批保留；越界与重复序号被忽略", async () => {
     const lines = captureLogs();
-    const rows = [line("哈LL喽你好。", 0.9), line("三百块。", 1)];
+    const rows = [line("哈LL喽你号。", 0.9), line("三百块。", 1)];
     for (const reply of ["我觉得都挺空的。", JSON.stringify({ drop: "1" }), JSON.stringify({ keep: [] }), JSON.stringify([1])]) {
       const rec = recorder(() => reply);
       const result = await filterFillerUtterances({ rows, endpoint, client: rec.client });
-      expect(result.rows.map((r) => r.text)).toEqual(["哈LL喽你好。", "三百块。"]);
+      expect(result.rows.map((r) => r.text)).toEqual(["哈LL喽你号。", "三百块。"]);
       expect(result.batches[0]?.error).toBeDefined();
     }
     const rec = recorder(() => JSON.stringify({ drop: [3, 1, 1, 0, -1] }));
@@ -146,7 +149,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
 
   test("日志记录每批大小、丢弃序号与原因", async () => {
     const lines = captureLogs();
-    const rows = [line("哈LL喽你好。", 0.9), line("三百块。", 1), line("嗯，喂，你好。", 1.2)];
+    const rows = [line("哈LL喽你号。", 0.9), line("三百块。", 1), line("嗯，喂，你号。", 1.2)];
     const rec = recorder(() =>
       JSON.stringify({ drop: [{ index: 1, reason: "纯问候" }, { index: 3, reason: "纯问候与接通寒暄" }] }),
     );
@@ -156,7 +159,7 @@ describe("#109 语义空洞短句与寒暄的批量模型过滤", () => {
     expect(line0).toContain("batchSize=3");
     expect(line0).toContain("drop=[1,3]");
     expect(line0).toContain("rows=[1,3]");
-    expect(line0).toContain("哈LL喽你好。");
+    expect(line0).toContain("哈LL喽你号。");
     expect(line0).toContain("纯问候");
     expect(line0).toContain("纯问候与接通寒暄");
     // 不把整份提示词写进日志
