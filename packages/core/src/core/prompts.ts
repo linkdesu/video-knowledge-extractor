@@ -7,7 +7,7 @@
  */
 import { sha256 } from "./cache";
 
-export type PromptId = "segment-chunk" | "segment-merge" | "note-key-points" | "host-detect";
+export type PromptId = "segment-chunk" | "segment-merge" | "note-key-points" | "host-detect" | "filler-filter";
 
 export type PromptVariable = { name: string; description: string };
 
@@ -90,6 +90,20 @@ hosts 里的 id 必须来自给定的说话人列表，原样复制，不要编�
 {{SPEAKERS}}
 {{LANGUAGE_HINT}}`;
 
+/**
+ * 语义空洞短句过滤（r76 / #109）的默认提示词：一次看一整批带编号的短句，只回要丢弃的编号。
+ * 「拿不准就保留」是硬要求——误删有内容的句子比留下一句寒暄糟得多。
+ */
+const FILLER_FILTER_TEMPLATE = `你是视频字幕清洗器。下面是从视频转写里挑出来的短句，每行一个编号。
+找出没有实际语义内容的句子，用于从字幕里删掉：纯语气词、识别乱码或串词（例如「OKKAYK」「哈LL喽你好」）、
+寒暄与连线确认（例如「嗯，喂，你好」「呃，你好，你好，能听见吗」）、重复的空口头应答。
+带事实、数字、观点、指令、提问的句子一律保留；拿不准就保留。
+只输出 JSON，不要解释，不要用代码块包裹：{"drop":[number]}
+drop 里只放要丢弃的句子编号，编号必须来自下面的列表；没列出的句子一律保留，没有要舍弃的就输出 {"drop":[]}。
+drop 的元素也可以写成 {"index":number,"reason":string}，reason 用不超过 10 个字说明理由。
+句子列表：
+{{SENTENCES}}`;
+
 /** 顺序即界面上展示的顺序。 */
 export const PROMPT_SPECS: readonly PromptSpec[] = [
   {
@@ -137,6 +151,17 @@ export const PROMPT_SPECS: readonly PromptSpec[] = [
     ],
     defaultTemplate: HOST_DETECT_TEMPLATE,
     outputContract: { marker: '{"hosts"', hint: '输出格式：{"hosts":[string]}' },
+  },
+  {
+    id: "filler-filter",
+    title: "空洞短句过滤",
+    description:
+      "把规则过滤剩下的短句按批交给模型，只回要丢弃的编号；保存时必须保留输出格式 {\"drop\":[…]}。",
+    variables: [
+      { name: "SENTENCES", description: "一批带编号的短句，每行「序号. 文本」；编号从 1 开始、批内连续。" },
+    ],
+    defaultTemplate: FILLER_FILTER_TEMPLATE,
+    outputContract: { marker: '{"drop"', hint: '输出格式：{"drop":[number]}' },
   },
 ];
 
