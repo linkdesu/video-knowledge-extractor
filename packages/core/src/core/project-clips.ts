@@ -72,14 +72,14 @@ export function allocateProjectClip(input: { clipsDir: string; nextSeq: number; 
   return { seq, file: projectClipFileName(seq, input.title, input.clipsDir), nextSeq: seq + 1 };
 }
 
-/** 所选字幕行按时间排序，重叠或相接（≤1ms）的行合并成一个片段；未选中的间隔因此不进切片。 */
+/** 所选字幕行按时间排序，重叠或相接的行合并成一个片段；未选中的间隔因此不进切片（与控制器 `mergeLines` 同一容差）。 */
 export function projectClipSegments(subtitles: readonly ClipSubtitle[]): Segment[] {
   const sorted = [...subtitles].sort((a, b) => a.start - b.start || a.end - b.end);
   const segments: Segment[] = [];
   for (const line of sorted) {
     if (!(line.end > line.start)) continue;
     const last = segments[segments.length - 1];
-    if (last !== undefined && line.start <= last.end + 0.001) {
+    if (last !== undefined && line.start <= last.end + 1e-6) {
       last.end = Math.max(last.end, line.end);
     } else {
       segments.push({ start: line.start, end: line.end });

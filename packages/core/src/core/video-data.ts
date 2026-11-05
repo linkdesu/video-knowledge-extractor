@@ -15,8 +15,11 @@ export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-r
 /** 主播的来源：自动识别 / 人工修正 / 未识别（旧文档、还没跑识别、或已被用户清空）。 */
 export type HostSource = "auto" | "manual" | null;
 
-/** 项目切片的字幕行快照：生成时选中的行内容与行 id；来源字幕或说话人名后来变化不影响这份记录。 */
-export type ClipSubtitle = { id?: string; start: number; end: number; speaker: string; text: string };
+/**
+ * 项目切片的字幕行快照：生成时选中的行内容与行 id；来源字幕或说话人名后来变化不影响这份记录。
+ * 形状兼容控制器（#123）的 `SubtitleLine`，`SliceJob.lines` 可直接传给 `generateProjectClip`。
+ */
+export type ClipSubtitle = { id?: string; start: number; end: number; speaker?: string; text: string };
 
 export type TopicClip = {
   file: string;
@@ -180,8 +183,11 @@ function parseClipSubtitles(items: unknown[]): ClipSubtitle[] {
     if (!isObject(item)) continue;
     const { start, end, speaker, text } = item;
     if (typeof start !== "number" || !Number.isFinite(start) || typeof end !== "number" || !Number.isFinite(end)) continue;
-    if (typeof speaker !== "string" || typeof text !== "string") continue;
-    out.push(typeof item.id === "string" ? { id: item.id, start, end, speaker, text } : { start, end, speaker, text });
+    if (typeof text !== "string") continue;
+    const line: ClipSubtitle = { start, end, text };
+    if (typeof item.id === "string") line.id = item.id;
+    if (typeof speaker === "string") line.speaker = speaker;
+    out.push(line);
   }
   return out;
 }

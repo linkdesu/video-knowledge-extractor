@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTmpDir } from "../testing/temp-dirs";
+import type { SubtitleLine } from "./project-controller";
 import { allocateProjectClip, clipFileTitle, generateProjectClip, projectClipFileName, projectClipSegments } from "./project-clips";
 
 describe("clipFileTitle（ADR-0056 清洗规则）", () => {
@@ -187,7 +188,8 @@ describe("generateProjectClip（真实 ffmpeg，复用 ADR-0026）", () => {
     const source = join(dir, "src.mp4");
     makeSource(source, 20, 160, 90);
     const clipsDir = join(dir, "clips");
-    const subtitles = [line(5, 7, "第一行"), line(15, 17, "第二行", "观众")].map((l, i) => ({ ...l, id: `line-${i}` }));
+    // 控制器（#123）的 SliceJob.lines 可直接传给 generateProjectClip
+    const subtitles: SubtitleLine[] = [line(5, 7, "第一行"), line(15, 17, "第二行", "观众")].map((l, i) => ({ ...l, id: `line-${i}` }));
     const { clip, nextSeq } = await generateProjectClip({
       sourcePath: source,
       hasVideo: true,
