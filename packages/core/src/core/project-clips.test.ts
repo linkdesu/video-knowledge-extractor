@@ -187,7 +187,7 @@ describe("generateProjectClip（真实 ffmpeg，复用 ADR-0026）", () => {
     const source = join(dir, "src.mp4");
     makeSource(source, 20, 160, 90);
     const clipsDir = join(dir, "clips");
-    const subtitles = [line(5, 7, "第一行"), line(15, 17, "第二行", "观众")];
+    const subtitles = [line(5, 7, "第一行"), line(15, 17, "第二行", "观众")].map((l, i) => ({ ...l, id: `line-${i}` }));
     const { clip, nextSeq } = await generateProjectClip({
       sourcePath: source,
       hasVideo: true,

@@ -210,8 +210,8 @@ describe("video.json 文档", () => {
       segmentIndexes: [0, 1],
       segmentOffsets: [2, 14],
       subtitles: [
-        { start: 10, end: 20, speaker: "主播", text: "第一行" },
-        { start: 50, end: 60, speaker: "观众", text: "第二行" },
+        { id: "line-3", start: 10, end: 20, speaker: "主播", text: "第一行" },
+        { id: "line-9", start: 50, end: 60, speaker: "观众", text: "第二行" },
       ],
       segments: [
         { start: 10, end: 20 },

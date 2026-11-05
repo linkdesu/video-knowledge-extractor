@@ -15,8 +15,8 @@ export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-r
 /** 主播的来源：自动识别 / 人工修正 / 未识别（旧文档、还没跑识别、或已被用户清空）。 */
 export type HostSource = "auto" | "manual" | null;
 
-/** 项目切片的字幕行快照：生成时选中的行内容；来源字幕或说话人名后来变化不影响这份记录。 */
-export type ClipSubtitle = { start: number; end: number; speaker: string; text: string };
+/** 项目切片的字幕行快照：生成时选中的行内容与行 id；来源字幕或说话人名后来变化不影响这份记录。 */
+export type ClipSubtitle = { id?: string; start: number; end: number; speaker: string; text: string };
 
 export type TopicClip = {
   file: string;
@@ -181,7 +181,7 @@ function parseClipSubtitles(items: unknown[]): ClipSubtitle[] {
     const { start, end, speaker, text } = item;
     if (typeof start !== "number" || !Number.isFinite(start) || typeof end !== "number" || !Number.isFinite(end)) continue;
     if (typeof speaker !== "string" || typeof text !== "string") continue;
-    out.push({ start, end, speaker, text });
+    out.push(typeof item.id === "string" ? { id: item.id, start, end, speaker, text } : { start, end, speaker, text });
   }
   return out;
 }
