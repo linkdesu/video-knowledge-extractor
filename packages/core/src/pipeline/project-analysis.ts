@@ -57,7 +57,7 @@ export type RangeAnalysisResult = {
   videoId: string;
   outputDir: string;
   topics: RangeAnalysisTopic[];
-  /** 本次区间新增的字幕行数。 */
+  /** 本次区间新增的字幕行数；区间已分析过（复用 `chunks`）时为 0。 */
   addedLines: number;
 };
 
@@ -88,7 +88,8 @@ function freshDirName(title: string, used: Set<string>): string {
 /**
  * 整理切片的分块分析（#126）：一个来源视频的一个区间，走现有导入的注册与格式规范化，
  * 只转写这一段、只划这一段的主题，字幕与主题追加进共享的 `video.json` 与缓存目录。
- * 已分析过的区间由控制器 cursor 挡住，不会被重复调用；本函数不判断增量。
+ * 同一区间再次进来（项目重启重建队列、另一个项目引用同一视频）时按 `chunks` 记录复用，
+ * 不重复转写，也不重复追加字幕与主题。
  */
 export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<RangeAnalysisResult> {
   const taskId = input.runToken ?? randomUUID();
@@ -109,6 +110,7 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
     const asr = input.asr ?? { provider: "local", modelDir };
     const engine = input.asrEngine ?? createAsrEngine(asr);
     const runToken = taskId;
+    const ownsLock = input.lock === undefined;
     const lock = input.lock ?? acquireVideoLock(video.outputDir);
     let wavPath: string | null = null;
     try {
@@ -158,6 +160,22 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: mediaPath, durationSeconds: probe.duration, hasVideo: probe.hasVideo });
       } catch {
         logger().warn("ffmpeg", "封面抽帧失败");
+      }
+
+      // 增量保护：同一区间已经分析过（同一项目重启、另一个项目引用同一视频）就直接复用，
+      // 不再转写/划主题，也不重复追加字幕与主题
+      const existing = data.chunks.find((c) => Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6);
+      if (existing !== undefined) {
+        const reusedTopics = data.topics
+          .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
+          .map((topic) => ({
+            id: topic.id,
+            title: topic.title,
+            category: "",
+            lineIds: lineIdsFor(topic, data.transcript.utterances),
+          }));
+        logger().info("project", "区间已分析，复用已有结果", { videoId: video.id, start, end, topics: reusedTopics.length });
+        return { videoId: video.id, outputDir: video.outputDir, topics: reusedTopics, addedLines: 0 };
       }
 
       // 只抽这一段；wav 名带随机后缀，同一视频的两个区间不会互相删除
@@ -257,7 +275,8 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       return { videoId: video.id, outputDir: video.outputDir, topics: analyzed, addedLines: filler.rows.length };
     } finally {
       if (wavPath !== null) rmSync(wavPath, { force: true });
-      lock.release();
+      // 调用方传进来的锁由调用方释放：这里提前释放会让同视频的另一个槽插进来
+      if (ownsLock) lock.release();
     }
   });
 }

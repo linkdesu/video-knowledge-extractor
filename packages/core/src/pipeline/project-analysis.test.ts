@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AsrEngine } from "../asr/engine";
+import { acquireVideoLock, isVideoLocked } from "../core/lock";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
 import type { SpeakerId, VideoId } from "../core/types";
 import { loadVideoData } from "../core/video-data";
@@ -195,5 +196,86 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
     const data = loadVideoData(second.outputDir, { id: second.videoId as VideoId, title: "" });
     expect(data.topics).toHaveLength(1);
     expect(data.transcript.utterances).toHaveLength(4);
+  });
+
+  test("同一区间再次分析：复用已有结果，不重复转写、不重复追加字幕与主题", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 2);
+    const calls: { wavPath: string }[] = [];
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 1 }),
+      asrEngine: fakeEngine(calls),
+    });
+    const again = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 1 }),
+      asrEngine: fakeEngine(calls),
+    });
+
+    expect(again.addedLines).toBe(0);
+    expect(again.topics.map((t) => t.id)).toEqual(first.topics.map((t) => t.id));
+    expect(calls).toHaveLength(1);
+    const data = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" });
+    expect(data.transcript.utterances).toHaveLength(2);
+    expect(data.topics).toHaveLength(1);
+    expect(data.chunks).toHaveLength(1);
+  });
+});
+
+describe("analyzeVideoRange：运行锁归属", () => {
+  test("调用方传入的锁由调用方释放：管线返回后锁仍在，不会被同视频的另一个槽插队", async () => {
+    const root = makeTmpDir("project-analysis-lock-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const calls: { wavPath: string }[] = [];
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine(calls),
+    });
+    const lock = acquireVideoLock(first.outputDir);
+    try {
+      const second = await analyzeVideoRange({
+        videoPath: source,
+        outputDir: first.outputDir,
+        notesRoot,
+        cacheRoot,
+        startSeconds: 2,
+        endSeconds: 4,
+        endpoint,
+        client: fakeClient({ start: 2, end: 4 }),
+        asrEngine: fakeEngine(calls),
+        lock,
+      });
+      expect(second.topics.map((t) => t.title)).toEqual(["区间主题"]);
+      expect(isVideoLocked(first.outputDir)).toBe(true);
+    } finally {
+      lock.release();
+    }
+    expect(isVideoLocked(first.outputDir)).toBe(false);
   });
 });
