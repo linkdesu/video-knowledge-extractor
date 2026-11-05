@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { ProjectEventLog, ProjectStore, type AnalysisJob, type ProposedTopic, type SliceJob } from "@video-notes/core";
+import {
+  ProjectEventLog,
+  ProjectStore,
+  videoIdFor,
+  type AnalysisJob,
+  type ProposedTopic,
+  type SliceJob,
+} from "@video-notes/core";
 import { makeTmpDir } from "@video-notes/core/testing";
 import { ProjectService } from "./projects";
 import { ProjectRuntime, type ProjectVideo } from "./project-runtime";
@@ -269,5 +276,90 @@ describe("ProjectRuntime：真实运行锁", () => {
 
     expect(readdirSync(outputDir)).toEqual([]);
     expect(service.get(project.id).queue?.proposed.map((topic) => topic.title)).toEqual(["主题一"]);
+  });
+});
+
+describe("ProjectRuntime：监控目录里未导入的文件（#128）", () => {
+  test("按路径注册元数据后加入整理，文件进入分析队列", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "目录整理", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    const sourcePath = join(ctx.root, "recordings", "新录制.mp4");
+    const analyzed: string[] = [];
+
+    const runtime = new ProjectRuntime({
+      service: ctx.service,
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job.fileId);
+        return [];
+      },
+      describeSource: async (path) => {
+        if (path !== sourcePath) return undefined;
+        return {
+          id: videoIdFor(path),
+          name: "新录制.mp4",
+          durationSeconds: 30,
+          outputDir: join(ctx.root, "out", "新录制"),
+          sourcePath: path,
+          hasVideo: true,
+        };
+      },
+    });
+
+    const registered = await runtime.registerSources(project.id, [sourcePath, "/not/in/watch.mp4"]);
+    expect(registered).toEqual([videoIdFor(sourcePath)]);
+    expect(runtime.attachProject(project.id).files.has(videoIdFor(sourcePath))).toBe(true);
+
+    runtime.startOrganize(project.id, [videoIdFor(sourcePath)]);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis.some((task) => task.status === "done") === true, "目录文件分析完成");
+
+    expect(analyzed).toEqual([videoIdFor(sourcePath)]);
+    expect(ctx.service.get(project.id).videoIds).toEqual([videoIdFor(sourcePath)]);
+  });
+
+  test("已导入过的路径不重复注册；没有 describeSource 时静默跳过", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "重复", rootDir: join(ctx.root, "p") });
+    let calls = 0;
+
+    const runtime = new ProjectRuntime({
+      service: ctx.service,
+      transcriptOf: () => [],
+      analyzeRange: async () => [],
+      describeSource: async () => {
+        calls += 1;
+        return undefined;
+      },
+    });
+
+    expect(await runtime.registerSources(project.id, [])).toEqual([]);
+    expect(await runtime.registerSources(project.id, ["/x.mp4"])).toEqual([]);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("ProjectRuntime：状态变化推送（#128 三态可见）", () => {
+  test("分析完成与切片完成都会推送新快照，最后一个推送是整理已结束", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "推送", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 30 });
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t1", title: "主题", category: "", lineIds: ["line-0", "line-1"] }]);
+
+    const statuses: string[] = [];
+    ctx.service.onChange(({ detail }) => {
+      const status = detail.queue?.files.find((file) => file.id === "v1")?.organizeStatus;
+      if (status !== undefined) statuses.push(status);
+    });
+
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(
+      () => ctx.service.get(project.id).queue?.files[0]?.organizeStatus === "finished",
+      "整理已结束",
+    );
+
+    expect(statuses).toContain("organizing");
+    expect(statuses.at(-1)).toBe("finished");
   });
 });

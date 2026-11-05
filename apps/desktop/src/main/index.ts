@@ -65,6 +65,7 @@ import {
   setTopicSelected,
   setHosts,
   videoIdFor,
+  openVideo,
   listLibrary,
   readLibraryVideo,
   mediaAbsolutePath,
@@ -126,6 +127,7 @@ import {
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { ProjectService } from "./projects";
+import { scanProjectDirectory } from "./project-directory";
 import { projectIpcHandlers } from "./projects-ipc";
 import { ProjectRuntime } from "./project-runtime";
 import { describeProjectClips } from "./project-clip-details";
@@ -271,6 +273,28 @@ configureAppLogging();
 const projectService = new ProjectService({
   store: ProjectStore.atRoot(dataRoot()),
   events: new ProjectEventLog(),
+  // 开始监控前校验目录（#128）：监控状态一开界面就锁住输入，拼错的路径必须当场拒绝
+  checkDirectory: (directory) => {
+    let stat;
+    try {
+      stat = statSync(directory);
+    } catch {
+      throw new Error(`监控目录不存在：${directory}`);
+    }
+    if (!stat.isDirectory()) throw new Error(`监控目录不是文件夹：${directory}`);
+  },
+  // 监控目录快照（#128）：表格数据源；目录里只有文件系统能给出的大小 / 修改时间，
+  // 时长按视频库已知值补，未导入的文件显示「—」，不在每次推送里跑 ffprobe。
+  scanDirectory: (watchDir, statuses) => {
+    const durations = new Map(
+      listLibrary(settings.notesRoot).map((video) => [video.id as string, video.durationSeconds] as const),
+    );
+    return scanProjectDirectory({
+      watchDir,
+      statuses,
+      durationOf: (videoId) => durations.get(videoId),
+    });
+  },
   // 产出卡片（#130）：切片内容以 `video.json` 为准，视频库补原比例与来源文件名
   describeClips: (record) => {
     const library = new Map(listLibrary(settings.notesRoot).map((video) => [video.id as string, video] as const));
@@ -307,6 +331,28 @@ const projectRuntime = new ProjectRuntime({
       outputDir: entry.outputDir,
       sourcePath: entry.sourcePath,
       hasVideo: entry.hasVideo ?? true,
+    };
+  },
+  // 监控目录里还没导入的文件（#128「开始整理」）：ffprobe 取时长，openVideo 注册进视频库
+  describeSource: async (path) => {
+    let probe;
+    try {
+      probe = await probeVideo(path);
+    } catch (err) {
+      logger().warn("project", "监控目录文件探测失败", {
+        path,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+    const video = openVideo(path, probe.duration, settings.notesRoot);
+    return {
+      id: video.id,
+      name: basename(path),
+      durationSeconds: probe.duration,
+      outputDir: video.outputDir,
+      sourcePath: video.sourcePath,
+      hasVideo: probe.hasVideo,
     };
   },
   context: async () => {
@@ -1933,7 +1979,16 @@ void app.whenReady().then(async () => {
         const err = await shell.openPath(dir);
         if (err !== "") throw new Error(`打开切片目录失败：${err}`);
       },
-      (projectId, videoIds) => projectRuntime.startOrganize(projectId, videoIds),
+      async (projectId, videoIds) => {
+        // 目录里的新文件还没有视频库元数据：先按路径注册，再走常规加入整理
+        const wanted = new Set(videoIds);
+        const sources = projectService
+          .get(projectId)
+          .directory.filter((file) => wanted.has(file.videoId) && !file.added)
+          .map((file) => file.path);
+        await projectRuntime.registerSources(projectId, sources);
+        return projectRuntime.startOrganize(projectId, videoIds);
+      },
     ),
   )) {
     ipcMain.handle(channel, guard(channel, handler));

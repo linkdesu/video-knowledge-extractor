@@ -15,12 +15,14 @@ import type {
   CreateProjectInput,
   ProjectClipInfo,
   ProjectDetail,
+  ProjectDirectoryFile,
   ProjectEventPayload,
   ProjectQueueState,
   ProjectSettingsPatch,
   ProjectSummary,
 } from "../shared/ipc";
 import { describeProjectClips } from "./project-clip-details";
+import type { DirectoryStatus } from "./project-directory";
 
 /**
  * 项目业务层（#125）：持久化清单 + 运行日志 + 每项目状态机。
@@ -35,6 +37,19 @@ export type ProjectServiceDeps = {
    * 缺省只拼项目内的路径与文件名标题，不读视频库。
    */
   describeClips?: (record: ProjectRecord) => ProjectClipInfo[];
+  /**
+   * 监控目录快照（#128）。main 注入：读目录并按视频库补时长；
+   * 缺省时 `detail.directory` 为空，界面只显示监控状态。
+   */
+  scanDirectory?: (
+    watchDir: string,
+    statuses: ReadonlyMap<string, DirectoryStatus>,
+  ) => ProjectDirectoryFile[];
+  /**
+   * 「开始监控」前校验目录（#128）。main 注入：目录不存在 / 不是目录直接抛可读错误；
+   * 监控开关一旦打开界面就锁住输入框，所以拼错的路径必须在落盘前拒绝。
+   */
+  checkDirectory?: (directory: string) => void;
 };
 
 type ChangeListener = (payload: ProjectEventPayload) => void;
@@ -43,6 +58,10 @@ export class ProjectService {
   private readonly store: ProjectStore;
   private readonly events: ProjectEventLog;
   private readonly describeClips: (record: ProjectRecord) => ProjectClipInfo[];
+  private readonly scanDirectory:
+    | ((watchDir: string, statuses: ReadonlyMap<string, DirectoryStatus>) => ProjectDirectoryFile[])
+    | undefined;
+  private readonly checkDirectory: ((directory: string) => void) | undefined;
   private readonly runtimes = new Map<string, ClipProject>();
   private readonly listeners = new Set<ChangeListener>();
   /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
@@ -54,6 +73,8 @@ export class ProjectService {
   constructor(deps: ProjectServiceDeps) {
     this.store = deps.store;
     this.events = deps.events;
+    this.scanDirectory = deps.scanDirectory;
+    this.checkDirectory = deps.checkDirectory;
     this.describeClips =
       deps.describeClips ??
       ((record) =>
@@ -125,6 +146,7 @@ export class ProjectService {
   }
 
   startMonitor(projectId: string, directory: string): ProjectDetail {
+    this.checkDirectory?.(directory);
     const record = this.store.startMonitor(projectId, directory);
     return this.publish(projectId, `监控已启动：${record.watchDir ?? directory}`);
   }
@@ -181,6 +203,14 @@ export class ProjectService {
     if (!controller.confirmTopic(topicKeyValue, [...lineIds])) throw new Error("所选字幕为空");
     const slice = controller.sliceQueue.filter((job) => job.topicKey === topicKeyValue).at(-1);
     return this.publish(projectId, `切片入队：${topic.title} · ${slice?.lines.length ?? 0} 行字幕`);
+  }
+
+  /**
+   * 只推一次最新快照，不写运行日志。执行器在控制器状态变化后调用：
+   * 分析/切片完成的时刻没有业务写操作，否则界面要等下一次事件才看到新状态（#128 三态）。
+   */
+  refresh(projectId: string): ProjectDetail {
+    return this.publish(projectId);
   }
 
   clipsDir(projectId: string): string {
@@ -260,8 +290,39 @@ export class ProjectService {
       videoIds: [...record.videoIds],
       clips: this.describeClips(record),
       queue: controller === null ? null : queueSnapshot(controller),
+      directory: this.directoryOf(record, controller),
       events: this.events.list(record.id),
     };
+  }
+
+  /**
+   * 监控目录快照：每行合并控制器里的整理状态。控制器没接入时，
+   * 项目清单里已加入的 id 按「持续整理中」显示（生产路径总会懒建控制器）。
+   */
+  private directoryOf(record: ProjectRecord, controller: ClipProject | null): ProjectDirectoryFile[] {
+    if (!record.monitoring || record.watchDir === null || this.scanDirectory === undefined) return [];
+    // 清单是「已加入」的真相源：重启后控制器只知道文件、added 还没恢复（#126 队列尚未落盘），
+    // 这时按「持续整理中」显示，不能让已加入的视频退回「未整理」。
+    const joined = new Set(record.videoIds);
+    const statuses = new Map<string, DirectoryStatus>();
+    for (const videoId of joined) {
+      statuses.set(videoId, { added: true, organizeStatus: "organizing", processedSeconds: 0 });
+    }
+    if (controller !== null) {
+      for (const file of controller.files.values()) {
+        const added = file.added || joined.has(file.id);
+        statuses.set(file.id, {
+          added,
+          organizeStatus: !added
+            ? "unorganized"
+            : file.added
+              ? controller.statusOf(file.id)
+              : "organizing",
+          processedSeconds: added ? file.processedSeconds : 0,
+        });
+      }
+    }
+    return this.scanDirectory(record.watchDir, statuses);
   }
 
   /** 一次变更 = 一条运行日志 + 一条结构化日志（ADR-0028）+ 一次详情推送。 */

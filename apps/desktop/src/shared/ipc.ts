@@ -445,6 +445,27 @@ export type ProjectFileInfo = {
   unslicedSeconds: number;
 };
 
+/**
+ * 监控目录里的一行（#128，原型 L60 / L130）：目录扫描 + 项目状态合并。
+ * 表格只读这个列表；`queue.files` 仍然只描述控制器里已知的文件。
+ */
+export type ProjectDirectoryFile = {
+  videoId: VideoId;
+  /** 文件名（含扩展名），表格第一列。 */
+  name: string;
+  /** 绝对路径；「开始整理」时主进程据此读元数据。 */
+  path: string;
+  sizeBytes: number;
+  /** 文件修改时间（ISO），表格按它倒序。 */
+  modifiedAt: string;
+  /** 视频库已知的时长；未导入或读不出时为 null，界面显示 `—`。 */
+  durationSeconds: number | null;
+  added: boolean;
+  organizeStatus: ProjectOrganizeStatus;
+  /** 从开头起连续、所有主题都已切片的时长（「已处理」小字）；未接入控制器为 0。 */
+  processedSeconds: number;
+};
+
 export type ProjectQueueState = {
   analysis: ProjectAnalysisTaskInfo[];
   slices: ProjectSliceTaskInfo[];
@@ -460,6 +481,8 @@ export type ProjectDetail = ProjectSummary & {
   clips: ProjectClipInfo[];
   /** 队列快照；项目执行器接入（#126）前为 null，界面按「队列空闲」显示。 */
   queue: ProjectQueueState | null;
+  /** 监控目录当前快照（#128）：按修改时间倒序；未监控或没有扫描器时为空。 */
+  directory: ProjectDirectoryFile[];
   /** 最新在前，每项目最多 80 条。 */
   events: ProjectLogEvent[];
 };

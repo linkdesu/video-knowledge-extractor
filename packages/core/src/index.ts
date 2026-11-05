@@ -93,7 +93,7 @@ export type { StorageMigrationResult } from "./core/storage-layout";
 export { resolveEndpointFromEnv, resolveLlmEndpoint, fetchModelIds } from "./llm/endpoint";
 export { displayUrl, isTimeoutError, llmHttpErrorMessage, llmNetworkErrorMessage } from "./llm/errors";
 export type { Progress, StepName, LlmEndpoint } from "./core/steps";
-export { videoIdFor } from "./core/paths";
+export { openVideo, videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo, deleteVideo } from "./core/library";
 export type { LibraryVideo, LibraryVideoStatus, LibraryDetail } from "./core/library";
 export { acquireVideoLock, isVideoLockBusy, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
