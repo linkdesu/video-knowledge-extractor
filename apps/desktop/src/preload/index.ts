@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AsrUpdatePatch,
   CorrectionEntry,
+  CreateProjectInput,
   DirectoryKind,
   ExtractTarget,
   JobSnapshot,
@@ -12,6 +13,10 @@ import type {
   ModelDownloadEvent,
   ModelsCheck,
   ModelsStatus,
+  ProjectDetail,
+  ProjectEventPayload,
+  ProjectSettingsPatch,
+  ProjectSummary,
   PromptStatus,
   SettingsPatch,
   SettingsStatus,
@@ -131,6 +136,26 @@ const api: VnoteApi = {
   prompts: () => ipcRenderer.invoke(IPC.prompts) as Promise<PromptStatus[]>,
   savePrompt: (id: string, text: string) => ipcRenderer.invoke(IPC.savePrompt, id, text) as Promise<PromptStatus[]>,
   resetPrompt: (id: string) => ipcRenderer.invoke(IPC.resetPrompt, id) as Promise<PromptStatus[]>,
+  listProjects: () => ipcRenderer.invoke(IPC.projectsList) as Promise<ProjectSummary[]>,
+  getProject: (projectId: string) => ipcRenderer.invoke(IPC.projectsGet, projectId) as Promise<ProjectDetail>,
+  createProject: (input: CreateProjectInput) => ipcRenderer.invoke(IPC.projectsCreate, input) as Promise<ProjectDetail>,
+  deleteProject: (projectId: string) => ipcRenderer.invoke(IPC.projectsDelete, projectId) as Promise<void>,
+  startProjectMonitor: (projectId: string, directory: string) =>
+    ipcRenderer.invoke(IPC.projectsStartMonitor, projectId, directory) as Promise<ProjectDetail>,
+  startProjectOrganize: (projectId: string, videoIds: string[]) =>
+    ipcRenderer.invoke(IPC.projectsStartOrganize, projectId, videoIds) as Promise<ProjectDetail>,
+  updateProjectSettings: (projectId: string, patch: ProjectSettingsPatch) =>
+    ipcRenderer.invoke(IPC.projectsUpdateSettings, projectId, patch) as Promise<ProjectDetail>,
+  confirmProjectTopic: (projectId: string, topicKey: string, lineIds: string[]) =>
+    ipcRenderer.invoke(IPC.projectsConfirmTopic, projectId, topicKey, lineIds) as Promise<ProjectDetail>,
+  openProjectClipsDir: (projectId: string) => ipcRenderer.invoke(IPC.projectsOpenClipsDir, projectId) as Promise<void>,
+  onProjectEvent: (listener: (payload: ProjectEventPayload) => void) => {
+    const listenerWrapper = (_event: Electron.IpcRendererEvent, payload: ProjectEventPayload): void => listener(payload);
+    ipcRenderer.on(IPC.projectsEvent, listenerWrapper);
+    return () => {
+      ipcRenderer.removeListener(IPC.projectsEvent, listenerWrapper);
+    };
+  },
 };
 
 const lab = labApi();
