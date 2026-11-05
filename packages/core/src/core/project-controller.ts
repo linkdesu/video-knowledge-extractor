@@ -1,4 +1,5 @@
 import type { Segment } from "./types";
+import type { TopicStatus } from "./video-data";
 
 /** 停止增长多久后补尾段；必须严格超过，恰好等于不补（#121 第 28、26 条）。 */
 export const GROWTH_IDLE_SECONDS = 30;
@@ -6,7 +7,6 @@ const EPS = 1e-6;
 
 export type TaskStatus = "waiting" | "running" | "done";
 export type OrganizeStatus = "unorganized" | "organizing" | "finished";
-export type TopicStatus = "proposed" | "queued" | "generating" | "done";
 
 /** 来源字幕行；确认弹窗按它勾选，切片记录按快照保存。 */
 export type SubtitleLine = {
@@ -192,6 +192,14 @@ export class ClipProject {
     this.pump();
   }
 
+  /** 打开时把已有的待确认主题全部入切片队列；关闭时已入队的任务继续。 */
+  setAutoSlice(enabled: boolean): void {
+    if (this.autoSlice === enabled) return;
+    this.autoSlice = enabled;
+    if (enabled) this.enqueueProposedTopics();
+    this.pump();
+  }
+
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (!job) return;
@@ -204,6 +212,7 @@ export class ClipProject {
       lineIds: [...t.lineIds],
       status: "proposed",
     }));
+    if (this.autoSlice) this.enqueueProposedTopics();
     this.refreshProcessed(job.fileId);
     this.pump();
   }
@@ -259,6 +268,14 @@ export class ClipProject {
     });
     this.pump();
     return true;
+  }
+
+  statusOf(fileId: string): OrganizeStatus {
+    const file = this.requireFile(fileId);
+    if (!file.added) return "unorganized";
+    const idle = this.clock - file.lastGrowthSeconds > GROWTH_IDLE_SECONDS;
+    const allSliced = file.processedSeconds >= file.durationSeconds - EPS;
+    return idle && allSliced ? "finished" : "organizing";
   }
 
   proposedTopics(): TopicState[] {
@@ -317,6 +334,14 @@ export class ClipProject {
       if (next) {
         next.status = "running";
         this.executor.slice(next);
+      }
+    }
+  }
+
+  private enqueueProposedTopics(): void {
+    for (const job of this.analysisQueue) {
+      for (const topic of job.topics) {
+        if (topic.status === "proposed") this.confirmTopic(topicKey(job.id, topic.id), topic.lineIds);
       }
     }
   }

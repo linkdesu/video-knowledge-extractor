@@ -202,7 +202,6 @@ export type {
   SubtitleLine,
   TaskStatus,
   TopicState,
-  TopicStatus,
 } from "./core/project-controller";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
