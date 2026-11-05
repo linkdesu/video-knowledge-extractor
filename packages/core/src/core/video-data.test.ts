@@ -199,6 +199,110 @@ describe("video.json 文档", () => {
     expect(d!.topics[0]!.clips[0]!.segmentOffsets).toEqual([]);
     expect(d!.topics[0]!.clips[1]!.segmentOffsets).toEqual([2]);
   });
+
+  test("项目切片记录往返：字幕行快照与片段列表保留", () => {
+    const dir = makeTmpDir("vnote-videodata-");
+    const video = makeVideo(dir);
+    const clip = {
+      file: "007-为什么你的选题没人看？.mp4",
+      start: 8,
+      end: 60,
+      segmentIndexes: [0, 1],
+      segmentOffsets: [2, 14],
+      subtitles: [
+        { id: "line-3", start: 10, end: 20, speaker: "主播", text: "第一行" },
+        { id: "line-9", start: 50, end: 60, speaker: "观众", text: "第二行" },
+      ],
+      segments: [
+        { start: 10, end: 20 },
+        { start: 50, end: 60 },
+      ],
+    };
+    writeVideoData(dir, {
+      ...emptyVideoData(video),
+      topics: [
+        {
+          id: "t1",
+          title: "为什么你的选题没人看？",
+          summary: "s",
+          segments: [{ start: 10, end: 60 }],
+          dirName: "d",
+          status: "done",
+          selected: true,
+          keyPoints: [],
+          clips: [clip],
+          startedAt: null,
+          elapsedSeconds: null,
+          error: null,
+        },
+      ],
+    } as unknown as VideoData);
+    expect(readVideoData(dir)!.topics[0]!.clips[0]).toEqual(clip);
+  });
+
+  test("旧记录没有快照字段时读回不补空数组", () => {
+    const dir = makeTmpDir("vnote-videodata-");
+    const video = makeVideo(dir);
+    writeVideoData(dir, {
+      ...emptyVideoData(video),
+      topics: [
+        {
+          id: "t1",
+          title: "T",
+          summary: "s",
+          segments: [{ start: 1, end: 2 }],
+          dirName: "d",
+          status: "done",
+          selected: true,
+          keyPoints: [],
+          clips: [{ file: "topic.mp4", start: 1, end: 2, segmentIndexes: [0], segmentOffsets: [] }],
+          startedAt: null,
+          elapsedSeconds: null,
+          error: null,
+        },
+      ],
+    } as unknown as VideoData);
+    const clip = readVideoData(dir)!.topics[0]!.clips[0]!;
+    expect(clip.subtitles).toBeUndefined();
+    expect(clip.segments).toBeUndefined();
+  });
+
+  test("快照字段形状非法时忽略，不挡住整个文档", () => {
+    const dir = makeTmpDir("vnote-videodata-");
+    const video = makeVideo(dir);
+    writeVideoData(dir, {
+      ...emptyVideoData(video),
+      topics: [
+        {
+          id: "t1",
+          title: "T",
+          summary: "s",
+          segments: [{ start: 1, end: 2 }],
+          dirName: "d",
+          status: "done",
+          selected: true,
+          keyPoints: [],
+          clips: [
+            {
+              file: "007-x.mp4",
+              start: 1,
+              end: 2,
+              segmentIndexes: [0],
+              segmentOffsets: [],
+              subtitles: "坏数据",
+              segments: [{ start: "x", end: 2 }, { start: 3, end: 4 }],
+            },
+          ],
+          startedAt: null,
+          elapsedSeconds: null,
+          error: null,
+        },
+      ],
+    } as unknown as VideoData);
+    const clip = readVideoData(dir)!.topics[0]!.clips[0]!;
+    expect(clip.subtitles).toBeUndefined();
+    expect(clip.segments).toEqual([{ start: 3, end: 4 }]);
+  });
 });
 
 describe("状态归一", () => {

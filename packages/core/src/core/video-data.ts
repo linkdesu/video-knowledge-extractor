@@ -15,7 +15,23 @@ export type TopicStatus = "queued" | "generating" | "done" | "failed" | "needs-r
 /** 主播的来源：自动识别 / 人工修正 / 未识别（旧文档、还没跑识别、或已被用户清空）。 */
 export type HostSource = "auto" | "manual" | null;
 
-export type TopicClip = { file: string; start: number; end: number; segmentIndexes: number[]; segmentOffsets: number[] };
+/**
+ * 项目切片的字幕行快照：生成时选中的行内容与行 id；来源字幕或说话人名后来变化不影响这份记录。
+ * 形状兼容控制器（#123）的 `SubtitleLine`，`SliceJob.lines` 可直接传给 `generateProjectClip`。
+ */
+export type ClipSubtitle = { id?: string; start: number; end: number; speaker?: string; text: string };
+
+export type TopicClip = {
+  file: string;
+  start: number;
+  end: number;
+  segmentIndexes: number[];
+  segmentOffsets: number[];
+  /** 项目切片：生成时选中的字幕行快照（时间顺序）；旧记录与非项目切片缺失 */
+  subtitles?: ClipSubtitle[];
+  /** 项目切片：快照字幕行合并出的片段列表（未经前移）；旧记录与非项目切片缺失 */
+  segments?: Segment[];
+};
 
 export type TopicRecord = {
   id: TopicId;
@@ -147,14 +163,42 @@ function parseOptionalNumberArray(v: unknown): number[] {
 function parseClips(v: unknown, where: string): TopicClip[] {
   return requireArray(v, where).map((c, i) => {
     if (!isObject(c)) throw new Error(`${where}[${i}] 不是对象`);
-    return {
+    const clip: TopicClip = {
       file: readString(c.file, `${where}[${i}].file`),
       start: readNumber(c.start, `${where}[${i}].start`),
       end: readNumber(c.end, `${where}[${i}].end`),
       segmentIndexes: parseNumberArray(c.segmentIndexes, `${where}[${i}].segmentIndexes`),
       segmentOffsets: parseOptionalNumberArray(c.segmentOffsets),
     };
+    // 项目切片的附加快照：缺失表示旧记录或非项目切片；形状非法时忽略，不挡住整个文档
+    if (Array.isArray(c.subtitles)) clip.subtitles = parseClipSubtitles(c.subtitles);
+    if (Array.isArray(c.segments)) clip.segments = parseOptionalSegments(c.segments);
+    return clip;
   });
+}
+
+function parseClipSubtitles(items: unknown[]): ClipSubtitle[] {
+  const out: ClipSubtitle[] = [];
+  for (const item of items) {
+    if (!isObject(item)) continue;
+    const { start, end, speaker, text } = item;
+    if (typeof start !== "number" || !Number.isFinite(start) || typeof end !== "number" || !Number.isFinite(end)) continue;
+    if (typeof text !== "string") continue;
+    const line: ClipSubtitle = { start, end, text };
+    if (typeof item.id === "string") line.id = item.id;
+    if (typeof speaker === "string") line.speaker = speaker;
+    out.push(line);
+  }
+  return out;
+}
+
+function parseOptionalSegments(items: unknown[]): Segment[] {
+  const out: Segment[] = [];
+  for (const item of items) {
+    if (!isObject(item) || typeof item.start !== "number" || !Number.isFinite(item.start) || typeof item.end !== "number" || !Number.isFinite(item.end)) continue;
+    out.push({ start: item.start, end: item.end });
+  }
+  return out;
 }
 function parseSegments(v: unknown, where: string): Segment[] {
   return requireArray(v, where).map((s, i) => {

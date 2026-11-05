@@ -50,7 +50,8 @@ export {
   loadVideoData,
   projectRunState,
 } from "./core/video-data";
-export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
+export type { TopicStatus, TopicClip, ClipSubtitle, TopicRecord, VideoData, VideoRef } from "./core/video-data";
+export { allocateProjectClip, clipFileTitle, projectClipFileName, projectClipSegments } from "./core/project-clips";
 export {
   videoNeedsRerun,
   renameSpeaker,
