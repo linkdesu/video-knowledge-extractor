@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTmpDir } from "../testing/temp-dirs";
 import { allocateProjectClip, clipFileTitle, generateProjectClip, projectClipFileName, projectClipSegments } from "./project-clips";
@@ -277,5 +277,118 @@ describe("generateProjectClip（真实 ffmpeg，复用 ADR-0026）", () => {
     const retried = await generateProjectClip({ ...input, sourcePath: join(dir, "src.mp4") });
     expect(retried.clip.file).toBe("001-失败重试.mp4");
     expect(retried.nextSeq).toBe(2);
+  });
+});
+
+describe("项目切片边界（#124 验收）", () => {
+  test("Windows 非法字符标题：文件名被清洗，文件真实可播", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 12, 96, 54);
+    const clipsDir = join(dir, "clips");
+    const { clip } = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "直播/复盘: 3 个技巧?",
+      subtitles: [line(3, 5, "一行")],
+    });
+    expect(clip.file).toBe("001-直播_复盘_ 3 个技巧_.mp4");
+    expect(clip.file).not.toMatch(/[\\/:*?"<>|]/);
+    decodes(join(clipsDir, clip.file));
+  });
+
+  test("全角问号原样保留，CON 加序号前缀后合法", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 12, 96, 54);
+    const clipsDir = join(dir, "clips");
+    const first = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "为什么你的选题没人看？",
+      subtitles: [line(3, 5, "一行")],
+    });
+    const second = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: first.nextSeq,
+      title: "CON",
+      subtitles: [line(3, 5, "一行")],
+    });
+    expect(first.clip.file).toBe("001-为什么你的选题没人看？.mp4");
+    expect(second.clip.file).toBe("002-CON.mp4");
+    expect(readdirSync(clipsDir).sort()).toEqual(["001-为什么你的选题没人看？.mp4", "002-CON.mp4"]);
+  });
+
+  test("超长标题按 60 码点截断，生成的文件名与记录一致", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 12, 96, 54);
+    const clipsDir = join(dir, "clips");
+    const { clip } = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "汉".repeat(61),
+      subtitles: [line(3, 5, "一行")],
+    });
+    expect(clip.file).toBe(`001-${"汉".repeat(60)}.mp4`);
+    expect(existsSync(join(clipsDir, clip.file))).toBe(true);
+  });
+
+  test("序号满 1000 自然四位；目录里的 999 之后从 1000 开始", () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    writeFileSync(join(dir, "999-旧切片.mp4"), "x");
+    const picked = allocateProjectClip({ clipsDir: dir, nextSeq: 1, title: "标题" });
+    expect(picked.seq).toBe(1000);
+    expect(picked.file).toBe("1000-标题.mp4");
+  });
+
+  test("删除切片后序号不复用", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 12, 96, 54);
+    const clipsDir = join(dir, "clips");
+    const first = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "标题",
+      subtitles: [line(3, 5, "一行")],
+    });
+    unlinkSync(join(clipsDir, first.clip.file));
+    const second = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: first.nextSeq,
+      title: "标题",
+      subtitles: [line(3, 5, "一行")],
+    });
+    expect(second.clip.file).toBe("002-标题.mp4");
+    expect(existsSync(join(clipsDir, "001-标题.mp4"))).toBe(false);
+  });
+
+  test("生成后目录里只有切片文件，不留列表或半成品", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 20, 96, 54);
+    const clipsDir = join(dir, "clips");
+    const { clip } = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "干净目录",
+      subtitles: [line(5, 7, "一"), line(15, 17, "二")],
+    });
+    expect(readdirSync(clipsDir)).toEqual([clip.file]);
   });
 });
