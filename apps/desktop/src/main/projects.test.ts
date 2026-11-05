@@ -287,3 +287,140 @@ describe("项目服务：切片序号与记录（#126）", () => {
     expect(new ProjectService({ store: ProjectStore.atRoot(dataDir), events: new ProjectEventLog() }).get(project.id).name).toBe("分离");
   });
 });
+
+describe("项目服务：开始监控前校验目录（#128）", () => {
+  test("目录不可用时拒绝开始监控，不写清单也不留「监控中」", () => {
+    const root = makeTmpDir("projects-monitor-check-");
+    const store = ProjectStore.atRoot(root);
+    const service = new ProjectService({
+      store,
+      events: new ProjectEventLog(),
+      checkDirectory: (directory) => {
+        if (directory !== join(root, "recordings")) throw new Error("监控目录不存在");
+      },
+    });
+    const project = service.create({ name: "校验", rootDir: join(root, "p") });
+
+    expect(() => service.startMonitor(project.id, join(root, "拼错目录"))).toThrow("监控目录不存在");
+    expect(service.get(project.id)).toMatchObject({ monitoring: false, watchDir: null });
+    expect(service.get(project.id).events.map((event) => event.text)).toEqual(["创建项目：校验"]);
+
+    expect(service.startMonitor(project.id, join(root, "recordings"))).toMatchObject({
+      monitoring: true,
+      watchDir: join(root, "recordings"),
+    });
+  });
+});
+
+describe("项目服务：监控目录快照（#128）", () => {
+  test("detail.directory 来自注入的扫描器；未监控时为空", () => {
+    const root = makeTmpDir("projects-directory-");
+    const store = ProjectStore.atRoot(root);
+    const service = new ProjectService({
+      store,
+      events: new ProjectEventLog(),
+      scanDirectory: (watchDir, statuses) => [
+        {
+          videoId: "v1",
+          name: "增长中.mp4",
+          path: join(watchDir, "增长中.mp4"),
+          sizeBytes: 10,
+          modifiedAt: "2026-11-05T12:00:00.000Z",
+          durationSeconds: 600,
+          added: statuses.get("v1")?.added ?? false,
+          organizeStatus: statuses.get("v1")?.organizeStatus ?? "unorganized",
+          processedSeconds: statuses.get("v1")?.processedSeconds ?? 0,
+        },
+      ],
+    });
+    const project = service.create({ name: "目录", rootDir: join(root, "p") });
+
+    expect(service.get(project.id).directory).toEqual([]);
+
+    service.startMonitor(project.id, join(root, "recordings"));
+    expect(service.get(project.id).directory).toMatchObject([
+      { videoId: "v1", added: false, organizeStatus: "unorganized" },
+    ]);
+  });
+
+  test("已加入整理的文件带控制器状态；已加入未接执行器时按持续整理中", () => {
+    const root = makeTmpDir("projects-directory-status-");
+    const service = new ProjectService({
+      store: ProjectStore.atRoot(root),
+      events: new ProjectEventLog(),
+      scanDirectory: (_watchDir, statuses) =>
+        ["v1", "v2", "v3"].map((id) => ({
+          videoId: id,
+          name: `${id}.mp4`,
+          path: `/recordings/${id}.mp4`,
+          sizeBytes: 1,
+          modifiedAt: "2026-11-05T12:00:00.000Z",
+          durationSeconds: null,
+          added: statuses.get(id)?.added ?? false,
+          organizeStatus: statuses.get(id)?.organizeStatus ?? "unorganized",
+          processedSeconds: statuses.get(id)?.processedSeconds ?? 0,
+        })),
+    });
+    const project = service.create({ name: "状态", rootDir: join(root, "p") });
+    service.startMonitor(project.id, join(root, "recordings"));
+    service.startOrganize(project.id, ["v1", "v2"]);
+
+    let detail = service.get(project.id);
+    expect(detail.directory.map((f) => [f.videoId, f.added, f.organizeStatus])).toEqual([
+      ["v1", true, "organizing"],
+      ["v2", true, "organizing"],
+      ["v3", false, "unorganized"],
+    ]);
+
+    const { controller } = attachController(service, project.id);
+    // v3 是 0 秒的空文件：停止增长超过 30 秒后已经是「整理已结束」
+    controller.addFile({ id: "v2", name: "v2.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    controller.addFile({ id: "v3", name: "v3.mp4", durationSeconds: 0, growing: false, modifiedSeconds: 0 });
+    controller.startOrganize(["v1", "v2", "v3"]);
+    controller.tick(31);
+    detail = service.get(project.id);
+    expect(detail.directory.map((f) => [f.videoId, f.organizeStatus, f.processedSeconds])).toEqual([
+      ["v1", "organizing", 0],
+      ["v2", "organizing", 0],
+      ["v3", "finished", 0],
+    ]);
+  });
+
+  test("重启后清单里已加入的视频不会退回「未整理」（控制器只知道文件、还没 startOrganize）", () => {
+    const root = makeTmpDir("projects-directory-restart-");
+    const service = new ProjectService({
+      store: ProjectStore.atRoot(root),
+      events: new ProjectEventLog(),
+      scanDirectory: (_watchDir, statuses) =>
+        ["v1"].map((id) => ({
+          videoId: id,
+          name: `${id}.mp4`,
+          path: `/recordings/${id}.mp4`,
+          sizeBytes: 1,
+          modifiedAt: "2026-11-05T12:00:00.000Z",
+          durationSeconds: 600,
+          added: statuses.get(id)?.added ?? false,
+          organizeStatus: statuses.get(id)?.organizeStatus ?? "unorganized",
+          processedSeconds: statuses.get(id)?.processedSeconds ?? 0,
+        })),
+    });
+    const project = service.create({ name: "重启", rootDir: join(root, "p") });
+    service.startMonitor(project.id, join(root, "recordings"));
+    service.startOrganize(project.id, ["v1"]);
+
+    // 重启后 attachProject 会把清单里的 id 重新 addFile，但 added 仍是 false
+    const controller = new ClipProject({
+      executor: { analyze() {}, slice() {} },
+      transcriptOf: () => LINES,
+      autoSlice: true,
+    });
+    controller.addFile({ id: "v1", name: "v1.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    service.attachRuntime(project.id, controller);
+
+    expect(service.get(project.id).directory[0]).toMatchObject({
+      videoId: "v1",
+      added: true,
+      organizeStatus: "organizing",
+    });
+  });
+});

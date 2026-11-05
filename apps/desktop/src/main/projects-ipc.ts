@@ -59,7 +59,7 @@ export function projectIpcHandlers(
   service: ProjectService,
   openDirectory: (path: string) => Promise<void>,
   /** 加入整理前要先走现有导入（注册、规范化）；缺省直接交给业务层（测试与未接执行器时）。 */
-  organizer?: (projectId: string, videoIds: string[]) => ProjectDetail,
+  organizer?: (projectId: string, videoIds: string[]) => ProjectDetail | Promise<ProjectDetail>,
 ): Record<ProjectInvokeChannel, ProjectHandler> {
   return {
     [IPC.projectsList]: () => service.list(),

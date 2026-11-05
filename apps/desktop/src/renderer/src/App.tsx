@@ -14,6 +14,7 @@ import { LibraryPage } from "./pages/LibraryPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { ProjectClipsTab } from "./components/ProjectClipsTab";
+import { ProjectConfigTab } from "./components/ProjectConfigTab";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DiarizationLabPage } from "./pages/DiarizationLabPage";
@@ -444,6 +445,37 @@ export function App() {
               project={project}
               tab={route.tab}
               panels={{
+                config: (
+                  <ProjectConfigTab
+                    project={project}
+                    // 三个动作都被主进程 publish 成 projects:event 全量推送；这里不再用
+                    // invoke 的返回值 setProject —— 开始整理要跑导入/探测，响应可能晚于
+                    // 期间到达的事件推送，覆盖会把手里的新状态换回旧快照。
+                    onStartMonitor={async (directory) => {
+                      try {
+                        await window.vnote.startProjectMonitor(project.id, directory);
+                      } catch (err) {
+                        showToast(`开始监控失败：${errMessage(err)}`);
+                      }
+                    }}
+                    onChunkMinutes={async (minutes) => {
+                      try {
+                        await window.vnote.updateProjectSettings(project.id, {
+                          chunkMinutes: minutes,
+                        });
+                      } catch (err) {
+                        showToast(`保存分块时长失败：${errMessage(err)}`);
+                      }
+                    }}
+                    onOrganize={async (videoIds) => {
+                      try {
+                        await window.vnote.startProjectOrganize(project.id, videoIds);
+                      } catch (err) {
+                        showToast(`开始整理失败：${errMessage(err)}`);
+                      }
+                    }}
+                  />
+                ),
                 output: (
                   <ProjectClipsTab
                     project={project}

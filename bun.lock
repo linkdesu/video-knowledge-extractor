@@ -12,7 +12,7 @@
     },
     "apps/cli": {
       "name": "vnote",
-      "version": "0.1.49",
+      "version": "0.1.50",
       "bin": {
         "vnote": "./src/cli.ts",
       },
@@ -22,7 +22,7 @@
     },
     "apps/desktop": {
       "name": "@video-notes/desktop",
-      "version": "0.1.49",
+      "version": "0.1.50",
       "dependencies": {
         "@video-notes/core": "workspace:*",
         "sherpa-onnx-node": "1.13.8",
@@ -52,7 +52,7 @@
     },
     "packages/core": {
       "name": "@video-notes/core",
-      "version": "0.1.49",
+      "version": "0.1.50",
       "dependencies": {
         "dotenv": "^18.0.8",
         "sherpa-onnx-node": "1.13.8",

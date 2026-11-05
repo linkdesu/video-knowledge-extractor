@@ -2065,3 +2065,164 @@ textarea {
     justify-self: end;
   }
 }
+
+/* 项目配置（#128）：沿用暗色桌面 token，目录表单与五列表格均限制在内容区内。 */
+.vn-config {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+.vn-config-card {
+  min-width: 0;
+}
+.vn-config-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.vn-config-head h2 {
+  margin: 0;
+  color: var(--vn-fg);
+  font-size: 16px;
+  line-height: 1.4;
+}
+.vn-config-directory-form {
+  margin-top: 16px;
+}
+.vn-config-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--vn-dim);
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+.vn-config-directory-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+.vn-config .vn-input {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.vn-config-hint {
+  margin: 10px 0 0;
+  /* impeccable tiny-text：提示文案 12px 起，不沿用全局 .vn-hint 的 11px */
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vn-config-chunk {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  color: var(--vn-muted);
+  font-size: 13px;
+}
+.vn-config-chunk-input {
+  width: 88px;
+  font-variant-numeric: tabular-nums;
+}
+.vn-config-table-wrap {
+  max-width: 100%;
+  margin-top: 16px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.vn-config-table {
+  min-width: 640px;
+  table-layout: fixed;
+}
+.vn-config-table th:first-child,
+.vn-config-table td:first-child {
+  width: 42px;
+  padding-right: 6px;
+  padding-left: 6px;
+  text-align: center;
+}
+.vn-config-table th:nth-child(2) {
+  width: 32%;
+}
+.vn-config-table th:nth-child(3) {
+  width: 18%;
+}
+.vn-config-table th:nth-child(4) {
+  width: 17%;
+}
+.vn-config-check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--vn-violet);
+  cursor: pointer;
+}
+.vn-config-check:disabled {
+  cursor: not-allowed;
+}
+.vn-config-check:focus-visible {
+  outline: 2px solid var(--vn-violet);
+  outline-offset: 2px;
+}
+.vn-config-file-name {
+  color: var(--vn-fg);
+  overflow-wrap: anywhere;
+}
+.vn-config-time,
+.vn-config-file-meta {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vn-config-file-meta small,
+.vn-config-processed {
+  display: block;
+  margin-top: 2px;
+  color: var(--vn-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.vn-config-status[data-status="organizing"] {
+  border-color: var(--vn-line2);
+  background: var(--vn-panel2);
+  color: var(--vn-cyan);
+}
+.vn-config-status[data-status="finished"] {
+  border-color: var(--vn-line2);
+  background: var(--vn-panel2);
+  color: var(--vn-lime);
+}
+.vn-config-empty {
+  padding: 24px 12px;
+  color: var(--vn-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.vn-config-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+}
+.vn-config-selection {
+  color: var(--vn-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.vn-config-footnote {
+  margin: 0 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 700px) {
+  .vn-config-directory-line {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .vn-config-directory-line .vn-input {
+    grid-column: 1 / -1;
+  }
+}

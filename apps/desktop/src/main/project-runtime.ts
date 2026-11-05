@@ -3,6 +3,7 @@ import {
   acquireVideoLock,
   analyzeVideoRange,
   ClipProject,
+  videoIdFor,
   generateProjectClip,
   isVideoLockBusy,
   loadVideoData,
@@ -64,6 +65,11 @@ export type ProjectRuntimeDeps = {
   context?: () => Promise<ProjectJobContext>;
   /** 按视频 id 解析视频库元数据；main 注入 listLibrary。 */
   resolveVideo?: (videoId: string) => ProjectVideo | undefined;
+  /**
+   * 监控目录里还没导入视频库的文件（#128）：按路径读元数据，时长走 ffprobe。
+   * 缺省时不接受目录里的新文件（测试与未接监控的调用方）。
+   */
+  describeSource?: (path: string) => Promise<ProjectVideo | undefined>;
 };
 
 /**
@@ -114,6 +120,32 @@ export class ProjectRuntime {
     return controller;
   }
 
+  /**
+   * 把监控目录里还没进视频库的文件（#128「开始整理」）注册成运行时元数据，
+   * 返回真正注册成功的 videoId。已注册或解析不出的路径跳过，不写清单。
+   */
+  async registerSources(projectId: string, paths: readonly string[]): Promise<string[]> {
+    if (paths.length === 0) return [];
+    this.attachProject(projectId);
+    const registered: string[] = [];
+    for (const path of paths) {
+      const videoId = videoIdFor(path);
+      if (this.videos.get(projectId)?.has(videoId) === true) continue;
+      // 先看视频库：已导入的文件不用再探测，也不该被目录描述覆盖
+      const known = this.deps.resolveVideo?.(videoId);
+      if (known !== undefined) {
+        this.registerVideo(projectId, known);
+        registered.push(videoId);
+        continue;
+      }
+      const described = await this.deps.describeSource?.(path);
+      if (described === undefined || described.id !== videoId) continue;
+      this.registerVideo(projectId, described);
+      registered.push(videoId);
+    }
+    return registered;
+  }
+
   /** 加入整理：先补齐视频库元数据（现有导入的产物），再交给控制器排分析队列。 */
   startOrganize(projectId: string, videoIds: readonly string[]): ProjectDetail {
     this.attachProject(projectId);
@@ -157,6 +189,7 @@ export class ProjectRuntime {
       logger().error("project", "区间分析失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failAnalysis(job.id, message);
     } finally {
+      this.service.refresh(projectId);
       lock?.release();
     }
   }
@@ -185,6 +218,7 @@ export class ProjectRuntime {
       logger().error("project", "切片失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failSlice(job.id, message);
     } finally {
+      this.service.refresh(projectId);
       lock?.release();
     }
   }

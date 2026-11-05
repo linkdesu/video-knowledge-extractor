@@ -53,4 +53,5 @@ Each feature file starts with an H1 and one paragraph describing user-visible be
 - [Diarization Lab (r48)](./diarization-lab.md) — dev-only 验收台：拖样本、A/B 方案色带、试听、阈值滑块、差异标记。
 - [Evidence hygiene (r50, run-id gate r51)](./evidence-hygiene.md) — userData lives outside the evidence tree, `secrets.bin` in `tmp/verify` fails `up`/`down`/`doctor`, `latest` is always rewritten as a plain file, and `--run` rejects `latest` in any casing before creating anything.
 - [Clip slicer queues (#126)](./clip-slicer.md) — 区间分析增量、双槽执行器、同视频运行锁、项目切片记录；界面归 #127–#130。
+- [Project config tab (#128)](./project-config.md) — 监控目录与状态、填入示例、分块时长夹值、目录视频表（全选 / 勾选 / 开始整理 / 三种状态）。
 - [Media formats (r42, r45b normalized imports)](./media-formats.md) — the direct-play matrix, import-time normalization (`media.mp4`/`media.mp3`), the fixture recipe, the pure-audio journey and the `.ts` legacy playback notice.
