@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeTmpDir } from "@video-notes/core/testing";
-import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeLabUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeLabUrl, encodeSourceUrl, parseRangeHeader } from "./media";
+import { createMediaHandler, decodeClipUrl, decodeCoverUrl, decodeLabUrl, decodeProjectClipUrl, decodeSourceUrl, encodeClipUrl, encodeCoverUrl, encodeLabUrl, encodeProjectClipUrl, encodeSourceUrl, parseRangeHeader } from "./media";
 
 // 路径断言走 resolve，Windows 上才会得到同一套盘符与分隔符
 const FIXTURE = resolve(process.cwd(), "media-fixture");
@@ -55,6 +55,59 @@ describe("media url 编解码", () => {
   test("文件不存在返回 not-found", () => {
     const url = encodeClipUrl("a/b/missing.mp4");
     expect(decodeClipUrl(url, ROOT, fakeRealpath, () => false)).toMatchObject({ code: "not-found" });
+  });
+});
+
+describe("项目切片路由（#130）", () => {
+  const clipsDir = resolve(ROOT, "切片项目/clips");
+  const resolveClipsDir = (projectId: string) =>
+    projectId === "proj-1" ? clipsDir : undefined;
+
+  test("encode → decode 回环：解析到 <项目目录>/clips/<文件>", () => {
+    const url = encodeProjectClipUrl("proj-1", "003-为什么你的选题没人看？.mp4");
+    const out = decodeProjectClipUrl(url, resolveClipsDir, fakeRealpath, fakeStat);
+    if ("code" in out) throw new Error(`expected location, got ${out.code}`);
+    expect(out.absolutePath).toBe(resolve(clipsDir, "003-为什么你的选题没人看？.mp4"));
+    expect(out.contentType).toBe("video/mp4");
+  });
+
+  test("未知项目：not-found", () => {
+    expect(
+      decodeProjectClipUrl(encodeProjectClipUrl("proj-x", "001-a.mp4"), resolveClipsDir, fakeRealpath, fakeStat),
+    ).toMatchObject({ code: "not-found" });
+  });
+
+  test("文件里的目录段一律拒绝（只能停在 clips 下）", () => {
+    for (const file of ["../escape.mp4", "a/b.mp4", "a\\b.mp4"]) {
+      expect(
+        decodeProjectClipUrl(encodeProjectClipUrl("proj-1", file), resolveClipsDir, fakeRealpath, fakeStat),
+      ).toMatchObject({ code: "forbidden" });
+    }
+  });
+
+  test("非 mp4 与不存在文件分别拒绝", () => {
+    expect(
+      decodeProjectClipUrl(encodeProjectClipUrl("proj-1", "001-a.txt"), resolveClipsDir, fakeRealpath, fakeStat),
+    ).toMatchObject({ code: "forbidden" });
+    expect(
+      decodeProjectClipUrl(encodeProjectClipUrl("proj-1", "001-missing.mp4"), resolveClipsDir, fakeRealpath, () => false),
+    ).toMatchObject({ code: "not-found" });
+  });
+
+  test("handler 按 project-clip 前缀分发：文件存在 200，未知项目 404", async () => {
+    const clips = makeTmpDir("vnote-media-project-clip-");
+    writeFileSync(join(clips, "001-切片.mp4"), Buffer.from([0, 0, 0, 24, 65, 1, 2, 3]));
+    const handler = createMediaHandler({
+      root: () => ROOT,
+      resolveSource: () => undefined,
+      resolveOutputDir: () => undefined,
+      resolveProjectClipsDir: (id) => (id === "proj-1" ? clips : undefined),
+    });
+    const ok = await handler(new Request(encodeProjectClipUrl("proj-1", "001-切片.mp4")));
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toBe("video/mp4");
+    const missing = await handler(new Request(encodeProjectClipUrl("proj-x", "001-切片.mp4")));
+    expect(missing.status).toBe(404);
   });
 });
 

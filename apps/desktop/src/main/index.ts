@@ -22,6 +22,7 @@ import {
   clearCache,
   dataRoot,
   coverPath,
+  projectClipsDir,
   collectEnvironment,
   buildDiagnostics,
   configureLogging,
@@ -127,6 +128,7 @@ import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { ProjectService } from "./projects";
 import { projectIpcHandlers } from "./projects-ipc";
 import { ProjectRuntime } from "./project-runtime";
+import { describeProjectClips } from "./project-clip-details";
 import { resolveLabCache } from "./dev-lab/cache-mode";
 import { createLabRuntime, devLabEnabled, type LabRuntime } from "./dev-lab/register";
 import { LAB_IPC, type LabProgress } from "../shared/lab";
@@ -269,6 +271,24 @@ configureAppLogging();
 const projectService = new ProjectService({
   store: ProjectStore.atRoot(dataRoot()),
   events: new ProjectEventLog(),
+  // 产出卡片（#130）：切片内容以 `video.json` 为准，视频库补原比例与来源文件名
+  describeClips: (record) => {
+    const library = new Map(listLibrary(settings.notesRoot).map((video) => [video.id as string, video] as const));
+    return describeProjectClips({
+      projectId: record.id,
+      clipsDir: projectClipsDir(record),
+      refs: record.clips,
+      resolveVideo: (videoId) => {
+        const video = library.get(videoId);
+        if (video === undefined) return undefined;
+        return {
+          outputDir: video.outputDir,
+          resolution: video.resolution,
+          sourceName: video.sourcePath === undefined || video.sourcePath === "" ? video.title : basename(video.sourcePath),
+        };
+      },
+    });
+  },
 });
 projectService.onChange((payload: ProjectEventPayload) => {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.projectsEvent, payload);
@@ -1763,6 +1783,14 @@ void app.whenReady().then(async () => {
         return v === undefined ? undefined : v.mediaPath === "" ? v.sourcePath : v.mediaPath;
       },
       resolveOutputDir: (videoId) => listLibrary(settings.notesRoot).find((v) => v.id === videoId)?.outputDir,
+      // 项目切片在 `<项目目录>/clips`（#130）：按项目 id 落到清单里的目录，未知项目 404
+      resolveProjectClipsDir: (projectId) => {
+        try {
+          return projectService.clipsDir(projectId);
+        } catch {
+          return undefined;
+        }
+      },
       ...(labCache === undefined ? {} : { labRoot: () => labCache.root }),
     }),
   );

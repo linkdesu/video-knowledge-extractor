@@ -361,6 +361,29 @@ export type ProjectEventLevel = "info" | "warn" | "error";
 
 export type ProjectClipRefInfo = { seq: number; videoId: VideoId; topicId: string; file: string };
 
+/**
+ * 切片产出 tab 的一张卡片（#130，原型 L132）：只给卡片与播放浮层要显示的东西，
+ * 源文件名与完整路径只出现在浮层里，不进卡片。
+ */
+export type ProjectClipInfo = ProjectClipRefInfo & {
+  title: string;
+  /** 主题分类；分析管线暂不产出分类，空串时卡片不显示。 */
+  category: string;
+  /** 原比例（源视频分辨率）；未知为 null，界面据此决定缩略图比例与「原比例」文案。 */
+  resolution: VideoResolution | null;
+  lineCount: number;
+  segmentCount: number;
+  durationSeconds: number;
+  /** 选中字幕行合并出的片段（未经前移），浮层「各段」与播放累计时长用。 */
+  segments: SegmentInfo[];
+  /** 播放浮层「来源」：源文件名（不含路径）。 */
+  sourceName: string | null;
+  /** 播放浮层展示的完整文件路径。 */
+  path: string;
+  /** `vnote-media://project-clip/...`；文件缺失或项目未知时由协议层 404。 */
+  mediaUrl: string;
+};
+
 /** 项目列表一行（原型 L29）：配置 + 四个计数。 */
 export type ProjectSummary = {
   id: string;
@@ -434,7 +457,7 @@ export type ProjectLogEvent = { id: number; at: string; level: ProjectEventLevel
 export type ProjectDetail = ProjectSummary & {
   /** 已加入整理的视频 id，按加入顺序。 */
   videoIds: VideoId[];
-  clips: ProjectClipRefInfo[];
+  clips: ProjectClipInfo[];
   /** 队列快照；项目执行器接入（#126）前为 null，界面按「队列空闲」显示。 */
   queue: ProjectQueueState | null;
   /** 最新在前，每项目最多 80 条。 */

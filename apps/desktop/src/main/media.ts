@@ -153,6 +153,48 @@ export function decodeClipUrl(
   if (segments.length < 2 || segments.some((s) => s === "" || UNSAFE_SEGMENTS[s] !== undefined || s.includes("\\"))) {
     return { code: "forbidden", message: "非法的媒体路径" };
   }
+  return resolveClipFile(root, segments, realpath, statIsFile);
+}
+
+/**
+ * 项目切片（#130）：`vnote-media://project-clip/<base64url(项目 id + "/" + 文件名)>`。
+ * 项目切片在 `<项目目录>/clips`，不在视频库根下，所以按项目 id 找目录再校验落点。
+ */
+export function encodeProjectClipUrl(projectId: string, file: string): string {
+  return `${MEDIA_SCHEME}://project-clip/${Buffer.from(`${projectId}/${file}`, "utf8").toString("base64url")}`;
+}
+
+/** 解码 `vnote-media://project-clip/...`：只认「项目 id + 一层文件名」，其余与 `decodeClipUrl` 同一套校验。 */
+export function decodeProjectClipUrl(
+  url: string,
+  resolveClipsDir: (projectId: string) => string | undefined,
+  realpath?: (p: string) => string,
+  statIsFile?: (p: string) => boolean,
+): MediaLocation | UrlError {
+  const m = url.match(`^${MEDIA_SCHEME}://project-clip/([A-Za-z0-9_-]+)$`);
+  if (m === null || m[1] === undefined) return { code: "bad-url", message: "非法的媒体 url" };
+  const decoded = Buffer.from(m[1], "base64url").toString("utf8");
+  if (isAbsolute(decoded)) return { code: "forbidden", message: "非法的媒体路径" };
+  const segments = decoded.split("/");
+  // 文件名固定在 clips 下一层：多一层就是越界，少一层是坏 url
+  if (segments.length !== 2 || segments.some((s) => s === "" || UNSAFE_SEGMENTS[s] !== undefined || s.includes("\\"))) {
+    return { code: "forbidden", message: "非法的媒体路径" };
+  }
+  const projectId = segments[0];
+  const file = segments[1];
+  if (projectId === undefined || file === undefined) return { code: "bad-url", message: "非法的媒体 url" };
+  const clipsDir = resolveClipsDir(projectId);
+  if (clipsDir === undefined) return { code: "not-found", message: "项目不存在" };
+  return resolveClipFile(clipsDir, [file], realpath, statIsFile);
+}
+
+/** 两个 clip 路由共用的落点校验：目录内、展开符号链接后仍在目录内、`.mp4`、常规文件。 */
+function resolveClipFile(
+  root: string,
+  segments: string[],
+  realpath?: (p: string) => string,
+  statIsFile?: (p: string) => boolean,
+): MediaLocation | UrlError {
   const rp = realpath ?? ((p: string) => {
     try {
       return realpathSync(p);
@@ -280,6 +322,8 @@ export function createMediaHandler(opts: {
   root: () => string;
   resolveSource: (videoId: string) => string | undefined;
   resolveOutputDir: (videoId: string) => string | undefined;
+  /** 项目 id → `<项目目录>/clips`（#130）；不传时 `vnote-media://project-clip/...` 一律 404。 */
+  resolveProjectClipsDir?: (projectId: string) => string | undefined;
   /** 开发模式 Lab 的样本根；打包版不传，`vnote-media://lab/...` 一律 404。 */
   labRoot?: () => string | undefined;
 }): (request: Request) => Promise<Response> {
@@ -332,9 +376,18 @@ export function createMediaHandler(opts: {
     }
     const rangeHeader = request.headers.get("range");
     const isSource = request.url.startsWith(`${MEDIA_SCHEME}://source/`);
+    const isProjectClip = request.url.startsWith(`${MEDIA_SCHEME}://project-clip/`);
     const decision = decideMediaRequest(request.url, {
       header: rangeHeader === null ? undefined : rangeHeader,
-      resolvePath: (u) => (isSource ? decodeSourceUrl(u, opts.resolveSource) : decodeClipUrl(u, opts.root())),
+      resolvePath: (u) => {
+        if (isSource) return decodeSourceUrl(u, opts.resolveSource);
+        if (isProjectClip) {
+          return opts.resolveProjectClipsDir === undefined
+            ? { code: "not-found", message: "项目切片不可用" }
+            : decodeProjectClipUrl(u, opts.resolveProjectClipsDir);
+        }
+        return decodeClipUrl(u, opts.root());
+      },
       stat: (p) => {
         try {
           return statSync(p).size;

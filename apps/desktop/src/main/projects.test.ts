@@ -14,6 +14,7 @@ import {
 import { makeTmpDir } from "@video-notes/core/testing";
 import type { ProjectDetail, ProjectEventPayload } from "../shared/ipc";
 import { ProjectService } from "./projects";
+import { encodeProjectClipUrl } from "./media";
 
 const LINES: SubtitleLine[] = [
   { id: "l1", start: 0, end: 4, speaker: "主播", text: "开场" },
@@ -95,6 +96,32 @@ describe("项目服务：持久化与隔离", () => {
     } finally {
       configureLogging();
     }
+  });
+
+  test("已落盘的切片引用投影成产出卡片字段：标题、路径与播放地址（无视频库时有文件名标题）", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "产出", rootDir: join(root, "p") });
+    const file = "001-为什么你的选题没人看？.mp4";
+    ProjectStore.atRoot(root).recordClip(project.id, { seq: 1, videoId: "v1", topicId: "t1", file });
+
+    expect(service.get(project.id).clips).toEqual([
+      {
+        seq: 1,
+        videoId: "v1",
+        topicId: "t1",
+        file,
+        title: "为什么你的选题没人看？",
+        category: "",
+        resolution: null,
+        lineCount: 0,
+        segmentCount: 0,
+        durationSeconds: 0,
+        segments: [],
+        sourceName: null,
+        path: join(root, "p", "clips", file),
+        mediaUrl: encodeProjectClipUrl(project.id, file),
+      },
+    ]);
   });
 
   test("未知项目与非法设置报可读错误", () => {
@@ -207,7 +234,8 @@ describe("项目服务：切片序号与记录（#126）", () => {
     const project = service.create({ name: "持久化", rootDir: join(root, "p") });
     const detail = service.recordClip(project.id, { seq: 7, videoId: "v1", topicId: "t1", file: "007-标题.mp4" });
     expect(detail.clipCount).toBe(1);
-    expect(detail.clips).toEqual([{ seq: 7, videoId: "v1", topicId: "t1", file: "007-标题.mp4" }]);
+    // #130 起详情里的切片带展示字段（标题/路径/播放地址），引用四元组仍按契约原样保留
+    expect(detail.clips).toMatchObject([{ seq: 7, videoId: "v1", topicId: "t1", file: "007-标题.mp4" }]);
 
     const reopened = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
     const again = reopened.get(project.id);
