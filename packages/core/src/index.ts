@@ -188,6 +188,14 @@ export { extractArchive, streamSha256 } from "./models/extract";
 export type { TarExec } from "./models/extract";
 export { COVER_FILE, coverPath, ensureCoverFrame } from "./core/cover";
 export { parseClipFileName } from "./core/clips";
+export {
+  allocateProjectClip,
+  clipFileTitle,
+  projectClipFileName,
+  PROJECT_CLIP_TITLE_MAX_CODEPOINTS,
+  PROJECT_CLIP_PATH_MAX_UTF16,
+} from "./core/project-clips";
+export type { ProjectClipAllocation } from "./core/project-clips";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
 export type { Utterance } from "./core/types";
