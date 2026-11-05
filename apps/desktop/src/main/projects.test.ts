@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   ClipProject,
@@ -184,5 +185,77 @@ describe("项目服务：队列与确认主题", () => {
     expect(detailB.queue).toBeNull();
     expect(detailB.events.map((event) => event.text)).toEqual(["创建项目：B"]);
     expect(detailA.events.map((event) => event.text)).toContain("开始整理：1 个视频");
+  });
+});
+
+describe("项目服务：切片序号与记录（#126）", () => {
+  test("确认主题支持含冒号的主题 id", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "冒号", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { autoSlice: false });
+    const { controller } = attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    controller.completeAnalysis(1, [{ id: "topic:1", title: "带冒号", category: "", lineIds: ["l1"] }]);
+
+    const detail = service.confirmTopic(project.id, topicKey(1, "topic:1"), ["l1"]);
+    expect(detail.queue?.slices.map((task) => task.topicKey)).toEqual(["1:topic:1"]);
+    expect(detail.events[0]?.text).toBe("切片入队：带冒号 · 1 行字幕");
+  });
+
+  test("recordClip 持久化切片引用与计数，重开项目后仍在", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "持久化", rootDir: join(root, "p") });
+    const detail = service.recordClip(project.id, { seq: 7, videoId: "v1", topicId: "t1", file: "007-标题.mp4" });
+    expect(detail.clipCount).toBe(1);
+    expect(detail.clips).toEqual([{ seq: 7, videoId: "v1", topicId: "t1", file: "007-标题.mp4" }]);
+
+    const reopened = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    const again = reopened.get(project.id);
+    expect(again.clipCount).toBe(1);
+    expect(again.clips[0]?.file).toBe("007-标题.mp4");
+    // 计数器已推进：下一个序号从 8 开始，不复用
+    expect(reopened.beginClip(project.id, "复用检查").seq).toBe(8);
+  });
+
+  test("并行分配序号不碰撞：未落盘的序号也占位", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "并行", rootDir: join(root, "p") });
+    const a = service.beginClip(project.id, "第一条");
+    const b = service.beginClip(project.id, "第二条");
+    expect([a.seq, b.seq]).toEqual([1, 2]);
+    expect(a.file).not.toBe(b.file);
+
+    // 第一条落盘后第二条仍可用自己的序号落盘
+    service.endClip(project.id, a.seq, { seq: a.seq, videoId: "v1", topicId: "t1", file: a.file });
+    service.endClip(project.id, b.seq, { seq: b.seq, videoId: "v1", topicId: "t2", file: b.file });
+    const detail = service.get(project.id);
+    expect(detail.clips.map((clip) => clip.seq)).toEqual([1, 2]);
+  });
+
+  test("生成失败放弃序号：不写记录、计数器不前进、同序号可再用", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "失败", rootDir: join(root, "p") });
+    const first = service.beginClip(project.id, "会失败");
+    service.abortClip(project.id, first.seq);
+    expect(service.get(project.id).clipCount).toBe(0);
+
+    const again = service.beginClip(project.id, "会失败");
+    expect(again.seq).toBe(first.seq);
+    service.endClip(project.id, again.seq, { seq: again.seq, videoId: "v1", topicId: "t1", file: again.file });
+    expect(service.get(project.id).clips[0]?.seq).toBe(first.seq);
+  });
+
+  test("projects.json 在数据根、视频库 index.json 在 notesRoot：两处路径互不影响", () => {
+    const dataDir = makeTmpDir("projects-data-");
+    const notes = makeTmpDir("projects-notes-");
+    const store = ProjectStore.atRoot(dataDir);
+    const service = new ProjectService({ store, events: new ProjectEventLog() });
+    const project = service.create({ name: "分离", rootDir: join(dataDir, "root") });
+
+    expect(existsSync(join(dataDir, "projects.json"))).toBe(true);
+    expect(existsSync(join(notes, "projects.json"))).toBe(false);
+    // 项目清单的读写完全不碰 notesRoot 的视频库索引
+    expect(existsSync(join(notes, "index.json"))).toBe(false);
+    expect(new ProjectService({ store: ProjectStore.atRoot(dataDir), events: new ProjectEventLog() }).get(project.id).name).toBe("分离");
   });
 });

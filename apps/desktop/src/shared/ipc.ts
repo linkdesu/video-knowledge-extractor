@@ -38,6 +38,8 @@ export type ClipInfo = {
   segmentIndexes: number[];
   /** 每个主题段在拼接文件里的起点偏移（秒，含前移与合并）；旧文档没有时为 []。 */
   segmentOffsets: number[];
+  /** 项目切片：所选字幕行合并出的片段；存在时 `segmentIndexes` 指向这张表而不是主题段（#126）。 */
+  segments?: SegmentInfo[];
 };
 
 export type SegmentInfo = { start: number; end: number };
@@ -354,7 +356,7 @@ export type NotesStartOptions = { force?: boolean };
 
 /** 项目里一个来源视频的三种整理状态（#121 第 26 条）。 */
 export type ProjectOrganizeStatus = "unorganized" | "organizing" | "finished";
-export type ProjectTaskStatus = "waiting" | "running" | "done";
+export type ProjectTaskStatus = "waiting" | "running" | "done" | "failed";
 export type ProjectEventLevel = "info" | "warn" | "error";
 
 export type ProjectClipRefInfo = { seq: number; videoId: VideoId; topicId: string; file: string };

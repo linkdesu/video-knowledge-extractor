@@ -25,7 +25,13 @@ export type TopicClip = {
   file: string;
   start: number;
   end: number;
+  /**
+   * 切片覆盖的片段时间段下标。视频库切片（`topic.mp4`）指向主题的 `segments`；
+   * 项目切片（记录带 `segments`）指向本记录的 `segments`（所选字幕行合并出的片段），
+   * 与 `segmentOffsets` 一一对应（#126 统一边界；ADR-0056 §7）。
+   */
   segmentIndexes: number[];
+  /** 与 `segmentIndexes` 同口径的拼接偏移：第 i 段起点在切片文件里的秒数（含前移与合并）。 */
   segmentOffsets: number[];
   /** 项目切片：生成时选中的字幕行快照（时间顺序）；旧记录与非项目切片缺失 */
   subtitles?: ClipSubtitle[];

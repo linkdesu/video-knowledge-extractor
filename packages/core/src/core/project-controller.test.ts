@@ -93,6 +93,11 @@ describe("整理分块入队", () => {
     p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 1200, growing: false, modifiedSeconds: 0 });
     p.tick(60);
     expect(p.analysisQueue).toHaveLength(0);
+    // 即使文件继续增长，未加入整理也保持「未整理」
+    p.reportGrowth("f1", 1800);
+    p.tick(60);
+    expect(p.statusOf("f1")).toBe("unorganized");
+    expect(p.analysisQueue).toHaveLength(0);
   });
 
   test("修改分块时长只影响以后产生的分块", () => {
@@ -462,5 +467,70 @@ describe("README 三个场景", () => {
     expect(p.clips).toHaveLength(2);
     expect(p.statusOf("f1")).toBe("finished");
     expect(p.unslicedSeconds("f1")).toBe(0);
+  });
+});
+
+describe("执行器接线契约（#126）", () => {
+  const lines: SubtitleLine[] = [
+    { id: "l1", start: 0, end: 10, speaker: "主播", text: "一" },
+    { id: "l2", start: 10, end: 20, speaker: "主播", text: "二" },
+  ];
+
+  test("主题 id 含冒号时仍能定位：topicKey 只按第一个冒号拆分", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.completeAnalysis(1, [{ id: "topic:1", title: "主题一", category: "", lineIds: ["l1"] }]);
+
+    const key = topicKey(1, "topic:1");
+    expect(p.proposedTopics().map((t) => t.id)).toEqual(["topic:1"]);
+    expect(p.confirmTopic(key, ["l1"])).toBe(true);
+    expect(p.sliceQueue[0]?.topicKey).toBe(key);
+    expect(p.confirmTopic(topicKey(1, "topic:1:x"), ["l2"])).toBe(false);
+  });
+
+  test("切片开始时主题进入 generating，完成后才是 done", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "", lineIds: ["l1"] }]);
+
+    const job = m.runningSlice()[0];
+    expect(job).toBeDefined();
+    expect(p.analysisQueue[0]?.topics[0]?.status).toBe("generating");
+
+    p.completeSlice(job!.id);
+    expect(p.analysisQueue[0]?.topics[0]?.status).toBe("done");
+  });
+
+  test("切片失败：任务标 failed、主题标 failed，不产出切片", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "", lineIds: ["l1"] }]);
+
+    const job = m.runningSlice()[0]!;
+    expect(p.failSlice(job.id, "ffmpeg 退出码 1")).toBe(true);
+    expect(p.sliceQueue[0]?.status).toBe("failed");
+    expect(p.analysisQueue[0]?.topics[0]?.status).toBe("failed");
+    expect(p.clips).toHaveLength(0);
+    expect(p.failSlice(job.id, "重复结算")).toBe(false);
+  });
+
+  test("分析失败：任务标 failed，不会自动补尾段重跑同一区间", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+
+    expect(p.failAnalysis(1, "ASR 失败")).toBe(true);
+    expect(p.analysisQueue[0]?.status).toBe("failed");
+    expect(p.failAnalysis(1, "重复结算")).toBe(false);
+    // 失败的分块不进入「已处理」，视频保持持续整理中
+    expect(p.unslicedSeconds("f1")).toBe(600);
+    expect(p.statusOf("f1")).toBe("organizing");
   });
 });

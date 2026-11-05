@@ -13,6 +13,9 @@ export function projectTopicArtifacts(data: VideoData, outputDir: string): Video
   let changed = false;
   const topics = data.topics.map((t) => {
     if (t.status !== "done") return t;
+    // 项目切片写在 `<项目目录>/clips`（ADR-0056 §1），记录带 `segments`；它们的产物不在主题目录，
+    // 这里不能按 `topic.mp4` 判定，否则会把项目视频的主题误投影成需重跑（#126）
+    if (t.clips.some((clip) => clip.segments !== undefined)) return t;
     let usable = false;
     try {
       const st = lstatSync(join(outputDir, t.dirName, "topic.mp4"));

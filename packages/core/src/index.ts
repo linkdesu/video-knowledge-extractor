@@ -1,5 +1,7 @@
 export { runExtract } from "./pipeline/extract";
 export type { ExtractInput, ExtractResult } from "./pipeline/extract";
+export { analyzeVideoRange, subtitleLinesFrom } from "./pipeline/project-analysis";
+export type { RangeAnalysisInput, RangeAnalysisResult, RangeAnalysisTopic } from "./pipeline/project-analysis";
 export { runNotes, runTopics } from "./pipeline/notes-run";
 export { loadDotenvFiles } from "./core/env";
 export {
@@ -94,7 +96,7 @@ export type { Progress, StepName, LlmEndpoint } from "./core/steps";
 export { videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo, deleteVideo } from "./core/library";
 export type { LibraryVideo, LibraryVideoStatus, LibraryDetail } from "./core/library";
-export { acquireVideoLock, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
+export { acquireVideoLock, isVideoLockBusy, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
 export type { VideoLock } from "./core/lock";
 export {
   VIDEO_DATA_FILE,
@@ -147,7 +149,7 @@ export {
 export type { CorrectionFileEntry } from "./core/corrections-io";
 export { probeVideo, parseProbeJson, planChunks, assertAudioDecodable, AUDIO_UNDECODABLE_ERROR } from "./core/audio";
 export type { ProbeResult, ChunkLimits } from "./core/audio";
-export { detectSilences, extractAudio, SILENCE_DETECTION } from "./core/audio";
+export { detectSilences, extractAudio, extractAudioRange, SILENCE_DETECTION } from "./core/audio";
 export type { Silence } from "./core/audio";
 export { createAsrEngine } from "./asr/engine";
 export type { AsrEngine, AsrEngineId, AsrConfig, AsrInput, AsrRun, AsrEngineOptions } from "./asr/engine";
@@ -198,7 +200,7 @@ export {
   PROJECT_CLIP_PATH_MAX_UTF16,
 } from "./core/project-clips";
 export type { ProjectClipAllocation } from "./core/project-clips";
-export { ClipProject, GROWTH_IDLE_SECONDS, topicKey } from "./core/project-controller";
+export { ClipProject, GROWTH_IDLE_SECONDS, splitTopicKey, topicKey } from "./core/project-controller";
 export {
   PROJECTS_FILE_NAME,
   PROJECTS_VERSION,

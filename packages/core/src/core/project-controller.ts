@@ -5,7 +5,7 @@ import type { TopicStatus } from "./video-data";
 export const GROWTH_IDLE_SECONDS = 30;
 const EPS = 1e-6;
 
-export type TaskStatus = "waiting" | "running" | "done";
+export type TaskStatus = "waiting" | "running" | "done" | "failed";
 export type OrganizeStatus = "unorganized" | "organizing" | "finished";
 
 /** 来源字幕行；确认弹窗按它勾选，切片记录按快照保存。 */
@@ -37,6 +37,8 @@ export type AnalysisJob = {
   status: TaskStatus;
   stage: 0 | 1;
   topics: TopicState[];
+  /** 失败终态的短原因；真实执行器结算时写入。 */
+  error?: string;
 };
 
 /** 一个主题一个切片任务。 */
@@ -49,6 +51,7 @@ export type SliceJob = {
   segments: Segment[];
   durationSeconds: number;
   status: TaskStatus;
+  error?: string;
 };
 
 export type ClipRecord = {
@@ -238,6 +241,31 @@ export class ClipProject {
     this.pump();
   }
 
+  /** 分析失败：任务落 failed 终态并释放分析槽；分块不重排，视频保持未处理到这一段。 */
+  failAnalysis(jobId: number, message: string): boolean {
+    const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
+    if (job === undefined) return false;
+    job.status = "failed";
+    job.error = message;
+    this.pump();
+    return true;
+  }
+
+  /** 切片失败：任务与所属主题都落 failed，不产出切片、不写项目清单。 */
+  failSlice(jobId: number, message: string): boolean {
+    const job = this.sliceQueue.find((j) => j.id === jobId && j.status === "running");
+    if (job === undefined) return false;
+    job.status = "failed";
+    job.error = message;
+    const topic = this.findTopic(job.topicKey)?.topic;
+    if (topic !== undefined) {
+      topic.status = "failed";
+      topic.lineIds = job.lines.map((line) => line.id);
+    }
+    this.pump();
+    return true;
+  }
+
   /**
    * 确认单个主题：按 `lineIds` 的字幕行快照建一个切片任务。
    * 空选、主题不存在、已经入队过都返回 false，不改变任何状态。
@@ -295,9 +323,11 @@ export class ClipProject {
   }
 
   private findTopic(key: string): { job: AnalysisJob; topic: TopicState } | undefined {
-    const [jobId, topicId] = key.split(":");
-    const job = this.analysisQueue.find((j) => j.id === Number(jobId));
-    const topic = job?.topics.find((t) => t.id === topicId);
+    // 主题 id 由模型给出，可能自带冒号：只按第一个冒号拆出分析任务序号
+    const parsed = splitTopicKey(key);
+    if (parsed === undefined) return undefined;
+    const job = this.analysisQueue.find((j) => j.id === parsed.jobId);
+    const topic = job?.topics.find((t) => t.id === parsed.topicId);
     return job && topic ? { job, topic } : undefined;
   }
 
@@ -339,6 +369,9 @@ export class ClipProject {
       const next = this.sliceQueue.find((j) => j.status === "waiting");
       if (next) {
         next.status = "running";
+        // 主题状态跟着切片任务走：queued → generating → done/failed（#126）
+        const topic = this.findTopic(next.topicKey)?.topic;
+        if (topic !== undefined && topic.status === "queued") topic.status = "generating";
         this.executor.slice(next);
       }
     }
@@ -367,6 +400,16 @@ export class ClipProject {
 
 export function topicKey(jobId: number, topicId: string): string {
   return `${jobId}:${topicId}`;
+}
+
+/** `topicKey` 的逆运算：只按第一个冒号拆，主题 id 自带的冒号原样保留（#126）。 */
+export function splitTopicKey(key: string): { jobId: number; topicId: string } | undefined {
+  const sep = key.indexOf(":");
+  if (sep <= 0) return undefined;
+  const jobId = Number(key.slice(0, sep));
+  const topicId = key.slice(sep + 1);
+  if (!Number.isInteger(jobId) || topicId === "") return undefined;
+  return { jobId, topicId };
 }
 
 function mergeLines(lines: SubtitleLine[]): Segment[] {

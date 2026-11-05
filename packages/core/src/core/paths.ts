@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Topic, TopicId, Video, VideoId, VideoIndex, VideoIndexEntry } from "./types";
 import { sha256 } from "./cache";
@@ -35,12 +35,29 @@ export function readJsonFile<T>(path: string): T | undefined {
   }
 }
 
-/** 覆盖整个文件：先写临时文件再 rename，磁盘上不留半截文件（ADR-0002）。 */
+/** 覆盖整个文件：先写临时文件再 rename，磁盘上不留半截文件（ADR-0002）；落盘内容与目录项都 fsync（#126）。 */
 function writeAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, text);
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, text);
+    // 掉电时 rename 可能先于数据可见：先确认临时文件内容已落盘
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, path);
+  // 目录项也 fsync，保证 rename 本身在崩溃后可见；Windows 不允许打开目录，失败按平台不支持处理
+  let dirFd: number | undefined;
+  try {
+    dirFd = openSync(dirname(path), "r");
+    fsyncSync(dirFd);
+  } catch {
+    // 平台不支持目录 fsync：rename 已是原子替换，退回尽力而为
+  } finally {
+    if (dirFd !== undefined) closeSync(dirFd);
+  }
 }
 
 export function writeJsonAtomic(path: string, value: unknown): void {

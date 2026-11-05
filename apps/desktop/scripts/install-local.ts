@@ -3,7 +3,7 @@
  * 双机本地安装脚本：
  * 1. 校验 package.json / apps/desktop / apps/cli / packages/core 版本号一致（可选校验相对基准 git ref 已递增）；
  * 2. 构建并重装 macOS 应用到 /Applications/Video Notes.app（清除 quarantine + ad-hoc 签名并校验 CFBundleShortVersionString）；
- * 3. 将对应版本的 Windows NSIS 安装包静默重装到 gamepc 的 D:\code\video-notes\app（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致，以及 Video Notes.exe 属性页的 FileVersion/ProductVersion 等于 package.json 版本 —— r64）。
+ * 3. 将对应版本的 Windows NSIS 安装包静默重装到测试机的 `<--win-root>\app`（默认 gamepc 的 D:\code\video-notes\app）（安装前自动停止运行中的 Video Notes.exe，修复桌面/开始菜单快捷方式，校验 Uninstall/Registry/app.asar 版本号一致，以及 Video Notes.exe 属性页的 FileVersion/ProductVersion 等于 package.json 版本 —— r64）。
  *    CI 产物按「当前提交 + 当前 package 版本」对齐：只下载 headSha === HEAD 的成功 windows-build 运行，
  *    产物版本不符直接失败，等不到就超时报错，绝不回退去装旧提交/旧版本的包（r61 / #81）。
  *    缓存命中前核对内容：本地 exe 的大小与 sha256 必须与 provenance 记录一致，且记录里的 CI 产物摘要
@@ -11,7 +11,7 @@
  *    绝不使用别的提交的缓存；确实用了别的提交打的包时，输出里明确写出 run、提交与哈希。
  *
  * 用法：
- *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--win-ci-wait-seconds <n>] [--ssh-host <host>] [--win-download-only]
+ *   bun run install:local [--check-bump-against <git-ref>] [--mac-only | --win-only] [--skip-mac-build] [--win-installer <path>] [--win-ci-wait-seconds <n>] [--ssh-host <host>] [--win-root <dir>] [--win-download-only]
  */
 
 import { spawnSync } from "node:child_process";
@@ -69,8 +69,8 @@ const macReleaseAppPath = resolve(
   desktopRoot,
   `release/Video Notes-darwin-${process.arch}/Video Notes.app`,
 );
-const defaultWinInstallDir = "D:\\code\\video-notes\\app";
-const defaultWinInstallerStageDir = "D:\\code\\video-notes\\installer";
+/** Windows 测试机的安装根目录：默认旧机 gamepc 的 D 盘；新机用 `--win-root` 覆盖（例如 C:\code\video-notes）。 */
+const defaultWinRoot = "D:\\code\\video-notes";
 
 interface CliOptions {
   checkBumpAgainst: string | null;
@@ -80,6 +80,8 @@ interface CliOptions {
   winInstaller: string | null;
   winCiWaitSeconds: number;
   sshHost: string;
+  /** Windows 安装根目录（app/ 与 installer/ 的父目录）。 */
+  winRoot: string;
   /** 只解析/下载并打印来源与哈希，不连 gamepc、不安装（r63 证据与排障用）。 */
   winDownloadOnly: boolean;
 }
@@ -93,6 +95,7 @@ function parseCliArgs(argv: string[]): CliOptions {
     winInstaller: null,
     winCiWaitSeconds: 1800,
     sshHost: "gamepc",
+    winRoot: defaultWinRoot,
     winDownloadOnly: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -116,6 +119,12 @@ function parseCliArgs(argv: string[]): CliOptions {
       opts.winCiWaitSeconds = parsed;
     } else if (arg === "--ssh-host") {
       opts.sshHost = argv[++i] ?? "gamepc";
+    } else if (arg === "--win-root") {
+      const raw = (argv[++i] ?? "").replace(/[\\/]+$/, "");
+      if (!/^[A-Za-z]:\\/.test(raw)) {
+        throw new Error(`--win-root 需要 Windows 绝对路径（例如 C:\\code\\video-notes），实际: ${String(argv[i])}`);
+      }
+      opts.winRoot = raw;
     } else if (arg === "--win-download-only") {
       opts.winDownloadOnly = true;
     } else {
@@ -151,7 +160,7 @@ function runCmd(
   return (res.stdout ?? "").trim();
 }
 
-function runWinPwsh(sshHost: string, psScript: string): string {
+function runWinPwsh(sshHost: string, psScript: string, stageDir: string = `${defaultWinRoot}\\installer`): string {
   const fullScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n${psScript.replace(/\r?\n/g, "\r\n")}\r\n`;
   if (fullScript.length < 600) {
     const encoded = Buffer.from(fullScript, "utf16le").toString("base64");
@@ -167,7 +176,7 @@ function runWinPwsh(sshHost: string, psScript: string): string {
   const localTmpDir = resolve(repoRoot, "tmp/installer");
   mkdirSync(localTmpDir, { recursive: true });
   const localPs1 = resolve(localTmpDir, "install-local-remote.ps1");
-  const remotePs1 = `${defaultWinInstallerStageDir}\\install-local-remote.ps1`;
+  const remotePs1 = `${stageDir}\\install-local-remote.ps1`;
   writeFileSync(localPs1, `\uFEFF${fullScript}`, "utf8");
   runCmd("scp", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", localPs1, `${sshHost}:${remotePs1}`]);
   try {
@@ -743,10 +752,13 @@ function resolveOrDownloadWinInstaller(
 function installWindowsApp(
   version: string,
   sshHost: string,
+  winRoot: string,
   explicitInstaller: string | null,
   waitSeconds: number,
   downloadOnly: boolean,
 ) {
+  const installDir = `${winRoot}\\app`;
+  const stageDir = `${winRoot}\\installer`;
   const { localPath, remotePath, source } = resolveOrDownloadWinInstaller(
     version,
     explicitInstaller,
@@ -768,16 +780,17 @@ function installWindowsApp(
         ? "来源无法核对内容（未计算 sha256）"
         : `已核对 sha256=${source.fileSha256}`;
     console.log(`[win] --win-download-only：${verified}，未上传、未安装`);
-    return { ...source, installDir: defaultWinInstallDir, installed: false };
+    return { ...source, installDir, installed: false };
   }
   const remoteInstallerPath =
     remotePath ??
-    `${defaultWinInstallerStageDir}\\${installerName(version)}`;
+    `${stageDir}\\${installerName(version)}`;
 
   if (localPath !== null) {
     runWinPwsh(
       sshHost,
-      `New-Item -ItemType Directory -Force -Path '${defaultWinInstallerStageDir}' | Out-Null`,
+      `New-Item -ItemType Directory -Force -Path '${stageDir}' | Out-Null`,
+      stageDir,
     );
     console.log(`[win] 正在上传安装包到 ${sshHost}:${remoteInstallerPath}...`);
     runCmd("scp", [localPath, `${sshHost}:${remoteInstallerPath}`], {
@@ -801,12 +814,12 @@ function installWindowsApp(
   }
 
   console.log(
-    `[win] 正在 ${sshHost} 上静默安装 Video Notes v${version} 到 ${defaultWinInstallDir}...`,
+    `[win] 正在 ${sshHost} 上静默安装 Video Notes v${version} 到 ${installDir}...`,
   );
   const installAndVerifyPs = `
 $ErrorActionPreference = 'Stop'
 $installer = '${remoteInstallerPath}'
-$installDir = '${defaultWinInstallDir}'
+$installDir = '${installDir}'
 $expectedVersion = '${version}'
 
 if (-not (Test-Path -LiteralPath $installer)) {
@@ -949,7 +962,7 @@ $llmAfter = Get-LlmFingerprint
   llmAfter = $llmAfter
 } | ConvertTo-Json -Compress
 `;
-  const rawJson = runWinPwsh(sshHost, installAndVerifyPs);
+  const rawJson = runWinPwsh(sshHost, installAndVerifyPs, stageDir);
   const lastLine = rawJson
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -1020,6 +1033,7 @@ async function main() {
     summary.windows = installWindowsApp(
       version,
       opts.sshHost,
+      opts.winRoot,
       opts.winInstaller,
       opts.winCiWaitSeconds,
       opts.winDownloadOnly,

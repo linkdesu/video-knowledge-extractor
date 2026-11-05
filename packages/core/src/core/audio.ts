@@ -94,6 +94,19 @@ export async function extractAudio(videoPath: string, wavPath: string, limitSeco
   );
 }
 
+/**
+ * 只抽一段时间轴的音频（整理切片的区间分析，#126）：`-ss` 放在输入前做快速定位，
+ * 输出的 wav 从 0 开始，调用方负责把字幕时间戳加回区间起点。
+ */
+export async function extractAudioRange(videoPath: string, wavPath: string, range: { start: number; end: number }): Promise<void> {
+  const duration = Math.max(0, range.end - range.start);
+  if (!(duration > 0)) throw new Error("音频区间为空");
+  await run(
+    ["ffmpeg", "-y", "-ss", String(range.start), "-t", String(duration), "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
+    { label: `抽取音频区间 ${videoPath} ${range.start}-${range.end}` },
+  );
+}
+
 /** 容器可读但音轨解不出（加密/损坏的直播录像）时给用户的稳定文案；UI 卡片与测试都引用它。 */
 export const AUDIO_UNDECODABLE_ERROR = "音轨无法解码（文件可能已损坏或来自加密直播录像），请重新导出为 mp4/m4a 后再导入";
 

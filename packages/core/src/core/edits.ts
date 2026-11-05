@@ -190,14 +190,18 @@ export function deleteTopicSegment(outputDir: string, topicId: string, segmentIn
     if (topic.segments.length <= 1) throw new Error("至少保留一个时间段");
     topic.segments.splice(segmentIndex, 1);
     topic.clips = topic.clips
-      .map((c) => ({
-        ...c,
-        segmentIndexes: c.segmentIndexes
-          .filter((i) => i !== segmentIndex)
-          .map((i) => (i > segmentIndex ? i - 1 : i)),
-        segmentOffsets: c.segmentOffsets.filter((_, i) => i !== segmentIndex),
-      }))
-      .filter((c) => c.segmentIndexes.length > 0);
+      .map((c) => {
+        // 项目切片的 segmentIndexes 指向所选字幕片段，不是主题段：不能按主题段下标重映射（#126）
+        if (c.segments !== undefined) return c;
+        return {
+          ...c,
+          segmentIndexes: c.segmentIndexes
+            .filter((i) => i !== segmentIndex)
+            .map((i) => (i > segmentIndex ? i - 1 : i)),
+          segmentOffsets: c.segmentOffsets.filter((_, i) => i !== segmentIndex),
+        };
+      })
+      .filter((c) => c.segments !== undefined || c.segmentIndexes.length > 0);
     topic.status = "needs-rerun";
     affected.add(topic.id);
   }, { structural: true });
