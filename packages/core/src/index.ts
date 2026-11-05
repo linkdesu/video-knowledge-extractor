@@ -199,6 +199,26 @@ export {
 } from "./core/project-clips";
 export type { ProjectClipAllocation } from "./core/project-clips";
 export { ClipProject, GROWTH_IDLE_SECONDS, topicKey } from "./core/project-controller";
+export {
+  PROJECTS_FILE_NAME,
+  PROJECTS_VERSION,
+  PROJECT_NAME_MAX,
+  PROJECT_CHUNK_MINUTES_DEFAULT,
+  PROJECT_CHUNK_MINUTES_MIN,
+  PROJECT_CHUNK_MINUTES_MAX,
+  ProjectStore,
+  projectClipsDir,
+  projectsFilePath,
+} from "./core/project-store";
+export type {
+  CreateProjectInput,
+  ProjectClipRef,
+  ProjectRecord,
+  ProjectSettingsPatch,
+  ProjectsFile,
+} from "./core/project-store";
+export { PROJECT_EVENT_LIMIT, ProjectEventLog } from "./core/project-events";
+export type { ProjectEventLevel, ProjectEventRecord } from "./core/project-events";
 export type {
   AddFileInput,
   AnalysisJob,
