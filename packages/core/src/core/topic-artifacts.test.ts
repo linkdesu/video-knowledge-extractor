@@ -103,4 +103,25 @@ describe("projectTopicArtifacts", () => {
     const { outputDir, data } = makeData([topic({ id: "t1" as string, status: "needs-rerun", error: "结构改过" })]);
     expect(projectTopicArtifacts(data, outputDir)).toBe(data);
   });
+
+  test("项目切片在项目 clips 目录：没有 topic.mp4 也保持 done，不被投影成需重跑", () => {
+    const { outputDir, data } = makeData([
+      topic({
+        id: "t1" as string,
+        status: "done",
+        clips: [
+          {
+            file: "001-主题.mp4",
+            start: 1,
+            end: 2,
+            segmentIndexes: [0],
+            segmentOffsets: [2],
+            subtitles: [{ start: 1, end: 2, text: "一" }],
+            segments: [{ start: 1, end: 2 }],
+          },
+        ],
+      }),
+    ]);
+    expect(projectTopicArtifacts(data, outputDir)).toBe(data);
+  });
 });

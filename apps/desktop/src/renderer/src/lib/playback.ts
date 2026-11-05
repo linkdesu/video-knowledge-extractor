@@ -16,6 +16,14 @@ export function clipSeekTarget(
   if (seg === undefined || topic.clips.length !== 1 || only === undefined || only.segmentOffsets.length === 0) {
     return { media: "source", seconds: sourceTime };
   }
+  // 项目切片带自己的片段表（#126）：先按源时间找到所属片段，再取对应偏移
+  if (only.segments !== undefined) {
+    const index = only.segments.findIndex((s) => sourceTime >= s.start && sourceTime < s.end);
+    if (index < 0) return { media: "source", seconds: sourceTime };
+    const clipSegment = only.segments[index]!;
+    const offset = only.segmentOffsets[index] ?? 0;
+    return { media: "clip", seconds: offset + (sourceTime - clipSegment.start) };
+  }
   const offset = only.segmentOffsets[segmentIndex] ?? 0;
   return { media: "clip", seconds: offset + (sourceTime - seg.start) };
 }

@@ -869,6 +869,7 @@ function toDetailDto(d: CoreLibraryDetail): VideoDetail {
         endSeconds: c.end,
         segmentIndexes: "segmentIndexes" in c ? c.segmentIndexes : [],
         segmentOffsets: c.segmentOffsets ?? [],
+        ...(c.segments !== undefined ? { segments: c.segments.map((s) => ({ start: s.start, end: s.end })) } : {}),
       })),
       startedAt: t.startedAt,
       elapsedSeconds: t.elapsedSeconds,

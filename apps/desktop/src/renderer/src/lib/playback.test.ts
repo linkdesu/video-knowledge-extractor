@@ -74,4 +74,27 @@ describe("clipSeekTarget", () => {
     };
     expect(clipSeekTarget(topic, 0, 150)).toEqual({ media: "source", seconds: 150 });
   });
+
+  test("项目切片：按切片自己的片段表定位，不按主题段下标", () => {
+    // 主题有两段，但切片只选了第二段里的一行：片段时间 300–310，2 秒前移后 offset 2
+    const topic = {
+      segments: [
+        { start: 100, end: 200 },
+        { start: 300, end: 400 },
+      ],
+      clips: [
+        {
+          file: "001-主题.mp4",
+          mediaUrl: "vnote-media://project/p/clips/001-主题.mp4",
+          startSeconds: 300,
+          endSeconds: 310,
+          segmentIndexes: [0],
+          segmentOffsets: [2],
+          segments: [{ start: 300, end: 310 }],
+        },
+      ],
+    };
+    expect(clipSeekTarget(topic, 1, 305)).toEqual({ media: "clip", seconds: 7 });
+    expect(clipSeekTarget(topic, 0, 150)).toEqual({ media: "source", seconds: 150 });
+  });
 });
