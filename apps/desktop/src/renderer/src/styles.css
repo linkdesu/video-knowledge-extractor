@@ -1609,3 +1609,216 @@ textarea {
     max-width: 100%;
   }
 }
+
+/* 整理切片（#127）：项目列表、项目页外框、公共日志与三个 tab。 */
+
+.vn-project-head {
+  margin-bottom: 16px;
+}
+.vn-project-actions {
+  margin-bottom: 10px;
+}
+.vn-project-form {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr) auto;
+  gap: 16px;
+  align-items: end;
+}
+.vn-project-form .vn-field {
+  margin-bottom: 0;
+}
+.vn-project-error {
+  margin-top: 10px;
+  color: #fda4af;
+  overflow-wrap: anywhere;
+}
+.vn-project-loading {
+  margin-top: 18px;
+}
+.vn-project-list {
+  margin-top: 20px;
+}
+.vn-project-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--vn-line);
+}
+.vn-project-name {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--vn-fg);
+}
+.vn-project-path {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vn-dim);
+  overflow-wrap: anywhere;
+}
+.vn-project-stats {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--vn-muted);
+}
+.vn-project-info {
+  display: grid;
+  gap: 5px;
+  margin: 14px 0 18px;
+  font-size: 12px;
+  color: var(--vn-muted);
+}
+.vn-project-info p {
+  margin: 0;
+}
+.vn-project-info strong {
+  margin-right: 4px;
+  color: var(--vn-fg);
+  font-weight: 500;
+}
+.vn-project-auto {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.vn-project-auto .vn-sub {
+  margin: 0;
+  max-width: 74ch;
+}
+.vn-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--vn-fg);
+  cursor: pointer;
+}
+.vn-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--vn-violet);
+}
+
+/* 公共日志：tabs 上方吸顶，折叠时只显示一行摘要（原型 L43-L46 / L133）。 */
+.vn-public-log {
+  position: sticky;
+  top: -1px;
+  z-index: 5;
+  margin: 18px 0 0;
+  background: var(--vn-panel);
+  border: 1px solid var(--vn-line2);
+  border-radius: 12px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.27);
+}
+.vn-public-log summary {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--vn-fg);
+  cursor: pointer;
+}
+.vn-log-summary {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--vn-muted);
+  overflow-wrap: anywhere;
+}
+.vn-public-body {
+  padding: 0 16px 16px;
+  max-height: 36vh;
+  overflow: auto;
+}
+.vn-state-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--vn-muted);
+}
+.vn-state-grid b {
+  display: block;
+  font-weight: 500;
+  color: var(--vn-fg);
+  overflow-wrap: anywhere;
+}
+.vn-event-log {
+  max-height: 130px;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--vn-muted);
+}
+.vn-event-log div {
+  padding: 5px 0;
+  border-top: 1px solid var(--vn-line);
+  overflow-wrap: anywhere;
+}
+.vn-event-log time {
+  margin-right: 12px;
+  color: var(--vn-violet);
+  font-variant-numeric: tabular-nums;
+}
+.vn-event-log div[data-level="warn"] {
+  color: #fcd34d;
+}
+.vn-event-log div[data-level="error"] {
+  color: #fda4af;
+}
+
+.vn-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 20px 0 12px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--vn-line2);
+}
+.vn-tab {
+  all: unset;
+  padding: 8px 14px;
+  border: 1px solid var(--vn-line2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+  color: var(--vn-muted);
+  cursor: pointer;
+  transition: 0.18s;
+}
+.vn-tab:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--vn-fg);
+}
+.vn-tab[aria-selected="true"] {
+  background: rgba(139, 92, 246, 0.14);
+  border-color: rgba(139, 92, 246, 0.4);
+  color: var(--vn-fg);
+}
+.vn-tab:focus-visible {
+  outline: 2px solid var(--vn-violet);
+  outline-offset: 3px;
+}
+.vn-tab-panel {
+  min-height: 180px;
+}
+
+@media (max-width: 900px) {
+  .vn-project-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vn-project-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .vn-state-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vn-log-summary {
+    display: block;
+    margin-left: 0;
+  }
+  .vn-tabs {
+    flex-wrap: wrap;
+  }
+}
