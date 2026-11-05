@@ -1,10 +1,14 @@
 import {
+  allocateProjectClip,
   ClipProject,
   logger,
   projectClipsDir,
   ProjectEventLog,
   ProjectStore,
+  splitTopicKey,
   topicKey,
+  type ProjectClipAllocation,
+  type ProjectClipRef,
   type ProjectRecord,
 } from "@video-notes/core";
 import type {
@@ -33,6 +37,8 @@ export class ProjectService {
   private readonly events: ProjectEventLog;
   private readonly runtimes = new Map<string, ClipProject>();
   private readonly listeners = new Set<ChangeListener>();
+  /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
+  private readonly inflightClips = new Map<string, Set<number>>();
 
   constructor(deps: ProjectServiceDeps) {
     this.store = deps.store;
@@ -122,10 +128,13 @@ export class ProjectService {
     this.requireRecord(projectId);
     const controller = this.runtimes.get(projectId);
     if (controller === undefined) throw new Error("项目执行器尚未接入");
-    const [jobId, topicId] = topicKeyValue.split(":");
-    const topic = controller.analysisQueue
-      .find((job) => job.id === Number(jobId))
-      ?.topics.find((item) => item.id === topicId);
+    const parsed = splitTopicKey(topicKeyValue);
+    const topic =
+      parsed === undefined
+        ? undefined
+        : controller.analysisQueue
+            .find((job) => job.id === parsed.jobId)
+            ?.topics.find((item) => item.id === parsed.topicId);
     if (topic === undefined || topic.status !== "proposed") throw new Error("主题不存在或已确认");
     if (!controller.confirmTopic(topicKeyValue, [...lineIds])) throw new Error("所选字幕为空");
     const slice = controller.sliceQueue.filter((job) => job.topicKey === topicKeyValue).at(-1);
@@ -134,6 +143,43 @@ export class ProjectService {
 
   clipsDir(projectId: string): string {
     return projectClipsDir(this.requireRecord(projectId));
+  }
+
+  /**
+   * 分配一个项目切片序号，但先不写清单（ADR-0056 §3：失败不消耗序号）。
+   * 在途序号登记在内存里，同项目并行任务不会拿到同一个号；落盘走 `endClip`。
+   */
+  beginClip(projectId: string, title: string): ProjectClipAllocation {
+    const record = this.requireRecord(projectId);
+    const inflight = this.inflightClips.get(projectId) ?? new Set<number>();
+    let nextSeq = record.nextClipSeq;
+    let allocation = allocateProjectClip({ clipsDir: projectClipsDir(record), nextSeq, title });
+    while (inflight.has(allocation.seq)) {
+      nextSeq = allocation.seq + 1;
+      allocation = allocateProjectClip({ clipsDir: projectClipsDir(record), nextSeq, title });
+    }
+    inflight.add(allocation.seq);
+    this.inflightClips.set(projectId, inflight);
+    return allocation;
+  }
+
+  /** 切片文件写完：把引用写进项目清单（序号与计数器一起前进），再解除在途占位。 */
+  endClip(projectId: string, seq: number, ref: ProjectClipRef): ProjectDetail {
+    if (ref.seq !== seq) throw new Error(`切片序号不一致：${seq} ≠ ${ref.seq}`);
+    const detail = this.recordClip(projectId, ref);
+    this.inflightClips.get(projectId)?.delete(seq);
+    return detail;
+  }
+
+  /** 生成失败：释放在途占位，不写记录、不推进计数器；同序号之后仍可复用。 */
+  abortClip(projectId: string, seq: number): void {
+    this.inflightClips.get(projectId)?.delete(seq);
+  }
+
+  /** 生产调用方：切片执行器在文件与 `video.json` 都落盘后登记项目计数（#126）。 */
+  recordClip(projectId: string, ref: ProjectClipRef): ProjectDetail {
+    this.store.recordClip(projectId, ref);
+    return this.publish(projectId, `切片已记录：${ref.file}`);
   }
 
   private requireRecord(projectId: string): ProjectRecord {
