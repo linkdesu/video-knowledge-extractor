@@ -20,6 +20,7 @@ import {
   ASR_MODEL_ID,
   cacheUsage,
   clearCache,
+  dataRoot,
   coverPath,
   collectEnvironment,
   buildDiagnostics,
@@ -76,6 +77,8 @@ import {
   saveSettings,
   VOLCENGINE_STANDARD_RESOURCE_ID,
   VOLCENGINE_STANDARD_SUBMIT_URL,
+  ProjectEventLog,
+  ProjectStore,
 } from "@video-notes/core";
 import { createVolcengineFlashProvider } from "../../../../packages/core/src/asr/providers/volcengine";
 import type {
@@ -112,6 +115,7 @@ import {
   type ModelLogEntry,
   type ModelsStatus,
   type NotesStartOptions,
+  type ProjectEventPayload,
   type PromptStatus,
   type SettingsPatch,
   type SettingsStatus,
@@ -120,6 +124,8 @@ import {
   type VideoDetail,
 } from "../shared/ipc";
 import { prepareDevHome, resolveDevHome } from "./dev-home";
+import { ProjectService } from "./projects";
+import { projectIpcHandlers } from "./projects-ipc";
 import { resolveLabCache } from "./dev-lab/cache-mode";
 import { createLabRuntime, devLabEnabled, type LabRuntime } from "./dev-lab/register";
 import { LAB_IPC, type LabProgress } from "../shared/lab";
@@ -256,6 +262,16 @@ function configureAppLogging(): void {
   logger().info("app", "日志初始化", { level: "info", dir: logDirFor(settings.notesRoot), version: app.getVersion(), commit: __APP_COMMIT__, notesRoot: settings.notesRoot, modelDir: settings.modelDir, cacheRoot: settings.cacheRoot });
 }
 configureAppLogging();
+
+// 整理切片项目（#125）：清单落在数据根 `projects.json`，整文件原子写。
+// 队列执行器由 #126 通过 `attachRuntime` 接入；接入前 `queue` 为 null，界面按队列空闲显示。
+const projectService = new ProjectService({
+  store: ProjectStore.atRoot(dataRoot()),
+  events: new ProjectEventLog(),
+});
+projectService.onChange((payload: ProjectEventPayload) => {
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.projectsEvent, payload);
+});
 
 // r49 诊断（临时）：启动时间线。t = 距进程启动毫秒数（用 uptime 回推基准，模块加载点即基准）。
 const STARTUP_T0 = Date.now() - Math.round(process.uptime() * 1000);
@@ -1849,6 +1865,15 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.cancelExtract, guard(IPC.cancelExtract, (_e, jobId: string) => queue.cancel(jobId)));
   ipcMain.handle(IPC.deleteVideo, guard(IPC.deleteVideo, (_e, videoId: string) => deleteVideoNow(videoId)));
   ipcMain.handle(IPC.activeJob, guard(IPC.activeJob, () => queue.active() ?? null));
+  // 项目通道集中在 projects-ipc：参数校验与业务调用在那里，这里只补文件管理器打开
+  for (const [channel, handler] of Object.entries(
+    projectIpcHandlers(projectService, async (dir) => {
+      const err = await shell.openPath(dir);
+      if (err !== "") throw new Error(`打开切片目录失败：${err}`);
+    }),
+  )) {
+    ipcMain.handle(channel, guard(channel, handler));
+  }
   ipcMain.handle(IPC.settings, guard(IPC.settings, () => settingsStatus()));
   ipcMain.handle(IPC.updateSettings, guard(IPC.updateSettings, (_e, patch: SettingsPatch) => updateSettings(patch)));
   ipcMain.handle(IPC.updateLlm, guard(IPC.updateLlm, (_e, patch: LlmUpdatePatch) => updateLlm(patch)));

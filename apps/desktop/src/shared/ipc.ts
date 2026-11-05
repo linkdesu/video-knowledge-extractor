@@ -352,6 +352,99 @@ export type LibraryCovers = string[];
 /** 笔记生成选项：force 连 `done` 主题也重新生成（缺省跳过 `done`）。 */
 export type NotesStartOptions = { force?: boolean };
 
+/** 项目里一个来源视频的三种整理状态（#121 第 26 条）。 */
+export type ProjectOrganizeStatus = "unorganized" | "organizing" | "finished";
+export type ProjectTaskStatus = "waiting" | "running" | "done";
+export type ProjectEventLevel = "info" | "warn" | "error";
+
+export type ProjectClipRefInfo = { seq: number; videoId: VideoId; topicId: string; file: string };
+
+/** 项目列表一行（原型 L29）：配置 + 四个计数。 */
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  rootDir: string;
+  /** `<项目目录>/clips`；主进程在「打开切片目录」时按需创建。 */
+  clipsDir: string;
+  watchDir: string | null;
+  monitoring: boolean;
+  chunkMinutes: number;
+  autoSlice: boolean;
+  videoCount: number;
+  /** 分析与切片两条队列里未完成的任务数。 */
+  pendingTaskCount: number;
+  proposedTopicCount: number;
+  clipCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProjectAnalysisTaskInfo = {
+  id: number;
+  fileId: VideoId;
+  name: string;
+  startSeconds: number;
+  endSeconds: number;
+  status: ProjectTaskStatus;
+  /** 0=字幕解析，1=主题分析；界面只显示等待中 / 进行中 / 已完成。 */
+  stage: 0 | 1;
+};
+
+export type ProjectSliceTaskInfo = {
+  id: number;
+  topicKey: string;
+  fileId: VideoId;
+  title: string;
+  status: ProjectTaskStatus;
+  lineCount: number;
+  segmentCount: number;
+  durationSeconds: number;
+};
+
+export type ProjectProposedTopicInfo = {
+  /** `确认主题` 的主键：`<分析任务 id>:<主题 id>`。 */
+  topicKey: string;
+  jobId: number;
+  fileId: VideoId;
+  title: string;
+  category: string;
+  lineIds: string[];
+};
+
+export type ProjectFileInfo = {
+  id: VideoId;
+  name: string;
+  added: boolean;
+  organizeStatus: ProjectOrganizeStatus;
+  /** 视频时长 − 从开头起连续、全部主题都已切片的分块时长。 */
+  unslicedSeconds: number;
+};
+
+export type ProjectQueueState = {
+  analysis: ProjectAnalysisTaskInfo[];
+  slices: ProjectSliceTaskInfo[];
+  proposed: ProjectProposedTopicInfo[];
+  files: ProjectFileInfo[];
+};
+
+export type ProjectLogEvent = { id: number; at: string; level: ProjectEventLevel; text: string };
+
+export type ProjectDetail = ProjectSummary & {
+  /** 已加入整理的视频 id，按加入顺序。 */
+  videoIds: VideoId[];
+  clips: ProjectClipRefInfo[];
+  /** 队列快照；项目执行器接入（#126）前为 null，界面按「队列空闲」显示。 */
+  queue: ProjectQueueState | null;
+  /** 最新在前，每项目最多 80 条。 */
+  events: ProjectLogEvent[];
+};
+
+/** `projects:event` 推送：项目详情全量快照，省掉事件后的二次拉取。 */
+export type ProjectEventPayload = { projectId: string; detail: ProjectDetail };
+
+export type CreateProjectInput = { name: string; rootDir: string };
+export type ProjectSettingsPatch = { name?: string; autoSlice?: boolean; chunkMinutes?: number };
+
 export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
   getVideo(videoId: VideoId): Promise<VideoDetail>;
@@ -419,6 +512,23 @@ export type VnoteApi = {
   savePrompt(id: string, text: string): Promise<PromptStatus[]>;
   /** 恢复默认：删除该步骤的覆盖。 */
   resetPrompt(id: string): Promise<PromptStatus[]>;
+  /** 切片项目列表（#125）：配置与四个计数。 */
+  listProjects(): Promise<ProjectSummary[]>;
+  getProject(projectId: string): Promise<ProjectDetail>;
+  createProject(input: CreateProjectInput): Promise<ProjectDetail>;
+  /** 删项目记录；项目目录与切片文件保持原样。 */
+  deleteProject(projectId: string): Promise<void>;
+  startProjectMonitor(projectId: string, directory: string): Promise<ProjectDetail>;
+  /** 加入整理：持久化视频 id；已加入的视频重复提交不重复计数。 */
+  startProjectOrganize(projectId: string, videoIds: VideoId[]): Promise<ProjectDetail>;
+  /** 改项目设置：名称 / 自动切片 / 分块时长；每次修改都写运行日志。 */
+  updateProjectSettings(projectId: string, patch: ProjectSettingsPatch): Promise<ProjectDetail>;
+  /** 确认单个主题：只带上选中的字幕行 id，主进程按当前字幕生成切片任务。 */
+  confirmProjectTopic(projectId: string, topicKey: string, lineIds: string[]): Promise<ProjectDetail>;
+  /** 在文件管理器打开 `<项目目录>/clips`，目录不存在先创建。 */
+  openProjectClipsDir(projectId: string): Promise<void>;
+  /** 项目详情变化（设置、队列、日志）推送；返回取消订阅函数。 */
+  onProjectEvent(listener: (payload: ProjectEventPayload) => void): () => void;
   /** 开发模式「说话人分离验收台」（r48）：打包版不存在这个字段。 */
   lab?: LabApi;
 };
@@ -470,4 +580,14 @@ export const IPC = {
   prompts: "prompts:list",
   savePrompt: "prompts:save",
   resetPrompt: "prompts:reset",
+  projectsList: "projects:list",
+  projectsGet: "projects:get",
+  projectsCreate: "projects:create",
+  projectsDelete: "projects:delete",
+  projectsStartMonitor: "projects:start-monitor",
+  projectsStartOrganize: "projects:start-organize",
+  projectsUpdateSettings: "projects:update-settings",
+  projectsConfirmTopic: "projects:confirm-topic",
+  projectsOpenClipsDir: "projects:open-clips-dir",
+  projectsEvent: "projects:event",
 } as const;
