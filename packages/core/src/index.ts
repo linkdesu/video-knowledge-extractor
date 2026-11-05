@@ -96,7 +96,7 @@ export type { Progress, StepName, LlmEndpoint } from "./core/steps";
 export { videoIdFor } from "./core/paths";
 export { listLibrary, readLibraryVideo, deleteVideo } from "./core/library";
 export type { LibraryVideo, LibraryVideoStatus, LibraryDetail } from "./core/library";
-export { acquireVideoLock, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
+export { acquireVideoLock, isVideoLockBusy, isVideoLocked, isVideoLockHeldByForeign } from "./core/lock";
 export type { VideoLock } from "./core/lock";
 export {
   VIDEO_DATA_FILE,

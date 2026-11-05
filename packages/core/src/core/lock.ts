@@ -12,6 +12,12 @@ type LockContent = { pid: number; startedAt: number; token: string };
 
 const MAX_ACQUIRE_ATTEMPTS = 5;
 const STALE_PREFIX = `${RUN_LOCK_FILE}.stale.`;
+/** 锁被活进程占用时的错误前缀；调用方按它区分「排队等一会儿」与真正的文件系统错误。 */
+export const LOCK_BUSY_MESSAGE = "视频正在运行";
+
+export function isVideoLockBusy(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith(LOCK_BUSY_MESSAGE);
+}
 
 function lockPath(outputDir: string): string {
   return resolve(outputDir, RUN_LOCK_FILE);
@@ -119,7 +125,7 @@ export function acquireVideoLock(outputDir: string): VideoLock {
         holderStartedAt: new Date(existing.startedAt).toISOString(),
         heldSeconds: Math.round((Date.now() - existing.startedAt) / 1000),
       });
-      throw new Error(`视频正在运行（pid ${existing.pid}）`);
+      throw new Error(`${LOCK_BUSY_MESSAGE}（pid ${existing.pid}）`);
     }
     let fd: number;
     try {
@@ -136,7 +142,7 @@ export function acquireVideoLock(outputDir: string): VideoLock {
       // 抢占前重读：别的进程可能刚建了活锁
       const stale = readLock(path);
       if (stale !== undefined && processAlive(stale.pid)) {
-        const busy = `视频正在运行（pid ${stale.pid}）`;
+        const busy = `${LOCK_BUSY_MESSAGE}（pid ${stale.pid}）`;
         logger().error("fs", "获取运行锁失败", { path, code, message: busy });
         throw new Error(busy);
       }
