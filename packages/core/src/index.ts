@@ -198,6 +198,21 @@ export {
   PROJECT_CLIP_PATH_MAX_UTF16,
 } from "./core/project-clips";
 export type { ProjectClipAllocation } from "./core/project-clips";
+export { ClipProject, GROWTH_IDLE_SECONDS, topicKey } from "./core/project-controller";
+export type {
+  AddFileInput,
+  AnalysisJob,
+  ClipProjectOptions,
+  ClipRecord,
+  OrganizeStatus,
+  ProjectExecutor,
+  ProjectFile,
+  ProposedTopic,
+  SliceJob,
+  SubtitleLine,
+  TaskStatus,
+  TopicState,
+} from "./core/project-controller";
 export { killActiveChildren } from "./core/exec";
 export type { VideoId } from "./core/types";
 export type { Utterance } from "./core/types";
