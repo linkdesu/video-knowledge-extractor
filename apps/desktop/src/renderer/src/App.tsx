@@ -1,23 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CreateProjectInput,
   JobSnapshot,
   LibraryVideo,
+  ProjectDetail,
+  ProjectSummary,
   VideoDetail,
 } from "../../shared/ipc";
 import { AppFrame } from "./rbp/blocks/app-shell-1";
 import { JobProgress } from "./rbp/blocks/monitoring-9";
 import { VideoWorkspace } from "./pages/VideoWorkspace";
 import { LibraryPage } from "./pages/LibraryPage";
+import { ProjectListPage } from "./pages/ProjectListPage";
+import { ProjectPage } from "./pages/ProjectPage";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DiarizationLabPage } from "./pages/DiarizationLabPage";
 import { ToastHost, showToast } from "./lib/toast";
 import { errMessage } from "./lib/format";
+import { breadcrumbParts, type ProjectTab } from "./lib/project-frame";
 
 // ADR-0014 §2：路由是可判别联合，存在 App 的 state 里，不引路由库。
 type Route =
   | { name: "library" }
   | { name: "video"; videoId: string; page: "transcript" | "topics" | "notes" }
+  | { name: "projects" }
+  | { name: "project"; projectId: string; tab: ProjectTab }
   | { name: "glossary" }
   | { name: "settings" }
   /** 开发模式验收台（r48）：打包版 lab 不存在，入口与路由都不出现。 */
@@ -36,6 +44,10 @@ export function App() {
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [job, setJob] = useState<JobSnapshot | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  // 整理切片（#127）：列表与当前项目详情分开存；详情由 projects:event 全量推送覆盖。
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [project, setProject] = useState<ProjectDetail | null>(null);
   const routeRef = useRef(route);
   useEffect(() => {
     routeRef.current = route;
@@ -55,6 +67,53 @@ export function App() {
       .then(setVideos)
       .catch((err) => setLibError(errMessage(err)));
   }, []);
+
+  const refreshProjects = useCallback(() => {
+    setProjectsError(null);
+    window.vnote
+      .listProjects()
+      .then(setProjects)
+      .catch((err) => setProjectsError(errMessage(err)));
+  }, []);
+
+  const loadProject = useCallback((projectId: string) => {
+    setProject(null);
+    window.vnote
+      .getProject(projectId)
+      .then(setProject)
+      .catch((err) => {
+        showToast(`打开项目失败：${errMessage(err)}`);
+        setRoute({ name: "projects" });
+      });
+  }, []);
+
+  const toProjects = useCallback(() => setRoute({ name: "projects" }), []);
+
+  const createProject = useCallback(async (input: CreateProjectInput) => {
+    const created = await window.vnote.createProject(input);
+    setProjects((prev) =>
+      prev === null
+        ? [created]
+        : [...prev.filter((item) => item.id !== created.id), created],
+    );
+    setProject(created);
+    setRoute({ name: "project", projectId: created.id, tab: "config" });
+  }, []);
+
+  const setAutoSlice = useCallback(
+    async (next: boolean) => {
+      if (route.name !== "project") return;
+      try {
+        const updated = await window.vnote.updateProjectSettings(route.projectId, {
+          autoSlice: next,
+        });
+        setProject(updated);
+      } catch (err) {
+        showToast(`保存失败：${errMessage(err)}`);
+      }
+    },
+    [route],
+  );
 
   // 视频库刷新：每次切回视频库、窗口重新获得焦点时重拉列表（r33 QA P2）。
   // 勾选/合并主题不会产生 job 事件，只刷新详情会让卡片状态停在「已完成」直到重启。
@@ -82,6 +141,28 @@ export function App() {
       void refreshLibrary();
     });
   }, [refreshLibrary]);
+
+  // 整理切片：进入列表拉列表；进入项目拉详情。tab 切换只改路由，不重拉详情。
+  useEffect(() => {
+    if (route.name === "projects") void refreshProjects();
+  }, [route.name, refreshProjects]);
+
+  const routeProjectId = route.name === "project" ? route.projectId : null;
+  useEffect(() => {
+    if (routeProjectId !== null) loadProject(routeProjectId);
+  }, [routeProjectId, loadProject]);
+
+  // 主进程每次项目变更都推全量详情：当前项目直接覆盖，列表行同步四个计数。
+  useEffect(() => {
+    return window.vnote.onProjectEvent(({ projectId, detail }) => {
+      setProject((prev) => (prev?.id === projectId ? detail : prev));
+      setProjects((prev) =>
+        prev?.some((item) => item.id === projectId)
+          ? prev.map((item) => (item.id === projectId ? detail : item))
+          : prev,
+      );
+    });
+  }, []);
 
   // 启动时接管已经在跑的任务，之后全部由 onJob 事件驱动。
   useEffect(() => {
@@ -252,7 +333,9 @@ export function App() {
         ? "settings"
         : route.name === "dev-diarization"
           ? "lab"
-          : "library";
+          : route.name === "projects" || route.name === "project"
+            ? "slicer"
+            : "library";
   const activeVideo =
     route.name === "video" ? (videos?.find((v) => v.id === route.videoId) ?? null) : null;
   const videoTitle =
@@ -264,17 +347,28 @@ export function App() {
 
   const crumb =
     route.name === "library"
-      ? { parts: ["视频库"] }
-      : route.name === "glossary"
-        ? { parts: ["术语表"] }
-        : route.name === "settings"
-          ? { parts: ["设置"] }
-          : route.name === "dev-diarization"
-            ? { parts: ["Diarization Lab"] }
-            : {
-                parts: ["视频库", videoTitle, PAGE_LABEL[route.page]],
-                onBack: toLibrary,
-              };
+      ? { parts: breadcrumbParts({ page: "notes" }) }
+      : route.name === "projects"
+        ? { parts: breadcrumbParts({ page: "projects" }) }
+        : route.name === "project"
+          ? {
+              parts: breadcrumbParts({
+                page: "project",
+                name: project?.id === route.projectId ? project.name : "项目",
+                tab: route.tab,
+              }),
+              onBack: toProjects,
+            }
+          : route.name === "glossary"
+            ? { parts: ["术语表"] }
+            : route.name === "settings"
+              ? { parts: ["设置"] }
+              : route.name === "dev-diarization"
+                ? { parts: ["Diarization Lab"] }
+                : {
+                    parts: ["整理笔记", videoTitle, PAGE_LABEL[route.page]],
+                    onBack: toLibrary,
+                  };
 
   return (
     <>
@@ -292,6 +386,7 @@ export function App() {
           if (key === "glossary") setRoute({ name: "glossary" });
           else if (key === "settings") setRoute({ name: "settings" });
           else if (key === "lab") setRoute({ name: "dev-diarization" });
+          else if (key === "slicer") setRoute({ name: "projects" });
           else toLibrary();
         }}
         crumb={crumb}
@@ -331,6 +426,33 @@ export function App() {
             onRerun={(v) => void rerun(v)}
             onDelete={removeVideo}
           />
+        ) : route.name === "projects" ? (
+          <ProjectListPage
+            projects={projects ?? []}
+            loading={projects === null && projectsError === null}
+            loadError={projectsError}
+            onReload={() => void refreshProjects()}
+            onOpen={(item) =>
+              setRoute({ name: "project", projectId: item.id, tab: "config" })
+            }
+            onCreate={createProject}
+          />
+        ) : route.name === "project" ? (
+          project !== null && project.id === route.projectId ? (
+            <ProjectPage
+              project={project}
+              tab={route.tab}
+              onTab={(tab) =>
+                setRoute({ name: "project", projectId: route.projectId, tab })
+              }
+              onBack={toProjects}
+              onToggleAutoSlice={setAutoSlice}
+            />
+          ) : (
+            <p className="vn-hint" data-testid="project-loading">
+              加载项目中…
+            </p>
+          )
         ) : route.name === "glossary" ? (
           <GlossaryPage />
         ) : (

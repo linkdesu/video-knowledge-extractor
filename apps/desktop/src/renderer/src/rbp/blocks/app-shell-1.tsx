@@ -2,13 +2,15 @@
 
 import type { ReactNode } from "react";
 
-// app-shell-1 改造：AppFrame = 侧栏导航（视频库/术语表/设置）+ 面包屑顶栏 + 内容槽。
-// 原型没有统计块、导入按钮、状态胶囊与头像，全部移除。
+// app-shell-1 改造：AppFrame = 侧栏导航（整理笔记/整理切片/术语表/设置）+ 面包屑顶栏 + 内容槽。
+// r82：「视频库」更名「整理笔记」（页面内容不变），新增「整理切片」（项目列表与项目页）。
+// nav-library 的 testid 保持不变：验收脚本用它在启动后判定界面就绪。
 
-type NavKey = "library" | "glossary" | "settings" | "lab";
+type NavKey = "library" | "slicer" | "glossary" | "settings" | "lab";
 
 const NAV_ITEMS: Array<{ key: NavKey; icon: string; label: string }> = [
-  { key: "library", icon: "▦", label: "视频库" },
+  { key: "library", icon: "▦", label: "整理笔记" },
+  { key: "slicer", icon: "✂", label: "整理切片" },
   { key: "glossary", icon: "⌘", label: "术语表" },
   { key: "settings", icon: "⚙", label: "设置" },
 ];
