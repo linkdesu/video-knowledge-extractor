@@ -278,6 +278,12 @@ export class ClipProject {
     return idle && allSliced ? "finished" : "organizing";
   }
 
+  /** 视频时长 − 从开头起连续、全部主题都已切片的分块时长。 */
+  unslicedSeconds(fileId: string): number {
+    const file = this.requireFile(fileId);
+    return Math.max(0, file.durationSeconds - file.processedSeconds);
+  }
+
   proposedTopics(): TopicState[] {
     return this.analysisQueue.flatMap((job) => job.topics.filter((t) => t.status === "proposed"));
   }

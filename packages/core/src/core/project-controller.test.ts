@@ -278,3 +278,189 @@ describe("自动切片开关", () => {
     expect(p.sliceQueue).toHaveLength(2);
   });
 });
+
+describe("单主题确认", () => {
+  const lines: SubtitleLine[] = Array.from({ length: 6 }, (_, i) => ({
+    id: `l${i + 1}`,
+    start: i * 15,
+    end: (i + 1) * 15,
+    speaker: "主播",
+    text: `第 ${i + 1} 行`,
+  }));
+
+  function pendingProject() {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "分类", lineIds: ["l2", "l3", "l4"] }]);
+    return { m, p };
+  }
+
+  test("删 1 行补 1 行：行 id、片段、累计时长精确", () => {
+    const { p } = pendingProject();
+    expect(p.confirmTopic(topicKey(1, "t1"), ["l1", "l2", "l4"])).toBe(true);
+
+    const job = p.sliceQueue[0]!;
+    expect(job.lines.map((l) => l.id)).toEqual(["l1", "l2", "l4"]);
+    expect(job.segments).toEqual([
+      { start: 0, end: 30 },
+      { start: 45, end: 60 },
+    ]);
+    expect(job.durationSeconds).toBe(45);
+    expect(p.proposedTopics()).toHaveLength(0);
+  });
+
+  test("空选拒绝，不改变主题与队列", () => {
+    const { p } = pendingProject();
+    expect(p.confirmTopic(topicKey(1, "t1"), [])).toBe(false);
+    expect(p.proposedTopics().map((t) => t.id)).toEqual(["t1"]);
+    expect(p.sliceQueue).toHaveLength(0);
+  });
+
+  test("同一个主题不会重复入队", () => {
+    const { p } = pendingProject();
+    expect(p.confirmTopic(topicKey(1, "t1"), ["l2"])).toBe(true);
+    expect(p.confirmTopic(topicKey(1, "t1"), ["l3"])).toBe(false);
+    expect(p.sliceQueue).toHaveLength(1);
+    expect(p.sliceQueue[0]!.lines.map((l) => l.id)).toEqual(["l2"]);
+  });
+
+  test("稍后确认前再次读取待确认区没有副作用", () => {
+    const { p } = pendingProject();
+    const before = p.proposedTopics().map((t) => [t.id, [...t.lineIds], t.status]);
+    expect(p.proposedTopics()).toHaveLength(1);
+    expect(p.proposedTopics().map((t) => [t.id, [...t.lineIds], t.status])).toEqual(before);
+    expect(p.sliceQueue).toHaveLength(0);
+  });
+
+  test("确认后再补入新增长的字幕行会进入切片", () => {
+    const { p } = pendingProject();
+    p.confirmTopic(topicKey(1, "t1"), ["l2"]);
+    p.completeSlice(1);
+    expect(p.clips[0]!.lines.map((l) => l.id)).toEqual(["l2"]);
+    expect(p.clips[0]!.durationSeconds).toBe(15);
+  });
+});
+
+describe("未切片内容时长", () => {
+  const lines: SubtitleLine[] = [
+    { id: "l1", start: 0, end: 10, speaker: "主播", text: "一" },
+    { id: "l2", start: 10, end: 20, speaker: "主播", text: "二" },
+  ];
+
+  test("只扣从开头起连续、全部主题都已切片的分块", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 1800, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    expect(p.unslicedSeconds("f1")).toBe(1800);
+
+    p.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "分类", lineIds: ["l1"] }]);
+    expect(p.unslicedSeconds("f1")).toBe(1800);
+    p.completeSlice(1);
+    expect(p.unslicedSeconds("f1")).toBe(1200);
+
+    p.completeAnalysis(2, [{ id: "t2", title: "主题二", category: "分类", lineIds: ["l2"] }]);
+    p.completeSlice(2);
+    expect(p.unslicedSeconds("f1")).toBe(600);
+
+    p.completeAnalysis(3, [{ id: "t3", title: "主题三", category: "分类", lineIds: ["l1"] }]);
+    p.completeSlice(3);
+    expect(p.unslicedSeconds("f1")).toBe(0);
+  });
+});
+
+describe("README 三个场景", () => {
+  const lines: SubtitleLine[] = Array.from({ length: 120 }, (_, i) => ({
+    id: `l${i}`,
+    start: i * 15,
+    end: (i + 1) * 15,
+    speaker: "主播",
+    text: `第 ${i} 行`,
+  }));
+
+  function twoTopics() {
+    return [
+      { id: "a", title: "主题 A", category: "分类", lineIds: ["l1"] },
+      { id: "b", title: "主题 B", category: "分类", lineIds: ["l2"] },
+    ];
+  }
+
+  function grow(p: ClipProject, fileId: string, seconds: number) {
+    const file = p.files.get(fileId)!;
+    let duration = file.durationSeconds;
+    for (let elapsed = 0; elapsed < seconds; elapsed += 15) {
+      duration += 15;
+      p.reportGrowth(fileId, duration);
+      p.tick(15);
+    }
+  }
+
+  function drain(p: ClipProject) {
+    for (let guard = 0; guard < 100; guard += 1) {
+      const analysis = p.analysisQueue.find((j) => j.status === "running");
+      const slice = p.sliceQueue.find((j) => j.status === "running");
+      if (!analysis && !slice) return;
+      if (analysis) p.completeAnalysis(analysis.id, twoTopics());
+      else if (slice) p.completeSlice(slice.id);
+    }
+    throw new Error("队列没有排空");
+  }
+
+  test("持续录制：从 7 分钟开始，推进两段后产出 4 条", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "f1", name: "直播_晚场.mp4", durationSeconds: 420, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    grow(p, "f1", 180);
+    grow(p, "f1", 600);
+    drain(p);
+
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+    ]);
+    expect(p.clips).toHaveLength(4);
+    expect(p.sliceQueue.filter((j) => j.status !== "done")).toHaveLength(0);
+  });
+
+  test("多个视频：完整录像处理到末尾，与增长录像共产出 8 条", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "full", name: "创作复盘_完整版.mp4", durationSeconds: 1080, growing: false, modifiedSeconds: 0 });
+    p.addFile({ id: "live", name: "直播_晚场.mp4", durationSeconds: 420, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["full", "live"]);
+
+    grow(p, "live", 600);
+    grow(p, "live", 600);
+    drain(p);
+
+    expect(p.analysisQueue.filter((j) => j.fileId === "full").map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1080],
+    ]);
+    expect(p.clips).toHaveLength(8);
+    expect(p.statusOf("full")).toBe("finished");
+    expect(p.unslicedSeconds("full")).toBe(0);
+  });
+
+  test("尾段恰好 30 秒无任务，超过后补 2 条且整理已结束", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { transcript: lines });
+    p.addFile({ id: "f1", name: "直播_晚场.mp4", durationSeconds: 420, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.setGrowing("f1", false);
+
+    p.tick(30);
+    expect(p.analysisQueue).toHaveLength(0);
+    expect(p.clips).toHaveLength(0);
+
+    p.tick(1);
+    drain(p);
+    expect(p.analysisQueue).toHaveLength(1);
+    expect(p.clips).toHaveLength(2);
+    expect(p.statusOf("f1")).toBe("finished");
+    expect(p.unslicedSeconds("f1")).toBe(0);
+  });
+});
