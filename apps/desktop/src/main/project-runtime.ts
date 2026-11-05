@@ -1,8 +1,10 @@
+import { mkdirSync } from "node:fs";
 import {
   acquireVideoLock,
   analyzeVideoRange,
   ClipProject,
   generateProjectClip,
+  isVideoLockBusy,
   loadVideoData,
   logger,
   mediaAbsolutePath,
@@ -55,7 +57,7 @@ export type ProjectRuntimeDeps = {
   /** 默认读 `video.json` 生成确认弹窗的字幕行；测试注入。 */
   transcriptOf?: (videoId: string) => SubtitleLine[];
   /** 默认用 core 的区间分析管线；测试注入。 */
-  analyzeRange?: (job: AnalysisJob, video: ProjectVideo) => Promise<ProposedTopic[]>;
+  analyzeRange?: (job: AnalysisJob, video: ProjectVideo, lock: VideoLock) => Promise<ProposedTopic[]>;
   /** 默认用 `generateProjectClip` 并把切片记录写回 `video.json`；测试注入。 */
   generateClip?: (job: SliceJob, video: ProjectVideo, alloc: ClipAllocation) => Promise<{ file: string }>;
   /** 真实执行器的配置来源；只有未注入 analyzeRange/generateClip 时才调用。 */
@@ -129,10 +131,14 @@ export class ProjectRuntime {
   private executor(projectId: string): ProjectExecutor {
     return {
       analyze: (job) => {
-        this.analysisTail = this.analysisTail.then(() => this.runAnalysis(projectId, job));
+        this.analysisTail = this.analysisTail
+          .then(() => this.runAnalysis(projectId, job))
+          .catch((err: unknown) => logger().error("project", "分析槽异常", { message: err instanceof Error ? err.message : String(err) }));
       },
       slice: (job) => {
-        this.sliceTail = this.sliceTail.then(() => this.runSlice(projectId, job));
+        this.sliceTail = this.sliceTail
+          .then(() => this.runSlice(projectId, job))
+          .catch((err: unknown) => logger().error("project", "切片槽异常", { message: err instanceof Error ? err.message : String(err) }));
       },
     };
   }
@@ -141,8 +147,9 @@ export class ProjectRuntime {
     const controller = this.controllers.get(projectId);
     const video = this.video(projectId, job.fileId, true);
     if (controller === undefined || video === undefined) return;
-    const lock = await this.lock(video);
+    let lock: VideoLock | undefined;
     try {
+      lock = await this.lock(video);
       const topics = await this.analyze(job, video, lock);
       controller.completeAnalysis(job.id, topics);
     } catch (err) {
@@ -150,7 +157,7 @@ export class ProjectRuntime {
       logger().error("project", "区间分析失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failAnalysis(job.id, message);
     } finally {
-      lock.release();
+      lock?.release();
     }
   }
 
@@ -160,8 +167,9 @@ export class ProjectRuntime {
     if (controller === undefined || video === undefined) return;
     const parsed = splitTopicKey(job.topicKey);
     const allocation = this.service.beginClip(projectId, job.title);
-    const lock = await this.lock(video);
+    let lock: VideoLock | undefined;
     try {
+      lock = await this.lock(video);
       const alloc = { ...allocation, clipsDir: this.service.clipsDir(projectId) };
       const { file } = await this.generate(job, video, alloc);
       if (parsed !== undefined) {
@@ -177,12 +185,12 @@ export class ProjectRuntime {
       logger().error("project", "切片失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failSlice(job.id, message);
     } finally {
-      lock.release();
+      lock?.release();
     }
   }
 
   private analyze(job: AnalysisJob, video: ProjectVideo, lock: VideoLock): Promise<ProposedTopic[]> {
-    if (this.deps.analyzeRange !== undefined) return this.deps.analyzeRange(job, video);
+    if (this.deps.analyzeRange !== undefined) return this.deps.analyzeRange(job, video, lock);
     return this.defaultAnalyze(job, video, lock);
   }
 
@@ -252,14 +260,21 @@ export class ProjectRuntime {
     return { file: clip.file };
   }
 
-  /** 同一个视频的运行锁：轮询 core 的锁文件，任务之间自然排队。 */
+  /**
+   * 同一个视频的运行锁：轮询 core 的锁文件，任务之间自然排队。
+   * 锁文件建在输出目录里，而目录由第一次分析才创建（新导入的视频还没有），
+   * 所以先建目录：否则 openSync 报 ENOENT，旧实现会把它当成「忙」无限重试。
+   * 只有「视频正在运行」是可重试的占用；其它文件系统错误直接抛出，避免永久错误变成空转。
+   */
   private async lock(video: ProjectVideo): Promise<VideoLock> {
     if (this.deps.acquireLock !== undefined) return this.deps.acquireLock(video.outputDir);
+    mkdirSync(video.outputDir, { recursive: true });
     for (;;) {
       if (this.disposed) throw new Error("项目执行器已停止");
       try {
         return acquireVideoLock(video.outputDir);
-      } catch {
+      } catch (err) {
+        if (!isVideoLockBusy(err)) throw err;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { ProjectEventLog, ProjectStore, type AnalysisJob, type ProposedTopic, type SliceJob } from "@video-notes/core";
 import { makeTmpDir } from "@video-notes/core/testing";
@@ -236,5 +237,37 @@ describe("ProjectRuntime：切片落盘与计数", () => {
     expect(ctx.service.get(project.id).queue?.slices.map((task) => task.topicKey)).toEqual(
       expect.arrayContaining(["1:a", "1:b"]),
     );
+  });
+});
+
+describe("ProjectRuntime：真实运行锁", () => {
+  test("输出目录还不存在时先建目录再取锁，分析不会因为锁文件 ENOENT 卡住", async () => {
+    const root = makeTmpDir("project-runtime-lock-");
+    const service = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    const project = service.create({ name: "首次整理", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { autoSlice: false });
+    const outputDir = join(root, "notes", "还没导入的视频");
+    expect(existsSync(outputDir)).toBe(false);
+
+    const runtime = new ProjectRuntime({
+      service,
+      transcriptOf: () => [],
+      analyzeRange: async () => [{ id: "t1", title: "主题一", category: "", lineIds: [] }],
+    });
+    runtime.registerVideo(project.id, {
+      id: "v1",
+      name: "a.mp4",
+      durationSeconds: 30,
+      outputDir,
+      sourcePath: join(root, "a.mp4"),
+      hasVideo: true,
+    });
+    runtime.attachProject(project.id);
+
+    runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => service.get(project.id).queue?.analysis.every((task) => task.status === "done") === true, "分析完成");
+
+    expect(readdirSync(outputDir)).toEqual([]);
+    expect(service.get(project.id).queue?.proposed.map((topic) => topic.title)).toEqual(["主题一"]);
   });
 });
