@@ -18,13 +18,14 @@ describe("项目清单持久化", () => {
   test("创建后落盘，重启（新建 store）仍在，字段齐全", () => {
     const root = makeTmpDir("projects-store-");
     const store = storeAt(root);
+    const expectedRoot = join(root, "Movies", "切片项目", "晚场直播");
     const first = store.create({
       name: "  晚场直播精华  ",
-      rootDir: "/Users/link/Movies/切片项目/晚场直播/",
+      rootDir: `${expectedRoot}/`,
     });
 
     expect(first.name).toBe("晚场直播精华");
-    expect(first.rootDir).toBe("/Users/link/Movies/切片项目/晚场直播");
+    expect(first.rootDir).toBe(expectedRoot);
     expect(first.chunkMinutes).toBe(10);
     expect(first.autoSlice).toBe(true);
     expect(first.monitoring).toBe(false);
