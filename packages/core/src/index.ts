@@ -191,7 +191,9 @@ export { parseClipFileName } from "./core/clips";
 export {
   allocateProjectClip,
   clipFileTitle,
+  generateProjectClip,
   projectClipFileName,
+  projectClipSegments,
   PROJECT_CLIP_TITLE_MAX_CODEPOINTS,
   PROJECT_CLIP_PATH_MAX_UTF16,
 } from "./core/project-clips";

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeTmpDir } from "../testing/temp-dirs";
-import { allocateProjectClip, clipFileTitle, projectClipFileName } from "./project-clips";
+import { allocateProjectClip, clipFileTitle, generateProjectClip, projectClipFileName, projectClipSegments } from "./project-clips";
 
 describe("clipFileTitle（ADR-0056 清洗规则）", () => {
   test("全角标点合法，原样保留", () => {
@@ -114,5 +115,167 @@ describe("allocateProjectClip", () => {
     const dir = makeTmpDir("vnote-project-clips-");
     writeFileSync(join(dir, "001-别的标题.mp4"), "x");
     expect(allocateProjectClip({ clipsDir: dir, nextSeq: 1, title: "标题" }).seq).toBe(2);
+  });
+});
+
+
+function makeSource(path: string, seconds: number, width: number, height: number): void {
+  execFileSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      `color=c=red:s=${width}x${height}:d=${seconds}`,
+      "-f",
+      "lavfi",
+      "-i",
+      `sine=d=${seconds}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-shortest",
+      path,
+    ],
+    { stdio: "pipe" },
+  );
+}
+
+function probe(path: string): { duration: number; width: number | undefined; height: number | undefined } {
+  const json = JSON.parse(
+    execFileSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration:stream=width,height", "-of", "json", path],
+      { encoding: "utf8" },
+    ),
+  ) as { format?: { duration?: string }; streams?: { width?: number; height?: number }[] };
+  const video = json.streams?.find((s) => s.width !== undefined && s.height !== undefined);
+  return { duration: Number(json.format?.duration), width: video?.width, height: video?.height };
+}
+
+function decodes(path: string): void {
+  execFileSync("ffmpeg", ["-v", "error", "-i", path, "-f", "null", "-"], { stdio: "pipe" });
+}
+
+const line = (start: number, end: number, text: string, speaker = "主播") => ({ start, end, speaker, text });
+
+describe("projectClipSegments", () => {
+  test("非连续所选行形成多个片段，重叠或相接的行合并", () => {
+    expect(
+      projectClipSegments([
+        line(15, 17, "第三行"),
+        line(5, 7, "第一行"),
+        line(7, 8, "相接的第二行"),
+        line(7.5, 9, "重叠的行"),
+      ]),
+    ).toEqual([
+      { start: 5, end: 9 },
+      { start: 15, end: 17 },
+    ]);
+  });
+});
+
+describe("generateProjectClip（真实 ffmpeg，复用 ADR-0026）", () => {
+  test("多片段：时长按片段累加、未选间隔不包含，记录带字幕快照与片段列表", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 20, 160, 90);
+    const clipsDir = join(dir, "clips");
+    const subtitles = [line(5, 7, "第一行"), line(15, 17, "第二行", "观众")];
+    const { clip, nextSeq } = await generateProjectClip({
+      sourcePath: source,
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "多片段",
+      subtitles,
+    });
+    const out = join(clipsDir, clip.file);
+    expect(clip.file).toBe("001-多片段.mp4");
+    expect(nextSeq).toBe(2);
+    expect(existsSync(out)).toBe(true);
+    expect(statSync(out).size).toBeGreaterThan(0);
+    decodes(out);
+    // 前移 2 秒（ADR-0026 现状）：[5,7] → [3,7]，[15,17] → [13,17]，两段各 4 秒共 8 秒；
+    // 从 3 到 17 的 14 秒跨度里，未选的 6 秒间隔不进文件
+    const probed = probe(out);
+    expect(Math.abs(probed.duration - 8)).toBeLessThan(0.3);
+    expect(probed.duration).toBeLessThan(14);
+    expect(clip).toEqual({
+      file: "001-多片段.mp4",
+      start: 3,
+      end: 17,
+      segmentIndexes: [0, 1],
+      segmentOffsets: [2, 6],
+      subtitles,
+      segments: [
+        { start: 5, end: 7 },
+        { start: 15, end: 17 },
+      ],
+    });
+  });
+
+  test("横屏与竖屏各一：输出分辨率与来源一致", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const clipsDir = join(dir, "clips");
+    const cases = [
+      { name: "横屏", width: 160, height: 90 },
+      { name: "竖屏", width: 90, height: 160 },
+    ];
+    let nextSeq = 1;
+    for (const item of cases) {
+      const source = join(dir, `${item.name}.mp4`);
+      makeSource(source, 12, item.width, item.height);
+      const { clip, nextSeq: next } = await generateProjectClip({
+        sourcePath: source,
+        hasVideo: true,
+        clipsDir,
+        nextSeq,
+        title: item.name,
+        subtitles: [line(3, 5, "一行")],
+      });
+      nextSeq = next;
+      const probed = probe(join(clipsDir, clip.file));
+      expect({ width: probed.width, height: probed.height }).toEqual({ width: item.width, height: item.height });
+      expect(probed.width! / probed.height!).toBeCloseTo(item.width / item.height, 3);
+      decodes(join(clipsDir, clip.file));
+    }
+    expect(nextSeq).toBe(3);
+  });
+
+  test("没有选中的字幕行时拒绝生成，不占用序号、不留下文件", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const source = join(dir, "src.mp4");
+    makeSource(source, 6, 96, 54);
+    const clipsDir = join(dir, "clips");
+    await expect(
+      generateProjectClip({ sourcePath: source, hasVideo: true, clipsDir, nextSeq: 1, title: "空", subtitles: [] }),
+    ).rejects.toThrow("至少选择一行字幕");
+    expect(allocateProjectClip({ clipsDir, nextSeq: 1, title: "空" }).seq).toBe(1);
+  });
+
+  test("生成失败不消耗序号、不留半成品，重试仍从同一序号开始", async () => {
+    const dir = makeTmpDir("vnote-project-clips-");
+    const clipsDir = join(dir, "clips");
+    const input = {
+      sourcePath: join(dir, "no-such.mp4"),
+      hasVideo: true,
+      clipsDir,
+      nextSeq: 1,
+      title: "失败重试",
+      subtitles: [line(1, 2, "一行")],
+    };
+    await expect(generateProjectClip(input)).rejects.toThrow();
+    expect(existsSync(join(clipsDir, "001-失败重试.mp4"))).toBe(false);
+    makeSource(join(dir, "src.mp4"), 6, 96, 54);
+    const retried = await generateProjectClip({ ...input, sourcePath: join(dir, "src.mp4") });
+    expect(retried.clip.file).toBe("001-失败重试.mp4");
+    expect(retried.nextSeq).toBe(2);
   });
 });

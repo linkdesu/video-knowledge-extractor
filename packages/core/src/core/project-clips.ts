@@ -1,5 +1,11 @@
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { concatClips, cutClip, planTopicClip } from "./clips";
+import { logger } from "./logger";
+import { ensureDir } from "./paths";
+import type { Segment } from "./types";
+import type { ClipSubtitle, TopicClip } from "./video-data";
 
 /** ADR-0056：标题最多 60 个码点（`Array.from` 计数，不切坏代理对）。 */
 export const PROJECT_CLIP_TITLE_MAX_CODEPOINTS = 60;
@@ -64,4 +70,76 @@ export function allocateProjectClip(input: { clipsDir: string; nextSeq: number; 
   }
   const seq = Math.max(1, Math.floor(input.nextSeq) || 1, highest + 1);
   return { seq, file: projectClipFileName(seq, input.title, input.clipsDir), nextSeq: seq + 1 };
+}
+
+/** 所选字幕行按时间排序，重叠或相接（≤1ms）的行合并成一个片段；未选中的间隔因此不进切片。 */
+export function projectClipSegments(subtitles: readonly ClipSubtitle[]): Segment[] {
+  const sorted = [...subtitles].sort((a, b) => a.start - b.start || a.end - b.end);
+  const segments: Segment[] = [];
+  for (const line of sorted) {
+    if (!(line.end > line.start)) continue;
+    const last = segments[segments.length - 1];
+    if (last !== undefined && line.start <= last.end + 0.001) {
+      last.end = Math.max(last.end, line.end);
+    } else {
+      segments.push({ start: line.start, end: line.end });
+    }
+  }
+  return segments;
+}
+
+/**
+ * 把一个主题所选的字幕行生成到 `<clipsDir>/<seq>-<标题>.mp4`（ADR-0056）：
+ * 行 → 片段 → `planTopicClip`（前移 2 秒、重叠合并）→ 逐段 `cutClip` 重编码 → `concatClips` 流拷贝拼接。
+ * 返回的 `TopicClip` 复用现有主题切片字段，并附字幕行快照与片段列表。
+ * 失败时不消耗序号、不覆盖已有文件；调用方在记录落盘后把计数器写成返回的 `nextSeq`。
+ */
+export async function generateProjectClip(input: {
+  sourcePath: string;
+  hasVideo: boolean;
+  clipsDir: string;
+  nextSeq: number;
+  title: string;
+  subtitles: readonly ClipSubtitle[];
+}): Promise<{ clip: TopicClip; nextSeq: number }> {
+  const subtitles = [...input.subtitles].sort((a, b) => a.start - b.start || a.end - b.end).map((line) => ({ ...line }));
+  const segments = projectClipSegments(subtitles);
+  if (segments.length === 0) throw new Error("至少选择一行字幕");
+  const allocation = allocateProjectClip({ clipsDir: input.clipsDir, nextSeq: input.nextSeq, title: input.title });
+  const { unions, segmentOffsets } = planTopicClip(segments);
+  const first = unions[0];
+  const last = unions[unions.length - 1];
+  if (first === undefined || last === undefined) throw new Error(`主题 ${input.title} 没有可切片的时间段`);
+  ensureDir(input.clipsDir);
+  const workDir = mkdtempSync(join(tmpdir(), "vnote-project-clip-"));
+  const outPath = join(input.clipsDir, allocation.file);
+  const parts: string[] = [];
+  try {
+    for (let i = 0; i < unions.length; i++) {
+      const part = join(workDir, `${i}.mp4`);
+      await cutClip({ videoPath: input.sourcePath, segment: unions[i]!, outPath: part, hasVideo: input.hasVideo });
+      parts.push(part);
+    }
+    try {
+      await concatClips({ parts, outPath, hasVideo: input.hasVideo });
+    } finally {
+      // concatClips 只负责流拷贝与 .part 清理，列表文件由调用方清理
+      rmSync(`${outPath}.list-${process.pid}.txt`, { force: true });
+    }
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+  logger().info("ffmpeg", "项目切片完成", { file: outPath, clipCount: parts.length });
+  return {
+    clip: {
+      file: allocation.file,
+      start: first.start,
+      end: last.end,
+      segmentIndexes: segments.map((_, index) => index),
+      segmentOffsets,
+      subtitles,
+      segments,
+    },
+    nextSeq: allocation.nextSeq,
+  };
 }
