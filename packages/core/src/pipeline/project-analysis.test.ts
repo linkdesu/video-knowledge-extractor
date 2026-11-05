@@ -64,14 +64,14 @@ function fakeEngine(calls: { wavPath: string }[]): AsrEngine {
   };
 }
 
-function fakeClient(): LlmClient {
+function fakeClient(range: { start: number; end: number }): LlmClient {
   return {
     model: endpoint.model,
     chat: async (_messages, opts) => {
       if (!opts?.json) throw new Error("需要 json");
       const system = _messages[0]?.content ?? "";
       if (system.includes("主题")) {
-        return JSON.stringify({ topics: [{ title: "区间主题", summary: "摘要", segments: [{ start: 0, end: 1 }] }] });
+        return JSON.stringify({ topics: [{ title: "区间主题", summary: "摘要", segments: [{ start: range.start, end: range.end }] }] });
       }
       return JSON.stringify({ rows: [] });
     },
@@ -94,7 +94,7 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
       startSeconds: 0,
       endSeconds: 2,
       endpoint,
-      client: fakeClient(),
+      client: fakeClient({ start: 0, end: 2 }),
       asrEngine: fakeEngine(calls),
     });
 
@@ -125,7 +125,7 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
       startSeconds: 0,
       endSeconds: 2,
       endpoint,
-      client: fakeClient(),
+      client: fakeClient({ start: 0, end: 2 }),
       asrEngine: fakeEngine(calls),
     });
     const second = await analyzeVideoRange({
@@ -136,7 +136,7 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
       startSeconds: 2,
       endSeconds: 4,
       endpoint,
-      client: fakeClient(),
+      client: fakeClient({ start: 2, end: 4 }),
       asrEngine: fakeEngine(calls),
     });
 
@@ -159,5 +159,41 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
     expect(second.topics[0]?.id).not.toBe(first.topics[0]?.id);
     // 原始字幕文本不改写（纠错只在展示层应用）
     expect(readFileSync(join(second.outputDir, "video.json"), "utf8")).toContain("第一句");
+  });
+
+  test("模型给出区间外的时间段：夹回区间，夹不出就丢弃，不串到别的区间", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const calls: { wavPath: string }[] = [];
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 1 }),
+      asrEngine: fakeEngine(calls),
+    });
+    const second = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      // 误用相对时间：0–1 不在 2–4 内，必须丢弃而不是映射到第一区间的字幕
+      client: fakeClient({ start: 0, end: 1 }),
+      asrEngine: fakeEngine(calls),
+    });
+    expect(second.topics).toEqual([]);
+    const data = loadVideoData(second.outputDir, { id: second.videoId as VideoId, title: "" });
+    expect(data.topics).toHaveLength(1);
+    expect(data.transcript.utterances).toHaveLength(4);
   });
 });

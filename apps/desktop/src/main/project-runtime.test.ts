@@ -189,4 +189,52 @@ describe("ProjectRuntime：切片落盘与计数", () => {
     expect(detail.clips[0]?.file).toBe("001-冒号主题.mp4");
     expect(detail.queue?.slices[0]?.status).toBe("done");
   });
+
+  test("自动切片开启：全部主题产出切片，视频整理已结束、未切片 0", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "全自动", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [
+      { id: "a", title: "主题甲", category: "", lineIds: ["line-0"] },
+      { id: "b", title: "主题乙", category: "", lineIds: ["line-1"] },
+    ]);
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => {
+      const slices = ctx.service.get(project.id).queue?.slices ?? [];
+      return slices.length === 2 && slices.every((task) => task.status === "done");
+    }, "全部切片完成");
+
+    const detail = ctx.service.get(project.id);
+    expect(detail.clips.map((clip) => clip.file)).toEqual(["001-主题甲.mp4", "002-主题乙.mp4"]);
+    expect(detail.queue?.proposed).toEqual([]);
+    expect(detail.queue?.files[0]?.organizeStatus).toBe("finished");
+    expect(detail.queue?.files[0]?.unslicedSeconds).toBe(0);
+  });
+
+  test("自动切片关闭：分析完成、切片 0、主题全部待确认；再打开自动切片入队且不重复", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "手工", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [
+      { id: "a", title: "主题甲", category: "", lineIds: ["line-0"] },
+      { id: "b", title: "主题乙", category: "", lineIds: ["line-1"] },
+    ]);
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis.every((task) => task.status === "done") === true, "分析完成");
+    const manual = ctx.service.get(project.id);
+    expect(manual.clips).toEqual([]);
+    expect(manual.queue?.slices).toEqual([]);
+    expect(manual.queue?.proposed.map((topic) => topic.title)).toEqual(["主题甲", "主题乙"]);
+
+    ctx.service.updateSettings(project.id, { autoSlice: true });
+    await waitUntil(() => ctx.service.get(project.id).clips.length === 2, "打开后补齐切片");
+    expect(ctx.service.get(project.id).queue?.slices.map((task) => task.topicKey)).toEqual(
+      expect.arrayContaining(["1:a", "1:b"]),
+    );
+  });
 });

@@ -212,13 +212,20 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       const usedIds = new Set(data.topics.map((t) => t.id as string));
       const usedDirs = new Set(data.topics.map((t) => t.dirName));
       const rangeKey = `t${Math.round(start)}`;
-      const records: TopicRecord[] = topics.map((topic, index) => {
-        const id = freshTopicId(`${rangeKey}-${index + 1}`, usedIds) as TopicId;
-        return {
+      const records: TopicRecord[] = [];
+      for (const topic of topics) {
+        // 一次任务只对这一段负责：模型若给出区间外的时间段（含误用相对时间），夹回区间；
+        // 夹不出一段有效区间就丢弃，避免把别的区间的字幕算进本主题
+        const segments = topic.segments
+          .map((s) => ({ start: Math.max(start, s.start), end: Math.min(end, s.end) }))
+          .filter((s) => s.end > s.start + 1e-6);
+        if (segments.length === 0) continue;
+        const id = freshTopicId(`${rangeKey}-${records.length + 1}`, usedIds) as TopicId;
+        records.push({
           id,
           title: topic.title,
           summary: topic.summary,
-          segments: topic.segments.map((s) => ({ ...s })),
+          segments,
           dirName: freshDirName(topic.title, usedDirs),
           status: "proposed",
           selected: true,
@@ -227,8 +234,8 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
           startedAt: null,
           elapsedSeconds: null,
           error: null,
-        };
-      });
+        });
+      }
       data.transcript = { speakers, utterances };
       data.topics = [...data.topics, ...records];
       if (data.importedAt === null) data.importedAt = new Date().toISOString();
