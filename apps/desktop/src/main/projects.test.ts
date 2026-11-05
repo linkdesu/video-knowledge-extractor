@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   ClipProject,
@@ -242,5 +243,19 @@ describe("项目服务：切片序号与记录（#126）", () => {
     expect(again.seq).toBe(first.seq);
     service.endClip(project.id, again.seq, { seq: again.seq, videoId: "v1", topicId: "t1", file: again.file });
     expect(service.get(project.id).clips[0]?.seq).toBe(first.seq);
+  });
+
+  test("projects.json 在数据根、视频库 index.json 在 notesRoot：两处路径互不影响", () => {
+    const dataDir = makeTmpDir("projects-data-");
+    const notes = makeTmpDir("projects-notes-");
+    const store = ProjectStore.atRoot(dataDir);
+    const service = new ProjectService({ store, events: new ProjectEventLog() });
+    const project = service.create({ name: "分离", rootDir: join(dataDir, "root") });
+
+    expect(existsSync(join(dataDir, "projects.json"))).toBe(true);
+    expect(existsSync(join(notes, "projects.json"))).toBe(false);
+    // 项目清单的读写完全不碰 notesRoot 的视频库索引
+    expect(existsSync(join(notes, "index.json"))).toBe(false);
+    expect(new ProjectService({ store: ProjectStore.atRoot(dataDir), events: new ProjectEventLog() }).get(project.id).name).toBe("分离");
   });
 });

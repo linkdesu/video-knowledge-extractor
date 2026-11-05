@@ -93,6 +93,11 @@ describe("整理分块入队", () => {
     p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 1200, growing: false, modifiedSeconds: 0 });
     p.tick(60);
     expect(p.analysisQueue).toHaveLength(0);
+    // 即使文件继续增长，未加入整理也保持「未整理」
+    p.reportGrowth("f1", 1800);
+    p.tick(60);
+    expect(p.statusOf("f1")).toBe("unorganized");
+    expect(p.analysisQueue).toHaveLength(0);
   });
 
   test("修改分块时长只影响以后产生的分块", () => {
