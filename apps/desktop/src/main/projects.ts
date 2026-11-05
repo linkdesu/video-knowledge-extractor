@@ -13,12 +13,14 @@ import {
 } from "@video-notes/core";
 import type {
   CreateProjectInput,
+  ProjectClipInfo,
   ProjectDetail,
   ProjectEventPayload,
   ProjectQueueState,
   ProjectSettingsPatch,
   ProjectSummary,
 } from "../shared/ipc";
+import { describeProjectClips } from "./project-clip-details";
 
 /**
  * 项目业务层（#125）：持久化清单 + 运行日志 + 每项目状态机。
@@ -28,6 +30,11 @@ import type {
 export type ProjectServiceDeps = {
   store: ProjectStore;
   events: ProjectEventLog;
+  /**
+   * 切片引用 → 产出卡片展示字段（#130）。main 注入带视频库解析的实现；
+   * 缺省只拼项目内的路径与文件名标题，不读视频库。
+   */
+  describeClips?: (record: ProjectRecord) => ProjectClipInfo[];
 };
 
 type ChangeListener = (payload: ProjectEventPayload) => void;
@@ -35,6 +42,7 @@ type ChangeListener = (payload: ProjectEventPayload) => void;
 export class ProjectService {
   private readonly store: ProjectStore;
   private readonly events: ProjectEventLog;
+  private readonly describeClips: (record: ProjectRecord) => ProjectClipInfo[];
   private readonly runtimes = new Map<string, ClipProject>();
   private readonly listeners = new Set<ChangeListener>();
   /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
@@ -46,6 +54,14 @@ export class ProjectService {
   constructor(deps: ProjectServiceDeps) {
     this.store = deps.store;
     this.events = deps.events;
+    this.describeClips =
+      deps.describeClips ??
+      ((record) =>
+        describeProjectClips({
+          projectId: record.id,
+          clipsDir: projectClipsDir(record),
+          refs: record.clips,
+        }));
   }
 
   /** main 注入：项目第一次被读取/操作时调用，让执行器把控制器接进来。 */
@@ -242,7 +258,7 @@ export class ProjectService {
     return {
       ...this.summaryOf(record, controller),
       videoIds: [...record.videoIds],
-      clips: record.clips.map((clip) => ({ ...clip })),
+      clips: this.describeClips(record),
       queue: controller === null ? null : queueSnapshot(controller),
       events: this.events.list(record.id),
     };

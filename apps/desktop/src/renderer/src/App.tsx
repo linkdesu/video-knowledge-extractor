@@ -13,6 +13,7 @@ import { VideoWorkspace } from "./pages/VideoWorkspace";
 import { LibraryPage } from "./pages/LibraryPage";
 import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectPage } from "./pages/ProjectPage";
+import { ProjectClipsTab } from "./components/ProjectClipsTab";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DiarizationLabPage } from "./pages/DiarizationLabPage";
@@ -442,6 +443,18 @@ export function App() {
             <ProjectPage
               project={project}
               tab={route.tab}
+              panels={{
+                output: (
+                  <ProjectClipsTab
+                    project={project}
+                    onOpenClipsDir={() => {
+                      void window.vnote
+                        .openProjectClipsDir(project.id)
+                        .catch((err) => showToast(`打开切片目录失败：${errMessage(err)}`));
+                    }}
+                  />
+                ),
+              }}
               onTab={(tab) =>
                 setRoute({ name: "project", projectId: route.projectId, tab })
               }
