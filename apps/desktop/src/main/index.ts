@@ -126,6 +126,7 @@ import {
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { ProjectService } from "./projects";
 import { projectIpcHandlers } from "./projects-ipc";
+import { ProjectRuntime } from "./project-runtime";
 import { resolveLabCache } from "./dev-lab/cache-mode";
 import { createLabRuntime, devLabEnabled, type LabRuntime } from "./dev-lab/register";
 import { LAB_IPC, type LabProgress } from "../shared/lab";
@@ -272,6 +273,36 @@ const projectService = new ProjectService({
 projectService.onChange((payload: ProjectEventPayload) => {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(IPC.projectsEvent, payload);
 });
+
+// 整理切片执行器（#126）：所有项目共用一个两槽执行器；分析/切片都读视频库同一份文档与缓存。
+const projectRuntime = new ProjectRuntime({
+  service: projectService,
+  resolveVideo: (videoId) => {
+    const entry = listLibrary(settings.notesRoot).find((video) => video.id === videoId);
+    if (entry === undefined || entry.sourcePath === undefined || entry.sourcePath === "") return undefined;
+    return {
+      id: entry.id,
+      name: basename(entry.sourcePath),
+      durationSeconds: entry.durationSeconds ?? 0,
+      outputDir: entry.outputDir,
+      sourcePath: entry.sourcePath,
+      hasVideo: entry.hasVideo ?? true,
+    };
+  },
+  context: async () => {
+    const asr = asrRuntime.config;
+    if (asr === undefined) throw new Error(asrRuntime.error ?? "ASR 未配齐，请在设置页补全");
+    return {
+      endpoint: await requireLlmEndpoint(),
+      asr,
+      notesRoot: settings.notesRoot,
+      cacheRoot: settings.cacheRoot,
+      modelDir: settings.modelDir,
+      prompts: readPromptOverrides(app.getPath("userData")),
+    };
+  },
+});
+projectService.setRuntimeProvider((projectId) => projectRuntime.attachProject(projectId));
 
 // r49 诊断（临时）：启动时间线。t = 距进程启动毫秒数（用 uptime 回推基准，模块加载点即基准）。
 const STARTUP_T0 = Date.now() - Math.round(process.uptime() * 1000);
@@ -1868,10 +1899,14 @@ void app.whenReady().then(async () => {
   ipcMain.handle(IPC.activeJob, guard(IPC.activeJob, () => queue.active() ?? null));
   // 项目通道集中在 projects-ipc：参数校验与业务调用在那里，这里只补文件管理器打开
   for (const [channel, handler] of Object.entries(
-    projectIpcHandlers(projectService, async (dir) => {
-      const err = await shell.openPath(dir);
-      if (err !== "") throw new Error(`打开切片目录失败：${err}`);
-    }),
+    projectIpcHandlers(
+      projectService,
+      async (dir) => {
+        const err = await shell.openPath(dir);
+        if (err !== "") throw new Error(`打开切片目录失败：${err}`);
+      },
+      (projectId, videoIds) => projectRuntime.startOrganize(projectId, videoIds),
+    ),
   )) {
     ipcMain.handle(channel, guard(channel, handler));
   }

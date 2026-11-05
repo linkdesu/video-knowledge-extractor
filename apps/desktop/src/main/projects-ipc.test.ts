@@ -50,7 +50,7 @@ describe("项目 IPC 契约", () => {
 
     // 主进程与 preload 必须都接上；少一个通道就是界面点了没反应的白屏
     const main = readFileSync(join(SRC, "main/index.ts"), "utf8");
-    expect(main).toContain("projectIpcHandlers(projectService,");
+    expect(main).toMatch(/projectIpcHandlers\(\s*projectService,/);
     expect(main).toContain("ipcMain.handle(channel, guard(channel, handler))");
     const preload = readFileSync(join(SRC, "preload/index.ts"), "utf8");
     for (const channel of INVOKE_CHANNELS) {
@@ -120,5 +120,24 @@ describe("项目 IPC 契约", () => {
     expect(() => handlers[IPC.projectsUpdateSettings]!(null, "p1", { autoSlice: "yes" })).toThrow("自动切片必须是布尔值");
     expect(() => handlers[IPC.projectsUpdateSettings]!(null, "p1", { chunkMinutes: "10" })).toThrow("分块时长必须是数字");
     expect(() => handlers[IPC.projectsConfirmTopic]!(null, "p1", "1:t1", [])).toThrow("字幕行 id必须是非空字符串数组");
+  });
+
+  test("开始整理先走 organizer（现有导入/规范化），再进控制器队列", () => {
+    const { root, service } = harness();
+    const calls: Array<[string, string[]]> = [];
+    const handlers = projectIpcHandlers(
+      service,
+      async () => {
+        /* 打开目录不在本用例范围 */
+      },
+      (projectId, videoIds) => {
+        calls.push([projectId, videoIds]);
+        return service.startOrganize(projectId, videoIds);
+      },
+    );
+    const project = service.create({ name: "接线", rootDir: join(root, "p") });
+    const detail = handlers[IPC.projectsStartOrganize]!(null, project.id, ["v1"]) as ProjectDetail;
+    expect(calls).toEqual([[project.id, ["v1"]]]);
+    expect(detail.videoIds).toEqual(["v1"]);
   });
 });

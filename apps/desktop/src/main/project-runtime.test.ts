@@ -1,0 +1,192 @@
+import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { ProjectEventLog, ProjectStore, type AnalysisJob, type ProposedTopic, type SliceJob } from "@video-notes/core";
+import { makeTmpDir } from "@video-notes/core/testing";
+import { ProjectService } from "./projects";
+import { ProjectRuntime, type ProjectVideo } from "./project-runtime";
+
+/** 可注入的互斥锁：同一个输出目录同时只允许一个任务。 */
+function fakeLocks() {
+  const held = new Set<string>();
+  const waiters: Array<{ dir: string; resolve: () => void }> = [];
+  const acquire = async (dir: string): Promise<{ release(): void }> => {
+    while (held.has(dir)) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      waiters.push({ dir, resolve });
+      await promise;
+    }
+    held.add(dir);
+    return {
+      release() {
+        held.delete(dir);
+        const index = waiters.findIndex((w) => w.dir === dir);
+        if (index >= 0) {
+          const [next] = waiters.splice(index, 1);
+          next?.resolve();
+        }
+      },
+    };
+  };
+  return { acquire, held };
+}
+
+async function flush(turns = 10): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
+}
+
+async function waitUntil(condition: () => boolean, label: string): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    if (condition()) return;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 5);
+    await promise;
+  }
+  throw new Error(`等待超时：${label}`);
+}
+
+function setup() {
+  const root = makeTmpDir("project-runtime-");
+  const service = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+  const locks = fakeLocks();
+  const started: string[] = [];
+  const sliced: SliceJob[] = [];
+  let analyzeImpl: (job: AnalysisJob) => Promise<ProposedTopic[]> = async () => [];
+  let generateImpl: ((job: SliceJob) => Promise<{ file: string }>) | undefined;
+
+  const runtime = new ProjectRuntime({
+    service,
+    acquireLock: locks.acquire,
+    transcriptOf: () =>
+      Array.from({ length: 6 }, (_, i) => ({ id: `line-${i}`, start: i * 10, end: (i + 1) * 10, text: `第 ${i} 行` })),
+    analyzeRange: async (job) => {
+      started.push(`analyze:${job.id}:${job.fileId}`);
+      return analyzeImpl(job);
+    },
+    generateClip: async (job) => {
+      started.push(`slice:${job.id}:${job.fileId}`);
+      sliced.push(job);
+      return generateImpl !== undefined ? generateImpl(job) : { file: `${String(job.id).padStart(3, "0")}-${job.title}.mp4` };
+    },
+  });
+
+  return {
+    root,
+    service,
+    runtime,
+    locks,
+    started,
+    sliced,
+    setAnalyze(fn: (job: AnalysisJob) => Promise<ProposedTopic[]>) {
+      analyzeImpl = fn;
+    },
+    setGenerate(fn: (job: SliceJob) => Promise<{ file: string }>) {
+      generateImpl = fn;
+    },
+  };
+}
+
+const V1: ProjectVideo = { id: "v1", name: "晚场.mp4", durationSeconds: 1200, outputDir: "/out/v1", sourcePath: "/v1.mp4", hasVideo: true };
+const V2: ProjectVideo = { id: "v2", name: "复盘.mp4", durationSeconds: 600, outputDir: "/out/v2", sourcePath: "/v2.mp4", hasVideo: true };
+
+describe("ProjectRuntime：全局两槽执行器", () => {
+  test("不同视频的切片与分析可以同时在跑", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "并发", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 600 });
+    ctx.runtime.registerVideo(project.id, V2);
+    ctx.runtime.attachProject(project.id);
+
+    const gate = Promise.withResolvers<void>();
+    const sliceGate = Promise.withResolvers<void>();
+    ctx.setAnalyze(async (job) => {
+      if (job.fileId === "v2") await gate.promise;
+      return [{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }];
+    });
+    ctx.setGenerate(async () => {
+      await sliceGate.promise;
+      return { file: "001-主题一.mp4" };
+    });
+    ctx.service.startOrganize(project.id, ["v1", "v2"]);
+    await waitUntil(() => ctx.started.includes("analyze:2:v2"), "v2 分析启动");
+
+    // 分析槽跑 v2（被闸门挡着），切片槽跑 v1 的切片：两条队列同时在跑
+    expect(ctx.started).toContain("analyze:2:v2");
+    expect(ctx.started).toContain("slice:1:v1");
+    expect(ctx.service.get(project.id).queue?.analysis.filter((task) => task.status === "running")).toHaveLength(1);
+    expect(ctx.service.get(project.id).queue?.slices.filter((task) => task.status === "running")).toHaveLength(1);
+
+    gate.resolve();
+    sliceGate.resolve();
+    await flush();
+  });
+
+  test("同一个视频：分析持锁时切片等待，不会并行写同一个视频", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "互斥", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, V1);
+    ctx.runtime.attachProject(project.id);
+
+    const secondRun = Promise.withResolvers<void>();
+    const sliceGate = Promise.withResolvers<void>();
+    let analysisActive = 0;
+    let sliceActive = 0;
+    let overlapped = false;
+    let first = true;
+    ctx.setAnalyze(async () => {
+      if (first) {
+        first = false;
+        return [{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }];
+      }
+      analysisActive += 1;
+      if (sliceActive > 0) overlapped = true;
+      await secondRun.promise;
+      analysisActive -= 1;
+      return [];
+    });
+    ctx.setGenerate(async () => {
+      sliceActive += 1;
+      if (analysisActive > 0) overlapped = true;
+      await sliceGate.promise;
+      sliceActive -= 1;
+      return { file: "001-主题一.mp4" };
+    });
+    // 两个分块：第一个完成后切片入队；第二个分析与切片都想要 v1 的锁
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.started.includes("analyze:2:v1") || ctx.sliced.length === 1, "第二个任务启动");
+    // 无论谁先拿到锁，另一个都必须等它释放：不能同时写同一个视频
+    const analysisWon = ctx.started.includes("analyze:2:v1");
+    if (analysisWon) {
+      expect(ctx.sliced).toHaveLength(0);
+      secondRun.resolve();
+      await waitUntil(() => ctx.sliced.length === 1, "切片启动");
+    } else {
+      sliceGate.resolve();
+      await waitUntil(() => ctx.started.includes("analyze:2:v1"), "第二个分块启动");
+    }
+    sliceGate.resolve();
+    secondRun.resolve();
+    await flush(30);
+    expect(overlapped).toBe(false);
+    expect(ctx.service.get(project.id).clips.map((clip) => clip.seq)).toEqual([1]);
+  });
+});
+
+describe("ProjectRuntime：切片落盘与计数", () => {
+  test("切片完成后写项目清单与计数，序号单调", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "落盘", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, V1);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t:1", title: "冒号主题", category: "", lineIds: ["line-1"] }]);
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await flush(20);
+
+    const detail = ctx.service.get(project.id);
+    expect(detail.clipCount).toBe(1);
+    expect(detail.clips[0]?.seq).toBe(1);
+    expect(detail.clips[0]?.topicId).toBe("t:1");
+    expect(detail.clips[0]?.file).toBe("001-冒号主题.mp4");
+    expect(detail.queue?.slices[0]?.status).toBe("done");
+  });
+});

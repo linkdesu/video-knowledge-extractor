@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { IPC } from "../shared/ipc";
-import type { CreateProjectInput, ProjectSettingsPatch } from "../shared/ipc";
+import type { CreateProjectInput, ProjectDetail, ProjectSettingsPatch } from "../shared/ipc";
 import type { ProjectService } from "./projects";
 
 /** `ipcMain.handle` 注册的项目通道（`projects:event` 是推送，不在其中）。 */
@@ -58,6 +58,8 @@ function requireSettingsPatch(value: unknown): ProjectSettingsPatch {
 export function projectIpcHandlers(
   service: ProjectService,
   openDirectory: (path: string) => Promise<void>,
+  /** 加入整理前要先走现有导入（注册、规范化）；缺省直接交给业务层（测试与未接执行器时）。 */
+  organizer?: (projectId: string, videoIds: string[]) => ProjectDetail,
 ): Record<ProjectInvokeChannel, ProjectHandler> {
   return {
     [IPC.projectsList]: () => service.list(),
@@ -68,8 +70,11 @@ export function projectIpcHandlers(
     },
     [IPC.projectsStartMonitor]: (_event, projectId, directory) =>
       service.startMonitor(requireString(projectId, "项目 id"), requireString(directory, "监控目录")),
-    [IPC.projectsStartOrganize]: (_event, projectId, videoIds) =>
-      service.startOrganize(requireString(projectId, "项目 id"), requireStringArray(videoIds, "视频 id")),
+    [IPC.projectsStartOrganize]: (_event, projectId, videoIds) => {
+      const id = requireString(projectId, "项目 id");
+      const ids = requireStringArray(videoIds, "视频 id");
+      return organizer === undefined ? service.startOrganize(id, ids) : organizer(id, ids);
+    },
     [IPC.projectsUpdateSettings]: (_event, projectId, patch) =>
       service.updateSettings(requireString(projectId, "项目 id"), requireSettingsPatch(patch)),
     [IPC.projectsConfirmTopic]: (_event, projectId, topicKeyValue, lineIds) =>

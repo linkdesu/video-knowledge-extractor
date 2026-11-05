@@ -39,10 +39,18 @@ export class ProjectService {
   private readonly listeners = new Set<ChangeListener>();
   /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
   private readonly inflightClips = new Map<string, Set<number>>();
+  /** 执行器按需接入：界面第一次读项目时懒建控制器（#126）。 */
+  private ensureRuntime: ((projectId: string) => void) | undefined;
+  private readonly ensuring = new Set<string>();
 
   constructor(deps: ProjectServiceDeps) {
     this.store = deps.store;
     this.events = deps.events;
+  }
+
+  /** main 注入：项目第一次被读取/操作时调用，让执行器把控制器接进来。 */
+  setRuntimeProvider(provider: (projectId: string) => void): void {
+    this.ensureRuntime = provider;
   }
 
   onChange(listener: ChangeListener): () => void {
@@ -66,11 +74,25 @@ export class ProjectService {
   }
 
   list(): ProjectSummary[] {
-    return this.store.list().map((record) => this.summaryOf(record, this.runtimes.get(record.id) ?? null));
+    const records = this.store.list();
+    for (const record of records) this.ensure(record.id);
+    return records.map((record) => this.summaryOf(record, this.runtimes.get(record.id) ?? null));
   }
 
   get(projectId: string): ProjectDetail {
+    this.requireRecord(projectId);
+    this.ensure(projectId);
     return this.detailOf(this.requireRecord(projectId));
+  }
+
+  private ensure(projectId: string): void {
+    if (this.runtimes.has(projectId) || this.ensureRuntime === undefined || this.ensuring.has(projectId)) return;
+    this.ensuring.add(projectId);
+    try {
+      this.ensureRuntime(projectId);
+    } finally {
+      this.ensuring.delete(projectId);
+    }
   }
 
   create(input: CreateProjectInput): ProjectDetail {
@@ -93,6 +115,8 @@ export class ProjectService {
 
   /** 已加入的视频不会重复计数；控制器已接入时同时把新增视频推进分析队列。 */
   startOrganize(projectId: string, videoIds: readonly string[]): ProjectDetail {
+    this.requireRecord(projectId);
+    this.ensure(projectId);
     const before = this.requireRecord(projectId).videoIds;
     const added = [...new Set(videoIds)].filter((id) => id !== "" && !before.includes(id));
     const record = this.store.addVideos(projectId, added);
@@ -110,6 +134,7 @@ export class ProjectService {
   }
 
   updateSettings(projectId: string, patch: ProjectSettingsPatch): ProjectDetail {
+    this.ensure(projectId);
     const record = this.store.updateSettings(projectId, patch);
     const controller = this.runtimes.get(projectId);
     if (controller !== null && controller !== undefined) {
@@ -126,6 +151,7 @@ export class ProjectService {
   /** 确认单个主题（只带行 id）：按当前字幕生成切片任务，重复确认与空选择都拒绝。 */
   confirmTopic(projectId: string, topicKeyValue: string, lineIds: readonly string[]): ProjectDetail {
     this.requireRecord(projectId);
+    this.ensure(projectId);
     const controller = this.runtimes.get(projectId);
     if (controller === undefined) throw new Error("项目执行器尚未接入");
     const parsed = splitTopicKey(topicKeyValue);
