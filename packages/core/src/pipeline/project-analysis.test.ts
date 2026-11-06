@@ -493,3 +493,32 @@ describe("analyzeVideoRange：运行锁归属", () => {
     expect(isVideoLocked(first.outputDir)).toBe(false);
   });
 });
+
+describe("两步进度：#142 依赖的事件契约", () => {
+  test("主题分析开始先发 done:0 的阶段事件，再发分块完成事件", async () => {
+    const root = makeTmpDir("project-analysis-progress-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const progress: Array<{ step: string; done: number; total: number }> = [];
+
+    await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine([]),
+      onProgress: (event) => progress.push({ step: event.step, done: event.done, total: event.total }),
+    });
+
+    // 执行器把 segment-topics 映射成第 2 步；事件名或起始时机一旦改动，队列 tab 会静默卡在第 1 步
+    const steps = progress.filter((event) => event.step === "segment-topics");
+    expect(steps[0]).toEqual({ step: "segment-topics", done: 0, total: 1 });
+    expect(steps.at(-1)).toEqual({ step: "segment-topics", done: 1, total: 1 });
+    expect(progress.some((event) => event.step === "transcribe")).toBe(true);
+  });
+});
