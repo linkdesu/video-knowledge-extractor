@@ -203,6 +203,17 @@ export class ClipProject {
     this.pump();
   }
 
+  /**
+   * 运行中的分析任务推进到第二阶段（转写完成 → 主题分析开始），由执行器在真实进度回调里调用。
+   * 只前进不回退，终态不再改；返回是否真的变了，调用方据此决定要不要推送详情。
+   */
+  advanceAnalysisStage(jobId: number, stage: 0 | 1): boolean {
+    const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
+    if (job === undefined || job.stage >= stage) return false;
+    job.stage = stage;
+    return true;
+  }
+
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (!job) return;
@@ -296,6 +307,13 @@ export class ClipProject {
     });
     this.pump();
     return true;
+  }
+
+  /** 确认弹窗读来源视频当前已知的完整字幕；未知主题返回空数组，不抛异常。 */
+  linesOf(topicKeyValue: string): SubtitleLine[] {
+    const located = this.findTopic(topicKeyValue);
+    if (located === undefined) return [];
+    return this.transcriptOf(located.job.fileId).map((line) => ({ ...line }));
   }
 
   statusOf(fileId: string): OrganizeStatus {

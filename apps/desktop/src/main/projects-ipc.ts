@@ -13,6 +13,7 @@ export type ProjectInvokeChannel =
   | typeof IPC.projectsStartOrganize
   | typeof IPC.projectsUpdateSettings
   | typeof IPC.projectsConfirmTopic
+  | typeof IPC.projectsTopicLines
   | typeof IPC.projectsOpenClipsDir;
 
 export type ProjectHandler = (event: unknown, ...args: unknown[]) => unknown | Promise<unknown>;
@@ -82,6 +83,11 @@ export function projectIpcHandlers(
         requireString(projectId, "项目 id"),
         requireString(topicKeyValue, "主题"),
         requireStringArray(lineIds, "字幕行 id"),
+      ),
+    [IPC.projectsTopicLines]: (_event, projectId, topicKeyValue) =>
+      service.topicLines(
+        requireString(projectId, "项目 id"),
+        requireString(topicKeyValue, "主题"),
       ),
     [IPC.projectsOpenClipsDir]: async (_event, projectId) => {
       const dir = service.clipsDir(requireString(projectId, "项目 id"));

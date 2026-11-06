@@ -58,7 +58,12 @@ export type ProjectRuntimeDeps = {
   /** 默认读 `video.json` 生成确认弹窗的字幕行；测试注入。 */
   transcriptOf?: (videoId: string) => SubtitleLine[];
   /** 默认用 core 的区间分析管线；测试注入。 */
-  analyzeRange?: (job: AnalysisJob, video: ProjectVideo, lock: VideoLock) => Promise<ProposedTopic[]>;
+  analyzeRange?: (
+    job: AnalysisJob,
+    video: ProjectVideo,
+    lock: VideoLock,
+    onStage?: (stage: 0 | 1) => void,
+  ) => Promise<ProposedTopic[]>;
   /** 默认用 `generateProjectClip` 并把切片记录写回 `video.json`；测试注入。 */
   generateClip?: (job: SliceJob, video: ProjectVideo, alloc: ClipAllocation) => Promise<{ file: string }>;
   /** 真实执行器的配置来源；只有未注入 analyzeRange/generateClip 时才调用。 */
@@ -182,13 +187,19 @@ export class ProjectRuntime {
     let lock: VideoLock | undefined;
     try {
       lock = await this.lock(video);
-      const topics = await this.analyze(job, video, lock);
+      // 两步进度只由执行器回报：控制器管状态，本类负责把真实阶段立刻推给界面
+      const onStage = (stage: 0 | 1): void => {
+        if (!controller.advanceAnalysisStage(job.id, stage)) return;
+        this.service.refresh(projectId);
+      };
+      const topics = await this.analyze(job, video, lock, onStage);
       controller.completeAnalysis(job.id, topics);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger().error("project", "区间分析失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failAnalysis(job.id, message);
     } finally {
+      // 终态（含队列推进到下一个任务）已经写进控制器，这里推一次详情就够
       this.service.refresh(projectId);
       lock?.release();
     }
@@ -223,12 +234,17 @@ export class ProjectRuntime {
     }
   }
 
-  private analyze(job: AnalysisJob, video: ProjectVideo, lock: VideoLock): Promise<ProposedTopic[]> {
-    if (this.deps.analyzeRange !== undefined) return this.deps.analyzeRange(job, video, lock);
-    return this.defaultAnalyze(job, video, lock);
+  private analyze(
+    job: AnalysisJob,
+    video: ProjectVideo,
+    lock: VideoLock,
+    onStage: (stage: 0 | 1) => void,
+  ): Promise<ProposedTopic[]> {
+    if (this.deps.analyzeRange !== undefined) return this.deps.analyzeRange(job, video, lock, onStage);
+    return this.defaultAnalyze(job, video, lock, onStage);
   }
 
-  /** 确认弹窗的字幕行：读共享的 `video.json`，行 id 与区间分析写入的 `line-<下标>` 同口径。 */
+  /** 确认弹窗的字幕行：读共享的 `video.json`，行 id 与区间分析写入的 `subtitleLinesFrom` 同口径。 */
   private subtitleLines(projectId: string, videoId: string): SubtitleLine[] {
     if (this.deps.transcriptOf !== undefined) return this.deps.transcriptOf(videoId);
     const video = this.video(projectId, videoId, false);
@@ -246,7 +262,12 @@ export class ProjectRuntime {
    * 真实分析：区间分析管线已自己处理导入注册与格式规范化；运行锁由本类先拿到，
    * 通过 `lock` 参数传入，避免同一进程内二次取锁。
    */
-  private async defaultAnalyze(job: AnalysisJob, video: ProjectVideo, lock: VideoLock): Promise<ProposedTopic[]> {
+  private async defaultAnalyze(
+    job: AnalysisJob,
+    video: ProjectVideo,
+    lock: VideoLock,
+    onStage: (stage: 0 | 1) => void,
+  ): Promise<ProposedTopic[]> {
     if (this.deps.context === undefined) throw new Error("项目执行器缺少 LLM/ASR 配置");
     const context = await this.deps.context();
     const result = await analyzeVideoRange({
@@ -261,6 +282,13 @@ export class ProjectRuntime {
       asr: context.asr,
       prompts: context.prompts,
       lock,
+      /**
+       * 阶段只由管线真实进度驱动：转写一直是第 0 步，主题分析（segment-topics）开始推进到第 1 步。
+       * 百分比留在管线里，界面只拿到 0 / 1 两步。
+       */
+      onProgress: (progress) => {
+        if (progress.step === "segment-topics") onStage(1);
+      },
     });
     return result.topics.map((topic) => ({ ...topic }));
   }

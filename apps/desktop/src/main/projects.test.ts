@@ -199,6 +199,33 @@ describe("项目服务：队列与确认主题", () => {
     expect(after.events[0]?.text).toBe("项目设置：2 分钟 / 自动切片开启；已入队任务继续处理");
   });
 
+  test("确认弹窗读完整字幕：未接入报错，接入后返回来源文件与全部行", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "字幕", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { autoSlice: false });
+    expect(() => service.topicLines(project.id, "1:t1")).toThrow("项目执行器尚未接入");
+
+    const { controller } = attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    controller.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "分类", lineIds: ["l1"] }]);
+
+    // 「稍后确认 / 重开」前后状态必须逐字节相同：读字幕这条链路不得有副作用
+    const snapshotBefore = service.get(project.id);
+    expect(service.topicLines(project.id, topicKey(1, "t1"))).toEqual({
+      topicKey: "1:t1",
+      lines: LINES.map((line) => ({
+        id: line.id,
+        start: line.start,
+        end: line.end,
+        speaker: line.speaker ?? "",
+        text: line.text,
+      })),
+    });
+    expect(service.get(project.id)).toEqual(snapshotBefore);
+    expect(() => service.topicLines(project.id, "9:t9")).toThrow("主题不存在");
+    expect(() => service.topicLines(project.id, "bad")).toThrow("主题不存在");
+  });
+
   test("项目详情只含本项目的队列与事件", () => {
     const { root, service } = setup();
     const a = service.create({ name: "A", rootDir: join(root, "a") });

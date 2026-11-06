@@ -339,6 +339,21 @@ describe("单主题确认", () => {
     expect(p.sliceQueue).toHaveLength(0);
   });
 
+  test("确认弹窗读完整字幕：不是 AI 建议的三行摘要，且是副本", () => {
+    const { p } = pendingProject();
+    const all = p.linesOf(topicKey(1, "t1"));
+    expect(all.map((line) => line.id)).toEqual(["l1", "l2", "l3", "l4", "l5", "l6"]);
+    expect(all[1]).toMatchObject({ speaker: "主播", text: "第 2 行" });
+    all.pop();
+    expect(p.linesOf(topicKey(1, "t1"))).toHaveLength(6);
+  });
+
+  test("未知主题读不到字幕，不抛异常", () => {
+    const { p } = pendingProject();
+    expect(p.linesOf(topicKey(9, "t1"))).toEqual([]);
+    expect(p.linesOf("bad")).toEqual([]);
+  });
+
   test("确认后再补入新增长的字幕行会进入切片", () => {
     const { p } = pendingProject();
     p.confirmTopic(topicKey(1, "t1"), ["l2"]);
@@ -532,5 +547,39 @@ describe("执行器接线契约（#126）", () => {
     // 失败的分块不进入「已处理」，视频保持持续整理中
     expect(p.unslicedSeconds("f1")).toBe(600);
     expect(p.statusOf("f1")).toBe("organizing");
+  });
+});
+
+describe("分析阶段推进", () => {
+  const stageLines: SubtitleLine[] = [
+    { id: "l1", start: 0, end: 10, speaker: "主播", text: "一" },
+    { id: "l2", start: 10, end: 20, speaker: "主播", text: "二" },
+  ];
+
+  function runningProject() {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, transcript: stageLines });
+    p.addFile({ id: "f1", name: "a.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    return { m, p };
+  }
+
+  test("运行中的任务推进到第二阶段：只前进、不回退、不重复生效", () => {
+    const { p } = runningProject();
+    expect(p.analysisQueue[0]).toMatchObject({ status: "running", stage: 0 });
+
+    expect(p.advanceAnalysisStage(1, 1)).toBe(true);
+    expect(p.analysisQueue[0]?.stage).toBe(1);
+    expect(p.advanceAnalysisStage(1, 1)).toBe(false);
+    expect(p.advanceAnalysisStage(1, 0)).toBe(false);
+    expect(p.analysisQueue[0]?.stage).toBe(1);
+  });
+
+  test("未知任务与终态任务不接受推进", () => {
+    const { p } = runningProject();
+    expect(p.advanceAnalysisStage(9, 1)).toBe(false);
+    expect(p.completeAnalysis(1, [])).toBeUndefined();
+    expect(p.analysisQueue[0]?.status).toBe("done");
+    expect(p.advanceAnalysisStage(1, 1)).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import type {
   ProjectQueueState,
   ProjectSettingsPatch,
   ProjectSummary,
+  ProjectTopicLines,
 } from "../shared/ipc";
 import { describeProjectClips } from "./project-clip-details";
 import type { DirectoryStatus } from "./project-directory";
@@ -211,6 +212,36 @@ export class ProjectService {
    */
   refresh(projectId: string): ProjectDetail {
     return this.publish(projectId);
+  }
+
+  /**
+   * 确认字幕弹窗：按 `topicKey` 找来源文件，返回当前已知的完整字幕。
+   * 只读、不改主题状态；稍后确认与重开走同一条路径，所以前后状态必然相同。
+   */
+  topicLines(projectId: string, topicKeyValue: string): ProjectTopicLines {
+    this.requireRecord(projectId);
+    this.ensure(projectId);
+    const controller = this.runtimes.get(projectId);
+    if (controller === undefined) throw new Error("项目执行器尚未接入");
+    const parsed = splitTopicKey(topicKeyValue);
+    const job =
+      parsed === undefined
+        ? undefined
+        : controller.analysisQueue.find((item) => item.id === parsed.jobId);
+    // 任务在、主题不在也要报错：空字幕是「读到了但没有字幕」，不是「主题不存在」
+    if (job === undefined || !job.topics.some((topic) => topic.id === parsed?.topicId)) {
+      throw new Error("主题不存在");
+    }
+    return {
+      topicKey: topicKeyValue,
+      lines: controller.linesOf(topicKeyValue).map((line) => ({
+        id: line.id,
+        start: line.start,
+        end: line.end,
+        speaker: line.speaker ?? "",
+        text: line.text,
+      })),
+    };
   }
 
   clipsDir(projectId: string): string {

@@ -473,6 +473,22 @@ export type ProjectQueueState = {
   files: ProjectFileInfo[];
 };
 
+/** 确认字幕弹窗的一行：id 与 core `subtitleLinesFrom` 同口径（时间 + 文本指纹，不随数组下标变化）。 */
+export type ProjectSubtitleLineInfo = {
+  id: string;
+  start: number;
+  end: number;
+  /** 缺说话人时为空串。 */
+  speaker: string;
+  text: string;
+};
+
+/** `projects:topic-lines`：待确认主题的完整字幕（不含 AI 建议筛选）。 */
+export type ProjectTopicLines = {
+  topicKey: string;
+  lines: ProjectSubtitleLineInfo[];
+};
+
 export type ProjectLogEvent = { id: number; at: string; level: ProjectEventLevel; text: string };
 
 export type ProjectDetail = ProjectSummary & {
@@ -573,6 +589,8 @@ export type VnoteApi = {
   updateProjectSettings(projectId: string, patch: ProjectSettingsPatch): Promise<ProjectDetail>;
   /** 确认单个主题：只带上选中的字幕行 id，主进程按当前字幕生成切片任务。 */
   confirmProjectTopic(projectId: string, topicKey: string, lineIds: string[]): Promise<ProjectDetail>;
+  /** 确认字幕弹窗：读来源视频当前已知的完整字幕（时间 / 说话人 / 文本）。 */
+  projectTopicLines(projectId: string, topicKey: string): Promise<ProjectTopicLines>;
   /** 在文件管理器打开 `<项目目录>/clips`，目录不存在先创建。 */
   openProjectClipsDir(projectId: string): Promise<void>;
   /** 项目详情变化（设置、队列、日志）推送；返回取消订阅函数。 */
@@ -636,6 +654,7 @@ export const IPC = {
   projectsStartOrganize: "projects:start-organize",
   projectsUpdateSettings: "projects:update-settings",
   projectsConfirmTopic: "projects:confirm-topic",
+  projectsTopicLines: "projects:topic-lines",
   projectsOpenClipsDir: "projects:open-clips-dir",
   projectsEvent: "projects:event",
 } as const;
