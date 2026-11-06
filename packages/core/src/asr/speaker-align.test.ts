@@ -84,9 +84,21 @@ describe("alignRangeSpeakers：区间局部编号 → 来源视频稳定身份",
     expect(alignRangeSpeakers(whole, range).size).toBe(0);
   });
 
-  test("重跑把长句拆成短句：包住关系也算证据", () => {
-    const whole = [line(0, 10, "speaker-2", "我们明天早上八点出发去机场，记得带身份证。")];
-    const range = [line(4, 8, "speaker-1", "记得带身份证。")];
+  test("只有包住关系、端点对不上：不立身份（另一人的短应答天然被长句包住）", () => {
+    const whole = [
+      line(0, 10, "speaker-2", "预算三百块，明天再决定。"),
+      line(20, 24, "speaker-2", "我的部分已经全部交付。"),
+    ];
+    const range = [line(4, 5.2, "speaker-1", "三百块。")];
+    expect(alignRangeSpeakers(whole, range).size).toBe(0);
+  });
+
+  test("同一身份的历史重复旧行仍能立身份（单票规则不会把它变成零票）", () => {
+    const whole = [
+      line(10, 12, "speaker-2", "今天讲一下素材整理的方法。"),
+      line(10, 12, "speaker-2", "今天讲一下素材整理的方法。"),
+    ];
+    const range = [line(10, 12, "speaker-1", "今天讲一下素材整理的方法。")];
     expect(alignRangeSpeakers(whole, range).get("speaker-1")).toBe("speaker-2");
   });
 
@@ -129,6 +141,19 @@ describe("assignStableSpeakerIds：落盘编号", () => {
     // 新号从既有编号与映射目标的最大编号之后开始，第三个编号不会撞上 speaker-9
     expect(out.rows.map((r) => r.speakerId)).toEqual(["speaker-9", "speaker-10"]);
     expect([...out.minted]).toEqual([["speaker-2", "speaker-10"]]);
+  });
+
+  test("本批原样保留的编号也占位，不能被铸号撞上", () => {
+    // taken 里只有 speaker-1/2；本批还有一位局部 speaker-3 会原样保留，
+    // 铸号必须从 speaker-4 起，否则第一位新人会与第三位共用 speaker-3
+    const rows = [
+      line(0, 2, "speaker-1", "第一句"),
+      line(3, 4, "speaker-2", "第二句"),
+      line(5, 6, "speaker-3", "第三句"),
+    ];
+    const out = assignStableSpeakerIds(rows, new Map(), new Set(["speaker-1", "speaker-2"]));
+    expect(out.rows.map((r) => r.speakerId)).toEqual(["speaker-4", "speaker-5", "speaker-3"]);
+    expect(out.minted.size).toBe(2);
   });
 
   test("不撞车也没映射的编号原样保留（只在本区间有效）", () => {

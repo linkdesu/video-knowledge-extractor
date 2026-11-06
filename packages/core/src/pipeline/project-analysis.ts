@@ -214,6 +214,8 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
        * 与既有编号撞车时另铸新号，字幕与弹窗里才不会把两个人显示成同一个名字。
        */
       const taken = new Set<string>(data.transcript.speakers.map((s) => s.id));
+      // 旧字幕行里出现过的编号同样占位：说话人表可能缺记录，铸号不能撞上它
+      for (const u of previous) taken.add(u.speakerId);
       const { rows: appended, minted } = assignStableSpeakerIds(dedupedRange, alignment, taken);
       const utterances = [...previous, ...appended].sort((a, b) => a.start - b.start || a.end - b.end);
       // 只在剩下的行里还出现的说话人才登记：整段被映射走的局部编号（先前的 speaker-1）不该留个空壳

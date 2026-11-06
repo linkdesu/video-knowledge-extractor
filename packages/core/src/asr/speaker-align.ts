@@ -36,20 +36,22 @@ const MIN_TEXT_CHARS = 2;
  */
 const CONFLICT_SECONDS = 1;
 
-/** 时间对得上：端点相近（同一次转写重跑的正常抖动），或一段被另一段包住（长句被拆开或合并）。 */
+/**
+ * 立身份只认端点对齐：起止各差 ≤0.6 秒（同一次转写重跑的正常抖动）。
+ * 不能把「一段包住另一段」也算成证据——另一人的短应答（「三百块。」）天然被对方的
+ * 长句包住，拿包住关系立身份就会把这个人的发言判成对方的重跑噪音，随后被删掉。
+ */
 function alignedInTime(a: DedupRow, b: DedupRow): boolean {
-  if (
+  return (
     Math.abs(a.start - b.start) <= SPEAKER_ALIGN_TIME_TOLERANCE_SECONDS &&
     Math.abs(a.end - b.end) <= SPEAKER_ALIGN_TIME_TOLERANCE_SECONDS
-  ) {
-    return true;
-  }
-  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
-  const shorter = Math.min(a.end - a.start, b.end - b.start);
-  return shorter > 0 && overlap >= shorter * MIN_TEXT_RATIO;
+  );
 }
 
-/** 两行归一化文本的相似度：最长公共子串占**较短**一行的比例（与判重的包含判据同一套文本）。 */
+/**
+ * 两行归一化文本的相似度：最长公共子串占**较短**一行的比例（与判重的包含判据同一套文本）。
+ * 端点对齐时两行本应是同一条行，除以较短一行能容忍重跑把长句截短。
+ */
 function textRatio(a: string, b: string): number {
   const shorter = Math.min(Array.from(a).length, Array.from(b).length);
   if (shorter === 0) return 0;
@@ -145,10 +147,19 @@ export function assignStableSpeakerIds<T extends DedupRow>(
   alignment: SpeakerAlignment,
   taken: ReadonlySet<string>,
 ): { rows: T[]; minted: Map<string, string> } {
-  const used = new Set<string>(taken);
-  for (const stable of alignment.values()) used.add(stable);
+  /**
+   * 占用集合必须包含本批**原样保留**的局部编号：它们不在 `taken`（没登记过说话人）里时
+   * 也可能叫 `speaker-3`，不预留就会被铸号撞上，两个不同的人又并成一个身份。
+   */
+  const reserved = new Set<string>(taken);
+  for (const stable of alignment.values()) reserved.add(stable);
+  for (const row of rows) {
+    const local = row.speakerId;
+    if (local === undefined || alignment.has(local)) continue;
+    reserved.add(local);
+  }
   let next = 1;
-  for (const id of used) {
+  for (const id of reserved) {
     const match = /^speaker-(\d+)$/.exec(id);
     if (match !== null) next = Math.max(next, Number(match[1]) + 1);
   }

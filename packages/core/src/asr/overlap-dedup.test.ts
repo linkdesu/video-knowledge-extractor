@@ -343,11 +343,27 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
   });
 
-  test("重跑把长句拆开：先对齐再判重，#144 的包含判据仍然生效", () => {
-    const existing = [{ ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-2" }];
-    const incoming = [{ ...row(4, 8, "记得带身份证。"), speakerId: "speaker-1" }];
+  test("身份另有端点证据时，重跑拆出来的短句仍按 #144 判重丢掉", () => {
+    const existing = [
+      { ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-2" },
+      { ...row(20, 24, "我的部分已经全部交付。"), speakerId: "speaker-2" },
+    ];
+    const incoming = [
+      { ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-1" },
+      { ...row(4, 8, "记得带身份证。"), speakerId: "speaker-1" },
+    ];
     const alignment = alignRangeSpeakers(existing, incoming);
+    expect(alignment.get("speaker-1")).toBe("speaker-2");
     expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("另一人的短应答被长句包住：包住关系不算身份证据，不能删掉他的发言", () => {
+    const existing = [{ ...row(0, 10, "预算三百块，明天再决定。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(4, 5.2, "三百块。"), speakerId: "speaker-1" }];
+    const alignment = alignRangeSpeakers(existing, incoming);
+    // 起点差 4 秒，端点对不上：不建立映射，判重也不比较说话人
+    expect(alignment.size).toBe(0);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
   });
 
   test("映射 + 语气词噪音（#144 规则）：组合后仍判重复，新行不重复追加", () => {
