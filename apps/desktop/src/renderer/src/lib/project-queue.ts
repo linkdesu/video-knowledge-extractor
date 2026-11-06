@@ -27,10 +27,13 @@ export function taskStatusLabel(status: ProjectTaskStatus): string {
   return STATUS_LABEL[status];
 }
 
-/** 「分析 N · 切片 N」：只数未完成的任务，与原型 tag 同口径；都空闲时显示「队列空闲」。 */
+/**
+ * 「分析 N · 切片 N」：只数还在等或正在跑的任务，与原型 tag 同口径；都空闲时显示「队列空闲」。
+ * 失败（#126）是终态，调度器不会再动它，算进待执行会让标题永远回不到空闲。
+ */
 export function queueCountLabel(queue: ProjectQueueState | null): string {
   const pending = (tasks: ReadonlyArray<{ status: ProjectTaskStatus }>) =>
-    tasks.filter((task) => task.status !== "done").length;
+    tasks.filter((task) => task.status === "waiting" || task.status === "running").length;
   const analysis = pending(queue?.analysis ?? []);
   const slices = pending(queue?.slices ?? []);
   return analysis === 0 && slices === 0 ? "队列空闲" : `分析 ${analysis} · 切片 ${slices}`;
@@ -79,7 +82,7 @@ export type PendingTopic = {
   sourceLine: string;
 };
 
-/** 待确认主题平铺（按分析任务顺序），补上来源行文案；不自动弹窗、不占队列。 */
+/** 待确认主题平铺：保持 main 快照顺序（分析队列平铺），补上来源行文案；不自动弹窗、不占队列。 */
 export function pendingTopics(queue: ProjectQueueState | null): PendingTopic[] {
   const jobs = queue?.analysis ?? [];
   return (queue?.proposed ?? []).map((topic) => ({
@@ -96,10 +99,18 @@ export function sliceTaskMeta(task: { lineCount: number; durationSeconds: number
   return `${task.lineCount} 行字幕 · ${fmtHms(task.durationSeconds)}`;
 }
 
-/** 队列底部「未切片内容时长」：只列已加入整理的视频，多个用「；」连接。 */
-export function queueFootline(queue: ProjectQueueState | null): string {
+/**
+ * 队列底部「未切片内容时长」：只列已加入整理的视频，多个用「；」连接。
+ * 重启后控制器还没 `startOrganize`，快照里的 `added` 仍是 false；项目清单 `videoIds` 是
+ * 「已加入」的真相源，两处任一为真就列出来，不能和配置页的状态打架。
+ */
+export function queueFootline(
+  queue: ProjectQueueState | null,
+  joinedIds: readonly string[] = [],
+): string {
+  const joined = new Set(joinedIds);
   const lines = (queue?.files ?? [])
-    .filter((file) => file.added)
+    .filter((file) => file.added || joined.has(file.id))
     .map((file) => `${file.name}：未切片内容时长 ${fmtHms(file.unslicedSeconds)}`);
   return lines.length === 0 ? "未切片内容时长：尚未加入视频。" : lines.join("；");
 }

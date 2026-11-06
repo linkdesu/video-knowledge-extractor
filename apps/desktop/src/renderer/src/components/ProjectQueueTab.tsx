@@ -154,7 +154,7 @@ export function ProjectQueueTab({ project }: { project: ProjectDetail }): JSX.El
       </section>
 
       <p className="vn-queue-foot" data-testid="queue-foot">
-        {queueFootline(queue)}
+        {queueFootline(queue, project.videoIds)}
       </p>
     </div>
   );

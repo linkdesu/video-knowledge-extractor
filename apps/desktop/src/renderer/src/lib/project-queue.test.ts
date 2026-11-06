@@ -82,6 +82,22 @@ describe("队列计数与状态文案", () => {
     expect(queueCountLabel(null)).toBe("队列空闲");
   });
 
+  test("失败是终态，不再算待执行；只有失败任务时仍是「队列空闲」", () => {
+    expect(
+      queueCountLabel(
+        queue({ analysis: [job({ status: "failed" })], slices: [slice({ status: "done" })] }),
+      ),
+    ).toBe("队列空闲");
+    expect(
+      queueCountLabel(
+        queue({
+          analysis: [job({ id: 1, status: "failed" }), job({ id: 2, status: "waiting" })],
+          slices: [slice({ status: "running" }), slice({ id: 2, status: "failed" })],
+        }),
+      ),
+    ).toBe("分析 1 · 切片 1");
+  });
+
   test("三条任务状态文案；失败是真实终态，不伪装成等待中", () => {
     expect(taskStatusLabel("waiting")).toBe("等待中");
     expect(taskStatusLabel("running")).toBe("进行中");
@@ -121,7 +137,7 @@ describe("队列计数与状态文案", () => {
 });
 
 describe("待确认主题与切片任务", () => {
-  test("待确认主题按分析任务顺序平铺，行 id 原样保留", () => {
+  test("待确认主题保持快照顺序平铺，行 id 原样保留", () => {
     const state = queue({
       analysis: [job({ id: 2, name: "复盘.mp4" })],
       proposed: [
@@ -182,5 +198,12 @@ describe("未切片内容时长", () => {
     expect(queueFootline(queue({ files: [file({ unslicedSeconds: -5 })] }))).toBe(
       "晚场.mp4：未切片内容时长 00:00:00",
     );
+  });
+
+  test("重启后快照 added=false，项目清单已加入的视频仍列在底部", () => {
+    const state = queue({ files: [file({ id: "v1", added: false, unslicedSeconds: 590 })] });
+    expect(queueFootline(state, ["v1"])).toBe("晚场.mp4：未切片内容时长 00:09:50");
+    expect(queueFootline(state, ["other"])).toBe("未切片内容时长：尚未加入视频。");
+    expect(queueFootline(state, [])).toBe("未切片内容时长：尚未加入视频。");
   });
 });

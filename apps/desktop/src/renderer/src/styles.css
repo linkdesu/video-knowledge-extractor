@@ -2348,6 +2348,7 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* 699 而非其它板块的 700：700px 视口下内容列仍放得下并排的两步，只在其下才纵排。 */
 @media (max-width: 699px) {
   .vn-queue-task-head {
     flex-wrap: wrap;
