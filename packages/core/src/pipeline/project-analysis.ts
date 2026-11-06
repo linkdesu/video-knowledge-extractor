@@ -15,7 +15,7 @@ import { logger, runWithTask } from "../core/logger";
 import { decideNormalization, normalizeMedia, targetFileName } from "../core/media-normalize";
 import type { PromptOverrides } from "../core/prompts";
 import type { LlmClient, LlmEndpoint, Progress } from "../core/steps";
-import type { Speaker, TopicId, Video } from "../core/types";
+import type { Segment, Speaker, TopicId, Video } from "../core/types";
 import type { SubtitleLine } from "../core/project-controller";
 import {
   emptyVideoData,
@@ -63,7 +63,7 @@ export type RangeAnalysisResult = {
   videoId: string;
   outputDir: string;
   topics: RangeAnalysisTopic[];
-  /** 本次区间新增的字幕行数；区间已分析过（复用 `chunks`）时为 0。 */
+  /** 本次区间新增的字幕行数；精确命中已有分块（直接复用、不重跑 ASR）时为 0。 */
   addedLines: number;
 };
 
@@ -76,10 +76,34 @@ function mergeSpeakers(existing: Speaker[], incoming: Speaker[]): Speaker[] {
   return merged;
 }
 
-/** 本区间已被已有主题覆盖的情况（区间已分析过，或重跑后没有新字幕）：返回可复用的主题记录。 */
-function reusedRangeTopics(data: VideoData, start: number, end: number): RangeAnalysisTopic[] {
+/**
+ * 已分析过的时段：`chunks` 的并集。视频库导入写的是 ASR 分块，区间分析写的是本次区间，
+ * 两者都可能互相重叠（同一视频既被整段导入过、又被项目区间分析过），先合并再判断包含关系。
+ */
+function analyzedSpans(chunks: VideoData["chunks"]): Segment[] {
+  const spans = chunks
+    .map((chunk) => ({ start: chunk.start, end: chunk.end }))
+    .filter((span) => span.end > span.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: Segment[] = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && span.start <= last.end + 1e-6) last.end = Math.max(last.end, span.end);
+    else merged.push({ ...span });
+  }
+  return merged;
+}
+
+/**
+ * 已有主题的区间重跑只刷新字幕（#150）：返回该区间里**仍待确认**（`proposed`）的主题，
+ * 建议行按当前字幕重新解析——新 ASR 补出来的行只要落在主题的时间范围里就自动进建议。
+ * 已确认 / 生成中 / 已切片 / 失败的主题不返回、也不改动：它们自己的记录（含切片字幕快照
+ * 与切片文件）在 `video.json` / 项目清单里，重跑不该让它们重新变成待确认、更不能重复切片。
+ */
+function refreshableTopics(data: VideoData, start: number, end: number): RangeAnalysisTopic[] {
   return data.topics
-    .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
+    .filter((topic) => topic.status === "proposed")
+    .filter((topic) => topic.segments.some((s) => s.end > start + 1e-6 && s.start < end - 1e-6))
     .map((topic) => ({
       id: topic.id,
       title: topic.title,
@@ -180,14 +204,30 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         logger().warn("ffmpeg", "封面抽帧失败");
       }
 
-      // 增量保护：同一区间已经分析过（同一项目重启、另一个项目引用同一视频）就直接复用，
-      // 不再转写/划主题，也不重复追加字幕与主题
+      /**
+       * 增量保护：同一区间已经分析过（同一项目重启、另一个项目引用同一视频）就直接复用，
+       * 不再转写/划主题，也不重复追加字幕与主题。只把仍待确认的主题重新给出建议行；
+       * 已确认 / 已切片的主题不再提案，避免重复切片（#150）。
+       * `topics` 为空时不算「已分析过」：视频库导入先落 `chunks` 再划主题，主题分析失败会留下
+       * 「有分块、没主题」的文档，那种区间必须照旧补一次主题分析（#150 评审 P2）。
+       */
       const existing = data.chunks.find((c) => Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6);
-      if (existing !== undefined) {
-        const reusedTopics = reusedRangeTopics(data, start, end);
+      if (existing !== undefined && data.topics.length > 0) {
+        const reusedTopics = refreshableTopics(data, start, end);
         logger().info("project", "区间已分析，复用已有结果", { videoId: video.id, start, end, topics: reusedTopics.length });
         return { videoId: video.id, outputDir: video.outputDir, topics: reusedTopics, addedLines: 0 };
       }
+
+      /**
+       * 已有主题的区间重跑（#150）：区间整段落在已分析分块里时只刷新字幕，
+       * 不再调主题分析 LLM、也不新建主题——大模型对同一段内容总能划出「新」主题，
+       * 真机重跑把直播 7 个主题变成 13 个、访谈 3 个变成 9 个。
+       * `topics` 为空时不走这条路：视频库可能只转写完成、主题分析失败，那种区间仍需正常分析。
+       */
+      const spans = analyzedSpans(data.chunks);
+      const refreshOnly =
+        data.topics.length > 0 && spans.some((span) => span.start <= start + 1e-6 && span.end >= end - 1e-6);
+      if (refreshOnly) logger().info("project", "区间已有主题，只刷新字幕", { videoId: video.id, start, end });
 
       // 只抽这一段；wav 名带随机后缀，同一视频的两个区间不会互相删除
       wavPath = resolve(cacheDir, `range-${Math.round(start)}-${Math.round(end)}-${randomUUID().slice(0, 8)}.wav`);
@@ -268,6 +308,10 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         ...run.transcript.speakers.filter((s) => usedSpeakers.has(s.id)),
         ...mintedSpeakers,
       ]);
+      /**
+       * 重跑也是这次区间的一次落盘记录：控制器按项目任务边界推进「已处理」时长，
+       * 重启后 `slicedSecondsFrom` 只认 `chunks`，不记这一段就会退回上一个更大的分块起点（#150 评审 P2）。
+       */
       const chunk = { index: data.chunks.length + 1, start, end };
       data.chunks = [...data.chunks.filter((c) => !(Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6)), chunk].sort(
         (a, b) => a.start - b.start,
@@ -276,15 +320,36 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       data.asrEngine = run.engine;
 
       /**
-       * 重跑没有带来任何新字幕（整段已转写过、这次转写只重复了已有内容）：不再跑主题分析。
-       * 否则同一段内容会多出一张近同主题卡——真机一次重跑把 7 个主题变成 15 个（#145 QA）。
-       * 区间记录照常落盘，重启后按 `chunks` 复用，不会再次转写。
+       * 已有主题的区间重跑（#150）：只落字幕、不调主题分析。
+       * 主题记录一个都不改：待确认的按当前字幕重算建议行返回，已确认 / 已切片的不返回也不再提案。
        */
-      if (appended.length === 0) {
+      if (refreshOnly) {
         data.transcript = { speakers, utterances };
         if (data.importedAt === null) data.importedAt = new Date().toISOString();
         writeVideoData(video.outputDir, data);
-        const reused = reusedRangeTopics(data, start, end);
+        const refreshed = refreshableTopics(data, start, end);
+        logger().info("project", "区间已有主题，字幕已刷新", {
+          videoId: video.id,
+          start,
+          end,
+          lines: appended.length,
+          topics: refreshed.length,
+          keptTopics: data.topics.length - refreshed.length,
+        });
+        return { videoId: video.id, outputDir: video.outputDir, topics: refreshed, addedLines: appended.length };
+      }
+
+      /**
+       * 重跑没有带来任何新字幕（整段已转写过、这次转写只重复了已有内容）且视频已有主题：
+       * 不再跑主题分析。否则同一段内容会多出一张近同主题卡——真机一次重跑把 7 个主题变成 15 个（#145 QA）。
+       * 区间记录照常落盘，重启后按 `chunks` 复用，不会再次转写。
+       * 视频还没有任何主题时**不**在这里停下：主题分析从来没成功过，必须照旧补跑（#150 评审 P2）。
+       */
+      if (appended.length === 0 && data.topics.length > 0) {
+        data.transcript = { speakers, utterances };
+        if (data.importedAt === null) data.importedAt = new Date().toISOString();
+        writeVideoData(video.outputDir, data);
+        const reused = refreshableTopics(data, start, end);
         logger().info("project", "区间没有新字幕，复用已有主题", {
           videoId: video.id,
           start,
