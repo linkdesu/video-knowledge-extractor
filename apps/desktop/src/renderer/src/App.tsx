@@ -15,6 +15,7 @@ import { ProjectListPage } from "./pages/ProjectListPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { ProjectClipsTab } from "./components/ProjectClipsTab";
 import { ProjectConfigTab } from "./components/ProjectConfigTab";
+import { ProjectQueueTab } from "./components/ProjectQueueTab";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { DiarizationLabPage } from "./pages/DiarizationLabPage";
@@ -476,6 +477,7 @@ export function App() {
                     }}
                   />
                 ),
+                queue: <ProjectQueueTab project={project} />,
                 output: (
                   <ProjectClipsTab
                     project={project}

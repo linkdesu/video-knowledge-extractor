@@ -17,6 +17,7 @@ import type {
   ProjectEventPayload,
   ProjectSettingsPatch,
   ProjectSummary,
+  ProjectTopicLines,
   PromptStatus,
   SettingsPatch,
   SettingsStatus,
@@ -148,6 +149,8 @@ const api: VnoteApi = {
     ipcRenderer.invoke(IPC.projectsUpdateSettings, projectId, patch) as Promise<ProjectDetail>,
   confirmProjectTopic: (projectId: string, topicKey: string, lineIds: string[]) =>
     ipcRenderer.invoke(IPC.projectsConfirmTopic, projectId, topicKey, lineIds) as Promise<ProjectDetail>,
+  projectTopicLines: (projectId: string, topicKey: string) =>
+    ipcRenderer.invoke(IPC.projectsTopicLines, projectId, topicKey) as Promise<ProjectTopicLines>,
   openProjectClipsDir: (projectId: string) => ipcRenderer.invoke(IPC.projectsOpenClipsDir, projectId) as Promise<void>,
   onProjectEvent: (listener: (payload: ProjectEventPayload) => void) => {
     const listenerWrapper = (_event: Electron.IpcRendererEvent, payload: ProjectEventPayload): void => listener(payload);

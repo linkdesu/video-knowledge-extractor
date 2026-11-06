@@ -2226,3 +2226,147 @@ textarea {
     grid-column: 1 / -1;
   }
 }
+/* 切片队列（#142）：两条独立队列、每块两步、待确认主题与未切片内容时长。 */
+.vn-queue {
+  min-width: 0;
+}
+.vn-queue-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.vn-queue-head h2 {
+  margin: 0;
+  color: var(--vn-fg);
+  font-size: 16px;
+  line-height: 1.4;
+}
+.vn-queue-head .vn-tag {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.vn-queue-intro {
+  margin: 10px 0 24px;
+  overflow-wrap: anywhere;
+}
+.vn-queue-section {
+  min-width: 0;
+  margin-top: 24px;
+}
+.vn-queue-section h3 {
+  margin: 0 0 12px;
+  color: var(--vn-fg);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.vn-queue-list {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+.vn-queue-task {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--vn-line);
+  border-radius: 12px;
+  background: var(--vn-panel2);
+}
+.vn-queue-task-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 16px;
+}
+.vn-queue-task-copy {
+  min-width: 0;
+}
+.vn-queue-task-copy h4 {
+  margin: 0;
+  color: var(--vn-fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vn-queue-task-copy p {
+  margin: 4px 0 0;
+  color: var(--vn-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vn-analysis-stages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+.vn-analysis-stage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--vn-fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.vn-analysis-stage-state {
+  flex-shrink: 0;
+  color: var(--vn-muted);
+}
+.vn-analysis-stage[data-state="running"] .vn-analysis-stage-state {
+  color: var(--vn-cyan);
+}
+.vn-analysis-stage[data-state="failed"] .vn-analysis-stage-state {
+  color: #fda4af;
+}
+.vn-queue-empty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--vn-line2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--vn-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vn-queue-foot {
+  margin: 24px 0 0;
+  color: var(--vn-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+/* 699 而非其它板块的 700：700px 视口下内容列仍放得下并排的两步，只在其下才纵排。 */
+@media (max-width: 699px) {
+  .vn-queue-task-head {
+    flex-wrap: wrap;
+  }
+  .vn-pending-topic .vn-queue-task-head {
+    flex-direction: column;
+  }
+  .vn-analysis-stages {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* 窄屏内容列会被侧栏压得很窄：阶段名与状态必须纵向排，横排会顶出卡片。 */
+  .vn-analysis-stage {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .vn-analysis-stage > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}

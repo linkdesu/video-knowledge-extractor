@@ -215,6 +215,8 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       const corrections = correctionsFor(video.outputDir, "project-analysis");
       const rangeLines = utterances.filter((u) => u.end > start && u.start < end);
       const rangeTranscript = { speakers, utterances: applyCorrections(corrections, rangeLines) };
+      // 转写已结束、主题分析（划段 + 合并）开始：先推一次，界面不必等首个分块模型返回才看到第二步
+      input.onProgress?.({ step: "segment-topics", done: 0, total: 1 });
       const { topics } = await logger().step("llm", "区间主题分析", () =>
         segmentTopics({
           transcript: rangeTranscript,

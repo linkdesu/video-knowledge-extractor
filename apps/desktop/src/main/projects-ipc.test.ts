@@ -22,6 +22,7 @@ const INVOKE_CHANNELS: ProjectInvokeChannel[] = [
   IPC.projectsStartOrganize,
   IPC.projectsUpdateSettings,
   IPC.projectsConfirmTopic,
+  IPC.projectsTopicLines,
   IPC.projectsOpenClipsDir,
 ];
 
@@ -109,6 +110,36 @@ describe("项目 IPC 契约", () => {
     const confirmed = handlers[IPC.projectsConfirmTopic]!(null, project.id, topicKey(1, "t1"), ["l2"]) as ProjectDetail;
     expect(confirmed.queue?.slices).toMatchObject([{ topicKey: "1:t1", lineCount: 1, segmentCount: 1, durationSeconds: 5 }]);
     expect(confirmed.events[0]?.text).toBe("切片入队：主题一 · 1 行字幕");
+  });
+
+  test("确认字幕弹窗通道：参数校验后交给业务层读完整字幕", () => {
+    const { root, service, handlers } = harness();
+    const project = handlers[IPC.projectsCreate]!(null, { name: "字幕", rootDir: join(root, "p") }) as ProjectDetail;
+    handlers[IPC.projectsUpdateSettings]!(null, project.id, { autoSlice: false });
+    const controller = new ClipProject({
+      executor: { analyze() {}, slice() {} },
+      transcriptOf: () => LINES,
+      autoSlice: false,
+    });
+    controller.addFile({ id: "v1", name: "录制.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    service.attachRuntime(project.id, controller);
+    handlers[IPC.projectsStartOrganize]!(null, project.id, ["v1"]);
+    controller.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "分类", lineIds: ["l1"] }]);
+
+    expect(handlers[IPC.projectsTopicLines]!(null, project.id, "1:t1")).toEqual({
+      topicKey: "1:t1",
+      lines: LINES.map((line) => ({
+        id: line.id,
+        start: line.start,
+        end: line.end,
+        speaker: line.speaker ?? "",
+        text: line.text,
+      })),
+    });
+    expect(() => handlers[IPC.projectsTopicLines]!(null, "", "1:t1")).toThrow("缺少项目 id");
+    expect(() => handlers[IPC.projectsTopicLines]!(null, project.id, "")).toThrow("缺少主题");
+    // 任务存在但主题不存在：不能伪装成「空字幕」，否则 renderer 的失败分支永远不触发
+    expect(() => handlers[IPC.projectsTopicLines]!(null, project.id, "1:missing")).toThrow("主题不存在");
   });
 
   test("参数校验给出可读错误，不把坏参数送进业务层", () => {

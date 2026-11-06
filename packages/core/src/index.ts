@@ -200,7 +200,7 @@ export {
   PROJECT_CLIP_PATH_MAX_UTF16,
 } from "./core/project-clips";
 export type { ProjectClipAllocation } from "./core/project-clips";
-export { ClipProject, GROWTH_IDLE_SECONDS, splitTopicKey, topicKey } from "./core/project-controller";
+export { ClipProject, GROWTH_IDLE_SECONDS, slicedSecondsFrom, splitTopicKey, topicKey } from "./core/project-controller";
 export {
   PROJECTS_FILE_NAME,
   PROJECTS_VERSION,

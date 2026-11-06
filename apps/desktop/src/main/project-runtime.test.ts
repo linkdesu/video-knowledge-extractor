@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ProjectEventLog,
   ProjectStore,
+  emptyVideoData,
   videoIdFor,
+  writeVideoData,
   type AnalysisJob,
   type ProposedTopic,
   type SliceJob,
@@ -58,7 +60,7 @@ function setup() {
   const locks = fakeLocks();
   const started: string[] = [];
   const sliced: SliceJob[] = [];
-  let analyzeImpl: (job: AnalysisJob) => Promise<ProposedTopic[]> = async () => [];
+  let analyzeImpl: (job: AnalysisJob, onStage?: (stage: 0 | 1) => void) => Promise<ProposedTopic[]> = async () => [];
   let generateImpl: ((job: SliceJob) => Promise<{ file: string }>) | undefined;
 
   const runtime = new ProjectRuntime({
@@ -66,9 +68,9 @@ function setup() {
     acquireLock: locks.acquire,
     transcriptOf: () =>
       Array.from({ length: 6 }, (_, i) => ({ id: `line-${i}`, start: i * 10, end: (i + 1) * 10, text: `第 ${i} 行` })),
-    analyzeRange: async (job) => {
+    analyzeRange: async (job, _video, _lock, onStage) => {
       started.push(`analyze:${job.id}:${job.fileId}`);
-      return analyzeImpl(job);
+      return analyzeImpl(job, onStage);
     },
     generateClip: async (job) => {
       started.push(`slice:${job.id}:${job.fileId}`);
@@ -84,7 +86,7 @@ function setup() {
     locks,
     started,
     sliced,
-    setAnalyze(fn: (job: AnalysisJob) => Promise<ProposedTopic[]>) {
+    setAnalyze(fn: (job: AnalysisJob, onStage?: (stage: 0 | 1) => void) => Promise<ProposedTopic[]>) {
       analyzeImpl = fn;
     },
     setGenerate(fn: (job: SliceJob) => Promise<{ file: string }>) {
@@ -180,6 +182,56 @@ describe("ProjectRuntime：全局两槽执行器", () => {
 });
 
 describe("ProjectRuntime：切片落盘与计数", () => {
+  test("主题分析开始时推进到第二阶段并立即推送详情", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "阶段", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+
+    const pushed: Array<{ status: string; stage: number }> = [];
+    ctx.service.onChange(({ detail }) => {
+      const task = detail.queue?.analysis[0];
+      if (task !== undefined) pushed.push({ status: task.status, stage: task.stage });
+    });
+    ctx.setAnalyze(async (_job, onStage) => {
+      onStage?.(1);
+      await flush(5);
+      return [];
+    });
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await flush(60);
+
+    // 真实进度的第二阶段必须被推出去，界面才不会一直停在「字幕解析进行中」
+    expect(pushed.some((item) => item.status === "running" && item.stage === 1)).toBe(true);
+    expect(pushed.at(-1)).toEqual({ status: "done", stage: 1 });
+  });
+
+  test("队列每次推进都推送详情：界面不用等下一次操作才看到完成", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "推送", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    ctx.setAnalyze(async () => [{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }]);
+
+    const pushed: Array<{ analysis: string; slices: string; proposed: number }> = [];
+    ctx.service.onChange(({ detail }) => {
+      pushed.push({
+        analysis: detail.queue?.analysis.map((task) => task.status).join(",") ?? "",
+        slices: detail.queue?.slices.map((task) => task.status).join(",") ?? "",
+        proposed: detail.queue?.proposed.length ?? 0,
+      });
+    });
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await flush(40);
+
+    // 分析完成的那一次推送必须已经带上待确认主题，而不是等到下一次用户操作才补
+    expect(pushed.at(-1)).toEqual({ analysis: "done", slices: "", proposed: 1 });
+  });
+
   test("切片完成后写项目清单与计数，序号单调", async () => {
     const ctx = setup();
     const project = ctx.service.create({ name: "落盘", rootDir: join(ctx.root, "p") });
@@ -361,5 +413,160 @@ describe("ProjectRuntime：状态变化推送（#128 三态可见）", () => {
 
     expect(statuses).toContain("organizing");
     expect(statuses.at(-1)).toBe("finished");
+  });
+});
+
+describe("ProjectRuntime：重启后的未切片时长（#142 QA）", () => {
+  test("重启后由已落盘切片恢复处理进度，未切片时长与重启前一致", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "out");
+    const project = ctx.service.create({ name: "重启恢复", rootDir: join(ctx.root, "p") });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "short-30s.mp4",
+      durationSeconds: 30,
+      outputDir,
+      sourcePath: join(ctx.root, "short-30s.mp4"),
+      hasVideo: true,
+    };
+    ctx.runtime.registerVideo(project.id, video);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t0-1", title: "主题", category: "", lineIds: ["line-0"] }]);
+
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(
+      () => (ctx.service.get(project.id).queue?.slices ?? []).some((task) => task.status === "done"),
+      "切片落盘",
+    );
+    expect(ctx.service.get(project.id).clips).toHaveLength(1);
+    expect(ctx.service.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
+
+    // 切片执行器写回的 video.json：分块 0–30，区间主题已 done
+    const data = emptyVideoData({
+      id: video.id as never,
+      title: video.name,
+      sourcePath: video.sourcePath,
+      durationSeconds: 30,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 30 }];
+    data.topics = [
+      {
+        id: "t0-1" as never,
+        title: "主题",
+        summary: "",
+        segments: [{ start: 0, end: 29.1 }],
+        dirName: "主题",
+        status: "done",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    writeVideoData(outputDir, data);
+
+    // 同一个数据根目录重新起服务与执行器：projects.json 里有 clip，控制器是全新的
+    const restarted = new ProjectService({
+      store: ProjectStore.atRoot(ctx.root),
+      events: new ProjectEventLog(),
+    });
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async () => [],
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    runtime.attachProject(project.id);
+
+    expect(restarted.get(project.id).clips).toHaveLength(1);
+    expect(restarted.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
+  });
+
+  test("坏掉的 video.json 不拖垮项目接入：队列照常出现，进度保守回退", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "broken-out");
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(join(outputDir, "video.json"), "{不是 JSON");
+    const project = ctx.service.create({ name: "坏文档", rootDir: join(ctx.root, "p") });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "short-30s.mp4",
+      durationSeconds: 30,
+      outputDir,
+      sourcePath: join(ctx.root, "short-30s.mp4"),
+      hasVideo: true,
+    };
+    ctx.service.startOrganize(project.id, ["v1"]);
+    ctx.service.recordClip(project.id, { seq: 1, videoId: "v1", topicId: "t0-1", file: "001-主题.mp4" });
+
+    const restarted = new ProjectService({
+      store: ProjectStore.atRoot(ctx.root),
+      events: new ProjectEventLog(),
+    });
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async () => [],
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    runtime.attachProject(project.id);
+
+    expect(restarted.get(project.id).queue).not.toBeNull();
+    expect(restarted.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(30);
+  });
+
+  test("没有主题的已完成分块重启后仍算已处理", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "empty-topics-out");
+    const project = ctx.service.create({ name: "零主题", rootDir: join(ctx.root, "p") });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "short-30s.mp4",
+      durationSeconds: 30,
+      outputDir,
+      sourcePath: join(ctx.root, "short-30s.mp4"),
+      hasVideo: true,
+    };
+    ctx.runtime.registerVideo(project.id, video);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => []);
+
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(
+      () => ctx.service.get(project.id).queue?.analysis[0]?.status === "done",
+      "分析完成",
+    );
+    expect(ctx.service.get(project.id).clips).toEqual([]);
+    expect(ctx.service.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
+
+    const data = emptyVideoData({
+      id: video.id as never,
+      title: video.name,
+      sourcePath: video.sourcePath,
+      durationSeconds: 30,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 30 }];
+    writeVideoData(outputDir, data);
+
+    const restarted = new ProjectService({
+      store: ProjectStore.atRoot(ctx.root),
+      events: new ProjectEventLog(),
+    });
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async () => [],
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    runtime.attachProject(project.id);
+
+    expect(restarted.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
   });
 });
