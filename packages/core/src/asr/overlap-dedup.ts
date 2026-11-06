@@ -24,24 +24,37 @@ export const OVERLAP_DEDUP_RULES: OverlapDedupRules = {
 
 const EPSILON = 1e-9;
 
-/** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
-function containedRatio(short: string, long: string): number {
-  if (short.length === 0) return 0;
-  const a = Array.from(short);
-  const b = Array.from(long);
+/** 最长公共子串：长度，以及它在新行里的起始下标。 */
+function longestCommonRunWithStart(a: string, b: string): { length: number; start: number } {
+  const left = Array.from(a);
+  const right = Array.from(b);
   let best = 0;
-  let previous = new Array<number>(b.length + 1).fill(0);
-  for (let i = 1; i <= a.length; i += 1) {
-    const current = new Array<number>(b.length + 1).fill(0);
-    for (let j = 1; j <= b.length; j += 1) {
-      if (a[i - 1] !== b[j - 1]) continue;
+  let bestEnd = 0;
+  let previous = new Array<number>(right.length + 1).fill(0);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = new Array<number>(right.length + 1).fill(0);
+    for (let j = 1; j <= right.length; j += 1) {
+      if (left[i - 1] !== right[j - 1]) continue;
       const length = (previous[j - 1] ?? 0) + 1;
       current[j] = length;
-      if (length > best) best = length;
+      if (length > best) {
+        best = length;
+        bestEnd = i;
+      }
     }
     previous = current;
   }
-  return best / a.length;
+  return { length: best, start: bestEnd - best };
+}
+
+/** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
+function longestCommonRun(a: string, b: string): number {
+  return longestCommonRunWithStart(a, b).length;
+}
+
+function containedRatio(short: string, long: string): number {
+  if (short.length === 0) return 0;
+  return longestCommonRun(short, long) / Array.from(short).length;
 }
 
 /**
@@ -61,14 +74,211 @@ export function dedupeOverlappingLines<T extends { start: number; end: number; t
   const order = [...prepared].sort((a, b) => b.seconds - a.seconds || a.row.start - b.row.start);
   const kept: typeof prepared = [];
   for (const item of order) {
-    const duplicate = kept.some((long) => {
-      if (long.seconds <= item.seconds + EPSILON) return false;
-      const overlap = Math.min(long.row.end, item.row.end) - Math.max(long.row.start, item.row.start);
-      if (overlap + EPSILON < rules.minOverlapRatio * item.seconds) return false;
-      return containedRatio(item.text, long.text) + EPSILON >= rules.minContainedRatio;
-    });
+    const duplicate = kept.some(
+      (long) =>
+        long.seconds > item.seconds + EPSILON &&
+        isDuplicatePair(long.row, item.row, long.text, item.text, rules),
+    );
     if (!duplicate) kept.push(item);
   }
   const survivors = new Set(kept.map((entry) => entry.row));
   return rows.filter((row) => survivors.has(row));
+}
+
+/**
+ * 两行是不是同一句话：时间重叠至少占较短一段的 `minOverlapRatio`，
+ * 且较短一段的文字有 `minContainedRatio` 能在较长一段里连续找到。
+ */
+function isDuplicatePair(
+  a: { start: number; end: number; text: string },
+  b: { start: number; end: number; text: string },
+  normalizedA: string,
+  normalizedB: string,
+  rules: OverlapDedupRules,
+): boolean {
+  const secondsA = a.end - a.start;
+  const secondsB = b.end - b.start;
+  const shorter = Math.min(secondsA, secondsB);
+  if (shorter <= 0) return false;
+  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+  if (overlap + EPSILON < rules.minOverlapRatio * shorter) return false;
+  const shortText = secondsA <= secondsB ? normalizedA : normalizedB;
+  const longText = secondsA <= secondsB ? normalizedB : normalizedA;
+  return containedRatio(shortText, longText) + EPSILON >= rules.minContainedRatio;
+}
+
+/**
+ * 新行里允许有多少个字是旧行没有的，仍算「同一句话的重复」。
+ * 只容忍公共子串之外的少量语气词差异；实词、否定词、数字的差异都是内容变了，必须保留。
+ */
+const MAX_UNMATCHED_CHARS = 4;
+
+/**
+ * 允许被当成「重跑噪音」的语气词/停顿词。归一化会去掉标点，剩下的每个字都是内容：
+ * 旧行「建议这样操作」vs 新行「不建议这样操作」只差一个「不」，但语义相反；
+ * 旧行「五百块」vs 新行「三百块」只差一个字，金额却不是同一个。
+ * 所以多出来的字必须全部落在这组语气词里，否则整行按新内容保留。
+ *
+ * 只收「单独出现时不构成实词」的句末语气词与停顿词。「吧」「哈」「喂」「嘿」「嗨」故意不在名单里：
+ * 它们是语气词，也是词的开头或全部（酒吧、网吧、贴吧、哈哈、喂饭），落在句尾时
+ * 无法和词尾区分（旧行「今天的目的地就是酒。」vs 新行「…就是酒吧。」，多出的「吧」是词的一部分），
+ * 旧行带句号也证明不了它是语气词。分不清就保留新行：多一条近似重复行，不能永久吞掉词尾。
+ */
+const FILLER_CHARS = new Set(Array.from("嗯恩呃额啊呀哦噢喔唉哎诶欸呢嘛啦咯喽"));
+
+/**
+ * 旧行说完一句话才会有的收尾标点。语气词白名单按单字判断，分不清「呢」是语气词还是词尾
+ * （旧行「…就是酒」vs 新行「…就是酒呢」）：旧行停在实词中间、没有终止标点时，多出来的字
+ * 更可能是重跑补齐的词，必须按新内容保留。逗号、顿号、分号只分隔分句，句子还没说完，
+ * 不能拿它证明「呢」是重跑噪音（旧行「…就是酒，」vs 新行「…就是酒呢。」）。
+ * 真实素材里整段字幕全部以句子终止标点收尾（`~/Documents/video-notes` 的 360 行转写
+ * 只剩「。」与「？」），这条前置条件不会削弱去重。
+ * 它只是必要条件：终止标点证明不了多出来的字不是词尾（见 `FILLER_CHARS`）。
+ */
+const SENTENCE_END = new Set(Array.from("。！？!?…"));
+
+/**
+ * 收尾标点外面可能还包着引号、括号，或者后面跟着空白（「…好吧呢。」、`…好吧呢。 `）。
+ * 它们只是装饰，不影响「这句话说完了」的判断；跳过它们再看最后一个有效字符。
+ */
+const TRAILING_DECORATION = new Set(Array.from("」』）)】]>》\"'”’"));
+
+/** 旧行是否以一个完整句子的终止标点结束（忽略尾部空白与成对引号、括号）。 */
+function endsWithSentenceEnd(text: string): boolean {
+  const chars = Array.from(text.trimEnd());
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const char = chars[index]!;
+    if (TRAILING_DECORATION.has(char)) continue;
+    return SENTENCE_END.has(char);
+  }
+  return false;
+}
+
+/** 去重只读行的身份字段：时间、文本，说话人可选（字幕行有，纯文本行没有）。 */
+type DedupRow = { start: number; end: number; text: string; speakerId?: string };
+
+/** 紧邻数字时保留的符号：小数点、正负号、百分号、分隔号都属于数值语义，不能被当标点删掉。 */
+const NUMERIC_SYMBOLS = new Set(Array.from(".+-%/:"));
+const DIGIT = /^[0-9]$/;
+/**
+ * 与 ASCII `-` 同义的连字符、减号、破折号。NFKC 不把 U+2212 折成 `-`，不显式归一的话
+ * 「收益率是−5%」里的负号被当符号丢掉，只剩「收益率是5%」，与旧行「收益率是5%。」判成同一句，
+ * 正负相反的数值因此被静默删掉（#144 缺陷 1）。归一之后，「−」与「-」的两种写法仍是同一行。
+ */
+const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
+/**
+ * 判重用的文本形态：与 `normalizeReplyText` 一样丢掉标点与空白，但数值语义相关的字符保留：
+ * 紧邻数字的标点（`.` `+` `-` `%` `/` `:`）与**所有** `\p{S}` 符号（`$` `€` `¥` `°` `×` …）。
+ *
+ * 为什么不能直接用 `normalizeReplyText`：它去掉 `\p{P}\p{S}` 后，「预算是3.5万元」与
+ * 「预算是35万元」、「收益率是-5%」与「收益率是5%」、「5%」与「5」、「预算是$500」与
+ * 「预算是€500」都成了同一串文本，重跑把金额、正负、单位听错时新行会被当成重复静默丢掉。
+ *
+ * 为什么符号全留：`\p{S}` 里没有纯装饰的字符（标点在 `\p{P}`），而哪一种符号会影响数值
+ * 含义（货币、度数、乘号、约等号）没法枚举干净。分不清就不当重复，宁可多留一行是有意的取舍。
+ *
+ * 为什么不是「整行数字列表必须相等」：那会要求新短句带上旧长句别处的数字，旧行
+ * 「预算是3.5万元，今天讨论素材整理。」里的「今天讨论素材整理」重跑后会被当新内容再追加一遍。
+ * 数字留在文本里参与包含判据，范围外的东西自然不参与。
+ */
+function dedupText(raw: string): string {
+  const cleaned = raw
+    .normalize("NFKC")
+    .replace(MINUS_VARIANTS, "-")
+    .toUpperCase()
+    .replace(/<[^>]*>/g, "")
+    .replace(/\[[^\]]*\]/g, "");
+  const chars = Array.from(cleaned);
+  const isDigit = (char: string | undefined): boolean => char !== undefined && DIGIT.test(char);
+  const kept: string[] = [];
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index]!;
+    if (/[\p{L}\p{N}\p{S}]/u.test(char)) {
+      kept.push(char);
+      continue;
+    }
+    // 标点只在挨着数字时才算内容：「-5」「10-20」「5%」「3.5」留下，「好，」里的逗号照旧丢掉
+    if (NUMERIC_SYMBOLS.has(char) && (isDigit(chars[index - 1]) || isDigit(chars[index + 1]))) {
+      kept.push(char);
+    }
+  }
+  return kept.join("");
+}
+
+/**
+ * 新行是不是已经被某条已有行覆盖：时间重叠至少占**新行**时长的 `minOverlapRatio`，
+ * 新行文本至少 `minContainedRatio` 能在旧行里连续找到，落在公共子串之外的字不超过
+ * `MAX_UNMATCHED_CHARS`，且这些字全是语气词。旧行还必须以收尾标点结束——否则多出来的
+ * 字可能是词尾（「酒」→「酒吧」），分不清就不算重复。
+ *
+ * 两条文字门槛都不能省：只看「没出现在旧行里的字数」，三四个字的短句只要时间重叠就全数命中
+ * （旧行「今天讨论素材整理」vs 新行「三百块」没一个字相同也 ≤4）。短句的重复（「嗯。」）
+ * 归一化后完全一致，不受影响。否定词只差一个字也会让语义反转，必须按新内容保留。
+ *
+ * 只认一个方向（新 ⊆ 旧）：旧行短、新行长了并带出新内容时必须保留新行，
+ * 否则重跑区间会永久丢掉那半句字幕。「可以」→「不可以」这种变长方向因此自然保留。
+ */
+function isCoveredBy(
+  incoming: DedupRow,
+  existing: DedupRow,
+  incomingText: string,
+  existingText: string,
+  rules: OverlapDedupRules,
+): boolean {
+  /**
+   * 说话人是行的身份：抢话时两个人可能在**同一毫秒区间说同一句话**，`dedupeOverlappingLines`
+   * 只删严格更短的行，两行都会留在字幕里。跨次追加若只看文本，会把另一个说话人的新发言
+   * 当重复删掉；只有任一侧没有说话人时才回落到纯文本判据。
+   */
+  if (
+    incoming.speakerId !== undefined &&
+    existing.speakerId !== undefined &&
+    incoming.speakerId !== existing.speakerId
+  ) {
+    return false;
+  }
+  const seconds = incoming.end - incoming.start;
+  if (seconds <= 0) return false;
+  const overlap = Math.min(existing.end, incoming.end) - Math.max(existing.start, incoming.start);
+  if (overlap + EPSILON < rules.minOverlapRatio * seconds) return false;
+  const length = Array.from(incomingText).length;
+  if (length === 0) return false;
+  const run = longestCommonRunWithStart(incomingText, existingText);
+  if (run.length + EPSILON < length * rules.minContainedRatio) return false;
+  if (length - run.length > MAX_UNMATCHED_CHARS) return false;
+  /**
+   * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
+   * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许语气词。
+   */
+  const chars = Array.from(incomingText);
+  const unmatched = [...chars.slice(0, run.start), ...chars.slice(run.start + run.length)];
+  if (unmatched.length === 0) return true;
+  /**
+   * 多出来的字可能是词的一部分而不是语气词，只有旧行本来就是完整句子（带收尾标点）
+   * 时才能当成重跑噪音；旧行停在句子中间时按新内容保留，宁可多一行也不吞字幕。
+   */
+  if (!endsWithSentenceEnd(existing.text)) return false;
+  return unmatched.every((char) => FILLER_CHARS.has(char));
+}
+
+/**
+ * 区间分析追加字幕时用（#129 回归）：只留下真正新增的行。
+ *
+ * 视频库里的视频通常已经整段转写过（#121 规格 117 复用视频库字幕），项目再分析其中一个区间时，
+ * ASR 会把这十几分钟重跑一遍。已有行必须原样保留——主题里的行 id 与弹窗选择都按行内容定位——
+ * 所以这里丢的是「已被已有行覆盖」的新行，而不是像 `dedupeOverlappingLines` 那样留长删短。
+ */
+export function dropCoveredDuplicates<T extends DedupRow>(
+  existing: readonly T[],
+  incoming: readonly T[],
+  rules: OverlapDedupRules = OVERLAP_DEDUP_RULES,
+): T[] {
+  if (existing.length === 0) return [...incoming];
+  const prepared = existing.map((row) => ({ row, text: dedupText(row.text) }));
+  return incoming.filter((row) => {
+    // 用 `dedupText` 而不是 `normalizeReplyText`：数字连它的符号要留在文本里参与判据，
+    // 否则小数、正负号、百分号被当标点删掉，新数值会被当重复丢掉
+    const text = dedupText(row.text);
+    return !prepared.some((prev) => isCoveredBy(row, prev.row, text, prev.text, rules));
+  });
 }

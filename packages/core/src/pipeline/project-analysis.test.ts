@@ -6,9 +6,9 @@ import type { AsrEngine } from "../asr/engine";
 import { acquireVideoLock, isVideoLocked } from "../core/lock";
 import type { LlmClient, LlmEndpoint } from "../core/steps";
 import type { SpeakerId, VideoId } from "../core/types";
-import { loadVideoData } from "../core/video-data";
+import { loadVideoData, writeVideoData } from "../core/video-data";
 import { makeTmpDir } from "../testing/temp-dirs";
-import { analyzeVideoRange } from "./project-analysis";
+import { analyzeVideoRange, subtitleLinesFrom } from "./project-analysis";
 
 const endpoint: LlmEndpoint = { baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test-model" };
 
@@ -160,6 +160,220 @@ describe("analyzeVideoRange：一个文件一个区间，按块增量", () => {
     expect(second.topics[0]?.id).not.toBe(first.topics[0]?.id);
     // 原始字幕文本不改写（纠错只在展示层应用）
     expect(readFileSync(join(second.outputDir, "video.json"), "utf8")).toContain("第一句");
+  });
+
+  test("区间落在已有转写里：只追加真正新增的字幕，不重复落盘、行 id 不变", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+
+    // 视频库先整段转写过（复用视频库字幕，见 #121 规格 117），项目再分析其中的子区间
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: fakeEngine([]),
+    });
+    const before = loadVideoData(whole.outputDir, { id: whole.videoId as VideoId, title: "" });
+    expect(before.transcript.utterances).toHaveLength(2);
+
+    const again = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine([]),
+    });
+
+    const data = loadVideoData(again.outputDir, { id: again.videoId as VideoId, title: "" });
+    expect(data.transcript.utterances.map((u) => [u.start, u.text])).toEqual([
+      [0.2, "第一句"],
+      [0.8, "第二句"],
+    ]);
+    expect(again.addedLines).toBe(0);
+    // 已有行 id 不变：主题的 lineIds 仍指向同一批字幕
+    expect(subtitleLinesFrom(data).filter((line) => again.topics[0]?.lineIds.includes(line.id)).map((line) => [line.start, line.text])).toEqual([
+      [0.2, "第一句"],
+      [0.8, "第二句"],
+    ]);
+  });
+
+  test("后到的区间字幕排在前面时，已有行 id 仍指向同一行字幕", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+
+    // 先分析后半段、再补前半段：合并后新行排到数组前面，下标型 id 会整体错位
+    const tail = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: fakeEngine([]),
+    });
+    const tailLines = subtitleLinesFrom(
+      loadVideoData(tail.outputDir, { id: tail.videoId as VideoId, title: "" }),
+    );
+    expect(tailLines.map((line) => [line.start, line.text])).toEqual([
+      [2.2, "第一句"],
+      [2.8, "第二句"],
+    ]);
+
+    const head = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: tail.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine([]),
+    });
+    const headLines = subtitleLinesFrom(
+      loadVideoData(head.outputDir, { id: head.videoId as VideoId, title: "" }),
+    );
+    expect(headLines.map((line) => [line.start, line.text])).toEqual([
+      [0.2, "第一句"],
+      [0.8, "第二句"],
+      [2.2, "第一句"],
+      [2.8, "第二句"],
+    ]);
+
+    // 弹窗打开期间字幕被插入时，已选 id 也必须解析回同一行（#129 提交精确性）
+    const resolve = (ids: readonly string[]) =>
+      headLines.filter((line) => ids.includes(line.id)).map((line) => [line.start, line.text]);
+    expect(resolve(tailLines.map((line) => line.id))).toEqual([
+      [2.2, "第一句"],
+      [2.8, "第二句"],
+    ]);
+    expect(resolve(tail.topics[0]?.lineIds ?? [])).toEqual([
+      [2.2, "第一句"],
+      [2.8, "第二句"],
+    ]);
+  });
+
+  test("同一时间、同一文本、不同说话人：两行各有独立 id，只选一行时只解析那一行", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const twoSpeakers: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => ({
+        transcript: {
+          speakers: [
+            { id: "s1" as SpeakerId, name: "说话人 1", color: "#888888" },
+            { id: "s2" as SpeakerId, name: "说话人 2", color: "#666666" },
+          ],
+          // 抢话：两个人同一时间说了同一句话，去重只删「严格更短」的行，这两行都会留下
+          utterances: [
+            { start: 0.2, end: 0.6, speakerId: "s1" as SpeakerId, text: "第一句。" },
+            { start: 0.2, end: 0.6, speakerId: "s2" as SpeakerId, text: "第一句。" },
+          ],
+        },
+        chunks: [{ index: 1, start: 0, end: 2 }],
+        timings: {},
+        cacheHits: [],
+        engine: "local",
+        modelId: "fake-asr",
+      }),
+    };
+
+    const analyzed = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: twoSpeakers,
+    });
+    const lines = subtitleLinesFrom(
+      loadVideoData(analyzed.outputDir, { id: analyzed.videoId as VideoId, title: "" }),
+    );
+
+    expect(lines.map((line) => line.speaker)).toEqual(["说话人 1", "说话人 2"]);
+    // 时间与文本相同，但它们是两行字幕：id 撞在一起时弹窗只能同时勾选、同时取消
+    expect(new Set(lines.map((line) => line.id)).size).toBe(2);
+    expect(analyzed.topics[0]?.lineIds).toHaveLength(2);
+    expect(new Set(analyzed.topics[0]?.lineIds ?? []).size).toBe(2);
+    // 只提交其中一行时，另一行不能被一起带上
+    const picked = analyzed.topics[0]?.lineIds[0] ?? "";
+    expect(lines.filter((line) => line.id === picked).map((line) => line.speaker)).toHaveLength(1);
+  });
+
+  test("旧数据里字段完全重复的两行：仍各有独立 id，弹窗勾一行不联动另一行", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine([]),
+    });
+
+    // 旧版无条件追加留下的历史数据：同一句字幕在 video.json 里存了两份，字段完全一致
+    const legacy = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" });
+    const duplicated = [...legacy.transcript.utterances, { ...legacy.transcript.utterances[0]! }];
+    writeVideoData(first.outputDir, {
+      ...legacy,
+      transcript: { ...legacy.transcript, utterances: duplicated },
+    });
+
+    const again = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: fakeEngine([]),
+    });
+    const lines = subtitleLinesFrom(
+      loadVideoData(again.outputDir, { id: again.videoId as VideoId, title: "" }),
+    );
+
+    // 已有行原样保留（含历史重复行），重跑出来的同两行被判定为重复丢掉
+    expect(lines.map((line) => [line.start, line.text])).toEqual([
+      [0.2, "第一句"],
+      [0.2, "第一句"],
+      [0.8, "第二句"],
+    ]);
+    // 字段完全相同的两行必须各有 id：撞在一起时弹窗勾一行会同时勾上另一行
+    expect(new Set(lines.map((line) => line.id)).size).toBe(3);
+    expect(again.topics[0]?.lineIds).toHaveLength(3);
+    expect(new Set(again.topics[0]?.lineIds ?? []).size).toBe(3);
+    const picked = again.topics[0]?.lineIds[0] ?? "";
+    expect(lines.filter((line) => line.id === picked)).toHaveLength(1);
   });
 
   test("模型给出区间外的时间段：夹回区间，夹不出就丢弃，不串到别的区间", async () => {
