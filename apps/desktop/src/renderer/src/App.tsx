@@ -477,7 +477,24 @@ export function App() {
                     }}
                   />
                 ),
-                queue: <ProjectQueueTab project={project} />,
+                queue: (
+                  <ProjectQueueTab
+                    project={project}
+                    loadTopicLines={(topicKey) =>
+                      window.vnote.projectTopicLines(project.id, topicKey)
+                    }
+                    confirmTopic={async (topicKey, lineIds) => {
+                      // 与 config 面板同一条规则：确认结果由主进程 publish 成
+                      // projects:event 全量推送，不用 invoke 返回值覆盖手里的快照。
+                      try {
+                        await window.vnote.confirmProjectTopic(project.id, topicKey, lineIds);
+                      } catch (err) {
+                        showToast(`确认切片失败：${errMessage(err)}`);
+                        throw err;
+                      }
+                    }}
+                  />
+                ),
                 output: (
                   <ProjectClipsTab
                     project={project}

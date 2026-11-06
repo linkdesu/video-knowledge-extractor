@@ -11,6 +11,7 @@ import {
   analysisStages,
   pendingTopics,
   proposedTopicMeta,
+  proposedTopicSource,
   queueCountLabel,
   queueFootline,
   sliceTaskMeta,
@@ -133,6 +134,12 @@ describe("队列计数与状态文案", () => {
     expect(analysisRangeLabel(job({ startSeconds: 65, endSeconds: 725 }))).toBe(
       "00:01:05–00:12:05",
     );
+  });
+
+  test("确认弹窗副标题是「文件名 · 分析区间」，与待确认列表行不是同一段文案", () => {
+    expect(
+      proposedTopicSource(job({ id: 3, name: "晚场.mp4", startSeconds: 0, endSeconds: 600 })),
+    ).toBe("晚场.mp4 · 分析区间 00:00:00–00:10:00");
   });
 });
 
