@@ -176,13 +176,13 @@ describe("dropCoveredDuplicates：区间重跑只追加新行", () => {
 
   test("旧行以引号收尾：引号里的终止标点仍证明句子说完了，丢掉语气词噪音", () => {
     const existing = [row(0, 2, "「今天的目的地就是酒吧。」")];
-    const incoming = [row(0, 2, "「今天的目的地就是酒吧呢。」")];
+    const incoming = [row(0, 2, "「今天的目的地就是酒吧啊。」")];
     expect(dropCoveredDuplicates(existing, incoming)).toEqual([]);
   });
 
   test("旧行尾部带空白：按最后一个非空白字符判断句子是否说完", () => {
     const existing = [row(0, 2, "今天的目的地就是酒吧。 ")];
-    const incoming = [row(0, 2, "今天的目的地就是酒吧呢。 ")];
+    const incoming = [row(0, 2, "今天的目的地就是酒吧啊。 ")];
     expect(dropCoveredDuplicates(existing, incoming)).toEqual([]);
   });
 
@@ -233,6 +233,46 @@ describe("dropCoveredDuplicates：区间重跑只追加新行", () => {
     const existing = [row(0, 2, "今天的目的地就是酒。")];
     const incoming = [row(0, 2, "今天的目的地就是酒吧。")];
     expect(dropCoveredDuplicates(existing, incoming)).toEqual(incoming);
+  });
+
+  test("词尾是「呢」「嘛」「啦」这些能组成实词的字：新行一律保留", () => {
+    // 华达呢是面料名、喇嘛是身份、哗啦是声音：都不是语气词，删掉就是永久丢内容
+    expect(dropCoveredDuplicates([row(0, 2, "这件外套的面料是华达。")], [row(0, 2, "这件外套的面料是华达呢。")])).toEqual([
+      row(0, 2, "这件外套的面料是华达呢。"),
+    ]);
+    expect(dropCoveredDuplicates([row(0, 2, "这次拜访的是喇。")], [row(0, 2, "这次拜访的是喇嘛。")])).toEqual([
+      row(0, 2, "这次拜访的是喇嘛。"),
+    ]);
+    expect(dropCoveredDuplicates([row(0, 2, "雨水落下的声音是哗。")], [row(0, 2, "雨水落下的声音是哗啦。")])).toEqual([
+      row(0, 2, "雨水落下的声音是哗啦。"),
+    ]);
+  });
+
+  test("新行完整落在旧行里，但旧行紧贴匹配段还有负号：正负含义不同，保留新行", () => {
+    const existing = [row(0, 2, "−5%是这次的收益率。")];
+    const incoming = [row(0, 2, "5%是这次的收益率。")];
+    expect(dropCoveredDuplicates(existing, incoming)).toEqual(incoming);
+  });
+
+  test("新行完整落在旧行里，但旧行紧贴匹配段还有货币符号或单位：含义不同，保留新行", () => {
+    expect(dropCoveredDuplicates([row(0, 2, "£500是本次预算。")], [row(0, 2, "500是本次预算。")])).toEqual([
+      row(0, 2, "500是本次预算。"),
+    ]);
+    expect(dropCoveredDuplicates([row(0, 2, "温度测量结果是30°。")], [row(0, 2, "温度测量结果是30。")])).toEqual([
+      row(0, 2, "温度测量结果是30。"),
+    ]);
+  });
+
+  test("旧行别处的数字与符号不在匹配边界上：仍算同一句重复，丢掉", () => {
+    const existing = [row(0, 10, "-预算是3.5万元，今天讨论素材整理。")];
+    const incoming = [row(4, 8, "今天讨论素材整理。")];
+    expect(dropCoveredDuplicates(existing, incoming)).toEqual([]);
+  });
+
+  test("整句被旧长句包住（旧行前后都是分句）：仍算重复，丢掉", () => {
+    const existing = [row(0, 10, "我们明天早上八点出发去机场，记得带身份证。")];
+    const incoming = [row(4, 8, "记得带身份证。")];
+    expect(dropCoveredDuplicates(existing, incoming)).toEqual([]);
   });
 
   test("时间不重叠的同一句话：不是重复，保留", () => {

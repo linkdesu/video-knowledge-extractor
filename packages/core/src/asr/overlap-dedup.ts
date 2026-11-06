@@ -24,12 +24,16 @@ export const OVERLAP_DEDUP_RULES: OverlapDedupRules = {
 
 const EPSILON = 1e-9;
 
-/** 最长公共子串：长度，以及它在新行里的起始下标。 */
-function longestCommonRunWithStart(a: string, b: string): { length: number; start: number } {
+/**
+ * 最长公共子串：长度，以及它在新行与旧行里各自的起始下标。
+ * 两个下标都要：「旧行贴着匹配段外面的那个字符」是不是数值符号，决定新行的数字有没有变。
+ */
+function longestCommonRunWithStart(a: string, b: string): { length: number; start: number; startInB: number } {
   const left = Array.from(a);
   const right = Array.from(b);
   let best = 0;
   let bestEnd = 0;
+  let bestEndInB = 0;
   let previous = new Array<number>(right.length + 1).fill(0);
   for (let i = 1; i <= left.length; i += 1) {
     const current = new Array<number>(right.length + 1).fill(0);
@@ -40,11 +44,12 @@ function longestCommonRunWithStart(a: string, b: string): { length: number; star
       if (length > best) {
         best = length;
         bestEnd = i;
+        bestEndInB = j;
       }
     }
     previous = current;
   }
-  return { length: best, start: bestEnd - best };
+  return { length: best, start: bestEnd - best, startInB: bestEndInB - best };
 }
 
 /** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
@@ -119,12 +124,13 @@ const MAX_UNMATCHED_CHARS = 4;
  * 旧行「五百块」vs 新行「三百块」只差一个字，金额却不是同一个。
  * 所以多出来的字必须全部落在这组语气词里，否则整行按新内容保留。
  *
- * 只收「单独出现时不构成实词」的句末语气词与停顿词。「吧」「哈」「喂」「嘿」「嗨」故意不在名单里：
- * 它们是语气词，也是词的开头或全部（酒吧、网吧、贴吧、哈哈、喂饭），落在句尾时
- * 无法和词尾区分（旧行「今天的目的地就是酒。」vs 新行「…就是酒吧。」，多出的「吧」是词的一部分），
- * 旧行带句号也证明不了它是语气词。分不清就保留新行：多一条近似重复行，不能永久吞掉词尾。
+ * 只收**叹词**（单独成句的嗯、啊、哦、唉…），它们的字面不构成任何词。其它常被当语气词的字
+ * 都能收在实词词尾：`吧`「酒吧」、`呢`「华达呢」、`嘛`「喇嘛」、`啦`「哗啦」、`哈`「哈哈」、
+ * `喂`「喂饭」、`额`「金额」、`恩`「报恩」。单字判据分不清「多出来的字是语气词还是词尾」，
+ * 这类字一律不算噪音——旧行带句号也不能证明什么。分不清就保留新行：多一条可见的近似重复行，
+ * 不能永久吞掉看不见的词尾（#144）。
  */
-const FILLER_CHARS = new Set(Array.from("嗯恩呃额啊呀哦噢喔唉哎诶欸呢嘛啦咯喽"));
+const FILLER_CHARS = new Set(Array.from("嗯呃啊呀哦噢喔唉哎诶欸"));
 
 /**
  * 旧行说完一句话才会有的收尾标点。语气词白名单按单字判断，分不清「呢」是语气词还是词尾
@@ -160,10 +166,20 @@ type DedupRow = { start: number; end: number; text: string; speakerId?: string }
 /** 紧邻数字时保留的符号：小数点、正负号、百分号、分隔号都属于数值语义，不能被当标点删掉。 */
 const NUMERIC_SYMBOLS = new Set(Array.from(".+-%/:"));
 const DIGIT = /^[0-9]$/;
+const SYMBOL = /^\p{S}$/u;
+/**
+ * 这个字符会不会改变一个数字的含义：紧邻数字的标点（`-5`、`3.5`、`5%`）与全部符号
+ * （`$` `€` `°` `×` `±` …）。`dedupText` 用它决定留哪个字符，匹配边界用它判断
+ * 「旧行把这个符号切在匹配段外面」时新行的数字是否已经变了。
+ */
+function isNumericSemantic(char: string | undefined): boolean {
+  return char !== undefined && (NUMERIC_SYMBOLS.has(char) || SYMBOL.test(char));
+}
+
 /**
  * 与 ASCII `-` 同义的连字符、减号、破折号。NFKC 不把 U+2212 折成 `-`，不显式归一的话
  * 「收益率是−5%」里的负号被当符号丢掉，只剩「收益率是5%」，与旧行「收益率是5%。」判成同一句，
- * 正负相反的数值因此被静默删掉（#144 缺陷 1）。归一之后，「−」与「-」的两种写法仍是同一行。
+ * 正负相反的数值因此被静默删掉（#144）。归一之后，「−」与「-」的两种写法仍是同一行。
  */
 const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
 /**
@@ -174,8 +190,9 @@ const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
  * 「预算是35万元」、「收益率是-5%」与「收益率是5%」、「5%」与「5」、「预算是$500」与
  * 「预算是€500」都成了同一串文本，重跑把金额、正负、单位听错时新行会被当成重复静默丢掉。
  *
- * 为什么符号全留：`\p{S}` 里没有纯装饰的字符（标点在 `\p{P}`），而哪一种符号会影响数值
- * 含义（货币、度数、乘号、约等号）没法枚举干净。分不清就不当重复，宁可多留一行是有意的取舍。
+ * 为什么符号全留：符号（`\p{S}`）里哪几种会改变数值含义（货币、度数、乘号、约等号）没法枚举
+ * 干净，而装饰性标点在 `\p{P}` 里、照旧丢掉，所以整类保留。这与「含义不同必留新行」不是一回事：
+ * 匹配边界还要单独看旧行有没有把符号切在外面（见 `isCoveredBy`）。
  *
  * 为什么不是「整行数字列表必须相等」：那会要求新短句带上旧长句别处的数字，旧行
  * 「预算是3.5万元，今天讨论素材整理。」里的「今天讨论素材整理」重跑后会被当新内容再追加一遍。
@@ -193,7 +210,7 @@ function dedupText(raw: string): string {
   const kept: string[] = [];
   for (let index = 0; index < chars.length; index += 1) {
     const char = chars[index]!;
-    if (/[\p{L}\p{N}\p{S}]/u.test(char)) {
+    if (/[\p{L}\p{N}]/u.test(char) || SYMBOL.test(char)) {
       kept.push(char);
       continue;
     }
@@ -247,6 +264,19 @@ function isCoveredBy(
   if (run.length + EPSILON < length * rules.minContainedRatio) return false;
   if (length - run.length > MAX_UNMATCHED_CHARS) return false;
   /**
+   * 匹配段之外的旧行字符也可能属于这个数字：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」
+   * 里新行整句都落在旧行里（未匹配 0 字），但负号被切在匹配段外面，正负含义已经不同；货币符号
+   * （`£500`）与单位（`30°`）同理。旧行紧贴匹配边界的字符是数值语义字符时，一律保留新行；
+   * 旧行**别处**的数字与符号不参与（旧行「预算是3.5万元，今天讨论素材整理。」照旧判重复）。
+   */
+  const existingChars = Array.from(existingText);
+  if (
+    isNumericSemantic(existingChars[run.startInB - 1]) ||
+    isNumericSemantic(existingChars[run.startInB + run.length])
+  ) {
+    return false;
+  }
+  /**
    * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
    * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许语气词。
    */
@@ -256,6 +286,7 @@ function isCoveredBy(
   /**
    * 多出来的字可能是词的一部分而不是语气词，只有旧行本来就是完整句子（带收尾标点）
    * 时才能当成重跑噪音；旧行停在句子中间时按新内容保留，宁可多一行也不吞字幕。
+   * 这条只在「新行多出字」时才检查：未匹配 0 字时旧行的收尾标点无关紧要。
    */
   if (!endsWithSentenceEnd(existing.text)) return false;
   return unmatched.every((char) => FILLER_CHARS.has(char));
