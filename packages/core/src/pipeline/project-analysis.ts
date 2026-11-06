@@ -20,6 +20,7 @@ import type { SubtitleLine } from "../core/project-controller";
 import {
   emptyVideoData,
   mediaAbsolutePath,
+  mediaForSource,
   readVideoData,
   writeVideoData,
   type TopicRecord,
@@ -160,10 +161,13 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       if (data === undefined) {
         data = { ...emptyVideoData(video), runToken, importedAt: new Date().toISOString() };
       }
+      // 上一次落盘时源文件的字节数：用它判断规范化产物是否还代表当前源文件（#132 D1）
+      const recordedSourceBytes = data.sourceBytes;
+      const sourceBytes = statSync(input.videoPath).size;
       data.runToken = runToken;
       data.hasVideo = probe.hasVideo;
       data.originalPath = video.sourcePath;
-      data.sourceBytes = statSync(input.videoPath).size;
+      data.sourceBytes = sourceBytes;
       data.resolution = probe.width !== null && probe.height !== null ? { width: probe.width, height: probe.height } : null;
       writeVideoData(video.outputDir, data);
 
@@ -197,7 +201,30 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         data.normalized = normalized.mode;
       }
       writeVideoData(video.outputDir, data);
-      const mediaPath = mediaAbsolutePath(data);
+      /**
+       * 抽音与声纹参考读哪份媒体：产物的**实测时长**短于源文件（增长中的录制）或源文件字节数变了，
+       * 就改读源文件（#132 D1）。刚重转过时产物与源文件等长，直接用它。播放与预览仍按 `mediaAbsolutePath`。
+       */
+      const artifactPath = mediaAbsolutePath(data);
+      const mediaDuration = reused ? await probeDurationOrNull(artifactPath) : probe.duration;
+      const mediaPath = mediaForSource(
+        { mediaPath: data.mediaPath, sourceBytes: data.sourceBytes, video: data.video },
+        {
+          recordedSourceBytes: reused ? recordedSourceBytes : sourceBytes,
+          sourceBytes,
+          sourceDuration: probe.duration,
+          mediaDuration,
+        },
+      );
+      if (mediaPath !== artifactPath) {
+        logger().info("ffmpeg", "规范化产物早于源文件，改读源文件", {
+          mediaPath: data.mediaPath,
+          mediaDuration,
+          recordedSourceBytes,
+          sourceBytes,
+          sourceDuration: probe.duration,
+        });
+      }
       try {
         await ensureCoverFrame({ outputDir: video.outputDir, sourcePath: mediaPath, durationSeconds: probe.duration, hasVideo: probe.hasVideo });
       } catch {
@@ -232,6 +259,12 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       // 只抽这一段；wav 名带随机后缀，同一视频的两个区间不会互相删除
       wavPath = resolve(cacheDir, `range-${Math.round(start)}-${Math.round(end)}-${randomUUID().slice(0, 8)}.wav`);
       await logger().step("ffmpeg", "抽取音频区间", () => extractAudioRange(mediaPath, wavPath!, { start, end }));
+      /**
+       * 抽出来几乎没有采样 = 这一段在读的媒体里根本没有音频（媒体比报告的时长还短）。
+       * 继续转写只会得到 0 行字幕，分块却记成 `done`，界面于是「整理已结束」而字幕停在半路（#132 D1）。
+       * 显式失败，把问题留给日志和失败状态，不伪造完成。
+       */
+      assertRangeAudio(wavPath, end - start);
       input.onProgress?.({ step: "transcribe", done: 0, total: 0 });
       const rangeVideo: Video = { ...video, durationSeconds: end - start };
       const run = await logger().step("asr", "区间转写", () => engine.run({ video: rangeVideo, wavPath: wavPath!, cacheDir }));
@@ -434,6 +467,35 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
 }
 
 type LineSource = { start: number; end: number; speakerId: string; text: string };
+
+/** 16 kHz 单声道 s16le：1 秒 32,000 字节；wav 头 44 字节。 */
+const WAV_BYTES_PER_SECOND = 32_000;
+const WAV_HEADER_BYTES = 44;
+
+/**
+ * 区间音频最少应有多少字节：取「区间时长」与 0.25 秒里较短的一档。
+ * 静音区间 ffmpeg 也会写满长度，只有「媒体里没有这段数据」才会产出几乎空的 wav。
+ */
+export function minimumRangeWavBytes(seconds: number): number {
+  return WAV_HEADER_BYTES + WAV_BYTES_PER_SECOND * Math.min(Math.max(seconds, 0), 0.25);
+}
+
+/** 抽出来的区间音频是空的：这一段在读的媒体里没有数据，必须显式失败（#132 D1）。 */
+function assertRangeAudio(wavPath: string, seconds: number): void {
+  const bytes = statSync(wavPath).size;
+  const minimum = minimumRangeWavBytes(seconds);
+  if (bytes >= minimum) return;
+  throw new Error(`区间没有可用音频：请求 ${Math.round(seconds * 10) / 10} 秒，只抽到 ${bytes} 字节（媒体可能比报告的时长还短）`);
+}
+
+/** 规范化产物的实测时长；文件缺失 / 损坏时返回 null（按过期处理）。 */
+async function probeDurationOrNull(path: string): Promise<number | null> {
+  try {
+    return (await probeVideo(path)).duration;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 字幕行 id：时间（毫秒）+ 说话人 + 文本指纹，与数组下标无关。

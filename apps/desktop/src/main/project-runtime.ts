@@ -9,6 +9,7 @@ import {
   loadVideoData,
   logger,
   mediaAbsolutePath,
+  probeVideo,
   readVideoData,
   setTopicProgress,
   slicedSecondsFrom,
@@ -354,11 +355,23 @@ export class ProjectRuntime {
     if (this.deps.context === undefined) throw new Error("项目执行器缺少 LLM/ASR 配置");
     const context = await this.deps.context();
     const data = loadVideoData(video.outputDir, { id: video.id as VideoId, title: video.name, sourcePath: video.sourcePath, durationSeconds: video.durationSeconds });
+    /**
+     * 增长中的录制：规范化产物只覆盖旧长度，末尾的切片会切出空文件（#132 D1）。
+     * 需要的时间点超出产物实测时长就从源文件切；产物够用时照旧用它。
+     */
+    const needsUntil = job.segments.reduce((end, segment) => Math.max(end, segment.end), 0);
+    const artifactPath = mediaAbsolutePath(data);
+    const sourcePath =
+      data.mediaPath === null
+        ? artifactPath
+        : (await this.artifactDuration(artifactPath)) + 0.5 >= needsUntil
+          ? artifactPath
+          : video.sourcePath;
     const topicId = splitTopicKey(job.topicKey)?.topicId ?? "";
     const startedAt = new Date().toISOString();
     setTopicProgress(video.outputDir, topicId, { status: "generating", startedAt, error: null });
     const { clip } = await generateProjectClip({
-      sourcePath: mediaAbsolutePath(data),
+      sourcePath,
       hasVideo: data.hasVideo ?? video.hasVideo,
       clipsDir: alloc.clipsDir,
       nextSeq: alloc.seq,
@@ -376,6 +389,15 @@ export class ProjectRuntime {
     });
     logger().info("project", "项目切片完成", { videoId: video.id, topicId, file: clip.file, model: context.endpoint.model });
     return { file: clip.file };
+  }
+
+  /** 规范化产物的实测时长；读不出按 0 处理（切片会退回源文件）。 */
+  private async artifactDuration(path: string): Promise<number> {
+    try {
+      return (await probeVideo(path)).duration;
+    } catch {
+      return 0;
+    }
   }
 
   /**

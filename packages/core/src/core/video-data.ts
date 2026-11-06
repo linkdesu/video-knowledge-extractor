@@ -315,6 +315,46 @@ export function mediaAbsolutePath(data: Pick<VideoData, "mediaPath" | "video">):
   return data.mediaPath === null ? data.video.sourcePath : resolve(data.video.outputDir, data.mediaPath);
 }
 
+/**
+ * 规范化产物是否已经落后于源文件：增长中的录制会不停变长，`media.mp3 / media.mp4`
+ * 却冻结在首次规范化那一刻。继续复用它，后面的区间只能抽到产物结尾之后的空白，
+ * 分块全部「完成」但 0 行字幕（#132 D1）。
+ *
+ * 判定看两件事，任一成立即视为过期：
+ * - 产物自己的时长明显短于源文件（实测；`null` = 读不出也得当过期）；
+ * - 源文件字节数与「上次分析时」不同（文件被替换 / 仍在增长）。
+ * 只比字节数不够：`sourceBytes` 记的是上次分析的时刻，不是产物生成的时刻——
+ * 续排的区间会在增长结束后才跑，字节数恰好相同，产物却仍是旧的。
+ */
+export function mediaIsStale(input: {
+  recordedSourceBytes: number | null;
+  sourceBytes: number;
+  sourceDuration: number;
+  mediaDuration: number | null;
+}): boolean {
+  if (input.mediaDuration === null) return true;
+  if (input.mediaDuration + 0.5 < input.sourceDuration) return true;
+  return input.recordedSourceBytes !== null && input.recordedSourceBytes !== input.sourceBytes;
+}
+
+/**
+ * 抽音 / 切片该读哪份媒体：有规范化产物且不过期就用产物，否则读源文件
+ * （ffmpeg 只要这一段，不必重转整段）。`data.mediaPath === null` 时产物就是源文件。
+ */
+export function mediaForSource(
+  data: Pick<VideoData, "mediaPath" | "sourceBytes" | "video">,
+  facts: {
+    recordedSourceBytes: number | null;
+    sourceBytes: number;
+    sourceDuration: number;
+    mediaDuration: number | null;
+  },
+): string {
+  const media = mediaAbsolutePath(data);
+  if (data.mediaPath === null) return media;
+  return mediaIsStale(facts) ? data.video.sourcePath : media;
+}
+
 /** 缺失返回 undefined；存在但损坏（版本不符、字段形状错）抛出指明文件与版本的错误。 */
 export function readVideoData(outputDir: string): VideoData | undefined {
   let raw: string;

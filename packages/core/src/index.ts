@@ -110,6 +110,7 @@ export {
   recordVideoFailure,
   clearVideoFailure,
   mediaAbsolutePath,
+  mediaForSource,
 } from "./core/video-data";
 export type { TopicStatus, TopicClip, TopicRecord, VideoData, VideoRef } from "./core/video-data";
 export {
