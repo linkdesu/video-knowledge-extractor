@@ -2348,6 +2348,138 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* 单主题确认字幕弹窗（#143，原型 L82 / L137-L139）：标题 + 来源、完整字幕列表、底部两个按钮。 */
+.vn-topic-confirm-mask {
+  box-sizing: border-box;
+  padding: 16px;
+  outline: none;
+}
+.vn-topic-confirm {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  min-height: 0;
+  overflow: hidden;
+}
+.vn-topic-confirm-head {
+  flex-shrink: 0;
+}
+.vn-topic-confirm-head h2,
+.vn-topic-confirm-head p {
+  overflow-wrap: anywhere;
+}
+.vn-topic-confirm-head p {
+  margin: 6px 0 0;
+  color: var(--vn-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vn-topic-confirm-description {
+  flex-shrink: 0;
+  margin-top: 16px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.vn-topic-confirm-summary {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.vn-topic-confirm-lines {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: start;
+  min-height: 96px;
+  max-height: min(46vh, 460px);
+  min-width: 0;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  scrollbar-width: thin;
+}
+.vn-topic-line {
+  display: grid;
+  grid-template-columns: auto 132px minmax(64px, 0.32fr) minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--vn-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+.vn-topic-line:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.vn-topic-line:focus-within {
+  outline: 2px solid var(--vn-violet);
+  outline-offset: -2px;
+}
+.vn-topic-line input {
+  width: 15px;
+  height: 15px;
+  margin: 3px 0 0;
+  accent-color: var(--vn-violet);
+  cursor: pointer;
+}
+.vn-topic-line time {
+  color: var(--vn-muted);
+  font-size: 11px;
+  line-height: 1.8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vn-topic-line span {
+  min-width: 0;
+  color: var(--vn-fg);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.vn-topic-line-speaker {
+  color: var(--vn-muted);
+  font-size: 12px;
+}
+.vn-topic-confirm-state {
+  margin: 0;
+  padding: 24px 16px;
+  color: var(--vn-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.vn-topic-confirm-state.error {
+  color: #fda4af;
+}
+.vn-topic-confirm-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+/* 窄屏（含 390px）：时间 / 说话人 / 文本纵向排，横排会把文本列压到不可读。 */
+@media (max-width: 699px) {
+  .vn-topic-line {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 10px;
+  }
+  .vn-topic-line input {
+    grid-row: 1 / 4;
+  }
+  .vn-topic-line time,
+  .vn-topic-line span {
+    grid-column: 2;
+    white-space: normal;
+  }
+}
+
 /* 699 而非其它板块的 700：700px 视口下内容列仍放得下并排的两步，只在其下才纵排。 */
 @media (max-width: 699px) {
   .vn-queue-task-head {

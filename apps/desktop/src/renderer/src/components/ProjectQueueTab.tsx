@@ -1,14 +1,31 @@
-import type { JSX } from "react";
-import type { ProjectDetail, ProjectTaskStatus } from "../../../shared/ipc";
+import { useCallback, useRef, useState, type JSX } from "react";
+import type {
+  ProjectDetail,
+  ProjectSubtitleLineInfo,
+  ProjectTaskStatus,
+  ProjectTopicLines,
+} from "../../../shared/ipc";
 import {
   analysisRangeLabel,
   analysisStages,
   pendingTopics,
+  proposedTopicSource,
   queueCountLabel,
   queueFootline,
   sliceTaskMeta,
   taskStatusLabel,
+  type PendingTopic,
 } from "../lib/project-queue";
+import { TopicConfirmDialog } from "./TopicConfirmDialog";
+
+type ActiveTopic = {
+  topic: PendingTopic;
+  /** 弹窗副标题（来源文件 · 分析区间）；与列表行的 `topic.sourceLine` 不是同一段文案。 */
+  sourceLine: string;
+  lines: ProjectSubtitleLineInfo[];
+  loading: boolean;
+  loadError: string | null;
+};
 
 function statusClass(status: ProjectTaskStatus): string {
   if (status === "done") return "ok";
@@ -18,15 +35,124 @@ function statusClass(status: ProjectTaskStatus): string {
 }
 
 /**
- * 切片队列 tab（#142，原型 L66-L68 / L131）：
+ * 切片队列 tab（#142 队列 + #143 单主题确认弹窗，原型 L66-L68 / L82 / L131 / L137-L139）：
  * 分析队列每块两步、待确认主题（不占队列、不自动弹窗）、切片队列、底部「未切片内容时长」。
- * 「确认字幕」的弹窗交互由 #143 接入；本 tab 只负责入口与列表面板，入口不自动打开任何东西。
+ * 待确认区只承载入口，弹窗、勾选与提交都在这里接线；#142 的队列展示逻辑保持不变。
  */
-export function ProjectQueueTab({ project }: { project: ProjectDetail }): JSX.Element {
+export function ProjectQueueTab({
+  project,
+  loadTopicLines,
+  confirmTopic,
+}: {
+  project: ProjectDetail;
+  loadTopicLines: (topicKey: string) => Promise<ProjectTopicLines>;
+  confirmTopic: (topicKey: string, lineIds: string[]) => Promise<void>;
+}): JSX.Element {
   const queue = project.queue;
   const analysis = queue?.analysis ?? [];
   const slices = queue?.slices ?? [];
   const proposed = pendingTopics(queue);
+  const [active, setActive] = useState<ActiveTopic | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const loadRequestRef = useRef(0);
+  /** 当前打开的是哪个主题；提交期间用户 Esc 换主题时，这次提交就不能再关弹窗。 */
+  const activeKeyRef = useRef<string | null>(null);
+  /** 弹窗是否仍关闭；关闭后在同一帧内又打开时，焦点恢复必须放弃。 */
+  const closedRef = useRef(true);
+
+  /**
+   * 关掉弹窗后把焦点放回去。`keepTrigger` 只对「稍后确认 / Esc」成立：那时入口按钮还在，
+   * 回到原按钮最顺手。生成切片会把该主题移出待确认区，入口按钮正在被卸载，哪怕此刻
+   * 还 `isConnected`（列表还没随推送重渲染），聚焦上去紧接着就会掉回 body —— 这条路径
+   * 必须直接给下一个待确认入口。
+   */
+  const closeDialog = useCallback((keepTrigger: boolean) => {
+    loadRequestRef.current += 1;
+    const closingKey = activeKeyRef.current;
+    activeKeyRef.current = null;
+    closedRef.current = true;
+    setActive(null);
+    const trigger = keepTrigger ? triggerRef.current : null;
+    requestAnimationFrame(() => {
+      if (!closedRef.current) return;
+      if (trigger !== null && trigger.isConnected) {
+        trigger.focus();
+        return;
+      }
+      /**
+       * 焦点不能掉到 body：先给下一个待确认入口（跳过刚提交的主题那一行），没有就落在
+       * 待确认区本身（section 带 tabIndex=-1，永不卸载）。
+       */
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-testid="pending-topic-confirm"]'),
+      ).filter(
+        (button) =>
+          closingKey === null ||
+          button.closest<HTMLElement>("[data-topic-key]")?.dataset.topicKey !== closingKey,
+      );
+      const next = candidates[0];
+      if (next !== undefined) {
+        next.focus();
+        return;
+      }
+      document.querySelector<HTMLElement>('[data-testid="queue-pending"]')?.focus();
+    });
+  }, []);
+
+  /** 稍后确认 / Esc：焦点回到原入口按钮。单独包一层，保持 Esc 监听的依赖稳定。 */
+  const defer = useCallback(() => closeDialog(true), [closeDialog]);
+
+  const openDialog = (topic: PendingTopic, trigger: HTMLButtonElement) => {
+    const requestId = ++loadRequestRef.current;
+    const job = analysis.find((item) => item.id === topic.jobId);
+    activeKeyRef.current = topic.topicKey;
+    closedRef.current = false;
+    triggerRef.current = trigger;
+    setActive({
+      topic,
+      sourceLine: job === undefined ? topic.sourceLine : proposedTopicSource(job),
+      lines: [],
+      loading: true,
+      loadError: null,
+    });
+
+    void loadTopicLines(topic.topicKey).then(
+      (result) => {
+        if (loadRequestRef.current !== requestId) return;
+        setActive((current) =>
+          current === null || current.topic.topicKey !== topic.topicKey
+            ? current
+            : { ...current, lines: result.lines, loading: false, loadError: null },
+        );
+      },
+      () => {
+        if (loadRequestRef.current !== requestId) return;
+        setActive((current) =>
+          current === null || current.topic.topicKey !== topic.topicKey
+            ? current
+            : {
+                ...current,
+                lines: [],
+                loading: false,
+                loadError: "无法读取完整字幕，请关闭后重试。",
+              },
+        );
+      },
+    );
+  };
+
+  const generate = async (lineIds: string[]) => {
+    if (active === null) return;
+    const topicKey = active.topic.topicKey;
+    // 打开这一份弹窗时的加载代次：Esc 后重开同一主题会 +1，用它区分「同一个弹窗」和「同主题的新弹窗」
+    const requestAtSubmit = loadRequestRef.current;
+    await confirmTopic(topicKey, lineIds);
+    // 提交期间用户可能已经 Esc 并打开另一个（或同一）主题：只关掉发起这次提交的那个弹窗
+    if (activeKeyRef.current === topicKey && loadRequestRef.current === requestAtSubmit) {
+      // 主题已经移出待确认区，原入口按钮不可靠：焦点直接给下一个入口
+      closeDialog(false);
+    }
+  };
 
   return (
     <div className="vn-queue" data-testid="project-queue-tab">
@@ -89,6 +215,7 @@ export function ProjectQueueTab({ project }: { project: ProjectDetail }): JSX.El
         className="vn-queue-section"
         aria-labelledby="queue-pending-title"
         data-testid="queue-pending"
+        tabIndex={-1}
       >
         <h3 id="queue-pending-title">待确认主题</h3>
         <div className="vn-queue-list">
@@ -107,11 +234,12 @@ export function ProjectQueueTab({ project }: { project: ProjectDetail }): JSX.El
                     <h4>{topic.title}</h4>
                     <p>{topic.sourceLine}</p>
                   </div>
-                  {/* 入口先按原型就位；#143 接上单主题确认弹窗，不自动弹、不占队列。 */}
+                  {/* 入口只打开当前主题的弹窗：不自动弹窗、不占队列。 */}
                   <button
                     type="button"
                     className="vn-btn sm primary"
                     data-testid="pending-topic-confirm"
+                    onClick={(event) => openDialog(topic, event.currentTarget)}
                   >
                     确认字幕
                   </button>
@@ -156,6 +284,24 @@ export function ProjectQueueTab({ project }: { project: ProjectDetail }): JSX.El
       <p className="vn-queue-foot" data-testid="queue-foot">
         {queueFootline(queue, project.videoIds)}
       </p>
+
+      {active === null ? null : (
+        <TopicConfirmDialog
+          /**
+           * 弹窗的勾选是 useState 初值：同一次挂载里换主题会沿用上一个主题的编辑。
+           * key 让每次挂载只服务一个 topicKey；「稍后确认 / Esc 后重开」本身会先卸载
+           * 弹窗，初值已经按 AI 建议重置，不依赖这个 key。
+           */
+          key={active.topic.topicKey}
+          topic={active.topic}
+          sourceLine={active.sourceLine}
+          lines={active.lines}
+          loading={active.loading}
+          loadError={active.loadError}
+          onDefer={defer}
+          onGenerate={generate}
+        />
+      )}
     </div>
   );
 }
