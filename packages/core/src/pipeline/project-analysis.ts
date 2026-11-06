@@ -3,6 +3,7 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "../asr/overlap-dedup";
+import { alignRangeSpeakers, applySpeakerAlignment } from "../asr/speaker-align";
 import { extractAudioRange, probeVideo } from "../core/audio";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
@@ -200,10 +201,21 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       });
 
       const previous = data.transcript.utterances;
+      /**
+       * 区间 ASR 的 `speaker-N` 按**本区间**说话时长排名（`assignSpeakers`），不是跨次稳定身份：
+       * 整段里排第二的人只切到他的大段发言时会在区间里排第一。判重前先按「同时间 + 同文本」
+       * 的既有行把局部编号映射回来源视频的稳定身份（#145），映射不了的编号不参与身份判断。
+       */
+      const alignment = alignRangeSpeakers(previous, filler.rows);
       // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
-      const appended = dropCoveredDuplicates(previous, filler.rows);
+      const appended = applySpeakerAlignment(dropCoveredDuplicates(previous, filler.rows, undefined, alignment), alignment);
       const utterances = [...previous, ...appended].sort((a, b) => a.start - b.start || a.end - b.end);
-      const speakers = mergeSpeakers(data.transcript.speakers, run.transcript.speakers);
+      // 只在剩下的行里还出现的说话人才登记：整段被映射走的局部编号（先前的 speaker-1）不该留个空壳
+      const usedSpeakers = new Set(appended.map((u) => u.speakerId));
+      const speakers = mergeSpeakers(
+        data.transcript.speakers,
+        run.transcript.speakers.filter((s) => usedSpeakers.has(s.id)),
+      );
       const chunk = { index: data.chunks.length + 1, start, end };
       data.chunks = [...data.chunks.filter((c) => !(Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6)), chunk].sort(
         (a, b) => a.start - b.start,

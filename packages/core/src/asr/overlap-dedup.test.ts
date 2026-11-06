@@ -313,3 +313,39 @@ describe("dropCoveredDuplicates：区间重跑只追加新行", () => {
     expect(dropCoveredDuplicates([], incoming)).toEqual(incoming);
   });
 });
+
+describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）", () => {
+  test("整段 speaker-2、区间 speaker-1 的同一行：映射后仍是重复，丢掉", () => {
+    const existing = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("映射到另一位稳定说话人：即使局部编号与旧行相同也不是重复，保留", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    // 局部 speaker-1 证明是整段的 speaker-2：编号相等不能当身份
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
+  });
+
+  test("局部说话人无法映射：不把编号相等当身份，保守保留新行", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
+  test("旧行没有说话人（纯文本）：仍按文本判重，映射缺失不影响", () => {
+    const existing = [row(10, 14, "这个方案可以继续推进。")];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("映射 + 语气词噪音（#144 规则）：组合后仍判重复，新行不重复追加", () => {
+    const existing = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(10, 14, "今天讲一下素材整理的方法啊。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+});

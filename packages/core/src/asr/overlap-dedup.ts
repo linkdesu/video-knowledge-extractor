@@ -53,8 +53,11 @@ function longestCommonRuns(a: string, b: string): { length: number; matches: Arr
   return { length: best, matches };
 }
 
-/** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
-function longestCommonRun(a: string, b: string): number {
+/**
+ * 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。
+ * 跨次说话人对齐（`speaker-align.ts`）用同一份判重文本与同一套相似度，不认识两套口径。
+ */
+export function longestCommonRun(a: string, b: string): number {
   return longestCommonRuns(a, b).length;
 }
 
@@ -162,7 +165,13 @@ function endsWithSentenceEnd(text: string): boolean {
 }
 
 /** 去重只读行的身份字段：时间、文本，说话人可选（字幕行有，纯文本行没有）。 */
-type DedupRow = { start: number; end: number; text: string; speakerId?: string };
+export type DedupRow = { start: number; end: number; text: string; speakerId?: string };
+
+/**
+ * 区间行的说话人身份映射（局部编号 → 来源视频的稳定身份，见 `speaker-align.ts`）。
+ * **没有条目就是「无法证明」**：判重时不能拿局部编号的相等或不相等当人物身份。
+ */
+export type SpeakerAlignment = ReadonlyMap<string, string>;
 
 /** 紧邻数字时保留的符号：小数点、正负号、百分号、分隔号都属于数值语义，不能被当标点删掉。 */
 const NUMERIC_SYMBOLS = new Set(Array.from(".+-%/:"));
@@ -200,9 +209,9 @@ const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
  * 数字留在文本里参与包含判据，范围外的东西自然不参与。
  */
 /** 判重文本：去标点后的文本，加上它的每个字符在原文（保留标点）里的下标。 */
-type DedupText = { text: string; chars: string[]; rawIndex: number[] };
+export type DedupText = { text: string; chars: string[]; rawIndex: number[] };
 
-function dedupText(raw: string): DedupText {
+export function dedupText(raw: string): DedupText {
   const cleaned = raw
     .normalize("NFKC")
     .replace(MINUS_VARIANTS, "-")
@@ -253,18 +262,21 @@ function isCoveredBy(
   existing: PrepRow,
   incomingText: string,
   rules: OverlapDedupRules,
+  alignment?: SpeakerAlignment,
 ): boolean {
   /**
    * 说话人是行的身份：抢话时两个人可能在**同一毫秒区间说同一句话**，`dedupeOverlappingLines`
    * 只删严格更短的行，两行都会留在字幕里。跨次追加若只看文本，会把另一个说话人的新发言
    * 当重复删掉；只有任一侧没有说话人时才回落到纯文本判据。
+   *
+   * 跨次比较前必须先对齐身份（#145）：区间转写的 `speaker-N` 是**本次音频内**的时长排名，
+   * 不是稳定身份，所以调用方给了映射时以映射为准；映射里没有这条局部编号就说明「证明不了」，
+   * 此时保守保留新行（宁可多一行，也不把别人的同一句话吞掉）。
    */
-  if (
-    incoming.speakerId !== undefined &&
-    existing.row.speakerId !== undefined &&
-    incoming.speakerId !== existing.row.speakerId
-  ) {
-    return false;
+  if (incoming.speakerId !== undefined && existing.row.speakerId !== undefined) {
+    const incomingIdentity = alignment === undefined ? incoming.speakerId : alignment.get(incoming.speakerId);
+    if (incomingIdentity === undefined) return false;
+    if (incomingIdentity !== existing.row.speakerId) return false;
   }
   const seconds = incoming.end - incoming.start;
   if (seconds <= 0) return false;
@@ -319,11 +331,15 @@ type PrepRow = { row: DedupRow } & DedupText;
  * 视频库里的视频通常已经整段转写过（#121 规格 117 复用视频库字幕），项目再分析其中一个区间时，
  * ASR 会把这十几分钟重跑一遍。已有行必须原样保留——主题里的行 id 与弹窗选择都按行内容定位——
  * 所以这里丢的是「已被已有行覆盖」的新行，而不是像 `dedupeOverlappingLines` 那样留长删短。
+ *
+ * `alignment` 是区间说话人的身份映射（`alignRangeSpeakers`）：给了它就只认映射，映射里没有的
+ * 局部编号按「证明不了」处理（保留新行）；不给则退化成编号相等的旧判据，供同一次转写内的调用。
  */
 export function dropCoveredDuplicates<T extends DedupRow>(
   existing: readonly T[],
   incoming: readonly T[],
   rules: OverlapDedupRules = OVERLAP_DEDUP_RULES,
+  alignment?: SpeakerAlignment,
 ): T[] {
   if (existing.length === 0) return [...incoming];
   const prepared: PrepRow[] = existing.map((row) => ({ row, ...dedupText(row.text) }));
@@ -331,6 +347,6 @@ export function dropCoveredDuplicates<T extends DedupRow>(
     // 用 `dedupText` 而不是 `normalizeReplyText`：数字连它的符号要留在文本里参与判据，
     // 否则小数、正负号、百分号被当标点删掉，新数值会被当重复丢掉
     const { text } = dedupText(row.text);
-    return !prepared.some((prev) => isCoveredBy(row, prev, text, rules));
+    return !prepared.some((prev) => isCoveredBy(row, prev, text, rules, alignment));
   });
 }
