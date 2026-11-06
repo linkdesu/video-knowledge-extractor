@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
-import { dedupeOverlappingLines } from "../asr/overlap-dedup";
+import { dedupeOverlappingLines, dropCoveredDuplicates } from "../asr/overlap-dedup";
 import { extractAudioRange, probeVideo } from "../core/audio";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
@@ -200,7 +200,9 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       });
 
       const previous = data.transcript.utterances;
-      const utterances = [...previous, ...filler.rows].sort((a, b) => a.start - b.start || a.end - b.end);
+      // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
+      const appended = dropCoveredDuplicates(previous, filler.rows);
+      const utterances = [...previous, ...appended].sort((a, b) => a.start - b.start || a.end - b.end);
       const speakers = mergeSpeakers(data.transcript.speakers, run.transcript.speakers);
       const chunk = { index: data.chunks.length + 1, start, end };
       data.chunks = [...data.chunks.filter((c) => !(Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6)), chunk].sort(
@@ -269,10 +271,10 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         videoId: video.id,
         start,
         end,
-        lines: filler.rows.length,
+        lines: appended.length,
         topics: analyzed.length,
       });
-      return { videoId: video.id, outputDir: video.outputDir, topics: analyzed, addedLines: filler.rows.length };
+      return { videoId: video.id, outputDir: video.outputDir, topics: analyzed, addedLines: appended.length };
     } finally {
       if (wavPath !== null) rmSync(wavPath, { force: true });
       // 调用方传进来的锁由调用方释放：这里提前释放会让同视频的另一个槽插进来
@@ -281,20 +283,57 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
   });
 }
 
-/** 主题覆盖到的字幕行 id：`line-<合并后下标>`，与对话层读 `video.json` 的顺序一致（追加区间只往后排）。 */
-function lineIdsFor(topic: TopicRecord, utterances: VideoData["transcript"]["utterances"]): string[] {
-  const ids: string[] = [];
-  for (let i = 0; i < utterances.length; i += 1) {
-    const u = utterances[i]!;
-    if (topic.segments.some((s) => u.end > s.start && u.start < s.end)) ids.push(`line-${i}`);
+type LineSource = { start: number; end: number; speakerId: string; text: string };
+
+/**
+ * 字幕行 id：时间（毫秒）+ 说话人 + 文本指纹，与数组下标无关。
+ * 区间分析会把新区间的字幕按时间插进已有字幕里，下标型 id 会让弹窗里的已选行
+ * 在后台分析插队后解析到别的字幕；时间、说话人、文本在一行字幕被改写前都不会变，
+ * 所以「弹窗快照 → 提交」在同一次改动里始终指向同一行（#129）。
+ * 说话人必须进指纹：抢话时两个说话人可能在**同一毫秒区间说出同一句话**，去重只删
+ * 严格更短的一行，两行都会留在字幕里；只按时间+文本生成 id 时这两行共用一个 id，
+ * 弹窗里勾一个就勾上两行，提交也只解析得出一行。
+ */
+function lineIdOf(utterance: LineSource, occurrence = 0): string {
+  let hash = 0x811c9dc5;
+  for (const code of `${utterance.speakerId}\u0000${utterance.text}`) {
+    hash ^= code.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
   }
-  return ids;
+  const base = `line-${Math.round(utterance.start * 1000)}-${Math.round(utterance.end * 1000)}-${(hash >>> 0).toString(36)}`;
+  /**
+   * 同一内容的第 2、3…次出现带 `-2`、`-3` 后缀：旧版无条件追加的区间重跑会把时间、说话人、
+   * 文本完全相同的两行都留在 `video.json` 里，只按字段生成 id 会让它们共用一个 id——
+   * 弹窗里勾一行联动两行，提交也只解析得出一行。两个调用方都按数组顺序数出现次数，id 必然一致。
+   */
+  return occurrence === 0 ? base : `${base}-${occurrence + 1}`;
 }
 
-/** 控制器确认弹窗用：按行 id 解析字幕快照（`line-<下标>`，与区间分析写入的一致）。 */
+/** 按数组顺序给每行分配 id（同内容行第 n 次出现带后缀）；主题与弹窗共用这一套，不许各算各的。 */
+function lineIdsOf(utterances: readonly LineSource[]): string[] {
+  const seen = new Map<string, number>();
+  return utterances.map((u) => {
+    const key = `${Math.round(u.start * 1000)}\u0000${Math.round(u.end * 1000)}\u0000${u.speakerId}\u0000${u.text}`;
+    const occurrence = seen.get(key) ?? 0;
+    seen.set(key, occurrence + 1);
+    return lineIdOf(u, occurrence);
+  });
+}
+
+/** 主题覆盖到的字幕行 id：与对话层读 `video.json` 的顺序无关，只认行自己的时间、说话人与文本。 */
+function lineIdsFor(topic: TopicRecord, utterances: VideoData["transcript"]["utterances"]): string[] {
+  const ids = lineIdsOf(utterances);
+  return ids.filter((_, index) => {
+    const u = utterances[index]!;
+    return topic.segments.some((s) => u.end > s.start && u.start < s.end);
+  });
+}
+
+/** 控制器确认弹窗用：按行 id 解析字幕快照（与区间分析写入的 `lineIdOf` 同口径）。 */
 export function subtitleLinesFrom(data: VideoData): SubtitleLine[] {
-  return data.transcript.utterances.map((u, i) => ({
-    id: `line-${i}`,
+  const ids = lineIdsOf(data.transcript.utterances);
+  return data.transcript.utterances.map((u, index) => ({
+    id: ids[index]!,
     start: u.start,
     end: u.end,
     speaker: data.transcript.speakers.find((s) => s.id === u.speakerId)?.name ?? "",
