@@ -9,15 +9,15 @@ import { createHash } from "node:crypto";
 import { closeSync, cpSync, createReadStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
 import { DIARIZATION_TUNING, SILENCE_DETECTION, logger, modelFileSpecs, type ModelRole } from "@video-notes/core";
-import { REFINE_DEFAULTS } from "./refine";
+import { REFINE_DEFAULTS, SPEAKER_EMBED_MIN_SECONDS } from "@video-notes/core";
 
 /** 缓存 schema：产物格式或参数口径变了就 +1，旧条目自然全部 miss。 */
 export const LAB_CACHE_SCHEMA = 1;
 
 /** 段级解码前后各多取的秒数；进键（改它会改 segtext）。 */
 export const LAB_SEGMENT_PADDING_SECONDS = 0.1;
-/** 短于这个秒数的段不做嵌入（保留 null 占位）；进键。 */
-export const LAB_EMBED_MIN_SECONDS = 0.1;
+/** 短于这个秒数的段不做嵌入（保留 null 占位）；进键。口径单一事实源在 core（`SPEAKER_EMBED_MIN_SECONDS`）。 */
+export const LAB_EMBED_MIN_SECONDS = SPEAKER_EMBED_MIN_SECONDS;
 
 export type LabSourceMode = "file" | "dir";
 

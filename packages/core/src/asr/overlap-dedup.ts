@@ -53,8 +53,11 @@ function longestCommonRuns(a: string, b: string): { length: number; matches: Arr
   return { length: best, matches };
 }
 
-/** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
-function longestCommonRun(a: string, b: string): number {
+/**
+ * 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。
+ * 跨次说话人对齐（`speaker-align.ts`）用同一份判重文本与同一套相似度，不认识两套口径。
+ */
+export function longestCommonRun(a: string, b: string): number {
   return longestCommonRuns(a, b).length;
 }
 
@@ -162,7 +165,13 @@ function endsWithSentenceEnd(text: string): boolean {
 }
 
 /** 去重只读行的身份字段：时间、文本，说话人可选（字幕行有，纯文本行没有）。 */
-type DedupRow = { start: number; end: number; text: string; speakerId?: string };
+export type DedupRow = { start: number; end: number; text: string; speakerId?: string };
+
+/**
+ * 区间行的说话人身份映射（局部编号 → 来源视频的稳定身份，见 `speaker-align.ts`）。
+ * **没有条目就是「无法证明」**：判重时不能拿局部编号的相等或不相等当人物身份。
+ */
+export type SpeakerAlignment = ReadonlyMap<string, string>;
 
 /** 紧邻数字时保留的符号：小数点、正负号、百分号、分隔号都属于数值语义，不能被当标点删掉。 */
 const NUMERIC_SYMBOLS = new Set(Array.from(".+-%/:"));
@@ -200,9 +209,9 @@ const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
  * 数字留在文本里参与包含判据，范围外的东西自然不参与。
  */
 /** 判重文本：去标点后的文本，加上它的每个字符在原文（保留标点）里的下标。 */
-type DedupText = { text: string; chars: string[]; rawIndex: number[] };
+export type DedupText = { text: string; chars: string[]; rawIndex: number[] };
 
-function dedupText(raw: string): DedupText {
+export function dedupText(raw: string): DedupText {
   const cleaned = raw
     .normalize("NFKC")
     .replace(MINUS_VARIANTS, "-")
@@ -251,20 +260,34 @@ function dedupText(raw: string): DedupText {
 function isCoveredBy(
   incoming: DedupRow,
   existing: PrepRow,
-  incomingText: string,
+  incomingDedup: DedupText,
   rules: OverlapDedupRules,
+  alignment?: SpeakerAlignment,
 ): boolean {
+  const incomingText = incomingDedup.text;
   /**
-   * 说话人是行的身份：抢话时两个人可能在**同一毫秒区间说同一句话**，`dedupeOverlappingLines`
-   * 只删严格更短的行，两行都会留在字幕里。跨次追加若只看文本，会把另一个说话人的新发言
-   * 当重复删掉；只有任一侧没有说话人时才回落到纯文本判据。
+   * 说话人是行的身份，但它只决定「是不是别人」，不决定「是不是重复」：
+   * - 跨次映射证明是**另一位**稳定说话人 → 保留（抢话时两个人可能在同一毫秒说同一句话，
+   *   `dedupeOverlappingLines` 只删严格更短的行，两行都会留在字幕里）；
+   * - 身份相同 → 继续按内容判；
+   * - 身份**证明不了**（区间分离出的簇数与整段不同时是常态）→ 也按内容判，与没有说话人的行一样。
+   *   这里曾按「证明不了就保守保留」处理，真机结果是字幕翻倍：同一句话被重跑写第二遍，
+   *   说话人 15→29、主题 7→15、确认弹窗建议行大批重复（#145 QA）。
    */
-  if (
-    incoming.speakerId !== undefined &&
-    existing.row.speakerId !== undefined &&
-    incoming.speakerId !== existing.row.speakerId
-  ) {
-    return false;
+  if (alignment !== undefined) {
+    /**
+     * 跨次追加：内容判据走 #144 的重叠判重，**不看说话人**——同一次转写的同一行（同文同时）
+     * 与近似行（同一句话的两种识别）都不写第二遍。区间重跑的分离结果常把同一个人判成两个簇
+     * （真机 15 个整段簇在区间里并成 6 个再拆开），只按身份放行就会写出字幕翻倍（#145 QA）。
+     */
+    if (isSameRowRerun(incoming, incomingDedup, existing)) return true;
+    if (isNearDuplicate(incoming, existing, incomingText, rules)) return true;
+  }
+  if (incoming.speakerId !== undefined && existing.row.speakerId !== undefined) {
+    const incomingIdentity = alignment === undefined ? incoming.speakerId : alignment.get(incoming.speakerId);
+    // 跨次：（证明不了 → 不按身份判，回落到下面的严格内容判据；证明是别人 → 保留）
+    if (incomingIdentity !== existing.row.speakerId && (alignment === undefined || incomingIdentity !== undefined)) return false;
+    if (incomingIdentity === undefined) return false;
   }
   const seconds = incoming.end - incoming.start;
   if (seconds <= 0) return false;
@@ -286,21 +309,7 @@ function isCoveredBy(
    * 第一处匹配前面带着负号，第二处才是覆盖新行的同句重复。任何一处通过就算覆盖。
    */
   return run.matches.some((match) => {
-    /**
-     * 匹配段之外的旧行字符也可能属于这个数字：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」
-     * 里新行整句都落在旧行里（未匹配 0 字），但负号被切在匹配段外面，正负含义已经不同；货币符号
-     * （`£500`）与单位（`30°`）同理。判断用的是**原文**下标：旧行「收益率是5%，今天讨论素材整理。」
-     * 丢逗号后 `%` 看似紧贴匹配段，原文里它属于上一分句，不能算到新行头上。
-     */
-    const startAt = existing.rawIndex[match.startInB];
-    const endAt = existing.rawIndex[match.startInB + run.length - 1];
-    if (startAt === undefined || endAt === undefined) return false;
-    if (
-      isNumericSemantic(existing.chars[startAt - 1]) ||
-      isNumericSemantic(existing.chars[endAt + 1])
-    ) {
-      return false;
-    }
+    if (touchesNumericBoundary(existing, match, run.length)) return false;
     /**
      * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
      * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许叹词。
@@ -308,6 +317,131 @@ function isCoveredBy(
     const unmatched = [...chars.slice(0, match.start), ...chars.slice(match.start + run.length)];
     return unmatched.every((char) => FILLER_CHARS.has(char));
   });
+}
+
+/**
+ * 身份证明不了时判定「这就是同一次转写的同一行」的时间容差。区间重跑的端点会抖几百毫秒，
+ * 真机验收里 74 行完全重复的字幕都在 0.6 秒内（#145 QA）。
+ */
+const RERUN_SAME_ROW_SECONDS = 0.75;
+
+/**
+ * 身份证明不了的行只能是「同一次转写的同一行」，不能是「被长句包住的短句」：
+ * 另一人的短应答（「三百块。」）天然被对方的长句包住，按包含关系判重就会删掉他的发言。
+ * 所以这里要求**端点对齐**（起止各差 ≤0.75 秒）且判重文本**完全相同**；
+ * 语气词噪音、拆句、包含关系这类放宽只在身份证明为同一人时才允许。
+ */
+function isSameRowRerun(incoming: DedupRow, incomingDedup: DedupText, existing: PrepRow): boolean {
+  if (
+    Math.abs(incoming.start - existing.row.start) > RERUN_SAME_ROW_SECONDS ||
+    Math.abs(incoming.end - existing.row.end) > RERUN_SAME_ROW_SECONDS
+  ) {
+    return false;
+  }
+  return incomingDedup.text === existing.text;
+}
+
+/**
+ * 匹配段之外是否贴着数值语义字符：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」里
+ * 新行整句都落在旧行里，但负号被切在匹配段外面，正负含义已经不同；货币符号（`£500`）与单位
+ * （`30°`）同理。判断用**原文**下标：旧行「收益率是5%，今天讨论素材整理。」丢逗号后 `%` 看似
+ * 紧贴匹配段，原文里它属于上一分句，不能算到新行头上。
+ */
+function touchesNumericBoundary(existing: PrepRow, match: { startInB: number }, length: number): boolean {
+  const startAt = existing.rawIndex[match.startInB];
+  const endAt = existing.rawIndex[match.startInB + length - 1];
+  if (startAt === undefined || endAt === undefined) return true;
+  return isNumericSemantic(existing.chars[startAt - 1]) || isNumericSemantic(existing.chars[endAt + 1]);
+}
+
+/**
+ * 同一句话的两次识别，归一化编辑距离相似度（1 − 编辑距离 / 较长一行）的合并下限。
+ * 真机 ASR 变体多是一两个字的差别（「你现要/有多少本金？」「OK好的好的的」），
+ * 80% 包含判据兜不住（新行多一两个字包含度就掉下来），编辑距离兜得住（#145 QA r91f）。
+ */
+const NEAR_DUPLICATE_SIMILARITY = 0.8;
+/** 阿拉伯数字与否定词：出现即视为含义敏感，合并前必须两边一致。 */
+const SENSITIVE_CHAR = /[0-9不没未别无]/;
+/**
+ * 阿拉伯数字（含小数、百分号、正负号）与否定词不同，就不是同一句话，绝不合并。
+ * 中文数字**不**进这道闸：ASR 常把「十六」听成「三十六」、「三六」听成「三是六」，
+ * 按数字守护反而把同一句话挡在门外（真机 9 条）；这类差异交给相似度判据。
+ * 代价：数字被听错的那一行会随旧行保留原数字（不静默双写、也不静默改写）。
+ */
+const NUMERIC_TOKEN = /[-+]?[0-9]+(?:\.[0-9]+)?%?/g;
+const NEGATION = /[不没未别无]/g;
+
+/** 归一化编辑距离相似度：0 表示完全不同，1 表示逐字相同。 */
+function editSimilarity(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  const longest = Math.max(left.length, right.length);
+  if (longest === 0) return 1;
+  // 长度差已经超过允许的编辑量时直接判不相似，省掉 O(n·m) 的 DP
+  if (Math.abs(left.length - right.length) / longest > 1 - NEAR_DUPLICATE_SIMILARITY) return 0;
+  let previous = new Uint16Array(right.length + 1);
+  let current = new Uint16Array(right.length + 1);
+  for (let j = 0; j <= right.length; j += 1) previous[j] = j;
+  for (let i = 1; i <= left.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const substitution = (previous[j - 1] ?? 0) + (left[i - 1] === right[j - 1] ? 0 : 1);
+      const insertion = (current[j - 1] ?? 0) + 1;
+      const deletion = (previous[j] ?? 0) + 1;
+      current[j] = Math.min(substitution, insertion, deletion);
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+  }
+  const distance = previous[right.length] ?? longest;
+  return 1 - distance / longest;
+}
+
+/** 两行的数字与否定词是否一致：数值、正负、币种、中文数字、"不/没/未"一改就是不同的话。 */
+function sameSemantics(a: string, b: string): boolean {
+  const tokens = (text: string): string => (text.match(NUMERIC_TOKEN) ?? []).join("|");
+  if (tokens(a) !== tokens(b)) return false;
+  return (a.match(NEGATION) ?? []).length === (b.match(NEGATION) ?? []).length;
+}
+
+/**
+ * 跨次「近似行」：同一时段里两行就是同一句话的两个识别版本，不再写第二遍。
+ * 区间重跑对同一段话总给出略有出入的措辞（「债权和债务是同时继承的。」→「债务是同时继承的。」、
+ * 「你现要多少本金？」→「你现有多少本金？」），身份又证明不了，按「无法映射就保留」放行会让
+ * 字幕涨 41%（#145 QA）。
+ *
+ * 判据（`dedupeOverlappingLines` 的同一套重叠口径，只是不删旧行）：
+ * - 时间重叠 ≥ 较短一段的 `minOverlapRatio`；
+ * - 文字满足**任一**：新行被旧行包住 ≥ `minContainedRatio`（拆分/截短），
+ *   或归一化编辑距离相似度 ≥ `NEAR_DUPLICATE_SIMILARITY`（多一两个字、换一个近音字）。
+ * 旧版还要求「新行不比旧行长」，真机里「可以，」前缀、「工作」→「工作上」正好卡在这道闸上；
+ * 现在改由语义闸兜底：数字（含中文数字）或否定词不同就不合并。
+ */
+function isNearDuplicate(incoming: DedupRow, existing: PrepRow, incomingText: string, rules: OverlapDedupRules): boolean {
+  const chars = Array.from(incomingText);
+  if (chars.length === 0) return false;
+  const seconds = incoming.end - incoming.start;
+  const existingSeconds = existing.row.end - existing.row.start;
+  const shorter = Math.min(seconds, existingSeconds);
+  if (shorter <= 0) return false;
+  const overlap = Math.min(existing.row.end, incoming.end) - Math.max(existing.row.start, incoming.start);
+  if (overlap + EPSILON < rules.minOverlapRatio * shorter) return false;
+  const run = longestCommonRuns(incomingText, existing.text);
+  const contained = run.length / chars.length;
+  if (contained + EPSILON >= rules.minContainedRatio) {
+    /**
+     * 包含方向：未匹配的那几个字若带阿拉伯数字或否定词，含义就不是同一句。
+     * 只在未匹配段上判，不比整行——新行是旧长句里的一截时，旧行上下文里的「不/没」与新行无关。
+     */
+    return run.matches.some((match) => {
+      if (touchesNumericBoundary(existing, match, run.length)) return false;
+      const unmatched = [...chars.slice(0, match.start), ...chars.slice(match.start + run.length)].join("");
+      return !SENSITIVE_CHAR.test(unmatched);
+    });
+  }
+  if (editSimilarity(incomingText, existing.text) + EPSILON < NEAR_DUPLICATE_SIMILARITY) return false;
+  return sameSemantics(incomingText, existing.text);
 }
 
 /** 已有行的判重形态：行本身 + 判重文本，供 `isCoveredBy` 一次算好复用。 */
@@ -319,18 +453,22 @@ type PrepRow = { row: DedupRow } & DedupText;
  * 视频库里的视频通常已经整段转写过（#121 规格 117 复用视频库字幕），项目再分析其中一个区间时，
  * ASR 会把这十几分钟重跑一遍。已有行必须原样保留——主题里的行 id 与弹窗选择都按行内容定位——
  * 所以这里丢的是「已被已有行覆盖」的新行，而不是像 `dedupeOverlappingLines` 那样留长删短。
+ *
+ * `alignment` 是区间说话人的身份映射（`alignRangeSpeakers`）：给了它就只认映射，映射里没有的
+ * 局部编号按「证明不了」处理（保留新行）；不给则退化成编号相等的旧判据，供同一次转写内的调用。
  */
 export function dropCoveredDuplicates<T extends DedupRow>(
   existing: readonly T[],
   incoming: readonly T[],
   rules: OverlapDedupRules = OVERLAP_DEDUP_RULES,
+  alignment?: SpeakerAlignment,
 ): T[] {
   if (existing.length === 0) return [...incoming];
   const prepared: PrepRow[] = existing.map((row) => ({ row, ...dedupText(row.text) }));
   return incoming.filter((row) => {
     // 用 `dedupText` 而不是 `normalizeReplyText`：数字连它的符号要留在文本里参与判据，
     // 否则小数、正负号、百分号被当标点删掉，新数值会被当重复丢掉
-    const { text } = dedupText(row.text);
-    return !prepared.some((prev) => isCoveredBy(row, prev, text, rules));
+    const incomingDedup = dedupText(row.text);
+    return !prepared.some((prev) => isCoveredBy(row, prev, incomingDedup, rules, alignment));
   });
 }

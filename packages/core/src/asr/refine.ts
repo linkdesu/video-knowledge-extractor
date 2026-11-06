@@ -1,11 +1,12 @@
 /**
- * 二次聚类（r48 Lab）：移植 `tmp/ref/diarization-r2/labels.py` 的自适应版本，
- * 只用于开发模式验收台，不进入正式管线。
+ * 二次聚类（r48 Lab，r91h 起进入正式管线）：移植 `tmp/ref/diarization-r2/labels.py`
+ * 的自适应版本。Lab 的 refine / refine_filter 方案与 `local.ts` 的本地转写共用这一份实现，
+ * 口径因此只有一处（ADR-0057）。
  *
  * 步骤：种子（时长 >= 1.5s 且有嵌入）→ BIC 单人守卫 → 平均连接层次聚类（NCC）
  * + silhouette 选 k → 短段「前后最近种子同簇则沿用，否则取质心余弦最大者」。
  */
-import type { DiarizationSegment } from "@video-notes/core";
+import type { DiarizationSegment } from "./sherpa";
 
 export type EmbeddingRow = { start: number; end: number; v: number[] | null };
 
@@ -23,6 +24,12 @@ export type RefineOptions = { seedSeconds?: number; maxK?: number; fallbackCut?:
 
 /** 二次聚类的默认参数；r53 起也是 Lab 分析缓存键的一部分（maxK = 说话人数上限）。 */
 export const REFINE_DEFAULTS: Required<RefineOptions> = { seedSeconds: 1.5, maxK: 12, fallbackCut: 0.65 };
+
+/**
+ * 二次聚类的口径版本。改聚类算法或默认参数（影响落盘说话人）就 +1，
+ * 正式管线与 Lab 的缓存键都带它，旧缓存自然 miss，不会静默沿用旧划分。
+ */
+export const REFINE_VERSION = 1;
 
 const DEFAULT_SEED_SECONDS = REFINE_DEFAULTS.seedSeconds;
 const DEFAULT_MAX_K = REFINE_DEFAULTS.maxK;
@@ -523,4 +530,18 @@ export function refineSegments(
     labels[i] = best;
   }
   return { labels, k: new Set(labels).size, picked, silhouette: silhouetteScore, bicK, seeds: seedIdx.length };
+}
+
+/**
+ * 把二次聚类标签写回分离段：`refineSegments` 的 `labels` 与 `segments` 等长（没有嵌入的短段
+ * 也会得到标签），这里只做一一对应的改写。原数组不改，返回新段。
+ */
+export function applyRefineLabels(
+  segments: readonly DiarizationSegment[],
+  labels: readonly number[],
+): DiarizationSegment[] {
+  if (labels.length !== segments.length) {
+    throw new Error(`二次聚类标签数 ${labels.length} 与分离段数 ${segments.length} 不一致`);
+  }
+  return segments.map((segment, index) => ({ ...segment, speaker: labels[index] ?? segment.speaker }));
 }

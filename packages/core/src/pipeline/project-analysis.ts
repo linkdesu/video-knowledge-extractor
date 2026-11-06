@@ -3,6 +3,8 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "../asr/overlap-dedup";
+import { alignRangeSpeakers, assignStableSpeakerIds } from "../asr/speaker-align";
+import { alignRangeByVoiceprint, voiceprintTable, type RangeVoiceprintDeps } from "./range-voiceprint";
 import { extractAudioRange, probeVideo } from "../core/audio";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
@@ -44,6 +46,10 @@ export type RangeAnalysisInput = {
   asr?: AsrConfig;
   /** 测试注入 ASR 引擎；真实调用方不传。 */
   asrEngine?: AsrEngine;
+  /** 测试注入：声纹映射用的段级嵌入（正式调用方不传，走 CAM++）。 */
+  voiceprintDeps?: RangeVoiceprintDeps;
+  /** 测试注入：跳过 ffmpeg 解码来源媒体，直接给整段参考音频。 */
+  referenceAudio?: { samples: Float32Array; sampleRate: number };
   runToken?: string;
   prompts?: PromptOverrides;
   /** 调用方已持有的运行锁（执行器先取锁，避免同进程二次取锁）；缺省自己取。 */
@@ -68,6 +74,18 @@ function mergeSpeakers(existing: Speaker[], incoming: Speaker[]): Speaker[] {
     merged.push({ ...speaker, color: speaker.color ?? "#6aa9ff" });
   }
   return merged;
+}
+
+/** 本区间已被已有主题覆盖的情况（区间已分析过，或重跑后没有新字幕）：返回可复用的主题记录。 */
+function reusedRangeTopics(data: VideoData, start: number, end: number): RangeAnalysisTopic[] {
+  return data.topics
+    .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
+    .map((topic) => ({
+      id: topic.id,
+      title: topic.title,
+      category: "",
+      lineIds: lineIdsFor(topic, data.transcript.utterances),
+    }));
 }
 
 function freshTopicId(base: string, used: Set<string>): string {
@@ -166,14 +184,7 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       // 不再转写/划主题，也不重复追加字幕与主题
       const existing = data.chunks.find((c) => Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6);
       if (existing !== undefined) {
-        const reusedTopics = data.topics
-          .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
-          .map((topic) => ({
-            id: topic.id,
-            title: topic.title,
-            category: "",
-            lineIds: lineIdsFor(topic, data.transcript.utterances),
-          }));
+        const reusedTopics = reusedRangeTopics(data, start, end);
         logger().info("project", "区间已分析，复用已有结果", { videoId: video.id, start, end, topics: reusedTopics.length });
         return { videoId: video.id, outputDir: video.outputDir, topics: reusedTopics, addedLines: 0 };
       }
@@ -200,16 +211,88 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       });
 
       const previous = data.transcript.utterances;
+      /**
+       * 区间 ASR 的 `speaker-N` 按**本区间**说话时长排名（`assignSpeakers`），不是跨次稳定身份：
+       * 整段里排第二的人只切到他的大段发言时会在区间里排第一。判重前先按「同时间 + 同文本」
+       * 的既有行把局部编号映射回来源视频的稳定身份（#145），映射不了的编号不参与身份判断。
+       */
+      const textAlignment = alignRangeSpeakers(previous, filler.rows);
+      /**
+       * 文本/时间立不了身份的局部簇，用声纹对既有说话人质心做归属（#145 r91j）：
+       * ASR 把相邻两行拼成一条、或端点漂移时会证不出身份，过去按 ADR-0052 直接铸新号，
+       * 真机上 7→8、3→5 的「新人」经 CAM++ 复算全是既有说话人或拼接碎片。
+       * 低余弦且种子不足的簇跟随最近质心，不单独建人；只有余弦不达标且种子够的才允许新人。
+       */
+      const voice = await alignRangeByVoiceprint({
+        existing: previous,
+        incoming: filler.rows,
+        alignment: textAlignment,
+        mediaPath,
+        rangeWavPath: wavPath,
+        rangeStart: start,
+        cacheDir,
+        modelDir,
+        ...(input.voiceprintDeps !== undefined ? { deps: input.voiceprintDeps } : {}),
+        ...(input.referenceAudio !== undefined ? { referenceAudio: input.referenceAudio } : {}),
+      });
+      const alignment = voice.alignment;
+      logger().info("asr", "区间说话人对齐", {
+        videoId: video.id,
+        start,
+        end,
+        localSpeakers: new Set(filler.rows.map((u) => u.speakerId)).size,
+        aligned: [...alignment].map(([local, stable]) => `${local}→${stable}`),
+        textAligned: [...textAlignment].map(([local, stable]) => `${local}→${stable}`),
+        references: voice.references,
+        voiceprint: voiceprintTable(voice.decisions),
+      });
       // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
-      const appended = dropCoveredDuplicates(previous, filler.rows);
+      const dedupedRange = dropCoveredDuplicates(previous, filler.rows, undefined, alignment);
+      /**
+       * 证明不了的局部编号不能直接落盘：它的 `speaker-1` 可能正是整段里的另一个人。
+       * 与既有编号撞车时另铸新号，字幕与弹窗里才不会把两个人显示成同一个名字。
+       */
+      const taken = new Set<string>(data.transcript.speakers.map((s) => s.id));
+      // 旧字幕行里出现过的编号同样占位：说话人表可能缺记录，铸号不能撞上它
+      for (const u of previous) taken.add(u.speakerId);
+      const { rows: appended, minted } = assignStableSpeakerIds(dedupedRange, alignment, taken);
       const utterances = [...previous, ...appended].sort((a, b) => a.start - b.start || a.end - b.end);
-      const speakers = mergeSpeakers(data.transcript.speakers, run.transcript.speakers);
+      // 只在剩下的行里还出现的说话人才登记：整段被映射走的局部编号（先前的 speaker-1）不该留个空壳
+      const usedSpeakers = new Set(appended.map((u) => u.speakerId));
+      const mintedSpeakers: Speaker[] = [...minted].map(([local, fresh]) => ({
+        id: fresh as Speaker["id"],
+        name: `说话人${fresh.slice("speaker-".length)}`,
+        color: run.transcript.speakers.find((s) => s.id === local)?.color ?? "#6aa9ff",
+      }));
+      const speakers = mergeSpeakers(data.transcript.speakers, [
+        ...run.transcript.speakers.filter((s) => usedSpeakers.has(s.id)),
+        ...mintedSpeakers,
+      ]);
       const chunk = { index: data.chunks.length + 1, start, end };
       data.chunks = [...data.chunks.filter((c) => !(Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6)), chunk].sort(
         (a, b) => a.start - b.start,
       );
       data.asrModel = run.modelId;
       data.asrEngine = run.engine;
+
+      /**
+       * 重跑没有带来任何新字幕（整段已转写过、这次转写只重复了已有内容）：不再跑主题分析。
+       * 否则同一段内容会多出一张近同主题卡——真机一次重跑把 7 个主题变成 15 个（#145 QA）。
+       * 区间记录照常落盘，重启后按 `chunks` 复用，不会再次转写。
+       */
+      if (appended.length === 0) {
+        data.transcript = { speakers, utterances };
+        if (data.importedAt === null) data.importedAt = new Date().toISOString();
+        writeVideoData(video.outputDir, data);
+        const reused = reusedRangeTopics(data, start, end);
+        logger().info("project", "区间没有新字幕，复用已有主题", {
+          videoId: video.id,
+          start,
+          end,
+          topics: reused.length,
+        });
+        return { videoId: video.id, outputDir: video.outputDir, topics: reused, addedLines: 0 };
+      }
 
       // 主题只针对本区间：用本区间的字幕作为提示词上下文，段坐标已经是绝对时间
       const corrections = correctionsFor(video.outputDir, "project-analysis");

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "./overlap-dedup";
+import { alignRangeSpeakers } from "./speaker-align";
 
 const row = (start: number, end: number, text: string) => ({ start, end, text });
 
@@ -311,5 +312,137 @@ describe("dropCoveredDuplicates：区间重跑只追加新行", () => {
   test("没有已有字幕时原样返回（首块分析）", () => {
     const incoming = [row(0, 2, "第一句"), row(2, 4, "第二句")];
     expect(dropCoveredDuplicates([], incoming)).toEqual(incoming);
+  });
+});
+
+describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）", () => {
+  test("整段 speaker-2、区间 speaker-1 的同一行：映射后仍是重复，丢掉", () => {
+    const existing = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("映射到另一位稳定说话人、文字也不同：是新发言，保留（身份不决定重复，但决定是不是别人）", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "我不同意这个说法啊。"), speakerId: "speaker-1" }];
+    // 局部 speaker-1 证明是整段的 speaker-2：编号相等不能当身份
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
+  });
+
+  test("映射到另一位稳定说话人、但同文同时：跨次仍不再写第二遍（重跑不是抢话）", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("身份证明不了时按内容判重：同文同时的行不再写第二遍（#145 QA）", () => {
+    // 区间分离出的簇数与整段不同，多数局部编号证不出身份；此时若按「保守保留」放行，
+    // 用户看到的是字幕翻倍 + 确认弹窗建议行重复——身份不决定「是不是重复」，只决定「是不是别人」
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("身份证明不了、文字高度相似且时间重叠：近似行不再追加（复用 #144 重叠判据）", () => {
+    // 真机：#145 QA 第二轮，区间重跑对同一段话给出略有出入的识别结果
+    const existing = [{ ...row(10, 14, "债权和债务是同时继承的。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10.2, 14, "债务是同时继承的。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("近似的两种口子都吃掉：编辑距离相似（新行多一两个字）与包含度足够", () => {
+    // Q 类：包含度 ≥0.8，但新行多一两个字；旧实现「新行更长不判」放过了它
+    const longerIncoming = [
+      { ...row(10, 14, "这你的理解跟你的处境是相对应的。"), speakerId: "speaker-3" },
+    ];
+    expect(
+      dropCoveredDuplicates(longerIncoming, [{ ...row(10, 14, "可以，你的理解跟你的处境是相对应的。"), speakerId: "speaker-1" }], undefined, new Map()),
+    ).toEqual([]);
+    // R 类：包含度不够，但归一化编辑距离只有一字之差
+    const oneCharOff = [{ ...row(20, 24, "你现有多少本金？"), speakerId: "speaker-3" }];
+    expect(
+      dropCoveredDuplicates(oneCharOff, [{ ...row(20, 24, "你现要多少本金？"), speakerId: "speaker-1" }], undefined, new Map()),
+    ).toEqual([]);
+  });
+
+  test("阿拉伯数字或否定不同就不合并（中文数字当识别噪音交给相似度）", () => {
+    // 数值：3 与 5 不是同一句
+    const amount = [{ ...row(30, 34, "预算是3.5万元。"), speakerId: "speaker-3" }];
+    const changed = [{ ...row(30, 34, "预算是3.9万元。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(amount, changed, undefined, new Map())).toEqual(changed);
+    // 否定：意思反了，必须留
+    const negated = [{ ...row(40, 44, "我同意这样处理。"), speakerId: "speaker-3" }];
+    const flipped = [{ ...row(40, 44, "我不同意这样处理。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(negated, flipped, undefined, new Map())).toEqual(flipped);
+    // 中文数字被听错（十六 / 三十六）：同一句话的两次识别，不再写第二遍
+    const numeral = [{ ...row(50, 54, "十六个月的火腿。"), speakerId: "speaker-3" }];
+    const variant = [{ ...row(50, 54, "三十六个月的火腿。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(numeral, variant, undefined, new Map())).toEqual([]);
+  });
+
+  test("近似判据不放宽数值含义：匹配段外的负号仍保留新行", () => {
+    const existing = [{ ...row(10, 14, "收益率是−5%。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10, 14, "收益率是5%。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
+  test("新行比旧行更长：近似判据不吞内容，保留新行", () => {
+    const existing = [{ ...row(10, 14, "今天讨论素材整理。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10, 14, "今天讨论素材整理。以及字幕校对的方法。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
+  test("身份证明不了、文字是新增内容：仍然保留（不因时间重叠误删）", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "我不同意这个说法啊。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
+  test("旧行没有说话人（纯文本）：仍按文本判重，映射缺失不影响", () => {
+    const existing = [row(10, 14, "这个方案可以继续推进。")];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("身份另有端点证据时，重跑拆出来的短句仍按 #144 判重丢掉", () => {
+    const existing = [
+      { ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-2" },
+      { ...row(20, 24, "我的部分已经全部交付。"), speakerId: "speaker-2" },
+    ];
+    const incoming = [
+      { ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-1" },
+      { ...row(4, 8, "记得带身份证。"), speakerId: "speaker-1" },
+    ];
+    const alignment = alignRangeSpeakers(existing, incoming);
+    expect(alignment.get("speaker-1")).toBe("speaker-2");
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("被长句包住的短句：跨次按 #144 的重叠判据算重复（这半句已经在旧行里）", () => {
+    const existing = [{ ...row(0, 10, "预算三百块，明天再决定。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(4, 5.2, "三百块。"), speakerId: "speaker-1" }];
+    const alignment = alignRangeSpeakers(existing, incoming);
+    // 起点差 4 秒，端点对不上：不建立映射；但「三百块」已被旧行完整说出，重跑再写一遍就是重复
+    expect(alignment.size).toBe(0);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+    // 同一次转写内的抢话仍按 #144 原判据（没有映射 = 没有跨次对齐），两行都留
+    expect(dropCoveredDuplicates(existing, incoming, undefined, undefined)).toEqual(incoming);
+  });
+
+  test("映射成立也要过 #144 的数值符号闸：匹配段外的负号仍保留新行", () => {
+    const existing = [{ ...row(0, 10, "−5%是这次的收益率。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(4, 8, "5%是这次的收益率。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
+  });
+
+  test("映射 + 语气词噪音（#144 规则）：组合后仍判重复，新行不重复追加", () => {
+    const existing = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(10, 14, "今天讲一下素材整理的方法啊。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
   });
 });

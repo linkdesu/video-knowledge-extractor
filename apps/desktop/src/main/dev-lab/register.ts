@@ -37,10 +37,10 @@ import {
 } from "./analysis-cache";
 import { evictLabCache, labCacheLimits, removeDuplicateSources, type LabCacheLimits } from "./cache-maintenance";
 import type { LabCachePlan } from "./cache-mode";
+import { refineSegments } from "@video-notes/core";
 import { createLabWorkerHost, type LabRunMessage, type LabWorkerProcess } from "./lab-worker-host";
 import { migrateLegacyEntries } from "./legacy-migrate";
 import { assembleLines, hostClusterCount } from "./lines";
-import { refineSegments } from "./refine";
 import { annotationsPath, isLabSampleId, listSamples, readMarks, readSample, writeMarks } from "./sample-store";
 
 export { devLabEnabled } from "./gate";

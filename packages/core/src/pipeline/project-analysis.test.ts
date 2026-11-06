@@ -522,3 +522,585 @@ describe("两步进度：#142 依赖的事件契约", () => {
     expect(progress.some((event) => event.step === "transcribe")).toBe(true);
   });
 });
+describe("analyzeVideoRange：跨次说话人对齐（#145）", () => {
+  /** 整段按「本次说话总时长」排名，区间只切到另一个人的大段发言：同一个人的编号倒过来。 */
+  function rankInvertingEngine(): AsrEngine {
+    let calls = 0;
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        if (!range) {
+          return {
+            transcript: {
+              speakers: [
+                { id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" },
+                { id: "speaker-2" as SpeakerId, name: "说话人2", color: "#e8764c" },
+              ],
+              // 整段：说话人1 靠大量短句排第一，说话人2 只有一段长发言
+              utterances: [
+                { start: 0.2, end: 1.1, speakerId: "speaker-1" as SpeakerId, text: "我们先看这一期的素材。" },
+                { start: 1.2, end: 2.2, speakerId: "speaker-1" as SpeakerId, text: "然后逐条对一遍字幕。" },
+                { start: 2.2, end: 3.6, speakerId: "speaker-2" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              ],
+            },
+            chunks: [{ index: 1, start: 0, end: 4 }],
+            timings: {},
+            cacheHits: [],
+            engine: "local",
+            modelId: "fake-asr",
+          };
+        }
+        return {
+          transcript: {
+            // 区间里只有这个人的发言：本区间排名把他排成 speaker-1
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: [
+              { start: 0.2, end: 1.6, speakerId: "speaker-1" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              { start: 1.8, end: 2.6, speakerId: "speaker-1" as SpeakerId, text: "字幕校对就按时间轴来。" },
+            ],
+          },
+          chunks: [{ index: 1, start: 0, end: 2 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  test("整段 speaker-2、区间 speaker-1 的同一行只留一行，新行不重复追加", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const engine = rankInvertingEngine();
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const beforeLines = subtitleLinesFrom(loadVideoData(whole.outputDir, { id: whole.videoId as VideoId, title: "" }));
+
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: engine,
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 重复的那一行不追加；真正的新行照常追加
+    expect(range.addedLines).toBe(1);
+    expect(data.transcript.utterances.map((u) => [u.start, u.text])).toEqual([
+      [0.2, "我们先看这一期的素材。"],
+      [1.2, "然后逐条对一遍字幕。"],
+      [2.2, "今天讲一下素材整理的方法。"],
+      [3.8, "字幕校对就按时间轴来。"],
+    ]);
+
+    const lines = subtitleLinesFrom(data);
+    // 一一对应：整段已有的行 id 一个都没变，弹窗的默认建议行不会因为重跑多出一份
+    expect(lines.filter((line) => line.text === "今天讲一下素材整理的方法。")).toHaveLength(1);
+    for (const line of beforeLines) expect(lines.some((l) => l.id === line.id)).toBe(true);
+    expect(new Set(lines.map((line) => line.id)).size).toBe(lines.length);
+    expect(new Set(range.topics[0]?.lineIds ?? []).size).toBe(range.topics[0]?.lineIds.length ?? 0);
+
+    // 对齐后的新行沿用来源视频的稳定身份：这个人整段里是 speaker-2
+    const appended = data.transcript.utterances.find((u) => u.text === "字幕校对就按时间轴来。");
+    expect(appended?.speakerId as string | undefined).toBe("speaker-2");
+    // 局部编号 speaker-1 已被映射走，不该在说话人列表里留下空壳
+    expect(data.transcript.speakers.map((s) => s.id as string).sort()).toEqual(["speaker-1", "speaker-2"]);
+    expect(lines.filter((line) => line.text === "字幕校对就按时间轴来。").map((line) => line.speaker)).toEqual(["说话人2"]);
+  });
+});
+
+describe("analyzeVideoRange：证明不了的局部编号不落盘成别人的身份（#145）", () => {
+  /** 整段两人；区间里冒出第三个人，局部编号撞上整段的 speaker-1。 */
+  function thirdPersonEngine(): AsrEngine {
+    let calls = 0;
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        if (!range) {
+          return {
+            transcript: {
+              speakers: [
+                { id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" },
+                { id: "speaker-2" as SpeakerId, name: "说话人2", color: "#e8764c" },
+              ],
+              utterances: [
+                { start: 0.2, end: 1.1, speakerId: "speaker-1" as SpeakerId, text: "我们先看这一期的素材。" },
+                { start: 1.2, end: 2.2, speakerId: "speaker-1" as SpeakerId, text: "然后逐条对一遍字幕。" },
+                { start: 2.2, end: 3.6, speakerId: "speaker-2" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              ],
+            },
+            chunks: [{ index: 1, start: 0, end: 4 }],
+            timings: {},
+            cacheHits: [],
+            engine: "local",
+            modelId: "fake-asr",
+          };
+        }
+        return {
+          transcript: {
+            // 局部 speaker-1 是本区间里说话最多的那个人（整段的 speaker-2），
+            // 局部 speaker-2 是刚进来的第三个人：他与整段任何行都对不上，证明不了身份
+            speakers: [
+              { id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" },
+              { id: "speaker-2" as SpeakerId, name: "说话人2", color: "#e8764c" },
+            ],
+            utterances: [
+              { start: 0.2, end: 1.6, speakerId: "speaker-1" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              { start: 1.6, end: 1.9, speakerId: "speaker-1" as SpeakerId, text: "字幕校对就按时间轴来。" },
+              { start: 0.5, end: 1.5, speakerId: "speaker-2" as SpeakerId, text: "我是刚进来的第三个人。" },
+            ],
+          },
+          chunks: [{ index: 1, start: 0, end: 2 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  test("区间新人的局部编号与整段既有编号撞车：另铸新号，不并进别人的身份", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const engine = thirdPersonEngine();
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: engine,
+      // 合成静音上算不出可信声纹：显式给「没有嵌入」，验证的是「证不出来 → 铸号」这条
+      voiceprintDeps: { embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) => spans.map((span) => ({ ...span, v: null })) },
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    const third = data.transcript.utterances.find((u) => u.text === "我是刚进来的第三个人。");
+    const followedUp = data.transcript.utterances.find((u) => u.text === "字幕校对就按时间轴来。");
+    // 已证明的发言仍归整段的 speaker-2
+    expect(followedUp?.speakerId as string | undefined).toBe("speaker-2");
+    // 证明不了的新人不能落到 speaker-1 / speaker-2 头上
+    expect(third?.speakerId as string | undefined).not.toBe("speaker-1");
+    expect(third?.speakerId as string | undefined).not.toBe("speaker-2");
+    const names = data.transcript.speakers.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(data.transcript.speakers.map((s) => s.id as string)).toContain(third?.speakerId as string);
+    // 重复行仍然只留一份
+    expect(range.addedLines).toBe(2);
+  });
+});
+
+describe("analyzeVideoRange：区间全是新内容（对齐无证据）", () => {
+  test("映射为空时新行全部保留，说话人正常登记且不与既有身份混名", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    let calls = 0;
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: range
+              ? [{ start: 0.2, end: 1.5, speakerId: "speaker-1" as SpeakerId, text: "这一段全新的内容没有旧行可以对上。" }]
+              : [{ start: 0.2, end: 1.5, speakerId: "speaker-1" as SpeakerId, text: "我们先看这一期的素材。" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 2 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: engine,
+      voiceprintDeps: { embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) => spans.map((span) => ({ ...span, v: null })) },
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 时间对不上（整段 0.2–1.5、区间 2.2–3.5），文本也不同：没有证据就保留
+    expect(range.addedLines).toBe(1);
+    expect(data.transcript.utterances.map((u) => u.text)).toEqual([
+      "我们先看这一期的素材。",
+      "这一段全新的内容没有旧行可以对上。",
+    ]);
+    const names = data.transcript.speakers.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(data.transcript.speakers).toHaveLength(2);
+  });
+});
+
+describe("analyzeVideoRange：区间分离簇数与整段不同（#145 QA）", () => {
+  /** 整段 3 人；区间只分出 1 个簇（真实分离模型在短音频上就是这样把多人并进一个编号）。 */
+  function mergedClusterEngine(): AsrEngine {
+    let calls = 0;
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        if (!range) {
+          return {
+            transcript: {
+              speakers: [
+                { id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" },
+                { id: "speaker-2" as SpeakerId, name: "说话人2", color: "#e8764c" },
+                { id: "speaker-3" as SpeakerId, name: "说话人3", color: "#5faa55" },
+              ],
+              utterances: [
+                { start: 0.2, end: 1.1, speakerId: "speaker-1" as SpeakerId, text: "我们先看这一期的素材。" },
+                { start: 1.2, end: 2.5, speakerId: "speaker-2" as SpeakerId, text: "然后逐条对一遍字幕。" },
+                { start: 4.2, end: 6.6, speakerId: "speaker-3" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+                { start: 6.8, end: 7.9, speakerId: "speaker-2" as SpeakerId, text: "字幕校对就按时间轴来。" },
+              ],
+            },
+            chunks: [{ index: 1, start: 0, end: 8 }],
+            timings: {},
+            cacheHits: [],
+            engine: "local",
+            modelId: "fake-asr",
+          };
+        }
+        return {
+          transcript: {
+            // 6 个整段簇被并成 1 个局部编号：它的行分别来自整段的两个人，身份证不出来
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: [
+              { start: 0.2, end: 2.6, speakerId: "speaker-1" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              { start: 2.8, end: 3.9, speakerId: "speaker-1" as SpeakerId, text: "字幕校对就按时间轴来。" },
+            ],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  test("同一句话被重跑写出第二遍：按内容判重，不追加行、不加说话人、不添主题", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const engine = mergedClusterEngine();
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 0, end: 8 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    expect(range.addedLines).toBe(0);
+    expect(data.transcript.utterances.map((u) => u.text)).toEqual([
+      "我们先看这一期的素材。",
+      "然后逐条对一遍字幕。",
+      "今天讲一下素材整理的方法。",
+      "字幕校对就按时间轴来。",
+    ]);
+    // 说话人 3 位不变：没有新增内容就不该铸新号
+    expect(data.transcript.speakers).toHaveLength(3);
+    // 主题不变：区间没有新内容就不再跑主题分析，不重复建卡、也不产生新的待确认主题
+    expect(data.topics).toHaveLength(1);
+    expect(range.topics).toEqual([]);
+
+    const lines = subtitleLinesFrom(data);
+    const contents = lines.filter((line) => line.start >= 4 && line.start < 8).map((line) => `${line.start}|${line.text}`);
+    expect(new Set(contents).size).toBe(contents.length);
+  });
+});
+
+describe("analyzeVideoRange：声纹把区间局部簇归回既有说话人（#145 r91j）", () => {
+  /** 同一套向量：base 决定「像谁」。 */
+  function voice(base: number): number[] {
+    const out = new Array<number>(8).fill(0);
+    out[base] = 1;
+    return out;
+  }
+
+  /** 让两个单位向量的余弦等于 target。 */
+  function blend(base: number, target: number): number[] {
+    const a = voice(base);
+    return a.map((value, i) => (i === base ? target : i === (base + 1) % 8 ? Math.sqrt(Math.max(0, 1 - target * target)) : value));
+  }
+
+  test("没有嵌入模型（CI / 未装模型）：声纹映射跳过，区间分析照常完成", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    let calls = 0;
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: range
+              ? [{ start: 0.2, end: 4.2, speakerId: "speaker-1" as SpeakerId, text: "区间里的一句话。" }]
+              : [{ start: 0.2, end: 3.2, speakerId: "speaker-1" as SpeakerId, text: "整段原有的一句话。" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+      voiceprintDeps: {
+        embedSpans: () => {
+          throw new Error("缺少模型文件：speaker-embedding");
+        },
+      },
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 退回文本对齐 + 铸号：分析不失败，新行照常落盘
+    expect(range.addedLines).toBe(1);
+    expect(data.transcript.utterances).toHaveLength(2);
+  });
+
+  test("真实新人：声纹不像任何既有说话人且种子够 → 仍然建新号", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    let calls = 0;
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: range
+              ? [{ start: 0.2, end: 4.2, speakerId: "speaker-1" as SpeakerId, text: "区间里真正的新人开口。" }]
+              : [{ start: 0.2, end: 3.2, speakerId: "speaker-1" as SpeakerId, text: "整段原有的一句话。" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+    let call = 0;
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+      voiceprintDeps: {
+        embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) =>
+          // 第一次调用是既有说话人参考（向量基 0），第二次是区间局部簇（向量基 4，余弦 0）
+          spans.map((span) => ({ start: span.start, end: span.end, v: voice(call++ === 0 ? 0 : 4) })),
+      },
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 余弦 0 且区间行 4 秒 ≥ 3 秒种子闸：允许建新号，旧编号不受影响
+    expect(data.transcript.speakers.map((s) => s.id as string)).toEqual(["speaker-1", "speaker-2"]);
+    expect(data.transcript.utterances.find((u) => u.text === "区间里真正的新人开口。")?.speakerId as string).toBe("speaker-2");
+  });
+
+  test("区间局部编号与既有行对不上文本，但声纹像同一个人：不铸新号", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    let calls = 0;
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: range
+              ? [{ start: 0.2, end: 3.2, speakerId: "speaker-1" as SpeakerId, text: "区间里重新识别的一句话。" }]
+              : [{ start: 0.2, end: 3.2, speakerId: "speaker-1" as SpeakerId, text: "整段原有的一句话。" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+    // 参考（整段）与区间（局部）嵌入都是同一个人：cos=0.86
+    const embedCalls: number[] = [];
+    const voiceprintDeps = {
+      embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) => {
+        embedCalls.push(spans.length);
+        return spans.map((span) => ({ start: span.start, end: span.end, v: blend(0, 0.86) }));
+      },
+    };
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+      voiceprintDeps,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 没有铸新号：说话人仍是整段那 1 位
+    expect(data.transcript.speakers.map((s) => s.id as string)).toEqual(["speaker-1"]);
+    expect(data.transcript.utterances.find((u) => u.text === "区间里重新识别的一句话。")?.speakerId as string).toBe("speaker-1");
+    expect(embedCalls.length).toBeGreaterThanOrEqual(2);
+  });
+});

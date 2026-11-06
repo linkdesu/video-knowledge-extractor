@@ -3,6 +3,8 @@
  * timings 与原 `transcribeVideo` 一字不改，只多返回 `engine`/`modelId`。
  */
 import { assignSpeakers, buildSpans, splitCrosstalk, splitSpan } from "./utterances";
+import { applyRefineLabels, REFINE_DEFAULTS, REFINE_VERSION, refineSegments, type EmbeddingRow, type RefineResult } from "./refine";
+import { extractSegmentEmbeddings, SPEAKER_EMBED_MIN_SECONDS, type SpeakerEmbeddingInput } from "./embeddings";
 import { ASR_PADDING_SECONDS, DIARIZATION_TUNING, createTranscriber, readWav, resolveModelPaths } from "./sherpa";
 import type { DiarizationSegment, Transcriber } from "./sherpa";
 import { detectSilences, planChunks } from "../core/audio";
@@ -18,7 +20,16 @@ export type LocalEngine = {
   run(input: AsrInput): Promise<AsrRun>;
 };
 
-export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngine {
+/**
+ * 测试注入点：转写器（分离 + 解码）与段级嵌入。正式调用方不传，一律走 sherpa/CAM++。
+ * 二次聚类的接线因此可以在没有模型文件的机器上验到「按 refine 标签重排说话人」。
+ */
+export type LocalEngineHooks = {
+  transcriber?: Transcriber;
+  embeddings?: (input: Omit<SpeakerEmbeddingInput, "modelPath">) => EmbeddingRow[];
+};
+
+export function createLocalEngine({ modelDir, hooks }: { modelDir: string; hooks?: LocalEngineHooks }): LocalEngine {
   return {
     id: "local",
     modelId: ASR_MODEL_ID,
@@ -46,6 +57,7 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
 
       let transcriber: Transcriber | undefined;
       const getTranscriber = async (): Promise<Transcriber> => {
+        if (hooks?.transcriber !== undefined) return hooks.transcriber;
         if (transcriber === undefined) {
           try {
             // 加载失败由 step 先记录完整 error 与 stack，随后按原包装消息抛出
@@ -94,8 +106,36 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
         cacheHit,
       });
 
+      /**
+       * 二次聚类（r91h，ADR-0057）：sherpa 原始簇只按阈值切，短音频与区间重跑里同一个人
+       * 常被切成两三个簇，跨次对齐因此证不出身份、字幕与说话人一起膨胀。Lab 的 refine
+       * 方案一直是这个问题的正解，但过去只挂在验收台；这里把同一份 `refineSegments`
+       * 接到正式管线，Lab 与正式转写的说话人划分从此同源。
+       */
+      const refined = await logger().step("diarization", "二次聚类", () =>
+        refineSpeakerSegments(segments, {
+          samples,
+          sampleRate,
+          resolveModelPath: () => resolveModelPaths(modelDir).embedding,
+          extract: hooks?.embeddings,
+          cacheDir: input.cacheDir,
+          audioHash: sha256(allBytes),
+          cacheHits,
+          timings,
+        }),
+      );
+      const labelled = refined.segments;
+      logger().info("diarization", "二次聚类完成", {
+        sherpaK: refined.sherpaK,
+        refineK: refined.result.k,
+        picked: refined.result.picked,
+        silhouette: refined.result.silhouette,
+        seeds: refined.result.seeds,
+        cacheHit: refined.cacheHit,
+      });
+
       const { spans, interjections } = splitCrosstalk(
-        buildSpans(segments).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS)),
+        buildSpans(labelled).flatMap((span) => splitSpan(span, silences, ASR_MAX_UTTERANCE_SECONDS)),
       );
       // 插话（#114）单独成行但不参与说话人投票：有内容的靠 filterFillerUtterances 之前的解码留成一行，
       // 纯语气词的由同一条过滤隐藏。
@@ -196,4 +236,72 @@ export function createLocalEngine({ modelDir }: { modelDir: string }): LocalEngi
       return { transcript, chunks, timings, cacheHits, engine: "local", modelId: ASR_MODEL_ID };
     },
   };
+}
+
+type RefineStageInput = {
+  samples: Float32Array;
+  sampleRate: number;
+  /** 只在真的要走 CAM++ 时求值（测试注入嵌入时不解析模型路径）。 */
+  resolveModelPath: () => string;
+  /** 测试注入：替代 CAM++ 抽取。 */
+  extract?: (input: Omit<SpeakerEmbeddingInput, "modelPath">) => EmbeddingRow[];
+  cacheDir: string;
+  audioHash: string;
+  cacheHits: string[];
+  timings: Record<string, number>;
+};
+
+/**
+ * 二次聚类与它的两级缓存（ADR-0057）：
+ * - 嵌入按「音频 + 嵌入模型 + 最短段时长」缓存，二次聚类按「音频 + 分离段 + 口径版本」缓存；
+ * - 聚类参数（`REFINE_DEFAULTS`）与 `REFINE_VERSION` 都进键：改算法或参数即 miss，绝不静默沿用
+ *   旧的说话人划分；
+ * - 聚类缓存命中时不重算嵌入（嵌入只为聚类服务）。
+ */
+async function refineSpeakerSegments(
+  segments: readonly DiarizationSegment[],
+  input: RefineStageInput,
+): Promise<{ segments: DiarizationSegment[]; result: RefineResult; sherpaK: number; cacheHit: boolean }> {
+  const sherpaK = new Set(segments.map((segment) => segment.speaker)).size;
+  const refineKey = cacheKey("transcribe", {
+    kind: "refine",
+    audio: input.audioHash,
+    segments: hashJson(segments),
+    version: REFINE_VERSION,
+    defaults: JSON.stringify(REFINE_DEFAULTS),
+    embedMinSeconds: SPEAKER_EMBED_MIN_SECONDS,
+  });
+  const cached = readCache<RefineResult>(input.cacheDir, refineKey);
+  if (cached !== undefined) {
+    input.cacheHits.push("refine");
+    logger().info("asr", "转写缓存命中", { kind: "refine" });
+    return { segments: applyRefineLabels(segments, cached.labels), result: cached, sherpaK, cacheHit: true };
+  }
+
+  const e0 = performance.now();
+  const embedKey = cacheKey("transcribe", {
+    kind: "embeddings",
+    audio: input.audioHash,
+    embedding: "campplus-zh",
+    minSeconds: SPEAKER_EMBED_MIN_SECONDS,
+  });
+  let embeddings = readCache<EmbeddingRow[]>(input.cacheDir, embedKey);
+  if (embeddings === undefined) {
+    const request = { samples: input.samples, sampleRate: input.sampleRate, segments };
+    embeddings =
+      input.extract !== undefined
+        ? input.extract(request)
+        : extractSegmentEmbeddings({ ...request, modelPath: input.resolveModelPath() });
+    writeCache(input.cacheDir, embedKey, embeddings);
+  } else {
+    input.cacheHits.push("embeddings");
+    logger().info("asr", "转写缓存命中", { kind: "embeddings" });
+  }
+  input.timings.embed = Math.round((performance.now() - e0) / 10) / 100;
+
+  const r0 = performance.now();
+  const result = refineSegments([...segments], embeddings);
+  writeCache(input.cacheDir, refineKey, result);
+  input.timings.refine = Math.round((performance.now() - r0) / 10) / 100;
+  return { segments: applyRefineLabels(segments, result.labels), result, sherpaK, cacheHit: false };
 }
