@@ -2414,6 +2414,13 @@ textarea {
 .vn-topic-line:hover {
   background: rgba(255, 255, 255, 0.05);
 }
+.vn-topic-line:has(input:checked) {
+  border-color: color-mix(in srgb, var(--vn-violet) 40%, transparent);
+  background: color-mix(in srgb, var(--vn-violet) 8%, transparent);
+}
+.vn-topic-line:has(input:checked):hover {
+  background: color-mix(in srgb, var(--vn-violet) 12%, transparent);
+}
 .vn-topic-line:focus-within {
   outline: 2px solid var(--vn-violet);
   outline-offset: -2px;
@@ -2464,19 +2471,27 @@ textarea {
   padding-top: 16px;
 }
 
-/* 窄屏（含 390px）：时间 / 说话人 / 文本纵向排，横排会把文本列压到不可读。 */
+/* 窄屏（含 390px）：时间与说话人共用元信息行，文本独占下一行，避免三行元信息稀释正文。 */
 @media (max-width: 699px) {
   .vn-topic-line {
-    grid-template-columns: auto minmax(0, 1fr);
+    /* 说话人列上限 max-content 但允许收缩：超长说话人名换行，不把行顶出弹窗。 */
+    grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr);
     gap: 4px 10px;
   }
   .vn-topic-line input {
-    grid-row: 1 / 4;
+    grid-row: 1 / 3;
   }
-  .vn-topic-line time,
-  .vn-topic-line span {
+  .vn-topic-line time {
     grid-column: 2;
-    white-space: normal;
+    grid-row: 1;
+  }
+  .vn-topic-line-speaker {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .vn-topic-line-text {
+    grid-column: 2 / 4;
+    grid-row: 2;
   }
 }
 
