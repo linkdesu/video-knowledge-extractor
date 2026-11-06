@@ -12,7 +12,7 @@ Two user surfaces, one repo:
 
 The harness is the repo-local helper `.omp/skills/verify-video-notes/scripts/verify.ts`. It builds the desktop app, starts an isolated instance, and drives real mouse, keyboard and drag input over CDP. Every proof artifact lands in `tmp/verify/<run>/` and survives teardown.
 
-Two targets are supported (r41): macOS Apple Silicon, the default (no `--target`), and the Windows 11 real machine (`--target win-gamepc`; ssh host `gamepc`, machine `Link-PC-MKII`, user `xieal`). The Windows path needs no RustDesk and no remote GUI session: screenshots and UI driving are pure CDP over a local SSH tunnel.
+Two targets are supported (r41): macOS Apple Silicon, the default (no `--target`), and the Windows 11 real machine (`--target win-gamepc`; ssh host `ether-gamepc`, user `ether`). The Windows path needs no RustDesk and no remote GUI session: screenshots and UI driving are pure CDP over a local SSH tunnel.
 
 ## Launch
 
@@ -26,7 +26,7 @@ ls /Users/link/Documents/video-notes/models   # ~1.1 GB of local ASR models, req
 # Files put into the model directory while the app runs are usable after one 检测本地模型 click (r38).
 ```
 
-**Test video rule (per platform, absolute).** Mac runs use only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); Windows runs use only videos under `C:\Users\xieal\Documents\video-notes\` (for example `C:\Users\xieal\Documents\video-notes\short-30s.mp4`, `C:\Users\xieal\Documents\video-notes\测试视频 1.mp4`). Never a video from another directory.
+**Test video rule (per platform, absolute).** Mac runs use only videos under `/Users/link/Documents/video-notes/` (for example `/Users/link/Documents/video-notes/【24年最有价值的一期视频】聊聊高频接针跟截面套利，并开源趋势网格策略，感谢2024大家的陪伴和支持.mp4`); Windows runs use only videos under `C:\Users\ether\Documents\video-notes\` (for example `C:\Users\ether\Documents\video-notes\short-30s.mp4`). Never a video from another directory.
 
 The `vnote` CLI resolves its LLM config from environment variables only (`VNOTE_LLM_BASE_URL` / `IDEALSOFT_API_URL`, `VNOTE_LLM_API_KEY` / `IDEALSOFT_API_KEY`), read from the shell and from `.env` in the cwd and the notes root.
 
@@ -91,18 +91,18 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts up --empty-settings
 Every round that modifies application or core code **must**:
 
 1. **Bump the version** across all four workspace manifests (`package.json`, `apps/desktop/package.json`, `apps/cli/package.json`, `packages/core/package.json`) relative to `origin/main`. The sidebar brand header renders `[data-testid=app-version]` (`v<version>`), and `doctor` asserts `window.vnote.settings().appVersion === apps/desktop/package.json#version`.
-2. **Reinstall the built app on both Mac and Windows (`gamepc`)** via `bun run install:local` so the user can launch the app directly from `/Applications/Video Notes.app` on macOS or the Desktop/Start Menu `Video Notes` shortcut (`D:\code\video-notes\app\Video Notes.exe`) on Windows `gamepc` for final acceptance:
+2. **Reinstall the built app on both Mac and Windows (`ether-gamepc`)** via `bun run install:local` so the user can launch the app directly from `/Applications/Video Notes.app` on macOS or the Desktop/Start Menu `Video Notes` shortcut (`C:\code\video-notes\app\Video Notes.exe`) on Windows `ether-gamepc` for final acceptance:
 
 ```bash
 # Verify version bump against origin/main, build & install macOS /Applications/Video Notes.app,
-# and silently install the matching Windows NSIS setup.exe onto gamepc (D:\code\video-notes\app)
+# and silently install the matching Windows NSIS setup.exe onto ether-gamepc (C:\code\video-notes\app)
 bun run install:local --check-bump-against origin/main
 ```
 
 `bun run install:local` verifies:
 - All 4 `package.json` files share the same semver and (with `--check-bump-against`) are strictly greater than the previous version;
 - macOS `/Applications/Video Notes.app` has `CFBundleShortVersionString === <version>`, quarantine cleared (`xattr -cr`), without touching macOS Keychain (`safeStorage` removed in r44);
-- Windows `gamepc` has any running `Video Notes.exe` stopped before NSIS overwrite, `D:\code\video-notes\app\Video Notes.exe` installed, Desktop & Start Menu `.lnk` shortcuts pointing to `D:\code\video-notes\app\Video Notes.exe`, and `Uninstall Video Notes.exe` `ProductVersion`, Uninstall Registry `DisplayVersion`, `resources\app.asar` version, and the installed exe's own `VersionInfo.FileVersion` / `ProductVersion` all matching `<version>` (r64 — the exe properties page is what a user reads; the setup exe's FileVersion is printed for the report only).
+- Windows `ether-gamepc` has any running `Video Notes.exe` stopped before NSIS overwrite, `C:\code\video-notes\app\Video Notes.exe` installed, Desktop & Start Menu `.lnk` shortcuts pointing to `C:\code\video-notes\app\Video Notes.exe`, and `Uninstall Video Notes.exe` `ProductVersion`, Uninstall Registry `DisplayVersion`, `resources\app.asar` version, and the installed exe's own `VersionInfo.FileVersion` / `ProductVersion` all matching `<version>` (r64 — the exe properties page is what a user reads; the setup exe's FileVersion is printed for the report only).
 
 ### Packaged app
 
@@ -128,7 +128,7 @@ A packaged run proves the app *works*; it does not prove the app *starts*. r48 s
 bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts --runs 10 \
   --app "apps/desktop/release/Video Notes-darwin-arm64/Video Notes.app" --run r49-fixed-coldstart
 bun .omp/skills/verify-video-notes/scripts/packaged-launch.ts --target win-gamepc \
-  --app "D:\code\video-notes\app\Video Notes.exe" --run r49-win-coldstart
+  --app "C:\code\video-notes\app\Video Notes.exe" --run r49-win-coldstart
 ```
 
 It launches the bundle N times, each with a fresh `VNOTE_HOME`/`VNOTE_USER_DATA` under `tmp/verify-state/<run>/launch-<i>/` (never inside the evidence tree), and requires every launch to reach `readyState === "complete"`, a non-empty `#root`, `[data-testid=nav-library]`, and `settings().appVersion` equal to `apps/desktop/package.json#version`. Each `launch-<i>.json` records the four assertion booleans under `checks`; `launch-<i>.png` / `.aria.txt` / `.json` plus `summary.json` (with `passed`, `failed` and a `count` such as `"10/10"`) land in `tmp/verify/<run>/` on both targets — the Windows screenshots and aria trees are copied in from `verify.ts drive shot` / `drive snapshot`. Exit code 1 if any launch is blank or missing evidence. Run it after `bun run package:mac` and again after `bun run install:local`. Recipe, negative control and gotchas: [features/packaged-launch.md](./features/packaged-launch.md).
@@ -147,13 +147,13 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 
 ### Evidence hygiene (r50)
 
-`tmp/verify/` holds evidence only. userData — `settings.json` plus `secrets.bin`, the plaintext LLM key — lives outside it in `tmp/verify-state/<run>/user-data` (Windows: `D:\code\video-notes\verify-state\<run>\user-data`), because a run's evidence is copied into reports and kept for months.
+`tmp/verify/` holds evidence only. userData — `settings.json` plus `secrets.bin`, the plaintext LLM key — lives outside it in `tmp/verify-state/<run>/user-data` (Windows: `C:\code\video-notes\verify-state\<run>\user-data`), because a run's evidence is copied into reports and kept for months.
 
 - `up`, `down`, `doctor` and the standalone `secrets-gate` command all scan the evidence tree for `secrets.bin`, `secrets.pending`, `secrets.bin.legacy-*` and `secrets.bin.tmp-*` **and** match file contents against the private `apiKey` (r60: a renamed or copied key file still leaks the value); an unreadable directory is reported as a failure instead of "clean", a hit is a hard failure that prints every path (never any value) and changes nothing (deleting a key file is the operator's call). `up` scans before it creates or launches anything, so a dirty tree never leaves an orphan process.
-- `up --user-data` refuses a directory inside `tmp/verify` (symlinks resolved), and `--user-data` on `--target win-gamepc` refuses a path inside `D:\code\video-notes\verify` after normalizing separators, `.`/`..` and case; `seed-config` applies the same rule per target, so the gate cannot be defeated by pointing userData back into the evidence tree.
+- `up --user-data` refuses a directory inside `tmp/verify` (symlinks resolved), and `--user-data` on `--target win-gamepc` refuses a path inside `C:\code\video-notes\verify` after normalizing separators, `.`/`..` and case; `seed-config` applies the same rule per target, so the gate cannot be defeated by pointing userData back into the evidence tree.
 - A leftover default userData directory is refused by `up` rather than inherited (`--empty-settings` would silently stop being empty); `down --purge` removes `tmp/verify-state/<run>` (and the remote `verify-state\<run>`) with the evidence.
 - `up` re-checks after the app is ready on both targets (win throws into the cleanup path, mac stops the process tree, since the app and tunnel are live) and `down` re-checks after the prune; a win run's pulled `win/` tree is covered by the same scan.
-- Remote residue is gated too (r60): `up --target win-gamepc` scans `D:\code\video-notes\verify` for historical key files before it writes anything (an unreadable remote directory fails as well), and `down` never pulls a remote key file — it lists it and fails so the operator deletes it on the box.
+- Remote residue is gated too (r60): `up --target win-gamepc` scans `C:\code\video-notes\verify` for historical key files before it writes anything (an unreadable remote directory fails as well), and `down` never pulls a remote key file — it lists it and fails so the operator deletes it on the box.
 - Cleanup only acts inside the two roots: `down` / `down --purge` refuse a `state.json` whose `runDir` (or symlinked default state directory) resolves outside `tmp/verify` / `tmp/verify-state`, and a refusal happens before anything is deleted or written.
 - Historical runs from before r50 keep their `user-data/` where it is: `secrets-gate` will report them until they are deleted (`down --run <id> --purge`). Recipe and gotchas: [features/evidence-hygiene.md](./features/evidence-hygiene.md).
 
@@ -161,21 +161,21 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts down
 
 Preconditions, once per machine (r41):
 
-- `ssh` from the mac reaches host `gamepc` (machine `Link-PC-MKII`, user `xieal`, Windows 11); `ssh gamepc "pwsh -NoProfile -Command exit"` succeeds.
-- On the box: `D:\code\video-notes` with `app\`, `installer\` and `verify\` (remote run dirs land in `verify\<runId>\`); local ASR models at `C:\Users\xieal\Documents\video-notes\models`; test videos at `C:\Users\xieal\Documents\video-notes\` (the test-video rule above).
-- A fresh box installs the app with `up --target win-gamepc --installer <path>`: a Mac path is uploaded with `scp` into `D:\code\video-notes\installer\` first, a `D:\...` path is used in place (assumed already on the box), and either form runs the NSIS installer silently into the install directory (default `D:\code\video-notes\app`; `--install-dir <WINPATH>` overrides it, the `/D=` stays last and unquoted so a Chinese-plus-space target like `C:\Users\xieal\Desktop\新建文件夹\Video Notes` installs cleanly; `bun run package:win` produces `Video Notes-<version>-setup.exe`). The executable resolves as `<install-dir>\Video Notes.exe` and `state.json` records `installDir` plus that resolved `remoteApp`; `doctor` and `down` work off the recorded executable. `--app <win exe path>` launches an existing executable and is mutually exclusive with `--installer`; with neither flag, `up` drives the already-installed `<install-dir>\Video Notes.exe` (default `D:\code\video-notes\app`).
+- `ssh` from the mac reaches host `ether-gamepc` (user `ether`, Windows 11); `ssh ether-gamepc "pwsh -NoProfile -Command exit"` succeeds.
+- On the box: `C:\code\video-notes` with `app\`, `installer\` and `verify\` (remote run dirs land in `verify\<runId>\`); local ASR models at `C:\Users\ether\Documents\video-notes\models`; test videos at `C:\Users\ether\Documents\video-notes\` (the test-video rule above).
+- A fresh box installs the app with `up --target win-gamepc --installer <path>`: a Mac path is uploaded with `scp` into `C:\code\video-notes\installer\` first, a `D:\...` path is used in place (assumed already on the box), and either form runs the NSIS installer silently into the install directory (default `C:\code\video-notes\app`; `--install-dir <WINPATH>` overrides it, the `/D=` stays last and unquoted so a Chinese-plus-space target like `C:\Users\ether\Desktop\新建文件夹\Video Notes` installs cleanly; `bun run package:win` produces `Video Notes-<version>-setup.exe`). The executable resolves as `<install-dir>\Video Notes.exe` and `state.json` records `installDir` plus that resolved `remoteApp`; `doctor` and `down` work off the recorded executable. `--app <win exe path>` launches an existing executable and is mutually exclusive with `--installer`; with neither flag, `up` drives the already-installed `<install-dir>\Video Notes.exe` (default `C:\code\video-notes\app`).
 - The launcher is `launch.ps1`, written as UTF-8 **with BOM**, and the scheduled-task action is pure ASCII: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<remoteRunDir>\launch.ps1"`. A `.cmd` would garble a Chinese path (cmd.exe reads it in the OEM code page); the BOM'd `.ps1` decodes it, and the task action itself never carries non-ASCII bytes. The script sets `NO_PROXY=*`, empties the proxy variables, sets `VNOTE_HOME` / `VNOTE_USER_DATA` / `VNOTE_MODEL_DIR`, and launches the app in the foreground with stdout+stderr to `app.log`. The r42 gate: install into the Chinese-plus-space directory above and run at least one pure-audio journey end to end; the recipe and the format matrix are in [features/windows-build.md](./features/windows-build.md) and [features/media-formats.md](./features/media-formats.md).
 
 ```bash
-bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "D:\code\video-notes\installer\r40-Video-Notes-0.1.0-setup.exe"
+bun .omp/skills/verify-video-notes/scripts/verify.ts up --target win-gamepc --installer "C:\code\video-notes\installer\Video Notes-<version>-setup.exe"
 ```
 
 What `up` does on the box (r41):
 
-1. Runs the installer (when given, into `--install-dir`, default `D:\code\video-notes\app`) or resolves the installed exe (`<install-dir>\Video Notes.exe`, or the `--app` path).
+1. Runs the installer (when given, into `--install-dir`, default `C:\code\video-notes\app`) or resolves the installed exe (`<install-dir>\Video Notes.exe`, or the `--app` path).
 2. Writes `launch.ps1` (UTF-8 with BOM) into the run dir and starts the app in interactive Session 1 through a one-shot scheduled task `VNoteVerify_<runId>` whose action is the pure-ASCII `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <run>\launch.ps1`; `state.json.pid` holds the remote Windows pid.
 3. The launcher carries `NO_PROXY=*` with empty `HTTP_PROXY` / `HTTPS_PROXY` into the process environment, because Surge on that box intercepts `127.0.0.1` and answers 503; the mac side neutralises its own proxy env for the same reason.
-4. Opens the local SSH tunnel `ssh -N -L <port>:127.0.0.1:<port> gamepc` and records the tunnel pid. No RustDesk, no remote GUI session: screenshots and UI driving are CDP (`Page.captureScreenshot`, `Accessibility.getFullAXTree`, `Input.*`, `Runtime.evaluate`) through that tunnel.
+4. Opens the local SSH tunnel `ssh -N -L <port>:127.0.0.1:<port> ether-gamepc` and records the tunnel pid. No RustDesk, no remote GUI session: screenshots and UI driving are CDP (`Page.captureScreenshot`, `Accessibility.getFullAXTree`, `Input.*`, `Runtime.evaluate`) through that tunnel.
 5. Writes `tmp/verify/<run>/state.json`, which also records `target`, `sshHost`, `remoteRunDir`, `remoteHome`, `remoteUserData`, `remoteModelDir`, `remoteAppLog`, `remoteApp`, `installDir` (installer runs only), `sshTunnelPid`, `scheduledTask`; `pid` holds the remote Windows pid.
 
 Windows evidence lives in `tmp/verify/<run>/win/` (the contents, and the `stoppedAt` copy of `state.json`, are covered in Evidence).
@@ -238,7 +238,7 @@ $V shot glossary-proof                     # -> <run>/glossary-proof.png
 $V snapshot glossary-proof                 # -> <run>/glossary-proof.aria.txt (accessibility tree)
 $V log 60                                  # tail <run>/app.log
 # On a win-gamepc run (r41) the same names land under <run>/win/ (`shot` -> <run>/win/<name>.png, `snapshot` -> <run>/win/<name>.aria.txt), `log` tails the remote `app.log` plus `<remoteHome>\logs\*.log`, and `drop` takes a Windows path instead:
-$V drop 'C:\Users\xieal\Documents\video-notes\short-30s.mp4'   # validated to exist remotely; the untouched Windows path is passed to the drag event
+$V drop 'C:\Users\ether\Documents\video-notes\short-30s.mp4'   # validated to exist remotely; the untouched Windows path is passed to the drag event
 $V clipboard                               # OS clipboard: `pbpaste` on mac, the app's renderer (`navigator.clipboard.readText()`) on win
 $V clipboard --save tmp/verify/<run>/win/clipboard.txt   # default: <run>/clipboard.txt on mac, <run>/win/clipboard.txt on win
 ```
@@ -351,7 +351,7 @@ bun .omp/skills/verify-video-notes/scripts/verify.ts runs
 
 | Command | Purpose |
 |---|---|
-| `up` | build + launch isolated Electron, wait for usable renderer (`--target <mac\|win-gamepc>`, default `mac`; win extras `--installer` / `--app` (mutually exclusive) / `--install-dir` (default `D:\code\video-notes\app`; ignored with `--app`) / `--ssh-host`, default `gamepc`) |
+| `up` | build + launch isolated Electron, wait for usable renderer (`--target <mac\|win-gamepc>`, default `mac`; win extras `--installer` / `--app` (mutually exclusive) / `--install-dir` (default `C:\code\video-notes\app`; ignored with `--app`) / `--ssh-host`, default `ether-gamepc`) |
 | `doctor` | read-only health check, exit 1 on failure (`--target` falls back to `state.target`) |
 | `drive …` | eval / click / click-text / type / fill / press / drop / drag / wait / text / shot / snapshot / status / log / clipboard (`--save <path>`; `--target` falls back to `state.target`) |
 | `down` | stop the instance this run started, prune caches, keep evidence (`--purge` deletes the run directory; `--target` falls back to `state.target`) |

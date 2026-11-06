@@ -87,7 +87,7 @@ function writeFakeSsh(mode: "residue" | "missing" | "error" = "residue"): string
       `const script = decode(command);`,
       `if (script.includes("Get-ChildItem")) {`,
       `  if (mode === "error") { process.stderr.write("Get-ChildItem : Access to the path is denied.\\n"); process.exit(1); }`,
-      `  if (mode === "missing") { process.stdout.write("MISSING\\n"); } else { process.stdout.write("11\\tD:\\\\code\\\\video-notes\\\\verify\\\\r47\\\\user-data\\\\secrets.bin\\r\\n"); }`,
+      `  if (mode === "missing") { process.stdout.write("MISSING\\n"); } else { process.stdout.write("11\\tC:\\\\code\\\\video-notes\\\\verify\\\\r47\\\\user-data\\\\secrets.bin\\r\\n"); }`,
       `} else if (script.includes("Test-Path")) {`,
       `  process.stdout.write("absent\\n");`,
       `} else {`,
@@ -164,7 +164,7 @@ describe.skipIf(process.platform !== "darwin")("r60 密钥门禁（issue #69）"
     const result = run(["up", "--target", "win-gamepc", "--run", runId, "--port", String(freePort())], { path: bin });
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("远端");
-    expect(result.stderr).toContain("D:\\code\\video-notes\\verify\\r47\\user-data\\secrets.bin");
+    expect(result.stderr).toContain("C:\\code\\video-notes\\verify\\r47\\user-data\\secrets.bin");
     // 远端残留不该等到建目录、传 app 之后才发现
     expect(existsSync(join(VERIFY_ROOT, runId))).toBe(false);
     expect(existsSync(join(STATE_ROOT, runId))).toBe(false);

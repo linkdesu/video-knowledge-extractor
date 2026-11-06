@@ -32,7 +32,7 @@ const HELP = `usage: packaged-launch.ts [--app PATH] [--runs N] [--run ID] [--po
                           [--target mac|win-gamepc] [--ssh-host NAME]
 
   --app PATH       打包产物：mac 的 .app 目录（默认 /Applications/Video Notes.app）或可执行文件；
-                   win-gamepc 上是远端 exe 路径（默认 D:\\code\\video-notes\\app\\Video Notes.exe）。
+                   win-gamepc 上是远端 exe 路径（默认 C:\\code\\video-notes\\app\\Video Notes.exe）。
   --runs N         冷启动次数（默认 3）；每次都用一份全新 userData。
   --run ID         证据目录名（默认 pkglaunch-<时间戳>）。
   --port N         CDP 端口（默认 9481）。
@@ -67,7 +67,7 @@ const target = targetFlag;
 const runs = Number(takeFlag("--runs") ?? "3");
 const port = Number(takeFlag("--port") ?? "9481");
 const timeoutMs = Number(takeFlag("--timeout") ?? "25000");
-const sshHost = takeFlag("--ssh-host") ?? "gamepc";
+const sshHost = takeFlag("--ssh-host") ?? "ether-gamepc";
 if (!Number.isInteger(runs) || runs < 1) {
   process.stderr.write(`packaged-launch: --runs 必须是 >=1 的整数（收到 ${String(runs)}）\n`);
   process.exit(1);
@@ -373,7 +373,7 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
 }
 
 const expectedVersion = desktopVersion();
-const appPath = appFlag ?? (target === "win-gamepc" ? "D:\\code\\video-notes\\app\\Video Notes.exe" : "/Applications/Video Notes.app");
+const appPath = appFlag ?? (target === "win-gamepc" ? "C:\\code\\video-notes\\app\\Video Notes.exe" : "/Applications/Video Notes.app");
 mkdirSync(evidenceDir, { recursive: true });
 mkdirSync(stateDir, { recursive: true });
 

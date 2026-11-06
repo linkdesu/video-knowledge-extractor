@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectClipInfo } from "../../../shared/ipc";
 import {
-  clipAspectStyle,
   clipDurationLabel,
   clipMetaLine,
   clipPlayerSubtitle,
@@ -50,12 +49,6 @@ describe("原比例", () => {
   test("分辨率缺失或非法：null", () => {
     expect(clipRatioLabel(null)).toBeNull();
     expect(clipRatioLabel({ width: 0, height: 1080 })).toBeNull();
-  });
-
-  test("缩略图框架按同一分辨率给 aspect-ratio", () => {
-    expect(clipAspectStyle({ width: 1920, height: 1080 })).toBe("1920 / 1080");
-    expect(clipAspectStyle({ width: 886, height: 1920 })).toBe("886 / 1920");
-    expect(clipAspectStyle(null)).toBeUndefined();
   });
 });
 

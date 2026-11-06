@@ -698,13 +698,13 @@ const OUTPUTS = [
 // --------------------------------------------------------------- Windows target
 
 /** The Windows machine has a fixed layout: one root, no config file. */
-const WIN_ROOT = "D:\\code\\video-notes";
+const WIN_ROOT = "C:\\code\\video-notes";
 const WIN_RUNS = `${WIN_ROOT}\\verify`;
 const WIN_INSTALLER_DIR = `${WIN_ROOT}\\installer`;
-/** 远端 userData 根（r50）：证据 staging 目录 D:\code\video-notes\verify 之外。 */
+/** 远端 userData 根（r50）：证据 staging 目录 C:\code\video-notes\verify 之外。 */
 const WIN_STATE_ROOT = `${WIN_ROOT}\\verify-state`;
-const WIN_MODEL_DIR = "C:\\Users\\xieal\\Documents\\video-notes\\models";
-const WIN_SSH_HOST = "gamepc";
+const WIN_MODEL_DIR = "C:\\Users\\ether\\Documents\\video-notes\\models";
+const WIN_SSH_HOST = "ether-gamepc";
 
 // --------------------------------------------------------- private verify config
 

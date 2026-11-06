@@ -32,6 +32,7 @@ function ClipCard({
 
   return (
     <article className="vn-card vn-clip-card" data-testid="clip-card">
+      {/* 原型 `.thumb` 固定 16:9 框架、视频 cover 裁剪；来源比例只写在 meta 行。 */}
       <button
         type="button"
         className="vn-clip-thumb"
