@@ -274,20 +274,20 @@ function isCoveredBy(
    *   这里曾按「证明不了就保守保留」处理，真机结果是字幕翻倍：同一句话被重跑写第二遍，
    *   说话人 15→29、主题 7→15、确认弹窗建议行大批重复（#145 QA）。
    */
+  if (alignment !== undefined) {
+    /**
+     * 跨次追加：内容判据走 #144 的重叠判重，**不看说话人**——同一次转写的同一行（同文同时）
+     * 与近似行（同一句话的两种识别）都不写第二遍。区间重跑的分离结果常把同一个人判成两个簇
+     * （真机 15 个整段簇在区间里并成 6 个再拆开），只按身份放行就会写出字幕翻倍（#145 QA）。
+     */
+    if (isSameRowRerun(incoming, incomingDedup, existing)) return true;
+    if (isNearDuplicate(incoming, existing, incomingText, rules)) return true;
+  }
   if (incoming.speakerId !== undefined && existing.row.speakerId !== undefined) {
     const incomingIdentity = alignment === undefined ? incoming.speakerId : alignment.get(incoming.speakerId);
-    if (alignment === undefined) {
-      if (incomingIdentity !== existing.row.speakerId) return false;
-    } else {
-      /**
-       * 跨次追加（有映射）：**同一次转写的同一行**不看说话人——同文同时的行绝不再写第二遍。
-       * 区间重跑的分离结果常把同一个人判成两个簇（真机 15 个整段簇在区间里并成 6 个再拆开），
-       * 只按身份放行就会写出字幕翻倍（#145 QA）。身份只用来判断「文字不同的行是不是别人」。
-       */
-      if (isSameRowRerun(incoming, incomingDedup, existing)) return true;
-      if (incomingIdentity === undefined) return false;
-      if (incomingIdentity !== existing.row.speakerId) return false;
-    }
+    // 跨次：（证明不了 → 不按身份判，回落到下面的严格内容判据；证明是别人 → 保留）
+    if (incomingIdentity !== existing.row.speakerId && (alignment === undefined || incomingIdentity !== undefined)) return false;
+    if (incomingIdentity === undefined) return false;
   }
   const seconds = incoming.end - incoming.start;
   if (seconds <= 0) return false;
@@ -309,21 +309,7 @@ function isCoveredBy(
    * 第一处匹配前面带着负号，第二处才是覆盖新行的同句重复。任何一处通过就算覆盖。
    */
   return run.matches.some((match) => {
-    /**
-     * 匹配段之外的旧行字符也可能属于这个数字：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」
-     * 里新行整句都落在旧行里（未匹配 0 字），但负号被切在匹配段外面，正负含义已经不同；货币符号
-     * （`£500`）与单位（`30°`）同理。判断用的是**原文**下标：旧行「收益率是5%，今天讨论素材整理。」
-     * 丢逗号后 `%` 看似紧贴匹配段，原文里它属于上一分句，不能算到新行头上。
-     */
-    const startAt = existing.rawIndex[match.startInB];
-    const endAt = existing.rawIndex[match.startInB + run.length - 1];
-    if (startAt === undefined || endAt === undefined) return false;
-    if (
-      isNumericSemantic(existing.chars[startAt - 1]) ||
-      isNumericSemantic(existing.chars[endAt + 1])
-    ) {
-      return false;
-    }
+    if (touchesNumericBoundary(existing, match, run.length)) return false;
     /**
      * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
      * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许叹词。
@@ -353,6 +339,43 @@ function isSameRowRerun(incoming: DedupRow, incomingDedup: DedupText, existing: 
     return false;
   }
   return incomingDedup.text === existing.text;
+}
+
+/**
+ * 匹配段之外是否贴着数值语义字符：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」里
+ * 新行整句都落在旧行里，但负号被切在匹配段外面，正负含义已经不同；货币符号（`£500`）与单位
+ * （`30°`）同理。判断用**原文**下标：旧行「收益率是5%，今天讨论素材整理。」丢逗号后 `%` 看似
+ * 紧贴匹配段，原文里它属于上一分句，不能算到新行头上。
+ */
+function touchesNumericBoundary(existing: PrepRow, match: { startInB: number }, length: number): boolean {
+  const startAt = existing.rawIndex[match.startInB];
+  const endAt = existing.rawIndex[match.startInB + length - 1];
+  if (startAt === undefined || endAt === undefined) return true;
+  return isNumericSemantic(existing.chars[startAt - 1]) || isNumericSemantic(existing.chars[endAt + 1]);
+}
+
+/**
+ * 跨次「近似行」：同一时段里新行文字基本被旧行包住（≥ `minContainedRatio`），就是同一句话的
+ * 两次识别——区间重跑对同一段话总给出略有出入的措辞（「债权和债务是同时继承的。」→
+ * 「债务是同时继承的。」），身份又证明不了，按「无法映射就保留」放行会让字幕涨 41%（#145 QA 第二轮）。
+ * 这就是 `dedupeOverlappingLines` 的重叠判据（时间重叠 ≥ 较短一段的 `minOverlapRatio`），
+ * 只是新行一侧不删旧行：留着的那行必须是内容更多的旧行。
+ *
+ * 两道闸：新行**比旧行长**时不判（它带着旧行没有的内容，丢掉就永久少了半句）；
+ * 匹配段外贴着数值语义字符时也不算（正负、币种、单位变了就是另一句话）。
+ */
+function isNearDuplicate(incoming: DedupRow, existing: PrepRow, incomingText: string, rules: OverlapDedupRules): boolean {
+  const chars = Array.from(incomingText);
+  if (chars.length === 0 || chars.length > Array.from(existing.text).length) return false;
+  const seconds = incoming.end - incoming.start;
+  const existingSeconds = existing.row.end - existing.row.start;
+  const shorter = Math.min(seconds, existingSeconds);
+  if (shorter <= 0) return false;
+  const overlap = Math.min(existing.row.end, incoming.end) - Math.max(existing.row.start, incoming.start);
+  if (overlap + EPSILON < rules.minOverlapRatio * shorter) return false;
+  const run = longestCommonRuns(incomingText, existing.text);
+  if (run.length + EPSILON < chars.length * rules.minContainedRatio) return false;
+  return run.matches.some((match) => !touchesNumericBoundary(existing, match, run.length));
 }
 
 /** 已有行的判重形态：行本身 + 判重文本，供 `isCoveredBy` 一次算好复用。 */

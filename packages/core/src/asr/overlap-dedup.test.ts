@@ -346,6 +346,25 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
   });
 
+  test("身份证明不了、文字高度相似且时间重叠：近似行不再追加（复用 #144 重叠判据）", () => {
+    // 真机：#145 QA 第二轮，区间重跑对同一段话给出略有出入的识别结果
+    const existing = [{ ...row(10, 14, "债权和债务是同时继承的。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10.2, 14, "债务是同时继承的。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("近似判据不放宽数值含义：匹配段外的负号仍保留新行", () => {
+    const existing = [{ ...row(10, 14, "收益率是−5%。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10, 14, "收益率是5%。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
+  test("新行比旧行更长：近似判据不吞内容，保留新行", () => {
+    const existing = [{ ...row(10, 14, "今天讨论素材整理。"), speakerId: "speaker-3" }];
+    const incoming = [{ ...row(10, 14, "今天讨论素材整理。以及字幕校对的方法。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
+  });
+
   test("身份证明不了、文字是新增内容：仍然保留（不因时间重叠误删）", () => {
     const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
     const incoming = [{ ...row(10, 14, "我不同意这个说法啊。"), speakerId: "speaker-1" }];
@@ -372,13 +391,15 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
   });
 
-  test("另一人的短应答被长句包住：包住关系不算身份证据，不能删掉他的发言", () => {
+  test("被长句包住的短句：跨次按 #144 的重叠判据算重复（这半句已经在旧行里）", () => {
     const existing = [{ ...row(0, 10, "预算三百块，明天再决定。"), speakerId: "speaker-2" }];
     const incoming = [{ ...row(4, 5.2, "三百块。"), speakerId: "speaker-1" }];
     const alignment = alignRangeSpeakers(existing, incoming);
-    // 起点差 4 秒，端点对不上：不建立映射，判重也不比较说话人
+    // 起点差 4 秒，端点对不上：不建立映射；但「三百块」已被旧行完整说出，重跑再写一遍就是重复
     expect(alignment.size).toBe(0);
-    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+    // 同一次转写内的抢话仍按 #144 原判据（没有映射 = 没有跨次对齐），两行都留
+    expect(dropCoveredDuplicates(existing, incoming, undefined, undefined)).toEqual(incoming);
   });
 
   test("映射成立也要过 #144 的数值符号闸：匹配段外的负号仍保留新行", () => {
