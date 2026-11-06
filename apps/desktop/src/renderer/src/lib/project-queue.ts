@@ -73,6 +73,13 @@ export function proposedTopicMeta(
     .join(" · ");
 }
 
+/** 确认弹窗副标题：`晚场.mp4 · 分析区间 00:00:00–00:10:00`。 */
+export function proposedTopicSource(
+  job: Pick<ProjectAnalysisTaskInfo, "name" | "startSeconds" | "endSeconds">,
+): string {
+  return `${job.name} · 分析区间 ${analysisRangeLabel(job)}`;
+}
+
 /** 待确认区的一行：AI 建议的行加来源行文案；不自动弹窗、不占队列。 */
 export type PendingTopic = {
   topicKey: string;
