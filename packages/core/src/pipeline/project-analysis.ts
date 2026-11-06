@@ -71,6 +71,18 @@ function mergeSpeakers(existing: Speaker[], incoming: Speaker[]): Speaker[] {
   return merged;
 }
 
+/** 本区间已被已有主题覆盖的情况（区间已分析过，或重跑后没有新字幕）：返回可复用的主题记录。 */
+function reusedRangeTopics(data: VideoData, start: number, end: number): RangeAnalysisTopic[] {
+  return data.topics
+    .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
+    .map((topic) => ({
+      id: topic.id,
+      title: topic.title,
+      category: "",
+      lineIds: lineIdsFor(topic, data.transcript.utterances),
+    }));
+}
+
 function freshTopicId(base: string, used: Set<string>): string {
   let id = base;
   for (let n = 2; used.has(id); n += 1) id = `${base}-${n}`;
@@ -167,14 +179,7 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       // 不再转写/划主题，也不重复追加字幕与主题
       const existing = data.chunks.find((c) => Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6);
       if (existing !== undefined) {
-        const reusedTopics = data.topics
-          .filter((topic) => topic.segments.some((s) => s.start >= start - 1e-6 && s.end <= end + 1e-6))
-          .map((topic) => ({
-            id: topic.id,
-            title: topic.title,
-            category: "",
-            lineIds: lineIdsFor(topic, data.transcript.utterances),
-          }));
+        const reusedTopics = reusedRangeTopics(data, start, end);
         logger().info("project", "区间已分析，复用已有结果", { videoId: video.id, start, end, topics: reusedTopics.length });
         return { videoId: video.id, outputDir: video.outputDir, topics: reusedTopics, addedLines: 0 };
       }
@@ -207,6 +212,13 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
        * 的既有行把局部编号映射回来源视频的稳定身份（#145），映射不了的编号不参与身份判断。
        */
       const alignment = alignRangeSpeakers(previous, filler.rows);
+      logger().info("asr", "区间说话人对齐", {
+        videoId: video.id,
+        start,
+        end,
+        localSpeakers: new Set(filler.rows.map((u) => u.speakerId)).size,
+        aligned: [...alignment].map(([local, stable]) => `${local}→${stable}`),
+      });
       // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
       const dedupedRange = dropCoveredDuplicates(previous, filler.rows, undefined, alignment);
       /**
@@ -235,6 +247,25 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       );
       data.asrModel = run.modelId;
       data.asrEngine = run.engine;
+
+      /**
+       * 重跑没有带来任何新字幕（整段已转写过、这次转写只重复了已有内容）：不再跑主题分析。
+       * 否则同一段内容会多出一张近同主题卡——真机一次重跑把 7 个主题变成 15 个（#145 QA）。
+       * 区间记录照常落盘，重启后按 `chunks` 复用，不会再次转写。
+       */
+      if (appended.length === 0) {
+        data.transcript = { speakers, utterances };
+        if (data.importedAt === null) data.importedAt = new Date().toISOString();
+        writeVideoData(video.outputDir, data);
+        const reused = reusedRangeTopics(data, start, end);
+        logger().info("project", "区间没有新字幕，复用已有主题", {
+          videoId: video.id,
+          start,
+          end,
+          topics: reused.length,
+        });
+        return { videoId: video.id, outputDir: video.outputDir, topics: reused, addedLines: 0 };
+      }
 
       // 主题只针对本区间：用本区间的字幕作为提示词上下文，段坐标已经是绝对时间
       const corrections = correctionsFor(video.outputDir, "project-analysis");

@@ -794,3 +794,104 @@ describe("analyzeVideoRange：区间全是新内容（对齐无证据）", () =>
     expect(data.transcript.speakers).toHaveLength(2);
   });
 });
+
+describe("analyzeVideoRange：区间分离簇数与整段不同（#145 QA）", () => {
+  /** 整段 3 人；区间只分出 1 个簇（真实分离模型在短音频上就是这样把多人并进一个编号）。 */
+  function mergedClusterEngine(): AsrEngine {
+    let calls = 0;
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        if (!range) {
+          return {
+            transcript: {
+              speakers: [
+                { id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" },
+                { id: "speaker-2" as SpeakerId, name: "说话人2", color: "#e8764c" },
+                { id: "speaker-3" as SpeakerId, name: "说话人3", color: "#5faa55" },
+              ],
+              utterances: [
+                { start: 0.2, end: 1.1, speakerId: "speaker-1" as SpeakerId, text: "我们先看这一期的素材。" },
+                { start: 1.2, end: 2.5, speakerId: "speaker-2" as SpeakerId, text: "然后逐条对一遍字幕。" },
+                { start: 4.2, end: 6.6, speakerId: "speaker-3" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+                { start: 6.8, end: 7.9, speakerId: "speaker-2" as SpeakerId, text: "字幕校对就按时间轴来。" },
+              ],
+            },
+            chunks: [{ index: 1, start: 0, end: 8 }],
+            timings: {},
+            cacheHits: [],
+            engine: "local",
+            modelId: "fake-asr",
+          };
+        }
+        return {
+          transcript: {
+            // 6 个整段簇被并成 1 个局部编号：它的行分别来自整段的两个人，身份证不出来
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: [
+              { start: 0.2, end: 2.6, speakerId: "speaker-1" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+              { start: 2.8, end: 3.9, speakerId: "speaker-1" as SpeakerId, text: "字幕校对就按时间轴来。" },
+            ],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  test("同一句话被重跑写出第二遍：按内容判重，不追加行、不加说话人、不添主题", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const engine = mergedClusterEngine();
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 0, end: 8 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    expect(range.addedLines).toBe(0);
+    expect(data.transcript.utterances.map((u) => u.text)).toEqual([
+      "我们先看这一期的素材。",
+      "然后逐条对一遍字幕。",
+      "今天讲一下素材整理的方法。",
+      "字幕校对就按时间轴来。",
+    ]);
+    // 说话人 3 位不变：没有新增内容就不该铸新号
+    expect(data.transcript.speakers).toHaveLength(3);
+    // 主题不变：区间没有新内容就不再跑主题分析，不重复建卡、也不产生新的待确认主题
+    expect(data.topics).toHaveLength(1);
+    expect(range.topics).toEqual([]);
+
+    const lines = subtitleLinesFrom(data);
+    const contents = lines.filter((line) => line.start >= 4 && line.start < 8).map((line) => `${line.start}|${line.text}`);
+    expect(new Set(contents).size).toBe(contents.length);
+  });
+});

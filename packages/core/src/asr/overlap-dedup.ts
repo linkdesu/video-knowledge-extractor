@@ -260,23 +260,34 @@ export function dedupText(raw: string): DedupText {
 function isCoveredBy(
   incoming: DedupRow,
   existing: PrepRow,
-  incomingText: string,
+  incomingDedup: DedupText,
   rules: OverlapDedupRules,
   alignment?: SpeakerAlignment,
 ): boolean {
+  const incomingText = incomingDedup.text;
   /**
-   * 说话人是行的身份：抢话时两个人可能在**同一毫秒区间说同一句话**，`dedupeOverlappingLines`
-   * 只删严格更短的行，两行都会留在字幕里。跨次追加若只看文本，会把另一个说话人的新发言
-   * 当重复删掉；只有任一侧没有说话人时才回落到纯文本判据。
-   *
-   * 跨次比较前必须先对齐身份（#145）：区间转写的 `speaker-N` 是**本次音频内**的时长排名，
-   * 不是稳定身份，所以调用方给了映射时以映射为准；映射里没有这条局部编号就说明「证明不了」，
-   * 此时保守保留新行（宁可多一行，也不把别人的同一句话吞掉）。
+   * 说话人是行的身份，但它只决定「是不是别人」，不决定「是不是重复」：
+   * - 跨次映射证明是**另一位**稳定说话人 → 保留（抢话时两个人可能在同一毫秒说同一句话，
+   *   `dedupeOverlappingLines` 只删严格更短的行，两行都会留在字幕里）；
+   * - 身份相同 → 继续按内容判；
+   * - 身份**证明不了**（区间分离出的簇数与整段不同时是常态）→ 也按内容判，与没有说话人的行一样。
+   *   这里曾按「证明不了就保守保留」处理，真机结果是字幕翻倍：同一句话被重跑写第二遍，
+   *   说话人 15→29、主题 7→15、确认弹窗建议行大批重复（#145 QA）。
    */
   if (incoming.speakerId !== undefined && existing.row.speakerId !== undefined) {
     const incomingIdentity = alignment === undefined ? incoming.speakerId : alignment.get(incoming.speakerId);
-    if (incomingIdentity === undefined) return false;
-    if (incomingIdentity !== existing.row.speakerId) return false;
+    if (alignment === undefined) {
+      if (incomingIdentity !== existing.row.speakerId) return false;
+    } else {
+      /**
+       * 跨次追加（有映射）：**同一次转写的同一行**不看说话人——同文同时的行绝不再写第二遍。
+       * 区间重跑的分离结果常把同一个人判成两个簇（真机 15 个整段簇在区间里并成 6 个再拆开），
+       * 只按身份放行就会写出字幕翻倍（#145 QA）。身份只用来判断「文字不同的行是不是别人」。
+       */
+      if (isSameRowRerun(incoming, incomingDedup, existing)) return true;
+      if (incomingIdentity === undefined) return false;
+      if (incomingIdentity !== existing.row.speakerId) return false;
+    }
   }
   const seconds = incoming.end - incoming.start;
   if (seconds <= 0) return false;
@@ -322,6 +333,28 @@ function isCoveredBy(
   });
 }
 
+/**
+ * 身份证明不了时判定「这就是同一次转写的同一行」的时间容差。区间重跑的端点会抖几百毫秒，
+ * 真机验收里 74 行完全重复的字幕都在 0.6 秒内（#145 QA）。
+ */
+const RERUN_SAME_ROW_SECONDS = 0.75;
+
+/**
+ * 身份证明不了的行只能是「同一次转写的同一行」，不能是「被长句包住的短句」：
+ * 另一人的短应答（「三百块。」）天然被对方的长句包住，按包含关系判重就会删掉他的发言。
+ * 所以这里要求**端点对齐**（起止各差 ≤0.75 秒）且判重文本**完全相同**；
+ * 语气词噪音、拆句、包含关系这类放宽只在身份证明为同一人时才允许。
+ */
+function isSameRowRerun(incoming: DedupRow, incomingDedup: DedupText, existing: PrepRow): boolean {
+  if (
+    Math.abs(incoming.start - existing.row.start) > RERUN_SAME_ROW_SECONDS ||
+    Math.abs(incoming.end - existing.row.end) > RERUN_SAME_ROW_SECONDS
+  ) {
+    return false;
+  }
+  return incomingDedup.text === existing.text;
+}
+
 /** 已有行的判重形态：行本身 + 判重文本，供 `isCoveredBy` 一次算好复用。 */
 type PrepRow = { row: DedupRow } & DedupText;
 
@@ -346,7 +379,7 @@ export function dropCoveredDuplicates<T extends DedupRow>(
   return incoming.filter((row) => {
     // 用 `dedupText` 而不是 `normalizeReplyText`：数字连它的符号要留在文本里参与判据，
     // 否则小数、正负号、百分号被当标点删掉，新数值会被当重复丢掉
-    const { text } = dedupText(row.text);
-    return !prepared.some((prev) => isCoveredBy(row, prev, text, rules, alignment));
+    const incomingDedup = dedupText(row.text);
+    return !prepared.some((prev) => isCoveredBy(row, prev, incomingDedup, rules, alignment));
   });
 }

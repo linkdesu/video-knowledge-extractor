@@ -323,17 +323,32 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
   });
 
-  test("映射到另一位稳定说话人：即使局部编号与旧行相同也不是重复，保留", () => {
+  test("映射到另一位稳定说话人、文字也不同：是新发言，保留（身份不决定重复，但决定是不是别人）", () => {
     const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
-    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "我不同意这个说法啊。"), speakerId: "speaker-1" }];
     // 局部 speaker-1 证明是整段的 speaker-2：编号相等不能当身份
     const alignment = new Map([["speaker-1", "speaker-2"]]);
     expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
   });
 
-  test("局部说话人无法映射：不把编号相等当身份，保守保留新行", () => {
+  test("映射到另一位稳定说话人、但同文同时：跨次仍不再写第二遍（重跑不是抢话）", () => {
     const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
     const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
+  });
+
+  test("身份证明不了时按内容判重：同文同时的行不再写第二遍（#145 QA）", () => {
+    // 区间分离出的簇数与整段不同，多数局部编号证不出身份；此时若按「保守保留」放行，
+    // 用户看到的是字幕翻倍 + 确认弹窗建议行重复——身份不决定「是不是重复」，只决定「是不是别人」
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("身份证明不了、文字是新增内容：仍然保留（不因时间重叠误删）", () => {
+    const existing = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
+    const incoming = [{ ...row(10, 14, "我不同意这个说法啊。"), speakerId: "speaker-1" }];
     expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual(incoming);
   });
 
