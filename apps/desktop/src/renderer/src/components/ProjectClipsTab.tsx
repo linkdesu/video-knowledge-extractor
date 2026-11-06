@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 import type { ProjectClipInfo, ProjectDetail } from "../../../shared/ipc";
 import {
+  clipAspectStyle,
   clipMetaLine,
   clipPlayerSubtitle,
   clipStatsLine,
@@ -35,6 +36,7 @@ function ClipCard({
       <button
         type="button"
         className="vn-clip-thumb"
+        style={{ aspectRatio: clipAspectStyle(clip.resolution) }}
         data-testid="clip-thumb"
         aria-label={`播放 ${clip.title}`}
         onClick={(event) => onPlay(clip, event.currentTarget)}

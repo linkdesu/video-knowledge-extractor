@@ -69,8 +69,8 @@ const macReleaseAppPath = resolve(
   desktopRoot,
   `release/Video Notes-darwin-${process.arch}/Video Notes.app`,
 );
-/** Windows 测试机的安装根目录：默认旧机 gamepc 的 D 盘；新机用 `--win-root` 覆盖（例如 C:\code\video-notes）。 */
-const defaultWinRoot = "D:\\code\\video-notes";
+/** Windows 测试机的安装根目录：默认 ether-gamepc 的 C:\code\video-notes；另一台机器用 `--win-root` 覆盖。 */
+const defaultWinRoot = "C:\\code\\video-notes";
 
 interface CliOptions {
   checkBumpAgainst: string | null;
@@ -94,7 +94,7 @@ function parseCliArgs(argv: string[]): CliOptions {
     skipMacBuild: false,
     winInstaller: null,
     winCiWaitSeconds: 1800,
-    sshHost: "gamepc",
+    sshHost: "ether-gamepc",
     winRoot: defaultWinRoot,
     winDownloadOnly: false,
   };
@@ -118,7 +118,7 @@ function parseCliArgs(argv: string[]): CliOptions {
       }
       opts.winCiWaitSeconds = parsed;
     } else if (arg === "--ssh-host") {
-      opts.sshHost = argv[++i] ?? "gamepc";
+      opts.sshHost = argv[++i] ?? "ether-gamepc";
     } else if (arg === "--win-root") {
       const raw = (argv[++i] ?? "").replace(/[\\/]+$/, "");
       if (!/^[A-Za-z]:\\/.test(raw)) {
