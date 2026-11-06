@@ -355,18 +355,72 @@ function touchesNumericBoundary(existing: PrepRow, match: { startInB: number }, 
 }
 
 /**
- * 跨次「近似行」：同一时段里新行文字基本被旧行包住（≥ `minContainedRatio`），就是同一句话的
- * 两次识别——区间重跑对同一段话总给出略有出入的措辞（「债权和债务是同时继承的。」→
- * 「债务是同时继承的。」），身份又证明不了，按「无法映射就保留」放行会让字幕涨 41%（#145 QA 第二轮）。
- * 这就是 `dedupeOverlappingLines` 的重叠判据（时间重叠 ≥ 较短一段的 `minOverlapRatio`），
- * 只是新行一侧不删旧行：留着的那行必须是内容更多的旧行。
+ * 同一句话的两次识别，归一化编辑距离相似度（1 − 编辑距离 / 较长一行）的合并下限。
+ * 真机 ASR 变体多是一两个字的差别（「你现要/有多少本金？」「OK好的好的的」），
+ * 80% 包含判据兜不住（新行多一两个字包含度就掉下来），编辑距离兜得住（#145 QA r91f）。
+ */
+const NEAR_DUPLICATE_SIMILARITY = 0.8;
+/** 阿拉伯数字与否定词：出现即视为含义敏感，合并前必须两边一致。 */
+const SENSITIVE_CHAR = /[0-9不没未别无]/;
+/**
+ * 阿拉伯数字（含小数、百分号、正负号）与否定词不同，就不是同一句话，绝不合并。
+ * 中文数字**不**进这道闸：ASR 常把「十六」听成「三十六」、「三六」听成「三是六」，
+ * 按数字守护反而把同一句话挡在门外（真机 9 条）；这类差异交给相似度判据。
+ * 代价：数字被听错的那一行会随旧行保留原数字（不静默双写、也不静默改写）。
+ */
+const NUMERIC_TOKEN = /[-+]?[0-9]+(?:\.[0-9]+)?%?/g;
+const NEGATION = /[不没未别无]/g;
+
+/** 归一化编辑距离相似度：0 表示完全不同，1 表示逐字相同。 */
+function editSimilarity(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  const longest = Math.max(left.length, right.length);
+  if (longest === 0) return 1;
+  // 长度差已经超过允许的编辑量时直接判不相似，省掉 O(n·m) 的 DP
+  if (Math.abs(left.length - right.length) / longest > 1 - NEAR_DUPLICATE_SIMILARITY) return 0;
+  let previous = new Uint16Array(right.length + 1);
+  let current = new Uint16Array(right.length + 1);
+  for (let j = 0; j <= right.length; j += 1) previous[j] = j;
+  for (let i = 1; i <= left.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const substitution = (previous[j - 1] ?? 0) + (left[i - 1] === right[j - 1] ? 0 : 1);
+      const insertion = (current[j - 1] ?? 0) + 1;
+      const deletion = (previous[j] ?? 0) + 1;
+      current[j] = Math.min(substitution, insertion, deletion);
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+  }
+  const distance = previous[right.length] ?? longest;
+  return 1 - distance / longest;
+}
+
+/** 两行的数字与否定词是否一致：数值、正负、币种、中文数字、"不/没/未"一改就是不同的话。 */
+function sameSemantics(a: string, b: string): boolean {
+  const tokens = (text: string): string => (text.match(NUMERIC_TOKEN) ?? []).join("|");
+  if (tokens(a) !== tokens(b)) return false;
+  return (a.match(NEGATION) ?? []).length === (b.match(NEGATION) ?? []).length;
+}
+
+/**
+ * 跨次「近似行」：同一时段里两行就是同一句话的两个识别版本，不再写第二遍。
+ * 区间重跑对同一段话总给出略有出入的措辞（「债权和债务是同时继承的。」→「债务是同时继承的。」、
+ * 「你现要多少本金？」→「你现有多少本金？」），身份又证明不了，按「无法映射就保留」放行会让
+ * 字幕涨 41%（#145 QA）。
  *
- * 两道闸：新行**比旧行长**时不判（它带着旧行没有的内容，丢掉就永久少了半句）；
- * 匹配段外贴着数值语义字符时也不算（正负、币种、单位变了就是另一句话）。
+ * 判据（`dedupeOverlappingLines` 的同一套重叠口径，只是不删旧行）：
+ * - 时间重叠 ≥ 较短一段的 `minOverlapRatio`；
+ * - 文字满足**任一**：新行被旧行包住 ≥ `minContainedRatio`（拆分/截短），
+ *   或归一化编辑距离相似度 ≥ `NEAR_DUPLICATE_SIMILARITY`（多一两个字、换一个近音字）。
+ * 旧版还要求「新行不比旧行长」，真机里「可以，」前缀、「工作」→「工作上」正好卡在这道闸上；
+ * 现在改由语义闸兜底：数字（含中文数字）或否定词不同就不合并。
  */
 function isNearDuplicate(incoming: DedupRow, existing: PrepRow, incomingText: string, rules: OverlapDedupRules): boolean {
   const chars = Array.from(incomingText);
-  if (chars.length === 0 || chars.length > Array.from(existing.text).length) return false;
+  if (chars.length === 0) return false;
   const seconds = incoming.end - incoming.start;
   const existingSeconds = existing.row.end - existing.row.start;
   const shorter = Math.min(seconds, existingSeconds);
@@ -374,8 +428,20 @@ function isNearDuplicate(incoming: DedupRow, existing: PrepRow, incomingText: st
   const overlap = Math.min(existing.row.end, incoming.end) - Math.max(existing.row.start, incoming.start);
   if (overlap + EPSILON < rules.minOverlapRatio * shorter) return false;
   const run = longestCommonRuns(incomingText, existing.text);
-  if (run.length + EPSILON < chars.length * rules.minContainedRatio) return false;
-  return run.matches.some((match) => !touchesNumericBoundary(existing, match, run.length));
+  const contained = run.length / chars.length;
+  if (contained + EPSILON >= rules.minContainedRatio) {
+    /**
+     * 包含方向：未匹配的那几个字若带阿拉伯数字或否定词，含义就不是同一句。
+     * 只在未匹配段上判，不比整行——新行是旧长句里的一截时，旧行上下文里的「不/没」与新行无关。
+     */
+    return run.matches.some((match) => {
+      if (touchesNumericBoundary(existing, match, run.length)) return false;
+      const unmatched = [...chars.slice(0, match.start), ...chars.slice(match.start + run.length)].join("");
+      return !SENSITIVE_CHAR.test(unmatched);
+    });
+  }
+  if (editSimilarity(incomingText, existing.text) + EPSILON < NEAR_DUPLICATE_SIMILARITY) return false;
+  return sameSemantics(incomingText, existing.text);
 }
 
 /** 已有行的判重形态：行本身 + 判重文本，供 `isCoveredBy` 一次算好复用。 */

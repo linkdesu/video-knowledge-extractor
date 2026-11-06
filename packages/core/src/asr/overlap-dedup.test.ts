@@ -353,6 +353,36 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
   });
 
+  test("近似的两种口子都吃掉：编辑距离相似（新行多一两个字）与包含度足够", () => {
+    // Q 类：包含度 ≥0.8，但新行多一两个字；旧实现「新行更长不判」放过了它
+    const longerIncoming = [
+      { ...row(10, 14, "这你的理解跟你的处境是相对应的。"), speakerId: "speaker-3" },
+    ];
+    expect(
+      dropCoveredDuplicates(longerIncoming, [{ ...row(10, 14, "可以，你的理解跟你的处境是相对应的。"), speakerId: "speaker-1" }], undefined, new Map()),
+    ).toEqual([]);
+    // R 类：包含度不够，但归一化编辑距离只有一字之差
+    const oneCharOff = [{ ...row(20, 24, "你现有多少本金？"), speakerId: "speaker-3" }];
+    expect(
+      dropCoveredDuplicates(oneCharOff, [{ ...row(20, 24, "你现要多少本金？"), speakerId: "speaker-1" }], undefined, new Map()),
+    ).toEqual([]);
+  });
+
+  test("阿拉伯数字或否定不同就不合并（中文数字当识别噪音交给相似度）", () => {
+    // 数值：3 与 5 不是同一句
+    const amount = [{ ...row(30, 34, "预算是3.5万元。"), speakerId: "speaker-3" }];
+    const changed = [{ ...row(30, 34, "预算是3.9万元。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(amount, changed, undefined, new Map())).toEqual(changed);
+    // 否定：意思反了，必须留
+    const negated = [{ ...row(40, 44, "我同意这样处理。"), speakerId: "speaker-3" }];
+    const flipped = [{ ...row(40, 44, "我不同意这样处理。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(negated, flipped, undefined, new Map())).toEqual(flipped);
+    // 中文数字被听错（十六 / 三十六）：同一句话的两次识别，不再写第二遍
+    const numeral = [{ ...row(50, 54, "十六个月的火腿。"), speakerId: "speaker-3" }];
+    const variant = [{ ...row(50, 54, "三十六个月的火腿。"), speakerId: "speaker-1" }];
+    expect(dropCoveredDuplicates(numeral, variant, undefined, new Map())).toEqual([]);
+  });
+
   test("近似判据不放宽数值含义：匹配段外的负号仍保留新行", () => {
     const existing = [{ ...row(10, 14, "收益率是−5%。"), speakerId: "speaker-3" }];
     const incoming = [{ ...row(10, 14, "收益率是5%。"), speakerId: "speaker-1" }];
