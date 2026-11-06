@@ -25,15 +25,16 @@ export const OVERLAP_DEDUP_RULES: OverlapDedupRules = {
 const EPSILON = 1e-9;
 
 /**
- * 最长公共子串：长度，以及它在新行与旧行里各自的起始下标。
- * 两个下标都要：「旧行贴着匹配段外面的那个字符」是不是数值符号，决定新行的数字有没有变。
+ * 最长公共子串：长度，以及**所有**达到这个长度的匹配位置（新行与旧行各自的下标）。
+ * 只取第一处会漏判：旧行「−5%是这次的收益率，后来5%是这次的收益率。」vs 新行
+ * 「5%是这次的收益率。」里第一处匹配前面带着负号，第二处才是真正覆盖新行的同句重复。
+ * 旧行侧下标：「旧行贴着匹配段外面的那个字符」是不是数值符号，决定新行的数字有没有变。
  */
-function longestCommonRunWithStart(a: string, b: string): { length: number; start: number; startInB: number } {
+function longestCommonRuns(a: string, b: string): { length: number; matches: Array<{ start: number; startInB: number }> } {
   const left = Array.from(a);
   const right = Array.from(b);
   let best = 0;
-  let bestEnd = 0;
-  let bestEndInB = 0;
+  let matches: Array<{ start: number; startInB: number }> = [];
   let previous = new Array<number>(right.length + 1).fill(0);
   for (let i = 1; i <= left.length; i += 1) {
     const current = new Array<number>(right.length + 1).fill(0);
@@ -43,18 +44,18 @@ function longestCommonRunWithStart(a: string, b: string): { length: number; star
       current[j] = length;
       if (length > best) {
         best = length;
-        bestEnd = i;
-        bestEndInB = j;
+        matches = [];
       }
+      if (length === best) matches.push({ start: i - length, startInB: j - length });
     }
     previous = current;
   }
-  return { length: best, start: bestEnd - best, startInB: bestEndInB - best };
+  return { length: best, matches };
 }
 
 /** 最长公共子串长度；归一化后的短文本有多大比例连续出现在长文本里。 */
 function longestCommonRun(a: string, b: string): number {
-  return longestCommonRunWithStart(a, b).length;
+  return longestCommonRuns(a, b).length;
 }
 
 function containedRatio(short: string, long: string): number {
@@ -198,7 +199,10 @@ const MINUS_VARIANTS = /[\u2212\u2010-\u2015\u2043\u02d7]/g;
  * 「预算是3.5万元，今天讨论素材整理。」里的「今天讨论素材整理」重跑后会被当新内容再追加一遍。
  * 数字留在文本里参与包含判据，范围外的东西自然不参与。
  */
-function dedupText(raw: string): string {
+/** 判重文本：去标点后的文本，加上它的每个字符在原文（保留标点）里的下标。 */
+type DedupText = { text: string; chars: string[]; rawIndex: number[] };
+
+function dedupText(raw: string): DedupText {
   const cleaned = raw
     .normalize("NFKC")
     .replace(MINUS_VARIANTS, "-")
@@ -208,24 +212,33 @@ function dedupText(raw: string): string {
   const chars = Array.from(cleaned);
   const isDigit = (char: string | undefined): boolean => char !== undefined && DIGIT.test(char);
   const kept: string[] = [];
+  /**
+   * 每个保留字符在 `chars`（丢了装饰后、**保留标点**的原文）里的下标。
+   * 判重按去标点后的文本判，但「这个符号是不是紧贴匹配段」必须在原文里看：
+   * 旧行「收益率是5%，今天讨论素材整理。」丢逗号后 `%` 就挨着「今」了，按去标点文本判
+   * 会把上一分句的百分号算到新行头上，正常重复不再去重。
+   */
+  const rawIndex: number[] = [];
   for (let index = 0; index < chars.length; index += 1) {
     const char = chars[index]!;
     if (/[\p{L}\p{N}]/u.test(char) || SYMBOL.test(char)) {
       kept.push(char);
+      rawIndex.push(index);
       continue;
     }
     // 标点只在挨着数字时才算内容：「-5」「10-20」「5%」「3.5」留下，「好，」里的逗号照旧丢掉
     if (NUMERIC_SYMBOLS.has(char) && (isDigit(chars[index - 1]) || isDigit(chars[index + 1]))) {
       kept.push(char);
+      rawIndex.push(index);
     }
   }
-  return kept.join("");
+  return { text: kept.join(""), chars, rawIndex };
 }
 
 /**
  * 新行是不是已经被某条已有行覆盖：时间重叠至少占**新行**时长的 `minOverlapRatio`，
  * 新行文本至少 `minContainedRatio` 能在旧行里连续找到，落在公共子串之外的字不超过
- * `MAX_UNMATCHED_CHARS`，且这些字全是语气词。旧行还必须以收尾标点结束——否则多出来的
+ * `MAX_UNMATCHED_CHARS`，且这些字全是叹词。旧行还必须以收尾标点结束——否则多出来的
  * 字可能是词尾（「酒」→「酒吧」），分不清就不算重复。
  *
  * 两条文字门槛都不能省：只看「没出现在旧行里的字数」，三四个字的短句只要时间重叠就全数命中
@@ -237,9 +250,8 @@ function dedupText(raw: string): string {
  */
 function isCoveredBy(
   incoming: DedupRow,
-  existing: DedupRow,
+  existing: PrepRow,
   incomingText: string,
-  existingText: string,
   rules: OverlapDedupRules,
 ): boolean {
   /**
@@ -249,48 +261,57 @@ function isCoveredBy(
    */
   if (
     incoming.speakerId !== undefined &&
-    existing.speakerId !== undefined &&
-    incoming.speakerId !== existing.speakerId
+    existing.row.speakerId !== undefined &&
+    incoming.speakerId !== existing.row.speakerId
   ) {
     return false;
   }
   const seconds = incoming.end - incoming.start;
   if (seconds <= 0) return false;
-  const overlap = Math.min(existing.end, incoming.end) - Math.max(existing.start, incoming.start);
+  const overlap = Math.min(existing.row.end, incoming.end) - Math.max(existing.row.start, incoming.start);
   if (overlap + EPSILON < rules.minOverlapRatio * seconds) return false;
-  const length = Array.from(incomingText).length;
-  if (length === 0) return false;
-  const run = longestCommonRunWithStart(incomingText, existingText);
-  if (run.length + EPSILON < length * rules.minContainedRatio) return false;
-  if (length - run.length > MAX_UNMATCHED_CHARS) return false;
-  /**
-   * 匹配段之外的旧行字符也可能属于这个数字：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」
-   * 里新行整句都落在旧行里（未匹配 0 字），但负号被切在匹配段外面，正负含义已经不同；货币符号
-   * （`£500`）与单位（`30°`）同理。旧行紧贴匹配边界的字符是数值语义字符时，一律保留新行；
-   * 旧行**别处**的数字与符号不参与（旧行「预算是3.5万元，今天讨论素材整理。」照旧判重复）。
-   */
-  const existingChars = Array.from(existingText);
-  if (
-    isNumericSemantic(existingChars[run.startInB - 1]) ||
-    isNumericSemantic(existingChars[run.startInB + run.length])
-  ) {
-    return false;
-  }
-  /**
-   * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
-   * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许语气词。
-   */
   const chars = Array.from(incomingText);
-  const unmatched = [...chars.slice(0, run.start), ...chars.slice(run.start + run.length)];
-  if (unmatched.length === 0) return true;
+  if (chars.length === 0) return false;
+  const run = longestCommonRuns(incomingText, existing.text);
+  if (run.length + EPSILON < chars.length * rules.minContainedRatio) return false;
+  if (chars.length - run.length > MAX_UNMATCHED_CHARS) return false;
   /**
    * 多出来的字可能是词的一部分而不是语气词，只有旧行本来就是完整句子（带收尾标点）
    * 时才能当成重跑噪音；旧行停在句子中间时按新内容保留，宁可多一行也不吞字幕。
    * 这条只在「新行多出字」时才检查：未匹配 0 字时旧行的收尾标点无关紧要。
    */
-  if (!endsWithSentenceEnd(existing.text)) return false;
-  return unmatched.every((char) => FILLER_CHARS.has(char));
+  if (chars.length > run.length && !endsWithSentenceEnd(existing.row.text)) return false;
+  /**
+   * 达到最长长度的匹配可能有好几处：旧行「−5%是这次的收益率，后来5%是这次的收益率。」里
+   * 第一处匹配前面带着负号，第二处才是覆盖新行的同句重复。任何一处通过就算覆盖。
+   */
+  return run.matches.some((match) => {
+    /**
+     * 匹配段之外的旧行字符也可能属于这个数字：旧行「−5%是这次的收益率。」vs 新行「5%是这次的收益率。」
+     * 里新行整句都落在旧行里（未匹配 0 字），但负号被切在匹配段外面，正负含义已经不同；货币符号
+     * （`£500`）与单位（`30°`）同理。判断用的是**原文**下标：旧行「收益率是5%，今天讨论素材整理。」
+     * 丢逗号后 `%` 看似紧贴匹配段，原文里它属于上一分句，不能算到新行头上。
+     */
+    const startAt = existing.rawIndex[match.startInB];
+    const endAt = existing.rawIndex[match.startInB + run.length - 1];
+    if (startAt === undefined || endAt === undefined) return false;
+    if (
+      isNumericSemantic(existing.chars[startAt - 1]) ||
+      isNumericSemantic(existing.chars[endAt + 1])
+    ) {
+      return false;
+    }
+    /**
+     * 只看公共子串**之外**的那几段：新行「不建议这样操作」撞上旧行「不会亏钱，建议这样操作」时，
+     * 一个「不」在旧行别处出现过，用旧行字符集判断就会放过语义反转；这里只允许叹词。
+     */
+    const unmatched = [...chars.slice(0, match.start), ...chars.slice(match.start + run.length)];
+    return unmatched.every((char) => FILLER_CHARS.has(char));
+  });
 }
+
+/** 已有行的判重形态：行本身 + 判重文本，供 `isCoveredBy` 一次算好复用。 */
+type PrepRow = { row: DedupRow } & DedupText;
 
 /**
  * 区间分析追加字幕时用（#129 回归）：只留下真正新增的行。
@@ -305,11 +326,11 @@ export function dropCoveredDuplicates<T extends DedupRow>(
   rules: OverlapDedupRules = OVERLAP_DEDUP_RULES,
 ): T[] {
   if (existing.length === 0) return [...incoming];
-  const prepared = existing.map((row) => ({ row, text: dedupText(row.text) }));
+  const prepared: PrepRow[] = existing.map((row) => ({ row, ...dedupText(row.text) }));
   return incoming.filter((row) => {
     // 用 `dedupText` 而不是 `normalizeReplyText`：数字连它的符号要留在文本里参与判据，
     // 否则小数、正负号、百分号被当标点删掉，新数值会被当重复丢掉
-    const text = dedupText(row.text);
-    return !prepared.some((prev) => isCoveredBy(row, prev.row, text, prev.text, rules));
+    const { text } = dedupText(row.text);
+    return !prepared.some((prev) => isCoveredBy(row, prev, text, rules));
   });
 }

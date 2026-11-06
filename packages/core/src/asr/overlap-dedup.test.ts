@@ -269,6 +269,33 @@ describe("dropCoveredDuplicates：区间重跑只追加新行", () => {
     expect(dropCoveredDuplicates(existing, incoming)).toEqual([]);
   });
 
+  test("上一分句以百分数收尾：分句标点隔开的符号不属于新行，仍算重复", () => {
+    expect(
+      dropCoveredDuplicates([row(0, 10, "收益率是5%，今天讨论素材整理。")], [row(4, 8, "今天讨论素材整理。")]),
+    ).toEqual([]);
+  });
+
+  test("下一分句以货币符号开头：分句标点隔开的符号不属于新行，仍算重复", () => {
+    expect(
+      dropCoveredDuplicates([row(0, 10, "今天讨论素材整理，£500是本次预算。")], [row(0, 5, "今天讨论素材整理。")]),
+    ).toEqual([]);
+  });
+
+  test("数字与小句之间有空格：符号不紧贴匹配段，仍算重复", () => {
+    expect(dropCoveredDuplicates([row(0, 10, "预算是500. 今天讨论素材整理。")], [row(4, 8, "今天讨论素材整理。")])).toEqual(
+      [],
+    );
+  });
+
+  test("旧行后面还有一处干净的同长匹配：不能因为首个匹配带负号就保留新行", () => {
+    expect(
+      dropCoveredDuplicates(
+        [row(0, 10, "−5%是这次的收益率，后来5%是这次的收益率。")],
+        [row(4, 8, "5%是这次的收益率。")],
+      ),
+    ).toEqual([]);
+  });
+
   test("整句被旧长句包住（旧行前后都是分句）：仍算重复，丢掉", () => {
     const existing = [row(0, 10, "我们明天早上八点出发去机场，记得带身份证。")];
     const incoming = [row(4, 8, "记得带身份证。")];
