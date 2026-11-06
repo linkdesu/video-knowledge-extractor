@@ -3,7 +3,7 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "../asr/overlap-dedup";
-import { alignRangeSpeakers, applySpeakerAlignment } from "../asr/speaker-align";
+import { alignRangeSpeakers, assignStableSpeakerIds } from "../asr/speaker-align";
 import { extractAudioRange, probeVideo } from "../core/audio";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
@@ -208,14 +208,25 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
        */
       const alignment = alignRangeSpeakers(previous, filler.rows);
       // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
-      const appended = applySpeakerAlignment(dropCoveredDuplicates(previous, filler.rows, undefined, alignment), alignment);
+      const dedupedRange = dropCoveredDuplicates(previous, filler.rows, undefined, alignment);
+      /**
+       * 证明不了的局部编号不能直接落盘：它的 `speaker-1` 可能正是整段里的另一个人。
+       * 与既有编号撞车时另铸新号，字幕与弹窗里才不会把两个人显示成同一个名字。
+       */
+      const taken = new Set<string>(data.transcript.speakers.map((s) => s.id));
+      const { rows: appended, minted } = assignStableSpeakerIds(dedupedRange, alignment, taken);
       const utterances = [...previous, ...appended].sort((a, b) => a.start - b.start || a.end - b.end);
       // 只在剩下的行里还出现的说话人才登记：整段被映射走的局部编号（先前的 speaker-1）不该留个空壳
       const usedSpeakers = new Set(appended.map((u) => u.speakerId));
-      const speakers = mergeSpeakers(
-        data.transcript.speakers,
-        run.transcript.speakers.filter((s) => usedSpeakers.has(s.id)),
-      );
+      const mintedSpeakers: Speaker[] = [...minted].map(([local, fresh]) => ({
+        id: fresh as Speaker["id"],
+        name: `说话人${fresh.slice("speaker-".length)}`,
+        color: run.transcript.speakers.find((s) => s.id === local)?.color ?? "#6aa9ff",
+      }));
+      const speakers = mergeSpeakers(data.transcript.speakers, [
+        ...run.transcript.speakers.filter((s) => usedSpeakers.has(s.id)),
+        ...mintedSpeakers,
+      ]);
       const chunk = { index: data.chunks.length + 1, start, end };
       data.chunks = [...data.chunks.filter((c) => !(Math.abs(c.start - start) < 1e-6 && Math.abs(c.end - end) < 1e-6)), chunk].sort(
         (a, b) => a.start - b.start,

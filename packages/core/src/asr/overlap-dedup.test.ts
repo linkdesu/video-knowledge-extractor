@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "./overlap-dedup";
+import { alignRangeSpeakers } from "./speaker-align";
 
 const row = (start: number, end: number, text: string) => ({ start, end, text });
 
@@ -340,6 +341,13 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     const existing = [row(10, 14, "这个方案可以继续推进。")];
     const incoming = [{ ...row(10, 14, "这个方案可以继续推进。"), speakerId: "speaker-1" }];
     expect(dropCoveredDuplicates(existing, incoming, undefined, new Map())).toEqual([]);
+  });
+
+  test("重跑把长句拆开：先对齐再判重，#144 的包含判据仍然生效", () => {
+    const existing = [{ ...row(0, 10, "我们明天早上八点出发去机场，记得带身份证。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(4, 8, "记得带身份证。"), speakerId: "speaker-1" }];
+    const alignment = alignRangeSpeakers(existing, incoming);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual([]);
   });
 
   test("映射 + 语气词噪音（#144 规则）：组合后仍判重复，新行不重复追加", () => {
