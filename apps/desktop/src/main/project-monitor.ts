@@ -28,8 +28,10 @@ export type GrowthMonitorOptions = {
   /** 追加运行日志（「发现新文件」等）。 */
   event: (projectId: string, text: string) => void;
   /**
-   * 已加入整理、但时长刚刚才读到的文件：先把运行时元数据（源路径 / 输出目录）登记好，
-   * 再报告增长，保证随后入队的分析任务能跑（#132 评审 P1）。
+   * 把运行时元数据（源路径 / 输出目录）登记好：
+   * - 已加入整理、时长刚刚才读到的文件：随后报告的涨长才能入队（#132 评审 P1）；
+   * - 首次看到的文件（含重启后的首轮）：运行时借这次登记找回 `video.json`，
+   *   恢复「已处理」与分块终点，不会把整段重排一遍（#132 D2）。
    */
   ensureSource?: (projectId: string, file: MonitoredFile, durationSeconds: number) => Promise<void>;
   /** 一轮里该项目的控制器状态变过：由调用方推送详情。 */
@@ -170,6 +172,11 @@ export class GrowthMonitor {
               growing: true,
               modifiedSeconds: controller.clock,
             });
+            /**
+             * 运行时的源元数据（源路径 / 输出目录）也要补上：重启后监控目录里的文件不在视频库，
+             * 只有这次登记能拿到 `video.json`，借此恢复已处理进度与分块终点（#132 D2）。
+             */
+            if (duration !== null) await this.options.ensureSource?.(project.projectId, entry, duration);
             changed = true;
             continue;
           }

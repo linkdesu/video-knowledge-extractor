@@ -294,6 +294,18 @@ export class ClipProject {
     file.processedSeconds = Math.min(file.durationSeconds, Math.max(file.processedSeconds, seconds, 0));
   }
 
+  /**
+   * 重启后恢复「已经划分到哪」：用已落盘分块的最大终点续排，重启不会把整个文件重排一遍（#132 D2）。
+   * 与 `restoreProcessed` 是两个口径：cursor 是划分位置，processed 是「已处理并落盘切片」。
+   * 只增不减；时长已知时夹在时长内，超出时长的旧记录按尾部对齐。
+   */
+  restoreCursor(fileId: string, seconds: number): void {
+    const file = this.files.get(fileId);
+    if (file === undefined || !Number.isFinite(seconds)) return;
+    const limit = file.durationKnown ? file.durationSeconds : Math.max(seconds, 0);
+    file.cursorSeconds = Math.max(file.cursorSeconds, Math.min(seconds, limit), 0);
+  }
+
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (!job) return;

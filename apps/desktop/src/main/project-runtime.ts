@@ -129,8 +129,10 @@ export class ProjectRuntime {
       const video = this.video(projectId, videoId, false);
       if (video !== undefined) controller.addFile(this.fileInput(video));
     }
+    // 清单是「已加入」的单一真相源：重启后界面按 videoIds 显示已加入，控制器必须一致（#132 D2）
     this.restoreProcessed(projectId, controller, ids, record.clips);
     this.service.attachRuntime(projectId, controller);
+    controller.startOrganize([...record.videoIds]);
     return controller;
   }
 
@@ -138,6 +140,8 @@ export class ProjectRuntime {
    * 重启后控制器是全新的：用项目清单里已落盘的切片 + `video.json` 的分块/主题状态恢复
    * 「已处理」进度，否则队列底部的「未切片内容时长」会退回整段时长（#142 QA）。
    * 没有切片的视频也要走一遍：零主题的已完成分块同样算已处理。
+   * 监控目录里的文件重启时还没有运行时元数据（不在视频库），它们在第一次登记时补恢复
+   * （`registerSources` → `restoreVideo`），否则「已加入」的文件会把整段重新排一遍（#132 D2）。
    */
   private restoreProcessed(
     projectId: string,
@@ -145,31 +149,43 @@ export class ProjectRuntime {
     videoIds: Iterable<string>,
     clips: ProjectDetail["clips"],
   ): void {
-    const sliced = new Map<string, Set<string>>();
-    for (const clip of clips) {
-      const ids = sliced.get(clip.videoId) ?? new Set<string>();
-      ids.add(clip.topicId);
-      sliced.set(clip.videoId, ids);
-    }
+    const sliced = slicedTopicIds(clips);
     for (const videoId of videoIds) {
       if (!controller.files.has(videoId)) continue;
       const video = this.video(projectId, videoId, false);
       if (video === undefined) continue;
-      // 单个视频文档坏掉不能拖垮整个项目接入：跳过它的恢复，控制器照常挂上
-      let data;
-      try {
-        data = readVideoData(video.outputDir);
-      } catch (err) {
-        logger().error("project", "恢复未切片时长失败", {
-          projectId,
-          videoId,
-          message: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-      if (data === undefined) continue;
-      controller.restoreProcessed(videoId, slicedSecondsFrom(data, sliced.get(videoId) ?? new Set()));
+      this.restoreVideo(controller, video, sliced.get(videoId) ?? new Set());
     }
+  }
+
+  /** 单个视频的磁盘进度：已处理时长 + 已分块终点。坏文档只跳过它自己，不拖垮项目接入。 */
+  private restoreVideo(controller: ClipProject, video: ProjectVideo, slicedTopicIds: ReadonlySet<string>): void {
+    let data;
+    try {
+      data = readVideoData(video.outputDir);
+    } catch (err) {
+      logger().error("project", "恢复未切片时长失败", {
+        videoId: video.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (data === undefined) return;
+    controller.restoreProcessed(video.id, slicedSecondsFrom(data, slicedTopicIds));
+    // 已落盘分块的最大终点：从这里续排，不重排已经分析过的区间（#132 D2）
+    controller.restoreCursor(video.id, data.chunks.reduce((end, chunk) => Math.max(end, chunk.end), 0));
+  }
+
+  /**
+   * 运行时元数据刚登记（监控首轮、时长刚读出）：顺手补一次磁盘进度恢复。
+   * 监控目录里的文件不在视频库，重启后 attachProject 时拿不到 outputDir，只能等这次登记（#132 D2）。
+   */
+  private restoreRegisteredVideo(projectId: string, videoId: string): void {
+    const controller = this.controllers.get(projectId);
+    const video = this.videos.get(projectId)?.get(videoId);
+    if (controller === undefined || video === undefined) return;
+    const sliced = slicedTopicIds(this.service.get(projectId).clips).get(videoId) ?? new Set();
+    this.restoreVideo(controller, video, sliced);
   }
 
   /**
@@ -199,6 +215,8 @@ export class ProjectRuntime {
       const described = await this.deps.describeSource?.(path, hint);
       if (described === undefined || described.id !== videoId) continue;
       this.registerVideo(projectId, described);
+      // 监控目录里的文件重启后没有元数据：登记这一刻才找得到 video.json，补恢复已处理/分块终点
+      this.restoreRegisteredVideo(projectId, videoId);
       registered.push(videoId);
     }
     return registered;
@@ -441,4 +459,15 @@ export class ProjectRuntime {
     if (resolved === undefined && required) throw new Error(`未知视频：${videoId}`);
     return resolved;
   }
+}
+
+/** 项目清单里的切片记录 → 每个视频已切片的主题 id（重启恢复用）。 */
+function slicedTopicIds(clips: ProjectDetail["clips"]): Map<string, Set<string>> {
+  const sliced = new Map<string, Set<string>>();
+  for (const clip of clips) {
+    const ids = sliced.get(clip.videoId) ?? new Set<string>();
+    ids.add(clip.topicId);
+    sliced.set(clip.videoId, ids);
+  }
+  return sliced;
 }

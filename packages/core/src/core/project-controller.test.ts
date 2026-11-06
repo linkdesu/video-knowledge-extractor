@@ -759,3 +759,34 @@ describe("开始整理早于监控登记（#132 D3）", () => {
     ]);
   });
 });
+
+describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
+  test("恢复后只排新增长的部分，已分块的区间不再重排", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    p.restoreCursor("f1", 120);
+    expect(p.files.get("f1")?.cursorSeconds).toBe(120);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+
+    // 只排恢复点之后的：已分块的 0–120 不再重排，剩下的整块与尾段照常入队
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [120, 180],
+      [180, 190],
+    ]);
+  });
+
+  test("恢复终点夹在时长之内，超过时长的分块记录按尾部对齐", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    p.restoreCursor("f1", 400);
+    expect(p.files.get("f1")?.cursorSeconds).toBe(190);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    expect(p.analysisQueue).toHaveLength(0);
+  });
+});
