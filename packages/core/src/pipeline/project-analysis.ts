@@ -4,6 +4,7 @@ import { extname, resolve } from "node:path";
 import { createAsrEngine, type AsrConfig, type AsrEngine } from "../asr/engine";
 import { dedupeOverlappingLines, dropCoveredDuplicates } from "../asr/overlap-dedup";
 import { alignRangeSpeakers, assignStableSpeakerIds } from "../asr/speaker-align";
+import { alignRangeByVoiceprint, voiceprintTable, type RangeVoiceprintDeps } from "./range-voiceprint";
 import { extractAudioRange, probeVideo } from "../core/audio";
 import { cacheDirFor, ensureDir, openVideo, slugify } from "../core/paths";
 import { modelDir as defaultModelDir, notesRoot as defaultNotesRoot } from "../core/config";
@@ -45,6 +46,10 @@ export type RangeAnalysisInput = {
   asr?: AsrConfig;
   /** 测试注入 ASR 引擎；真实调用方不传。 */
   asrEngine?: AsrEngine;
+  /** 测试注入：声纹映射用的段级嵌入（正式调用方不传，走 CAM++）。 */
+  voiceprintDeps?: RangeVoiceprintDeps;
+  /** 测试注入：跳过 ffmpeg 解码来源媒体，直接给整段参考音频。 */
+  referenceAudio?: { samples: Float32Array; sampleRate: number };
   runToken?: string;
   prompts?: PromptOverrides;
   /** 调用方已持有的运行锁（执行器先取锁，避免同进程二次取锁）；缺省自己取。 */
@@ -211,13 +216,35 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
        * 整段里排第二的人只切到他的大段发言时会在区间里排第一。判重前先按「同时间 + 同文本」
        * 的既有行把局部编号映射回来源视频的稳定身份（#145），映射不了的编号不参与身份判断。
        */
-      const alignment = alignRangeSpeakers(previous, filler.rows);
+      const textAlignment = alignRangeSpeakers(previous, filler.rows);
+      /**
+       * 文本/时间立不了身份的局部簇，用声纹对既有说话人质心做归属（#145 r91j）：
+       * ASR 把相邻两行拼成一条、或端点漂移时会证不出身份，过去按 ADR-0052 直接铸新号，
+       * 真机上 7→8、3→5 的「新人」经 CAM++ 复算全是既有说话人或拼接碎片。
+       * 低余弦且种子不足的簇跟随最近质心，不单独建人；只有余弦不达标且种子够的才允许新人。
+       */
+      const voice = await alignRangeByVoiceprint({
+        existing: previous,
+        incoming: filler.rows,
+        alignment: textAlignment,
+        mediaPath,
+        rangeWavPath: wavPath,
+        rangeStart: start,
+        cacheDir,
+        modelDir,
+        ...(input.voiceprintDeps !== undefined ? { deps: input.voiceprintDeps } : {}),
+        ...(input.referenceAudio !== undefined ? { referenceAudio: input.referenceAudio } : {}),
+      });
+      const alignment = voice.alignment;
       logger().info("asr", "区间说话人对齐", {
         videoId: video.id,
         start,
         end,
         localSpeakers: new Set(filler.rows.map((u) => u.speakerId)).size,
         aligned: [...alignment].map(([local, stable]) => `${local}→${stable}`),
+        textAligned: [...textAlignment].map(([local, stable]) => `${local}→${stable}`),
+        references: voice.references,
+        voiceprint: voiceprintTable(voice.decisions),
       });
       // 复用视频库字幕时这段区间可能已经整段转写过：只追加真正新增的行，已有行与 line id 保持不变
       const dedupedRange = dropCoveredDuplicates(previous, filler.rows, undefined, alignment);
