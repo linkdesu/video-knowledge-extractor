@@ -891,9 +891,10 @@ describe("analyzeVideoRange：区间分离簇数与整段不同（#145 QA）", (
     ]);
     // 说话人 3 位不变：没有新增内容就不该铸新号
     expect(data.transcript.speakers).toHaveLength(3);
-    // 主题不变：区间没有新内容就不再跑主题分析，不重复建卡、也不产生新的待确认主题
+    // 主题不变：区间没有新内容就不再跑主题分析，不重复建卡
     expect(data.topics).toHaveLength(1);
-    expect(range.topics).toEqual([]);
+    // #150：重跑只刷新字幕——同一个待确认主题按当前字幕重新给出建议行，不会产生新主题
+    expect(range.topics.map((t) => t.id)).toEqual([data.topics[0]!.id]);
 
     const lines = subtitleLinesFrom(data);
     const contents = lines.filter((line) => line.start >= 4 && line.start < 8).map((line) => `${line.start}|${line.text}`);
@@ -1102,5 +1103,396 @@ describe("analyzeVideoRange：声纹把区间局部簇归回既有说话人（#1
     expect(data.transcript.speakers.map((s) => s.id as string)).toEqual(["speaker-1"]);
     expect(data.transcript.utterances.find((u) => u.text === "区间里重新识别的一句话。")?.speakerId as string).toBe("speaker-1");
     expect(embedCalls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("analyzeVideoRange：已有主题的区间重跑只刷新字幕（#150）", () => {
+  /** 只数「主题分析器」提示词（主题划段/合并）；字幕清洗等其它请求照常返回空结果。 */
+  function countingClient(range: { start: number; end: number }, counter: { topics: number }): LlmClient {
+    return {
+      model: endpoint.model,
+      chat: async (messages, opts) => {
+        if (!opts?.json) throw new Error("需要 json");
+        const system = messages[0]?.content ?? "";
+        if (system.includes("主题分析器")) {
+          counter.topics += 1;
+          return JSON.stringify({ topics: [{ title: "区间主题", summary: "摘要", segments: [{ start: range.start, end: range.end }] }] });
+        }
+        return JSON.stringify({ rows: [] });
+      },
+    };
+  }
+
+  /** 声纹不参与：证不出来的局部编号走铸号，不影响字幕与主题断言。 */
+  const noVoiceprint = {
+    embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) =>
+      spans.map((span) => ({ ...span, v: null })),
+  };
+
+  /** 第一次调用是整段基础转写；之后的调用返回区间内两条全新的字幕（时间相对区间起点）。 */
+  function twoPassEngine(extra: ReadonlyArray<{ start: number; end: number; text: string }>): AsrEngine {
+    let calls = 0;
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const rerun = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: rerun
+              ? extra.map((u) => ({ ...u, speakerId: "speaker-1" as SpeakerId }))
+              : [
+                  { start: 0.2, end: 1.6, speakerId: "speaker-1" as SpeakerId, text: "今天讲一下素材整理的方法。" },
+                  { start: 2.2, end: 3.0, speakerId: "speaker-1" as SpeakerId, text: "字幕校对就按时间轴来。" },
+                  { start: 4.2, end: 5.0, speakerId: "speaker-1" as SpeakerId, text: "我们先把素材按日期归档。" },
+                  { start: 6.2, end: 7.0, speakerId: "speaker-1" as SpeakerId, text: "然后统一导出到项目目录。" },
+                ],
+          },
+          chunks: [{ index: 1, start: 0, end: 8 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  const newLines = [
+    { start: 1.2, end: 1.8, text: "这段是重跑补出来的新的内容。" },
+    { start: 3.4, end: 4.0, text: "第二次转写新增的补充字幕行。" },
+  ];
+
+  test("区间整段落在已分析分块里：不调主题分析、不新建主题，待确认主题的字幕按新 ASR 刷新", async () => {
+    const root = makeTmpDir("project-analysis-refresh-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const counter = { topics: 0 };
+    const engine = twoPassEngine(newLines);
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 8,
+      endpoint,
+      client: countingClient({ start: 0, end: 8 }, counter),
+      asrEngine: engine,
+    });
+    const topicCallsAfterFirst = counter.topics;
+    expect(topicCallsAfterFirst).toBeGreaterThan(0);
+    const before = loadVideoData(whole.outputDir, { id: whole.videoId as VideoId, title: "" });
+    expect(before.topics.map((t) => t.status)).toEqual(["proposed"]);
+
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 6,
+      endpoint,
+      client: countingClient({ start: 2, end: 6 }, counter),
+      asrEngine: engine,
+      voiceprintDeps: noVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // AC2：重跑不再发起主题分析请求
+    expect(counter.topics).toBe(topicCallsAfterFirst);
+    // AC1：主题数量与内容完全不变，只有字幕被刷新
+    expect(data.topics).toHaveLength(1);
+    expect(data.topics[0]!.id).toBe(before.topics[0]!.id);
+    expect(data.topics[0]!.title).toBe(before.topics[0]!.title);
+    expect(data.topics[0]!.segments).toEqual(before.topics[0]!.segments);
+    // 重跑区间照旧记一笔分块：重启后 `slicedSecondsFrom` 靠它按项目边界恢复「已处理」时长
+    expect(data.chunks.map((c) => [c.start, c.end])).toEqual([
+      [0, 8],
+      [2, 6],
+    ]);
+
+    // 新 ASR 的新增字幕照常进完整字幕列表
+    expect(range.addedLines).toBe(newLines.length);
+    const lines = subtitleLinesFrom(data);
+    const addedIds = newLines.map((line) => lines.find((l) => l.text === line.text)?.id);
+    expect(addedIds.every((id) => id !== undefined)).toBe(true);
+
+    // AC3(a)：待确认主题重新给出的建议行包含新 ASR 的行（按时间落入主题范围）
+    expect(range.topics).toHaveLength(1);
+    expect(range.topics[0]!.id).toBe(before.topics[0]!.id);
+    expect(range.topics[0]!.lineIds).toEqual(expect.arrayContaining(addedIds as string[]));
+  });
+
+  test("已切片主题：重跑后主题记录与切片快照逐字节不变，也不会重新变回待确认", async () => {
+    const root = makeTmpDir("project-analysis-refresh-sliced-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const counter = { topics: 0 };
+    const engine = twoPassEngine(newLines);
+
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 8,
+      endpoint,
+      client: countingClient({ start: 0, end: 8 }, counter),
+      asrEngine: engine,
+    });
+
+    // 已确认并切完：主题 done + 切片快照（字幕行快照与片段）
+    const sliced = loadVideoData(whole.outputDir, { id: whole.videoId as VideoId, title: "" });
+    const snapshot = sliced.topics.map((topic) => ({
+      ...topic,
+      status: "done" as const,
+      clips: [
+        {
+          file: "001-区间主题.mp4",
+          start: 0.2,
+          end: 3.0,
+          segmentIndexes: [0, 1],
+          segmentOffsets: [0, 1.4],
+          subtitles: sliced.transcript.utterances.map((u) => ({ start: u.start, end: u.end, text: u.text })),
+          segments: [{ start: 0.2, end: 3.0 }],
+        },
+      ],
+    }));
+    // 再补一个落在同一区间里的失败主题：失败态同样不该被重跑重新提案
+    const failedTopic = {
+      ...snapshot[0]!,
+      id: "topic-failed" as typeof snapshot[0]["id"],
+      title: "失败区间主题",
+      segments: [{ start: 2.2, end: 2.9 }],
+      status: "failed" as const,
+      clips: [],
+    };
+    writeVideoData(whole.outputDir, { ...sliced, topics: [...snapshot, failedTopic] });
+    const snapshotAll = [...snapshot, failedTopic];
+    const topicCallsBefore = counter.topics;
+
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 6,
+      endpoint,
+      client: countingClient({ start: 2, end: 6 }, counter),
+      asrEngine: engine,
+      voiceprintDeps: noVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // AC2：仍然没有主题分析请求
+    expect(counter.topics).toBe(topicCallsBefore);
+    // 主题记录（含切片字幕快照与片段、失败主题）原样保留
+    expect(data.topics).toEqual(snapshotAll);
+    // AC3(b)：已切片 / 已失败的主题都不会被重新提为待确认
+    expect(range.topics).toEqual([]);
+    // 完整字幕列表照常更新
+    expect(range.addedLines).toBe(newLines.length);
+    expect(data.transcript.utterances).toHaveLength(sliced.transcript.utterances.length + newLines.length);
+  });
+
+  test("从未分析过的区间：照常跑主题分析并产生主题", async () => {
+    const root = makeTmpDir("project-analysis-fresh-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const counter = { topics: 0 };
+    const engine = twoPassEngine(newLines);
+
+    const head = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: countingClient({ start: 0, end: 2 }, counter),
+      asrEngine: engine,
+    });
+    const topicCallsAfterHead = counter.topics;
+    const tail = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: head.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: countingClient({ start: 2, end: 4 }, counter),
+      asrEngine: engine,
+      voiceprintDeps: noVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(tail.outputDir, { id: tail.videoId as VideoId, title: "" });
+    // 未分析过的区间没有「已有主题」可比，必须照旧分析
+    expect(counter.topics).toBeGreaterThan(topicCallsAfterHead);
+    expect(data.topics).toHaveLength(2);
+    expect(tail.topics.map((t) => t.id)).toEqual([data.topics[1]!.id]);
+  });
+
+  test("主题范围之外的新字幕：只进完整字幕列表，不挂到任何主题", async () => {
+    const root = makeTmpDir("project-analysis-refresh-outside-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const counter = { topics: 0 };
+    const engine = twoPassEngine([{ start: 5.4, end: 6.0, text: "主题范围之外的补充内容。" }]);
+
+    // 整段只有 0–2 这一段被划成主题；2s 之后从未属于任何主题
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 8,
+      endpoint,
+      client: countingClient({ start: 0, end: 2 }, counter),
+      asrEngine: engine,
+    });
+    const topicCallsBefore = counter.topics;
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 6,
+      endpoint,
+      client: countingClient({ start: 0, end: 6 }, counter),
+      asrEngine: engine,
+      voiceprintDeps: noVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    expect(counter.topics).toBe(topicCallsBefore);
+    expect(data.topics).toHaveLength(1);
+    const lines = subtitleLinesFrom(data);
+    const outside = lines.find((line) => line.text === "主题范围之外的补充内容。");
+    expect(outside?.start).toBe(5.4);
+    // 只进完整字幕列表：不在待确认主题的建议行里，也没有因此新建主题
+    expect(range.topics.map((t) => t.id)).toEqual([data.topics[0]!.id]);
+    expect(range.topics[0]!.lineIds).not.toContain(outside!.id);
+  });
+
+  test("只转写完成、主题分析失败（topics 为空）的视频：再跑同一区间仍会补划主题", async () => {
+    const root = makeTmpDir("project-analysis-refresh-notopics-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 4);
+    const counter = { topics: 0 };
+
+    // 视频库导入中途失败的真实状态：chunks 已落盘、topics 为空（extract 先写分块再划主题）
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: { model: endpoint.model, chat: async () => JSON.stringify({ topics: [] }) },
+      asrEngine: fakeEngine([]),
+    });
+    const empty = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" });
+    expect(empty.topics).toEqual([]);
+    expect(empty.chunks).toHaveLength(1);
+
+    // 分块精确命中，但视频没有任何主题：不能当成「已分析过」直接复用。
+    // 用一份干净缓存，避免上一次「空主题」的候选响应把这次补跑也压成空结果。
+    const again = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot: join(root, "cache-retry"),
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: countingClient({ start: 0, end: 2 }, counter),
+      asrEngine: fakeEngine([]),
+    });
+
+    expect(counter.topics).toBeGreaterThan(0);
+    const data = loadVideoData(again.outputDir, { id: again.videoId as VideoId, title: "" });
+    expect(data.topics).toHaveLength(1);
+    expect(again.topics).toHaveLength(1);
+  });
+
+  test("重跑区间横跨两个相邻分块：合并后的已分析时段仍算覆盖，不重新划主题", async () => {
+    const root = makeTmpDir("project-analysis-refresh-merged-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    const counter = { topics: 0 };
+    const calls: { wavPath: string }[] = [];
+    const engine = fakeEngine(calls);
+
+    const head = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: countingClient({ start: 0, end: 2 }, counter),
+      asrEngine: engine,
+    });
+    await analyzeVideoRange({
+      videoPath: source,
+      outputDir: head.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: countingClient({ start: 2, end: 4 }, counter),
+      asrEngine: engine,
+    });
+    const before = loadVideoData(head.outputDir, { id: head.videoId as VideoId, title: "" });
+    expect(before.chunks.map((c) => [c.start, c.end])).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
+    const topicCallsBefore = counter.topics;
+
+    // 1–3 单独看谁都不包含它，只有把 [0,2] 与 [2,4] 合并成 [0,4] 才算已有主题的区间
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: head.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 1,
+      endSeconds: 3,
+      endpoint,
+      client: countingClient({ start: 1, end: 3 }, counter),
+      asrEngine: engine,
+      voiceprintDeps: noVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    expect(counter.topics).toBe(topicCallsBefore);
+    expect(data.topics).toHaveLength(2);
+    expect(data.topics.map((t) => t.id)).toEqual(before.topics.map((t) => t.id));
+    // 两个待确认主题都与区间相交：都按当前字幕重新给出建议行，不新建主题
+    expect(range.topics.map((t) => t.id).sort()).toEqual(before.topics.map((t) => t.id).sort());
   });
 });
