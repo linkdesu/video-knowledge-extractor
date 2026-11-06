@@ -71,6 +71,31 @@ describe("alignRangeSpeakers：区间局部编号 → 来源视频稳定身份",
     expect(alignRangeSpeakers(whole, range).size).toBe(0);
   });
 
+  test("第二位身份的证据不到 1 秒：内容不冲突，仍按最强证据映射", () => {
+    const whole = [
+      line(10, 14, "speaker-2", "今天讲一下素材整理的方法。"),
+      line(14, 14.9, "speaker-3", "这个方法我认可。"),
+    ];
+    const range = [
+      line(10, 14, "speaker-1", "今天讲一下素材整理的方法。"),
+      line(14, 14.9, "speaker-1", "这个方法我认可。"),
+    ];
+    // 0.9 秒 < CONFLICT_SECONDS：这里断的是「边界值不误判成折叠」
+    expect(alignRangeSpeakers(whole, range).get("speaker-1")).toBe("speaker-2");
+  });
+
+  test("恰 2 字的行参与投票，1 字的行不参与", () => {
+    const whole = [
+      line(10, 14, "speaker-2", "今天讲一下素材整理的方法。"),
+      line(14, 15, "speaker-2", "好的。"),
+      line(16, 17, "speaker-2", "嗯。"),
+    ];
+    const twoChars = [line(10, 14, "speaker-1", "今天讲一下素材整理的方法。"), line(14, 15, "speaker-1", "好的。")];
+    expect(alignRangeSpeakers(whole, twoChars).get("speaker-1")).toBe("speaker-2");
+    // 只有 1 字的行对上：一个字不能立身份
+    expect(alignRangeSpeakers(whole, [line(16, 17, "speaker-1", "嗯。")]).size).toBe(0);
+  });
+
   test("同一局部编号对第二位稳定身份也有成段证据：编号把两人并了，不映射", () => {
     // 区间里次要说话人不足 assignSpeakers 的 3 秒闸门时会归给邻座，一个局部编号因此横跨两人
     const whole = [

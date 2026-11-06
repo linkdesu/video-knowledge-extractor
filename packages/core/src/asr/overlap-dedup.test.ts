@@ -366,6 +366,13 @@ describe("dropCoveredDuplicates：跨次说话人身份按映射对齐（#145）
     expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
   });
 
+  test("映射成立也要过 #144 的数值符号闸：匹配段外的负号仍保留新行", () => {
+    const existing = [{ ...row(0, 10, "−5%是这次的收益率。"), speakerId: "speaker-2" }];
+    const incoming = [{ ...row(4, 8, "5%是这次的收益率。"), speakerId: "speaker-1" }];
+    const alignment = new Map([["speaker-1", "speaker-2"]]);
+    expect(dropCoveredDuplicates(existing, incoming, undefined, alignment)).toEqual(incoming);
+  });
+
   test("映射 + 语气词噪音（#144 规则）：组合后仍判重复，新行不重复追加", () => {
     const existing = [{ ...row(10, 14, "今天讲一下素材整理的方法。"), speakerId: "speaker-2" }];
     const incoming = [{ ...row(10, 14, "今天讲一下素材整理的方法啊。"), speakerId: "speaker-1" }];
