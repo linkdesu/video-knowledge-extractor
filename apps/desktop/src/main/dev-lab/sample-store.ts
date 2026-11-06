@@ -5,9 +5,9 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
+import type { EmbeddingRow } from "@video-notes/core";
 import { normalizeMark, type LabMarks, type LabSampleMeta } from "../../shared/lab";
 import type { LabAnalysisStamp } from "./analysis-cache";
-import type { EmbeddingRow } from "./refine";
 
 export type LabSampleFile = {
   version: 1;

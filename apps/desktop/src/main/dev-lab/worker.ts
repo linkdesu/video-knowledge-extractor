@@ -6,20 +6,12 @@
 import { mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DiarizationSegment } from "@video-notes/core";
-import { createTranscriber, detectSilences, extractAudio, readWav, resolveModelPaths } from "@video-notes/core";
-import * as sherpaModule from "sherpa-onnx-node";
+import { createTranscriber, detectSilences, extractAudio, extractSegmentEmbeddings, readWav, resolveModelPaths } from "@video-notes/core";
 import { importExperimentDir } from "./experiment";
-import { LAB_EMBED_MIN_SECONDS, LAB_SEGMENT_PADDING_SECONDS } from "./analysis-cache";
+import { LAB_SEGMENT_PADDING_SECONDS } from "./analysis-cache";
 import { serveLabWorker, type LabParentPort, type LabRunMessage, type LabWorkerProgress } from "./lab-worker-host";
-import type { EmbeddingRow } from "./refine";
 import { writeJson, writeSampleFile } from "./sample-store";
 import type { LabSampleFile } from "./sample-store";
-
-function resolveSherpa(): typeof sherpaModule {
-  const mod = sherpaModule as unknown as { OnnxRuntime?: unknown; default?: typeof sherpaModule };
-  if (typeof mod.OnnxRuntime !== "undefined") return sherpaModule;
-  return mod.default ?? sherpaModule;
-}
 
 type SegmentTextRow = { start: number; end: number; text: string };
 
@@ -52,26 +44,13 @@ async function computeSample(message: LabRunMessage, post: (progress: LabWorkerP
   post({ step: "diarize", done: 1, total: 1, detail: `${segments.length} 段` });
 
   t = Date.now();
-  const sherpa = resolveSherpa();
-  const extractor = new sherpa.SpeakerEmbeddingExtractor({
-    model: paths.embedding,
-    numThreads: 2,
-    debug: 0,
-    provider: "cpu",
-  });
-  const embeddings: EmbeddingRow[] = [];
-  segments.forEach((seg, i) => {
-    const from = Math.max(0, Math.round(seg.start * sampleRate));
-    const to = Math.min(samples.length, Math.round(seg.end * sampleRate));
-    let v: number[] | null = null;
-    if (seg.end - seg.start >= LAB_EMBED_MIN_SECONDS && to > from) {
-      const stream = extractor.createStream();
-      stream.acceptWaveform({ samples: samples.subarray(from, to), sampleRate });
-      // Electron utility process 禁止 napi 外部缓冲（默认 true 会抛 External buffers are not allowed）。
-      if (extractor.isReady(stream)) v = Array.from(extractor.compute(stream, false));
-    }
-    embeddings.push({ start: seg.start, end: seg.end, v });
-    if (i % 25 === 0) post({ step: "embed", done: i + 1, total: segments.length, detail: null });
+  // 抽取口径与正式管线共用 core 的同一份实现（ADR-0057）；进度节奏也由它给。
+  const embeddings = extractSegmentEmbeddings({
+    samples,
+    sampleRate,
+    segments,
+    modelPath: paths.embedding,
+    onProgress: (done) => post({ step: "embed", done, total: segments.length, detail: null }),
   });
   writeJson(join(message.outDir, "embeddings.json"), { dim: embeddings.find((e) => e.v !== null)?.v?.length ?? 0, rows: embeddings });
   timings.embed = Math.round((Date.now() - t) / 100) / 10;
