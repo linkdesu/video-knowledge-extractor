@@ -124,6 +124,7 @@ type LaunchFacts = {
   navLibrary: boolean;
   navCount: number;
   settingsVersion: string | null;
+  notesRoot: string | null;
   title: string;
   bodyLength: number;
 };
@@ -138,6 +139,7 @@ const FACTS_EXPRESSION = `(async () => {
     navLibrary: document.querySelector('[data-testid=nav-library]') !== null,
     navCount: document.querySelectorAll('nav [data-testid^="nav-"]').length,
     settingsVersion: settings === null ? null : settings.appVersion,
+    notesRoot: settings === null ? null : settings.notesRoot,
     title: document.title,
     bodyLength: document.body === null ? 0 : document.body.innerHTML.length,
   };
@@ -157,9 +159,23 @@ async function waitForPort(deadline: number): Promise<void> {
   throw new Error(`CDP 端口 ${port} 在 ${timeoutMs}ms 内没有出现 page target`);
 }
 
-/** 每次启动的四条断言，逐条落进 launch-<i>.json，失败时能在 summary 里直接定位。 */
-type Checks = { readyState: boolean; root: boolean; navLibrary: boolean; appVersion: boolean };
+/** 每次启动的断言，逐条落进 launch-<i>.json，失败时能在 summary 里直接定位。 */
+type Checks = { readyState: boolean; root: boolean; navLibrary: boolean; appVersion: boolean; isolatedHome: boolean };
 type LaunchOutcome = { ok: boolean; problems: string[]; checks: Checks | null; facts: LaunchFacts | null; readyMs?: number };
+
+/**
+ * notesRoot 必须落在本轮的隔离目录里（r95c）：打包启动用的是真实用户配置，
+ * VNOTE_HOME 没生效时会把笔记写进 `~/Documents/video-notes`，证据也就失去了隔离前提。
+ * mac 用绝对路径相等，Windows 用「包含 verify-state/<run>」判定（远端 home 由 verify.ts 决定）。
+ */
+type Isolation = { kind: "mac"; home: string } | { kind: "win"; run: string };
+
+function isolatedNotesRoot(notesRoot: string | null, isolation: Isolation): boolean {
+  if (notesRoot === null || notesRoot.trim() === "") return false;
+  if (isolation.kind === "mac") return resolve(notesRoot) === resolve(isolation.home);
+  const normalized = notesRoot.replace(/\\/g, "/").toLowerCase();
+  return normalized.includes(`/verify-state/${isolation.run}/`.toLowerCase());
+}
 
 /** 白屏时渲染主线程可能被阻塞：每个 CDP 调用都要有上限，否则门禁自己会挂住。 */
 async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
@@ -174,19 +190,21 @@ async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Prom
   }
 }
 
-/** 白屏的判定标准就是这四条：文档没完成、root 空、没有主界面导航、版本不符。 */
-function verdict(facts: LaunchFacts, expectedVersion: string): { problems: string[]; checks: Checks } {
+/** 白屏的判定标准：文档没完成、root 空、没有主界面导航、版本不符；外加隔离目录断言。 */
+function verdict(facts: LaunchFacts, expectedVersion: string, isolation: Isolation): { problems: string[]; checks: Checks } {
   const checks: Checks = {
     readyState: facts.readyState === "complete",
     root: facts.rootChildren > 0,
     navLibrary: facts.navLibrary,
     appVersion: facts.settingsVersion === expectedVersion,
+    isolatedHome: isolatedNotesRoot(facts.notesRoot, isolation),
   };
   const problems: string[] = [];
   if (!checks.readyState) problems.push(`readyState=${facts.readyState}`);
   if (!checks.root) problems.push("root 无子节点");
   if (!checks.navLibrary) problems.push("缺少 [data-testid=nav-library]");
   if (!checks.appVersion) problems.push(`appVersion=${String(facts.settingsVersion)}，期望 ${expectedVersion}`);
+  if (!checks.isolatedHome) problems.push(`notesRoot 未隔离：${String(facts.notesRoot)}`);
   return { problems, checks };
 }
 
@@ -237,7 +255,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
         }
         await Bun.sleep(200);
       }
-      if (facts !== null && verdict(facts, expectedVersion).problems.length > 0) {
+      if (facts !== null && verdict(facts, expectedVersion, { kind: "mac", home }).problems.length > 0) {
         // 白屏页面不会提交新帧，直接 captureScreenshot 会永久等待；先 abort 加载
         await withDeadline(cdp.send("Page.stopLoading"), 3000, "Page.stopLoading").catch(() => {});
       }
@@ -274,7 +292,7 @@ async function launchMac(appPath: string, index: number, expectedVersion: string
     if (facts === null) {
       problems = ["CDP 求值全部失败", ...evidenceProblems];
     } else {
-      const v = verdict(facts, expectedVersion);
+      const v = verdict(facts, expectedVersion, { kind: "mac", home });
       problems = [...v.problems, ...evidenceProblems];
       checks = v.checks;
     }
@@ -359,7 +377,7 @@ async function launchWin(appPath: string, index: number, expectedVersion: string
   if (facts === null) {
     problems.push(`drive eval 失败：${evalResult.stderr.toString().slice(0, 400)}`);
   } else {
-    const v = verdict(facts, expectedVersion);
+    const v = verdict(facts, expectedVersion, { kind: "win", run });
     problems.push(...v.problems);
     checks = v.checks;
   }
