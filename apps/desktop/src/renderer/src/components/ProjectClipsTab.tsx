@@ -9,7 +9,6 @@ import {
 import { createPortal } from "react-dom";
 import type { ProjectClipInfo, ProjectDetail } from "../../../shared/ipc";
 import {
-  clipAspectStyle,
   clipMetaLine,
   clipPlayerSubtitle,
   clipStatsLine,
@@ -33,10 +32,10 @@ function ClipCard({
 
   return (
     <article className="vn-card vn-clip-card" data-testid="clip-card">
+      {/* 原型 `.thumb` 固定 16:9 框架、视频 cover 裁剪；来源比例只写在 meta 行。 */}
       <button
         type="button"
         className="vn-clip-thumb"
-        style={{ aspectRatio: clipAspectStyle(clip.resolution) }}
         data-testid="clip-thumb"
         aria-label={`播放 ${clip.title}`}
         onClick={(event) => onPlay(clip, event.currentTarget)}

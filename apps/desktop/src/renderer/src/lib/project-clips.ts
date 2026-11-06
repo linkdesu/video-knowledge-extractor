@@ -28,12 +28,6 @@ export function clipRatioLabel(resolution: VideoResolution | null): string | nul
   return w <= 32 && h <= 32 ? `${w}:${h}` : `${width} × ${height}`;
 }
 
-/** 缩略图框架的 `aspect-ratio`：与来源同比例，框架不按横竖屏切换。 */
-export function clipAspectStyle(resolution: VideoResolution | null): string | undefined {
-  if (resolution === null || resolution.width <= 0 || resolution.height <= 0) return undefined;
-  return `${resolution.width} / ${resolution.height}`;
-}
-
 /** 清单按生成顺序追加；产出 tab 按原型最新在前显示（不改共享 DTO 顺序）。 */
 export function clipsNewestFirst(clips: readonly ProjectClipInfo[]): ProjectClipInfo[] {
   return [...clips].reverse();
