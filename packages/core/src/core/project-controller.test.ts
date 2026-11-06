@@ -4,6 +4,7 @@ import {
   type AnalysisJob,
   type ProjectExecutor,
   type SliceJob,
+  slicedSecondsFrom,
   topicKey,
   type SubtitleLine,
 } from "./project-controller";
@@ -581,5 +582,56 @@ describe("分析阶段推进", () => {
     expect(p.completeAnalysis(1, [])).toBeUndefined();
     expect(p.analysisQueue[0]?.status).toBe("done");
     expect(p.advanceAnalysisStage(1, 1)).toBe(false);
+  });
+});
+
+describe("重启恢复已处理进度（#142 QA）", () => {
+  /** 只取恢复口径要用的字段；其余文档字段与本函数无关。 */
+  function doc(
+    chunks: Array<{ start: number; end: number }>,
+    topics: Array<{ id: string; status: string; segments: Array<{ start: number; end: number }> }>,
+  ) {
+    return {
+      chunks: chunks.map((chunk, index) => ({ index: index + 1, ...chunk })),
+      topics,
+    } as unknown as Parameters<typeof slicedSecondsFrom>[0];
+  }
+
+  test("只累计从 0 连续、且块内主题已落盘切片的块", () => {
+    const data = doc(
+      [
+        { start: 0, end: 30 },
+        { start: 30, end: 60 },
+        { start: 60, end: 90 },
+      ],
+      [
+        { id: "t0-1", status: "done", segments: [{ start: 0, end: 29 }] },
+        { id: "t30-1", status: "proposed", segments: [{ start: 30, end: 59 }] },
+        { id: "t60-1", status: "done", segments: [{ start: 60, end: 89 }] },
+      ],
+    );
+    expect(slicedSecondsFrom(data, new Set(["t0-1", "t60-1"]))).toBe(30);
+  });
+
+  test("主题 done 但没有项目切片记录时不计入（避免把只生成过笔记的主题算成已处理）", () => {
+    const data = doc(
+      [{ start: 0, end: 30 }],
+      [{ id: "t0-1", status: "done", segments: [{ start: 0, end: 29 }] }],
+    );
+    expect(slicedSecondsFrom(data, new Set())).toBe(0);
+  });
+
+  test("分块不连续时停在前一块末尾", () => {
+    const data = doc(
+      [
+        { start: 0, end: 30 },
+        { start: 40, end: 70 },
+      ],
+      [
+        { id: "t0-1", status: "done", segments: [{ start: 0, end: 29 }] },
+        { id: "t40-1", status: "done", segments: [{ start: 40, end: 69 }] },
+      ],
+    );
+    expect(slicedSecondsFrom(data, new Set(["t0-1", "t40-1"]))).toBe(30);
   });
 });

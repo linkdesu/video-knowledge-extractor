@@ -11,6 +11,7 @@ import {
   mediaAbsolutePath,
   readVideoData,
   setTopicProgress,
+  slicedSecondsFrom,
   subtitleLinesFrom,
   splitTopicKey,
 } from "@video-notes/core";
@@ -121,8 +122,47 @@ export class ProjectRuntime {
       const video = this.video(projectId, videoId, false);
       if (video !== undefined) controller.addFile(this.fileInput(video));
     }
+    this.restoreProcessed(projectId, controller, ids, record.clips);
     this.service.attachRuntime(projectId, controller);
     return controller;
+  }
+
+  /**
+   * 重启后控制器是全新的：用项目清单里已落盘的切片 + `video.json` 的分块/主题状态恢复
+   * 「已处理」进度，否则队列底部的「未切片内容时长」会退回整段时长（#142 QA）。
+   * 没有切片的视频也要走一遍：零主题的已完成分块同样算已处理。
+   */
+  private restoreProcessed(
+    projectId: string,
+    controller: ClipProject,
+    videoIds: Iterable<string>,
+    clips: ProjectDetail["clips"],
+  ): void {
+    const sliced = new Map<string, Set<string>>();
+    for (const clip of clips) {
+      const ids = sliced.get(clip.videoId) ?? new Set<string>();
+      ids.add(clip.topicId);
+      sliced.set(clip.videoId, ids);
+    }
+    for (const videoId of videoIds) {
+      if (!controller.files.has(videoId)) continue;
+      const video = this.video(projectId, videoId, false);
+      if (video === undefined) continue;
+      // 单个视频文档坏掉不能拖垮整个项目接入：跳过它的恢复，控制器照常挂上
+      let data;
+      try {
+        data = readVideoData(video.outputDir);
+      } catch (err) {
+        logger().error("project", "恢复未切片时长失败", {
+          projectId,
+          videoId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      if (data === undefined) continue;
+      controller.restoreProcessed(videoId, slicedSecondsFrom(data, sliced.get(videoId) ?? new Set()));
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 import type { Segment } from "./types";
-import type { TopicStatus } from "./video-data";
+import type { TopicStatus, VideoData } from "./video-data";
 
 /** 停止增长多久后补尾段；必须严格超过，恰好等于不补（#121 第 28、26 条）。 */
 export const GROWTH_IDLE_SECONDS = 30;
@@ -212,6 +212,16 @@ export class ClipProject {
     if (job === undefined || job.stage >= stage) return false;
     job.stage = stage;
     return true;
+  }
+
+  /**
+   * 重启后从已落盘切片恢复「已处理」进度：只增不减，夹在 [0, 时长]。
+   * 进度口径与 `refreshProcessed` 相同，来源换成磁盘上的分块与主题状态。
+   */
+  restoreProcessed(fileId: string, seconds: number): void {
+    const file = this.files.get(fileId);
+    if (file === undefined || !Number.isFinite(seconds)) return;
+    file.processedSeconds = Math.min(file.durationSeconds, Math.max(file.processedSeconds, seconds, 0));
   }
 
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
@@ -441,4 +451,26 @@ function mergeLines(lines: SubtitleLine[]): Segment[] {
     }
   }
   return segments;
+}
+
+/**
+ * 重启恢复：由 `video.json` 的分块与主题状态算出「从开头起连续、全部主题都已切片」的秒数。
+ * 口径与 `refreshProcessed` 相同：分块必须从 0 连续，块内主题全部 done 且有落盘切片才计入。
+ * `slicedTopicIds` 来自项目清单的 clip 记录，避免把只生成过笔记、没切片的主题算成已处理。
+ * 主题按时间段相交归入分块：同一视频若另有边界不同的视频库笔记主题，恢复可能偏保守（偏小）。
+ */
+export function slicedSecondsFrom(
+  data: Pick<VideoData, "chunks" | "topics">,
+  slicedTopicIds: ReadonlySet<string>,
+): number {
+  let end = 0;
+  for (const chunk of [...data.chunks].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (chunk.start > end + EPS) break;
+    const inChunk = data.topics.filter((topic) =>
+      topic.segments.some((segment) => segment.start < chunk.end - EPS && segment.end > chunk.start + EPS),
+    );
+    if (!inChunk.every((topic) => topic.status === "done" && slicedTopicIds.has(topic.id))) break;
+    end = Math.max(end, chunk.end);
+  }
+  return end;
 }
