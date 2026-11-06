@@ -80,13 +80,16 @@ export function TopicConfirmDialog({
   useEffect(() => {
     const onEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // 提交中的 Esc 不是「取消」：IPC 已经在途，关掉弹窗只会让切片在后台静默入队。
+      // 与「稍后确认」按钮的 disabled={submitting} 同一个语义。
+      if (submitting) return;
       event.preventDefault();
       event.stopPropagation();
       onDefer();
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [onDefer]);
+  }, [onDefer, submitting]);
 
   const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Tab") return;
@@ -152,7 +155,11 @@ export function TopicConfirmDialog({
           漏选的行，取消勾选可移除不需要的行。选中字幕按时间顺序拼接，不包含中间未选内容。
         </p>
         {loading || loadError !== null ? null : (
-          <p className="vn-topic-confirm-summary" data-testid="topic-confirm-summary">
+          <p
+            id="topic-confirm-summary"
+            className="vn-topic-confirm-summary"
+            data-testid="topic-confirm-summary"
+          >
             {selectedCountLabel(selectedIds.length, lines.length)}
           </p>
         )}
@@ -206,6 +213,8 @@ export function TopicConfirmDialog({
             type="button"
             className="vn-btn primary"
             data-testid="topic-confirm-generate"
+            // 禁用原因由计数行解释（「已选 0 行」）；把它连成说明，读屏不只听到「不可用」。
+            aria-describedby={loading || loadError !== null ? undefined : "topic-confirm-summary"}
             disabled={generateDisabled}
             onClick={() => void generate()}
           >

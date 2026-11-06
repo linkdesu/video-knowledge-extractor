@@ -21,7 +21,9 @@ function line(overrides: Partial<ProjectSubtitleLineInfo> = {}): ProjectSubtitle
 }
 
 describe("单主题确认：AI 建议默认勾选", () => {
-  test("重开弹窗总是回到 AI 建议，不保留上次未提交的编辑", () => {
+  // 「重开回到 AI 建议」由组件卸载重挂保证（TopicConfirmDialog 的 useState 初值 + 父层
+  // active === null 才渲染），纯函数层只能锁「每次调用都从建议重新取值」这一半：
+  test("每次都从 AI 建议重新取值，不保留上一次调用后的编辑", () => {
     const suggested = ["line-3", "line-4", "line-5"];
     const edited = toggleLine(
       toggleLine(suggestedSelection({ lineIds: suggested }), "line-3"),

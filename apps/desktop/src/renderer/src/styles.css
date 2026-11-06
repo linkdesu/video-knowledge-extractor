@@ -2358,10 +2358,13 @@ textarea {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  width: min(760px, calc(100vw - 32px));
+  /* 与 `.vn-modal` 一致：宽度已由 mask 的 padding 收窄，不再手算 100vw − 32。 */
+  width: min(760px, 100%);
   max-height: calc(100vh - 32px);
   min-height: 0;
-  overflow: hidden;
+  /* 视口极矮时固定区（标题 + 说明 + 计数 + 按钮≈300px）加字幕列表最小高度会超出弹窗：
+     允许弹窗自身纵向滚动，底部两个按钮才始终可达；正常高度下滚动条不出现。 */
+  overflow: hidden auto;
 }
 .vn-topic-confirm-head {
   flex-shrink: 0;
