@@ -473,7 +473,7 @@ export type ProjectQueueState = {
   files: ProjectFileInfo[];
 };
 
-/** 确认字幕弹窗的一行：id 与 core `subtitleLinesFrom` 同口径（时间 + 文本指纹，不随数组下标变化）。 */
+/** 确认字幕弹窗的一行：id 与 core `subtitleLinesFrom` 同口径（`line-<合并后下标>`，与读 `video.json` 的顺序一致）。 */
 export type ProjectSubtitleLineInfo = {
   id: string;
   start: number;
