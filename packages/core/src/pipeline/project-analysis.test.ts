@@ -915,6 +915,67 @@ describe("analyzeVideoRange：声纹把区间局部簇归回既有说话人（#1
     return a.map((value, i) => (i === base ? target : i === (base + 1) % 8 ? Math.sqrt(Math.max(0, 1 - target * target)) : value));
   }
 
+  test("没有嵌入模型（CI / 未装模型）：声纹映射跳过，区间分析照常完成", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 8);
+    let calls = 0;
+    const engine: AsrEngine = {
+      id: "local",
+      modelId: "fake-asr",
+      run: async () => {
+        const range = calls > 0;
+        calls += 1;
+        return {
+          transcript: {
+            speakers: [{ id: "speaker-1" as SpeakerId, name: "说话人1", color: "#4f8ef7" }],
+            utterances: range
+              ? [{ start: 0.2, end: 4.2, speakerId: "speaker-1" as SpeakerId, text: "区间里的一句话。" }]
+              : [{ start: 0.2, end: 3.2, speakerId: "speaker-1" as SpeakerId, text: "整段原有的一句话。" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 4 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+    const whole = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 0, end: 4 }),
+      asrEngine: engine,
+    });
+    const range = await analyzeVideoRange({
+      videoPath: source,
+      outputDir: whole.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 4,
+      endSeconds: 8,
+      endpoint,
+      client: fakeClient({ start: 4, end: 8 }),
+      asrEngine: engine,
+      voiceprintDeps: {
+        embedSpans: () => {
+          throw new Error("缺少模型文件：speaker-embedding");
+        },
+      },
+      referenceAudio: { samples: new Float32Array(16000 * 8), sampleRate: 16000 },
+    });
+    const data = loadVideoData(range.outputDir, { id: range.videoId as VideoId, title: "" });
+    // 退回文本对齐 + 铸号：分析不失败，新行照常落盘
+    expect(range.addedLines).toBe(1);
+    expect(data.transcript.utterances).toHaveLength(2);
+  });
+
   test("真实新人：声纹不像任何既有说话人且种子够 → 仍然建新号", async () => {
     const root = makeTmpDir("project-analysis-");
     const notesRoot = join(root, "notes");

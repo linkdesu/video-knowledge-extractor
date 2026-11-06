@@ -69,6 +69,33 @@ export async function alignRangeByVoiceprint(input: {
   if (pending.length === 0) {
     return { alignment: input.alignment, decisions: [], references: 0, localClusters: 0, computed: false };
   }
+  try {
+    return await alignWithEmbeddings(input, pending);
+  } catch (err) {
+    /**
+     * 声纹映射是**尽力而为**：模型缺失（CI / 没装本地模型）、音频解码失败、嵌入器抛错时
+     * 退回文本/时间对齐的结果，宁可多一个编号也不能让区间分析整段失败。
+     */
+    logger().warn("asr", "声纹映射跳过", { error: err instanceof Error ? err.message : String(err) });
+    return { alignment: input.alignment, decisions: [], references: 0, localClusters: 0, computed: false };
+  }
+}
+
+async function alignWithEmbeddings(
+  input: {
+    existing: readonly Utterance[];
+    incoming: readonly Utterance[];
+    alignment: SpeakerAlignment;
+    mediaPath: string;
+    rangeWavPath: string;
+    rangeStart: number;
+    cacheDir: string;
+    modelDir: string;
+    deps?: RangeVoiceprintDeps;
+    referenceAudio?: { samples: Float32Array; sampleRate: number };
+  },
+  pending: readonly string[],
+): Promise<RangeVoiceprintResult> {
   const embed =
     input.deps?.embedSpans ??
     (({ samples, sampleRate, spans }: { samples: Float32Array; sampleRate: number; spans: ReadonlyArray<{ start: number; end: number }> }) =>
