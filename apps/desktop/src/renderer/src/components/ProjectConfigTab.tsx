@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type JSX } from "react";
-import type { ProjectDetail } from "../../../shared/ipc";
+import type { ProjectDetail, ProjectDirectoryFile } from "../../../shared/ipc";
 import { fmtDateTime } from "../lib/format";
 import {
   ORGANIZE_STATUS_LABEL,
+  SortRefreshScheduler,
   clampChunkMinutes,
   directoryCountLabel,
   directoryEmptyHint,
   exampleDirectory,
   fileMeta,
+  mergeDirectoryView,
   monitorStatusLabel,
   processedLabel,
   selectAllState,
@@ -34,15 +36,29 @@ export function ProjectConfigTab({
   const [savingChunk, setSavingChunk] = useState(false);
   const [organizing, setOrganizing] = useState(false);
   const directoryRef = useRef<HTMLInputElement | null>(null);
-  const previousOrder = useRef<string[]>([]);
+  // 修改时间显示与排序 500ms 防抖、最长 2 秒（原型 scheduleSort / #132）
+  const [sortSnapshot, setSortSnapshot] = useState<ProjectDirectoryFile[]>(() =>
+    sortDirectoryFiles(project.directory, []),
+  );
+  const previousOrder = useRef<string[]>(sortSnapshot.map((file) => file.videoId));
+  const schedulerRef = useRef<SortRefreshScheduler<ProjectDirectoryFile[]> | null>(null);
+  if (schedulerRef.current === null) {
+    schedulerRef.current = new SortRefreshScheduler((latest) => {
+      const sorted = sortDirectoryFiles(latest, previousOrder.current);
+      previousOrder.current = sorted.map((file) => file.videoId);
+      setSortSnapshot(sorted);
+    });
+  }
 
-  const files = sortDirectoryFiles(project.directory, previousOrder.current);
+  const files = mergeDirectoryView(project.directory, sortSnapshot);
   const selectAll = selectAllState(files, selected);
   const organizeButton = startButtonState(files, selected);
 
   useEffect(() => {
-    previousOrder.current = files.map((file) => file.videoId);
-  });
+    schedulerRef.current?.push(project.directory);
+  }, [project.directory]);
+
+  useEffect(() => () => schedulerRef.current?.cancel(), []);
 
   const startMonitor = () => {
     const nextDirectory = directory.trim();

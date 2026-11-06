@@ -448,6 +448,7 @@ export function App() {
               panels={{
                 config: (
                   <ProjectConfigTab
+                    key={project.id}
                     project={project}
                     // 三个动作都被主进程 publish 成 projects:event 全量推送；这里不再用
                     // invoke 的返回值 setProject —— 开始整理要跑导入/探测，响应可能晚于

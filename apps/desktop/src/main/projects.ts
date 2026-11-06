@@ -51,6 +51,8 @@ export type ProjectServiceDeps = {
    * 监控开关一旦打开界面就锁住输入框，所以拼错的路径必须在落盘前拒绝。
    */
   checkDirectory?: (directory: string) => void;
+  /** 监控开始后立刻记目录基线（#132），之后出现的文件才算「新文件」。 */
+  onMonitorStarted?: (projectId: string, watchDir: string) => void;
 };
 
 type ChangeListener = (payload: ProjectEventPayload) => void;
@@ -63,6 +65,7 @@ export class ProjectService {
     | ((watchDir: string, statuses: ReadonlyMap<string, DirectoryStatus>) => ProjectDirectoryFile[])
     | undefined;
   private readonly checkDirectory: ((directory: string) => void) | undefined;
+  private readonly onMonitorStarted: ((projectId: string, watchDir: string) => void) | undefined;
   private readonly runtimes = new Map<string, ClipProject>();
   private readonly listeners = new Set<ChangeListener>();
   /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
@@ -76,6 +79,7 @@ export class ProjectService {
     this.events = deps.events;
     this.scanDirectory = deps.scanDirectory;
     this.checkDirectory = deps.checkDirectory;
+    this.onMonitorStarted = deps.onMonitorStarted;
     this.describeClips =
       deps.describeClips ??
       ((record) =>
@@ -149,6 +153,7 @@ export class ProjectService {
   startMonitor(projectId: string, directory: string): ProjectDetail {
     this.checkDirectory?.(directory);
     const record = this.store.startMonitor(projectId, directory);
+    if (record.watchDir !== null) this.onMonitorStarted?.(projectId, record.watchDir);
     return this.publish(projectId, `监控已启动：${record.watchDir ?? directory}`);
   }
 
@@ -204,6 +209,14 @@ export class ProjectService {
     if (!controller.confirmTopic(topicKeyValue, [...lineIds])) throw new Error("所选字幕为空");
     const slice = controller.sliceQueue.filter((job) => job.topicKey === topicKeyValue).at(-1);
     return this.publish(projectId, `切片入队：${topic.title} · ${slice?.lines.length ?? 0} 行字幕`);
+  }
+
+  /**
+   * 只写一条运行日志并推送详情（监控轮询「发现新文件」用，不改变控制器状态之外的东西）。
+   */
+  recordEvent(projectId: string, text: string): ProjectDetail {
+    this.requireRecord(projectId);
+    return this.publish(projectId, text);
   }
 
   /**

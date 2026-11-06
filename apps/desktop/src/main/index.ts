@@ -128,6 +128,7 @@ import {
 import { prepareDevHome, resolveDevHome } from "./dev-home";
 import { ProjectService } from "./projects";
 import { scanProjectDirectory } from "./project-directory";
+import { GrowthMonitor } from "./project-monitor";
 import { projectIpcHandlers } from "./projects-ipc";
 import { ProjectRuntime } from "./project-runtime";
 import { describeProjectClips } from "./project-clip-details";
@@ -283,6 +284,8 @@ const projectService = new ProjectService({
     }
     if (!stat.isDirectory()) throw new Error(`监控目录不是文件夹：${directory}`);
   },
+  // 点击「开始监控」的瞬间记下基线：之后掉进来的文件才算新文件（#132）
+  onMonitorStarted: (projectId, watchDir) => growthMonitor.seed(projectId, watchDir),
   // 监控目录快照（#128）：表格数据源；目录里只有文件系统能给出的大小 / 修改时间，
   // 时长按视频库已知值补，未导入的文件显示「—」，不在每次推送里跑 ffprobe。
   scanDirectory: (watchDir, statuses) => {
@@ -292,7 +295,8 @@ const projectService = new ProjectService({
     return scanProjectDirectory({
       watchDir,
       statuses,
-      durationOf: (videoId) => durations.get(videoId),
+      // 监控探到的最新时长优先（增长中文件比视频库里的旧值新），再回退视频库（#132）
+      durationOf: (videoId) => growthMonitor?.durationOf(videoId) ?? durations.get(videoId),
     });
   },
   // 产出卡片（#130）：切片内容以 `video.json` 为准，视频库补原比例与来源文件名
@@ -334,16 +338,20 @@ const projectRuntime = new ProjectRuntime({
     };
   },
   // 监控目录里还没导入的文件（#128「开始整理」）：ffprobe 取时长，openVideo 注册进视频库
-  describeSource: async (path) => {
+  describeSource: async (path, durationHint) => {
     let probe;
     try {
       probe = await probeVideo(path);
     } catch (err) {
-      logger().warn("project", "监控目录文件探测失败", {
-        path,
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return undefined;
+      // 监控刚读到过时长（#132）：文件还在写、这次探测失败也能先登记元数据
+      if (durationHint === undefined) {
+        logger().warn("project", "监控目录文件探测失败", {
+          path,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        return undefined;
+      }
+      probe = { duration: durationHint, hasVideo: true };
     }
     const video = openVideo(path, probe.duration, settings.notesRoot);
     return {
@@ -369,6 +377,37 @@ const projectRuntime = new ProjectRuntime({
   },
 });
 projectService.setRuntimeProvider((projectId) => projectRuntime.attachProject(projectId));
+
+/**
+ * 阶段 2 目录轮询（#132）：每 2 秒读一次监控目录的大小 / 修改时间，变化即一次增长；
+ * 30 秒阈值由控制器写死（`GROWTH_IDLE_SECONDS`）。读不出时长时按还在增长处理，不入队。
+ */
+const growthMonitor = new GrowthMonitor({
+  watchProjects: () =>
+    projectService
+      .list()
+      .filter((project) => project.monitoring && project.watchDir !== null)
+      .map((project) => ({ projectId: project.id, watchDir: project.watchDir as string })),
+  controllerOf: (projectId) => projectRuntime.controller(projectId),
+  probeDuration: async (path) => {
+    try {
+      return (await probeVideo(path)).duration;
+    } catch (err) {
+      // 录制中的 mp4 常常读不出时长：这不是错误，按「还在增长、不入队」处理
+      logger().debug("project", "监控文件时长暂不可读", {
+        path,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  },
+  event: (projectId, text) => projectService.recordEvent(projectId, text),
+  ensureSource: async (projectId, file, durationSeconds) => {
+    // 时长刚读到、还没登记运行时元数据：先补齐，随后入队的分析任务才能找到源文件
+    await projectRuntime.registerSources(projectId, [{ path: file.path, durationSeconds }]);
+  },
+  changed: (projectId) => projectService.refresh(projectId),
+});
 
 // r49 诊断（临时）：启动时间线。t = 距进程启动毫秒数（用 uptime 回推基准，模块加载点即基准）。
 const STARTUP_T0 = Date.now() - Math.round(process.uptime() * 1000);
@@ -1735,6 +1774,7 @@ app.on("before-quit", (event) => {
   quitting = true;
   // Lab worker 持有原生线程，不 kill 就会比 app 活得久（r54）：退出路径无条件终止。
   labRuntime?.dispose();
+  growthMonitor.stop();
   if (queue.busy()) queue.cancelAll();
   const forceQuit = setTimeout(() => {
     for (const w of workers.values()) w.handle.kill();
@@ -1757,6 +1797,8 @@ app.on("will-quit", () => {
 
 void app.whenReady().then(async () => {
   startup("whenReady 进入");
+  // 目录轮询从应用启动就跑：监控中的项目即使界面没打开也持续判定增长（#132）
+  growthMonitor.start();
   // 启动顺序（ADR-0015 §3）：密钥库 → 重放 pending → 重算运行时 → 本地模型检测（r37）
   // r64：Windows 上旧版 safeStorage 密文是 DPAPI（随用户、不随签名），仍能解，改用异步 API
   // （Electron 45 弃用了同步的 isEncryptionAvailable / decryptString）；没有旧密文时这里什么都不做。

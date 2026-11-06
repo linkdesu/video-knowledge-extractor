@@ -389,6 +389,52 @@ describe("ProjectRuntime：监控目录里未导入的文件（#128）", () => {
     expect(await runtime.registerSources(project.id, ["/x.mp4"])).toEqual([]);
     expect(calls).toBe(1);
   });
+
+  test("时长读不出的监控文件可以先加入整理，可读后补齐元数据再入队", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "录制中", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    const sourcePath = join(ctx.root, "recordings", "录制中.mp4");
+    const videoId = videoIdFor(sourcePath);
+    const analyzed: string[] = [];
+
+    const runtime = new ProjectRuntime({
+      service: ctx.service,
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job.fileId);
+        return [];
+      },
+      // 录制中的 mp4 读不出时长；监控给出 durationHint 时才建元数据
+      describeSource: async (path, durationHint) => {
+        if (path !== sourcePath || durationHint === undefined) return undefined;
+        return {
+          id: videoId,
+          name: "录制中.mp4",
+          durationSeconds: durationHint,
+          outputDir: join(ctx.root, "out", "录制中"),
+          sourcePath: path,
+          hasVideo: true,
+        };
+      },
+    });
+
+    const controller = runtime.attachProject(project.id);
+    controller.addFile({ id: videoId, name: "录制中.mp4", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    controller.setChunkMinutes(1);
+
+    // 监控已登记该文件：加入整理不抛、也不入队
+    expect(() => runtime.startOrganize(project.id, [videoId])).not.toThrow();
+    expect(controller.files.get(videoId)?.added).toBe(true);
+    expect(controller.analysisQueue).toHaveLength(0);
+
+    // 监控读到 60 秒（正好一块）：补齐源元数据 → 报告增长 → 分析任务能真的跑起来
+    await runtime.registerSources(project.id, [{ path: sourcePath, durationSeconds: 60 }]);
+    controller.reportGrowth(videoId, 60);
+    controller.tick(1);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis.some((task) => task.status === "done") === true, "录制中文件分析完成");
+    expect(analyzed).toEqual([videoId]);
+  });
 });
 
 describe("ProjectRuntime：状态变化推送（#128 三态可见）", () => {

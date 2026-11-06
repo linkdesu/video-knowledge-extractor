@@ -74,8 +74,9 @@ export type ProjectRuntimeDeps = {
   /**
    * 监控目录里还没导入视频库的文件（#128）：按路径读元数据，时长走 ffprobe。
    * 缺省时不接受目录里的新文件（测试与未接监控的调用方）。
+   * `durationHint`：监控刚读到的时长；再次探测失败时用它建元数据，避免入队后跑不起来（#132）。
    */
-  describeSource?: (path: string) => Promise<ProjectVideo | undefined>;
+  describeSource?: (path: string, durationHint?: number) => Promise<ProjectVideo | undefined>;
 };
 
 /**
@@ -103,6 +104,11 @@ export class ProjectRuntime {
     map.set(video.id, video);
     this.videos.set(projectId, map);
     this.controllers.get(projectId)?.addFile(this.fileInput(video));
+  }
+
+  /** 监控轮询要拿已接入的控制器；未接入返回 undefined（#132）。 */
+  controller(projectId: string): ClipProject | undefined {
+    return this.controllers.get(projectId);
   }
 
   /** 懒建控制器并接入 ProjectService；清单是配置的单一真相源。 */
@@ -168,12 +174,18 @@ export class ProjectRuntime {
   /**
    * 把监控目录里还没进视频库的文件（#128「开始整理」）注册成运行时元数据，
    * 返回真正注册成功的 videoId。已注册或解析不出的路径跳过，不写清单。
+   * 传入对象 + `durationSeconds` 时用于「监控已读到时长、运行时还没登记」的补齐（#132）。
    */
-  async registerSources(projectId: string, paths: readonly string[]): Promise<string[]> {
-    if (paths.length === 0) return [];
+  async registerSources(
+    projectId: string,
+    sources: readonly (string | { path: string; durationSeconds: number })[],
+  ): Promise<string[]> {
+    if (sources.length === 0) return [];
     this.attachProject(projectId);
     const registered: string[] = [];
-    for (const path of paths) {
+    for (const source of sources) {
+      const path = typeof source === "string" ? source : source.path;
+      const hint = typeof source === "string" ? undefined : source.durationSeconds;
       const videoId = videoIdFor(path);
       if (this.videos.get(projectId)?.has(videoId) === true) continue;
       // 先看视频库：已导入的文件不用再探测，也不该被目录描述覆盖
@@ -183,7 +195,7 @@ export class ProjectRuntime {
         registered.push(videoId);
         continue;
       }
-      const described = await this.deps.describeSource?.(path);
+      const described = await this.deps.describeSource?.(path, hint);
       if (described === undefined || described.id !== videoId) continue;
       this.registerVideo(projectId, described);
       registered.push(videoId);
@@ -191,11 +203,15 @@ export class ProjectRuntime {
     return registered;
   }
 
-  /** 加入整理：先补齐视频库元数据（现有导入的产物），再交给控制器排分析队列。 */
+  /**
+   * 加入整理：先补齐视频库元数据（现有导入的产物），再交给控制器排分析队列。
+   * 监控目录里时长还读不出的文件也允许先加入：控制器 `durationKnown=false` 不会入队，
+   * 等监控读到时长并补齐源元数据后再排（#132 评审 P1）。
+   */
   startOrganize(projectId: string, videoIds: readonly string[]): ProjectDetail {
     this.attachProject(projectId);
     for (const videoId of videoIds) {
-      const video = this.video(projectId, videoId, true);
+      const video = this.video(projectId, videoId, false);
       if (video !== undefined) this.registerVideo(projectId, video);
     }
     return this.service.startOrganize(projectId, videoIds);
