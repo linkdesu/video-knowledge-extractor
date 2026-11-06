@@ -131,6 +131,11 @@ export class ClipProject {
 
   private readonly executor: ProjectExecutor;
   private readonly transcriptOf: (fileId: string) => SubtitleLine[];
+  /**
+   * 已要求「开始整理」、但文件元数据还没登记（监控首轮轮询之前）的 id。
+   * 登记到达时自动加入：否则界面显示已加入、控制器永远不知道，按钮也点不动（#132 D3）。
+   */
+  private readonly requested = new Set<string>();
   private chunkSeconds: number;
   private jobSerial = 0;
   private sliceSerial = 0;
@@ -158,6 +163,7 @@ export class ClipProject {
       // 监控轮询 / 视频库注册会反复登记同一文件：只补元数据，队列进度与已加入状态不重置（#132）
       existing.name = input.name;
       existing.present = true;
+      if (this.requested.delete(input.id)) existing.added = true;
       if (known && input.durationSeconds !== null) {
         if (input.durationSeconds > existing.durationSeconds + EPS) existing.durationSeconds = input.durationSeconds;
         existing.durationKnown = true;
@@ -171,7 +177,8 @@ export class ClipProject {
       durationKnown: known,
       growing: input.growing,
       lastGrowthSeconds: input.modifiedSeconds,
-      added: false,
+      // 已经在「开始整理」里点过的文件，元数据一到达就算已加入（#132 D3）
+      added: this.requested.delete(input.id),
       present: true,
       cursorSeconds: 0,
       processedSeconds: 0,
@@ -218,7 +225,15 @@ export class ClipProject {
   }
 
   startOrganize(fileIds: string[]): void {
-    for (const id of fileIds) this.requireFile(id).added = true;
+    for (const id of fileIds) {
+      const file = this.files.get(id);
+      if (file === undefined) {
+        // 监控首轮轮询之前就点了「开始整理」：先记下意图，元数据登记到达时再生效（#132 D3）
+        this.requested.add(id);
+        continue;
+      }
+      file.added = true;
+    }
     this.enqueueDue();
     this.pump();
   }

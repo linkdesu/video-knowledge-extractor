@@ -166,8 +166,9 @@ export class ProjectService {
     const record = this.store.addVideos(projectId, added);
     const controller = this.runtimes.get(projectId);
     if (controller !== null && controller !== undefined) {
-      const known = added.filter((id) => controller.files.has(id));
-      if (known.length > 0) controller.startOrganize(known);
+      // 不只传「新加入」的：首轮轮询之前点整理、或旧版本卡住的记录，
+      // 控制器里可能还没有这个文件，加入意图必须在这次补上（#132 D2/D3）
+      controller.startOrganize([...new Set(videoIds)].filter((id) => id !== ""));
     }
     return this.publish(
       projectId,

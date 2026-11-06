@@ -720,3 +720,42 @@ describe("增长监控（#132）", () => {
     expect(p.linesOf(topicKey(1, "t1")).map((line) => line.id)).toEqual(["l1", "l2"]);
   });
 });
+
+describe("开始整理早于监控登记（#132 D3）", () => {
+  test("未知文件的加入请求在元数据到达后生效并正常入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+
+    // 开始监控后首轮轮询（≤2 秒）之前点了「开始整理」：控制器里还没有这个文件
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue).toHaveLength(0);
+    expect(p.files.has("f1")).toBe(false);
+
+    // 首次轮询登记：0 字节读不出时长，先按还在增长处理
+    p.addFile({ id: "f1", name: "弹窗增长.ts", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    expect(p.files.get("f1")?.added).toBe(true);
+    expect(p.statusOf("f1")).toBe("organizing");
+    expect(p.analysisQueue).toHaveLength(0);
+
+    // 追加到 80 秒：凑满一块立即入队，不需要任何人工操作
+    p.reportGrowth("f1", 80);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 60]]);
+  });
+
+  test("加入请求不会把之后才登记的文件漏掉，重复登记也不重复计入", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    p.startOrganize(["f1"]);
+
+    p.addFile({ id: "f1", name: "a.ts", durationSeconds: 120, growing: false, modifiedSeconds: 0 });
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+    ]);
+  });
+});

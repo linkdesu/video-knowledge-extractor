@@ -616,3 +616,53 @@ describe("ProjectRuntime：重启后的未切片时长（#142 QA）", () => {
     expect(restarted.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
   });
 });
+
+describe("ProjectRuntime：首轮轮询前就开始整理（#132 D3）", () => {
+  test("控制器还没有该文件时也记下加入请求，监控登记后自动入队", async () => {
+    const root = makeTmpDir("project-runtime-race-");
+    const service = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    const project = service.create({ name: "竞态", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { chunkMinutes: 1 });
+    const sourcePath = join(root, "recordings", "弹窗增长.ts");
+    const videoId = videoIdFor(sourcePath);
+    const analyzed: AnalysisJob[] = [];
+
+    const runtime = new ProjectRuntime({
+      service,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [];
+      },
+      // 0 字节时 describeSource 读不出任何元数据（QA 的最短复现路径）
+      describeSource: async (path, durationHint) => {
+        if (path !== sourcePath || durationHint === undefined) return undefined;
+        return {
+          id: videoId,
+          name: "弹窗增长.ts",
+          durationSeconds: durationHint,
+          outputDir: join(root, "out", "弹窗增长"),
+          sourcePath: path,
+          hasVideo: false,
+        };
+      },
+    });
+
+    // 开始监控后 ~0.7 秒点「开始整理」：控制器里还没有这个文件
+    const controller = runtime.attachProject(project.id);
+    expect(() => runtime.startOrganize(project.id, [videoId])).not.toThrow();
+    expect(controller.files.has(videoId)).toBe(false);
+
+    // 首次轮询登记：0 字节、读不出时长
+    controller.addFile({ id: videoId, name: "弹窗增长.ts", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    expect(service.get(project.id).queue?.files[0]).toMatchObject({ id: videoId, added: true });
+    expect(analyzed).toHaveLength(0);
+
+    // 追加到满块：监控补齐源元数据 → 自动入队分析
+    await runtime.registerSources(project.id, [{ path: sourcePath, durationSeconds: 80 }]);
+    controller.reportGrowth(videoId, 80);
+    controller.tick(1);
+    await waitUntil(() => analyzed.some((job) => job.start === 0 && job.end === 60), "满块入队");
+  });
+});
