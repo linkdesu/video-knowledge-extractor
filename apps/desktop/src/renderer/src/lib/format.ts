@@ -9,6 +9,14 @@ export function fmtElapsed(seconds: number): string {
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/** 原型 `stamp()`：HH:MM:SS，超过 24 小时继续累加小时数；非法值按 0。 */
+export function fmtHms(seconds: number): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+}
+
 /** 词表「修改时间」：月-日 时:分，本地时区。 */
 export function fmtDateTime(iso: string | null): string {
   if (iso === null) return "—";
