@@ -9,6 +9,7 @@ import {
   loadVideoData,
   logger,
   mediaAbsolutePath,
+  probeVideo,
   readVideoData,
   setTopicProgress,
   slicedSecondsFrom,
@@ -74,8 +75,9 @@ export type ProjectRuntimeDeps = {
   /**
    * 监控目录里还没导入视频库的文件（#128）：按路径读元数据，时长走 ffprobe。
    * 缺省时不接受目录里的新文件（测试与未接监控的调用方）。
+   * `durationHint`：监控刚读到的时长；再次探测失败时用它建元数据，避免入队后跑不起来（#132）。
    */
-  describeSource?: (path: string) => Promise<ProjectVideo | undefined>;
+  describeSource?: (path: string, durationHint?: number) => Promise<ProjectVideo | undefined>;
 };
 
 /**
@@ -105,6 +107,11 @@ export class ProjectRuntime {
     this.controllers.get(projectId)?.addFile(this.fileInput(video));
   }
 
+  /** 监控轮询要拿已接入的控制器；未接入返回 undefined（#132）。 */
+  controller(projectId: string): ClipProject | undefined {
+    return this.controllers.get(projectId);
+  }
+
   /** 懒建控制器并接入 ProjectService；清单是配置的单一真相源。 */
   attachProject(projectId: string): ClipProject {
     const existing = this.controllers.get(projectId);
@@ -122,8 +129,10 @@ export class ProjectRuntime {
       const video = this.video(projectId, videoId, false);
       if (video !== undefined) controller.addFile(this.fileInput(video));
     }
+    // 清单是「已加入」的单一真相源：重启后界面按 videoIds 显示已加入，控制器必须一致（#132 D2）
     this.restoreProcessed(projectId, controller, ids, record.clips);
     this.service.attachRuntime(projectId, controller);
+    controller.startOrganize([...record.videoIds]);
     return controller;
   }
 
@@ -131,6 +140,8 @@ export class ProjectRuntime {
    * 重启后控制器是全新的：用项目清单里已落盘的切片 + `video.json` 的分块/主题状态恢复
    * 「已处理」进度，否则队列底部的「未切片内容时长」会退回整段时长（#142 QA）。
    * 没有切片的视频也要走一遍：零主题的已完成分块同样算已处理。
+   * 监控目录里的文件重启时还没有运行时元数据（不在视频库），它们在第一次登记时补恢复
+   * （`registerSources` → `restoreVideo`），否则「已加入」的文件会把整段重新排一遍（#132 D2）。
    */
   private restoreProcessed(
     projectId: string,
@@ -138,42 +149,77 @@ export class ProjectRuntime {
     videoIds: Iterable<string>,
     clips: ProjectDetail["clips"],
   ): void {
-    const sliced = new Map<string, Set<string>>();
-    for (const clip of clips) {
-      const ids = sliced.get(clip.videoId) ?? new Set<string>();
-      ids.add(clip.topicId);
-      sliced.set(clip.videoId, ids);
-    }
+    const sliced = slicedTopicIds(clips);
     for (const videoId of videoIds) {
       if (!controller.files.has(videoId)) continue;
       const video = this.video(projectId, videoId, false);
       if (video === undefined) continue;
-      // 单个视频文档坏掉不能拖垮整个项目接入：跳过它的恢复，控制器照常挂上
-      let data;
-      try {
-        data = readVideoData(video.outputDir);
-      } catch (err) {
-        logger().error("project", "恢复未切片时长失败", {
-          projectId,
-          videoId,
-          message: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-      if (data === undefined) continue;
-      controller.restoreProcessed(videoId, slicedSecondsFrom(data, sliced.get(videoId) ?? new Set()));
+      this.restoreVideo(controller, video, sliced.get(videoId) ?? new Set());
     }
+  }
+
+  /** 单个视频的磁盘进度：已处理时长 + 已分块终点。坏文档只跳过它自己，不拖垮项目接入。 */
+  private restoreVideo(controller: ClipProject, video: ProjectVideo, slicedTopicIds: ReadonlySet<string>): void {
+    let data;
+    try {
+      data = readVideoData(video.outputDir);
+    } catch (err) {
+      logger().error("project", "恢复未切片时长失败", {
+        videoId: video.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (data === undefined) return;
+    const chunkEnd = data.chunks.reduce((end, chunk) => Math.max(end, chunk.end), 0);
+    const processed = slicedSecondsFrom(data, slicedTopicIds);
+    controller.restoreProcessed(video.id, processed);
+    /**
+     * 续排点就是「已处理」的终点，不是分块最大终点：分块存在不等于它的主题都已切片。
+     * 按分块终点续排会把「有待确认主题 / 切片中断」的区间跳过，队列里再没有它们，
+     * 界面就永远无法确认（自动切片关闭时重启即复现）；按已处理续排则会把这些区间
+     * 重新排进来，`refreshableTopics` 只把仍待确认的主题重新提案（#132 D2 / #150）。
+     */
+    controller.restoreCursor(video.id, processed);
+    const file = controller.files.get(video.id);
+    logger().info("project", "恢复视频进度", {
+      videoId: video.id,
+      outputDir: video.outputDir,
+      chunks: data.chunks.length,
+      chunkEnd,
+      processed,
+      duration: file?.durationSeconds,
+      cursor: file?.cursorSeconds,
+    });
+  }
+
+  /**
+   * 运行时元数据刚登记（监控首轮、时长刚读出）：顺手补一次磁盘进度恢复。
+   * 监控目录里的文件不在视频库，重启后 attachProject 时拿不到 outputDir，只能等这次登记（#132 D2）。
+   */
+  private restoreRegisteredVideo(projectId: string, videoId: string): void {
+    const controller = this.controllers.get(projectId);
+    const video = this.videos.get(projectId)?.get(videoId);
+    if (controller === undefined || video === undefined) return;
+    const sliced = slicedTopicIds(this.service.get(projectId).clips).get(videoId) ?? new Set();
+    this.restoreVideo(controller, video, sliced);
   }
 
   /**
    * 把监控目录里还没进视频库的文件（#128「开始整理」）注册成运行时元数据，
    * 返回真正注册成功的 videoId。已注册或解析不出的路径跳过，不写清单。
+   * 传入对象 + `durationSeconds` 时用于「监控已读到时长、运行时还没登记」的补齐（#132）。
    */
-  async registerSources(projectId: string, paths: readonly string[]): Promise<string[]> {
-    if (paths.length === 0) return [];
+  async registerSources(
+    projectId: string,
+    sources: readonly (string | { path: string; durationSeconds: number })[],
+  ): Promise<string[]> {
+    if (sources.length === 0) return [];
     this.attachProject(projectId);
     const registered: string[] = [];
-    for (const path of paths) {
+    for (const source of sources) {
+      const path = typeof source === "string" ? source : source.path;
+      const hint = typeof source === "string" ? undefined : source.durationSeconds;
       const videoId = videoIdFor(path);
       if (this.videos.get(projectId)?.has(videoId) === true) continue;
       // 先看视频库：已导入的文件不用再探测，也不该被目录描述覆盖
@@ -183,19 +229,25 @@ export class ProjectRuntime {
         registered.push(videoId);
         continue;
       }
-      const described = await this.deps.describeSource?.(path);
+      const described = await this.deps.describeSource?.(path, hint);
       if (described === undefined || described.id !== videoId) continue;
       this.registerVideo(projectId, described);
+      // 监控目录里的文件重启后没有元数据：登记这一刻才找得到 video.json，补恢复已处理/分块终点
+      this.restoreRegisteredVideo(projectId, videoId);
       registered.push(videoId);
     }
     return registered;
   }
 
-  /** 加入整理：先补齐视频库元数据（现有导入的产物），再交给控制器排分析队列。 */
+  /**
+   * 加入整理：先补齐视频库元数据（现有导入的产物），再交给控制器排分析队列。
+   * 监控目录里时长还读不出的文件也允许先加入：控制器 `durationKnown=false` 不会入队，
+   * 等监控读到时长并补齐源元数据后再排（#132 评审 P1）。
+   */
   startOrganize(projectId: string, videoIds: readonly string[]): ProjectDetail {
     this.attachProject(projectId);
     for (const videoId of videoIds) {
-      const video = this.video(projectId, videoId, true);
+      const video = this.video(projectId, videoId, false);
       if (video !== undefined) this.registerVideo(projectId, video);
     }
     return this.service.startOrganize(projectId, videoIds);
@@ -338,11 +390,23 @@ export class ProjectRuntime {
     if (this.deps.context === undefined) throw new Error("项目执行器缺少 LLM/ASR 配置");
     const context = await this.deps.context();
     const data = loadVideoData(video.outputDir, { id: video.id as VideoId, title: video.name, sourcePath: video.sourcePath, durationSeconds: video.durationSeconds });
+    /**
+     * 增长中的录制：规范化产物只覆盖旧长度，末尾的切片会切出空文件（#132 D1）。
+     * 需要的时间点超出产物实测时长就从源文件切；产物够用时照旧用它。
+     */
+    const needsUntil = job.segments.reduce((end, segment) => Math.max(end, segment.end), 0);
+    const artifactPath = mediaAbsolutePath(data);
+    const sourcePath =
+      data.mediaPath === null
+        ? artifactPath
+        : (await this.artifactDuration(artifactPath)) + 0.5 >= needsUntil
+          ? artifactPath
+          : video.sourcePath;
     const topicId = splitTopicKey(job.topicKey)?.topicId ?? "";
     const startedAt = new Date().toISOString();
     setTopicProgress(video.outputDir, topicId, { status: "generating", startedAt, error: null });
     const { clip } = await generateProjectClip({
-      sourcePath: mediaAbsolutePath(data),
+      sourcePath,
       hasVideo: data.hasVideo ?? video.hasVideo,
       clipsDir: alloc.clipsDir,
       nextSeq: alloc.seq,
@@ -360,6 +424,15 @@ export class ProjectRuntime {
     });
     logger().info("project", "项目切片完成", { videoId: video.id, topicId, file: clip.file, model: context.endpoint.model });
     return { file: clip.file };
+  }
+
+  /** 规范化产物的实测时长；读不出按 0 处理（切片会退回源文件）。 */
+  private async artifactDuration(path: string): Promise<number> {
+    try {
+      return (await probeVideo(path)).duration;
+    } catch {
+      return 0;
+    }
   }
 
   /**
@@ -403,4 +476,15 @@ export class ProjectRuntime {
     if (resolved === undefined && required) throw new Error(`未知视频：${videoId}`);
     return resolved;
   }
+}
+
+/** 项目清单里的切片记录 → 每个视频已切片的主题 id（重启恢复用）。 */
+function slicedTopicIds(clips: ProjectDetail["clips"]): Map<string, Set<string>> {
+  const sliced = new Map<string, Set<string>>();
+  for (const clip of clips) {
+    const ids = sliced.get(clip.videoId) ?? new Set<string>();
+    ids.add(clip.topicId);
+    sliced.set(clip.videoId, ids);
+  }
+  return sliced;
 }

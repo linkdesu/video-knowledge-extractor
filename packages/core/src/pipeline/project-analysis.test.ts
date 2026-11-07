@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import type { AsrEngine } from "../asr/engine";
 import { acquireVideoLock, isVideoLocked } from "../core/lock";
@@ -38,6 +38,43 @@ function makeMp4(path: string, seconds: number): void {
     ],
     { stdio: "pipe" },
   );
+}
+
+/** 容器为 mpegts 的素材：规范化决策是 remux，会落一份 media.mp4（长度冻结在首次规范化那一刻）。 */
+function makeTs(path: string, seconds: number): void {
+  execFileSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      `color=c=blue:s=96x64:d=${seconds}`,
+      "-f",
+      "lavfi",
+      "-i",
+      `sine=d=${seconds}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-shortest",
+      "-f",
+      "mpegts",
+      path,
+    ],
+    { stdio: "pipe" },
+  );
+}
+
+/** `ffprobe` 读出的容器时长；测试用它定位尾巴区间。 */
+function probeSeconds(path: string): number {
+  const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], { stdio: "pipe" });
+  return Number(out.toString().trim());
 }
 
 /** 假 ASR：每次调用的时间戳都从 0 开始（相对区间），由管线负责加区间起点。 */
@@ -1494,5 +1531,243 @@ describe("analyzeVideoRange：已有主题的区间重跑只刷新字幕（#150�
     expect(data.topics.map((t) => t.id)).toEqual(before.topics.map((t) => t.id));
     // 两个待确认主题都与区间相交：都按当前字幕重新给出建议行，不新建主题
     expect(range.topics.map((t) => t.id).sort()).toEqual(before.topics.map((t) => t.id).sort());
+  });
+});
+
+describe("analyzeVideoRange：源文件增长后不复用过期规范化产物（#132 D1）", () => {
+  /** 记录每次转写拿到的 wav 字节数：过期产物抽出来的区间音频几乎是空的。 */
+  function meteringEngine(sizes: number[]): AsrEngine {
+    return {
+      id: "local",
+      modelId: "metering-asr",
+      run: async (input) => {
+        sizes.push(statSync(input.wavPath).size);
+        return {
+          transcript: {
+            speakers: [{ id: "s1" as SpeakerId, name: "说话人 1", color: "#888888" }],
+            utterances: [{ start: 0.2, end: 0.6, speakerId: "s1" as SpeakerId, text: "第一句" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 2 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "metering-asr",
+        };
+      },
+    };
+  }
+
+  const freshVoiceprint = {
+    embedSpans: ({ spans }: { spans: ReadonlyArray<{ start: number; end: number }> }) =>
+      spans.map((span) => ({ ...span, v: null })),
+  };
+
+  test("源文件变长后区间从源文件抽音频，不从旧 media.mp4 抽", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.ts");
+    makeTs(source, 2);
+    const sizes: number[] = [];
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: meteringEngine(sizes),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+    const normalized = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" });
+    // 前提：这一份素材确实规范化出了独立产物，否则本用例测不到复用逻辑
+    expect(normalized.mediaPath).not.toBeNull();
+    expect(sizes[0]).toBeGreaterThan(16_000);
+
+    // 录制继续写：同一路径变成更长的文件（字节数变了，旧 media.mp4 只覆盖前 2 秒）
+    makeTs(source, 4);
+    const grownBytes = statSync(source).size;
+
+    await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: meteringEngine(sizes),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+
+    // 2 秒 16 kHz 单声道 s16le ≈ 64 KB；旧产物在这里只能抽出 44 字节的 wav 头
+    expect(sizes[1]).toBeGreaterThan(32_000);
+    const data = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" });
+    expect(data.sourceBytes).toBe(grownBytes);
+    expect(data.chunks.map((c) => [c.start, c.end])).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
+  });
+
+  test("规范化产物与源文件等长时仍然复用，不重复转码", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.ts");
+    makeTs(source, 4);
+
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 2,
+      endpoint,
+      client: fakeClient({ start: 0, end: 2 }),
+      asrEngine: fakeEngine([]),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+    const artifact = loadVideoData(first.outputDir, { id: first.videoId as VideoId, title: "" }).mediaPath;
+    expect(artifact).not.toBeNull();
+    const artifactStat = statSync(join(first.outputDir, artifact!));
+
+    await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 2, end: 4 }),
+      asrEngine: fakeEngine([]),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+
+    // 源文件没变：产物沿用（mtime 不变即未重写）
+    const after = statSync(join(first.outputDir, artifact!));
+    expect(after.mtimeMs).toBe(artifactStat.mtimeMs);
+  });
+
+  test("上一轮已经记过源文件字节数：产物仍按实测时长判过期（真机 400 秒的失效路径）", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.ts");
+    makeTs(source, 2);
+    const sizes: number[] = [];
+    const run = (startSeconds: number, endSeconds: number) =>
+      analyzeVideoRange({
+        videoPath: source,
+        notesRoot,
+        cacheRoot,
+        startSeconds,
+        endSeconds,
+        endpoint,
+        client: fakeClient({ start: startSeconds, end: endSeconds }),
+        asrEngine: meteringEngine(sizes),
+        voiceprintDeps: freshVoiceprint,
+        referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+      });
+
+    const first = await run(0, 2);
+    // 录制继续长到 4 秒：下一次分析把「当前字节数」写进 video.json
+    makeTs(source, 4);
+    await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 2,
+      endSeconds: 3,
+      endpoint,
+      client: fakeClient({ start: 2, end: 3 }),
+      asrEngine: meteringEngine(sizes),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+    expect(sizes).toHaveLength(2);
+
+    // 再下一段：源文件字节数与记录相同（增长已结束），产物却还是 2 秒那份
+    await analyzeVideoRange({
+      videoPath: source,
+      outputDir: first.outputDir,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 3,
+      endSeconds: 4,
+      endpoint,
+      client: fakeClient({ start: 3, end: 4 }),
+      asrEngine: meteringEngine(sizes),
+      voiceprintDeps: freshVoiceprint,
+      referenceAudio: { samples: new Float32Array(16000 * 4), sampleRate: 16000 },
+    });
+
+    // 1 秒 16 kHz 单声道 ≈ 32 KB；旧产物在这里只能抽出 44+34 字节
+    expect(sizes).toHaveLength(3);
+    expect(sizes[2]).toBeGreaterThan(16_000);
+  });
+});
+
+describe("analyzeVideoRange：短尾巴不判失败（#132 QA B2）", () => {
+  test("文件停在帧中间：最后 0.2 秒只解出部分采样时跳过，不报「区间没有可用音频」", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "直播.ts");
+    makeTs(source, 4);
+    const full = probeSeconds(source);
+    // 增长中的录制停在 AAC 帧中间：容器仍报完整时长，最后这段只解得出部分采样（真机 0.138 秒 → 0.116 秒）
+    truncateSync(source, statSync(source).size - 600);
+    const calls: { wavPath: string }[] = [];
+
+    const result = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: full - 0.2,
+      endSeconds: full,
+      endpoint,
+      client: fakeClient({ start: full - 0.2, end: full }),
+      asrEngine: fakeEngine(calls),
+    });
+
+    // 跳过：不抽音、不转写、不落分块，任务按完成结算（否则「已处理」卡在缺口前，永远整理中）
+    expect(result.topics).toEqual([]);
+    expect(calls).toHaveLength(0);
+    const data = loadVideoData(result.outputDir, { id: result.videoId as VideoId, title: "" });
+    expect(data.chunks).toEqual([]);
+  });
+
+  test("0.5 秒的尾巴照旧分析：跳过只针对解不出稳定采样的一小截", async () => {
+    const root = makeTmpDir("project-analysis-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "直播.ts");
+    makeTs(source, 4);
+    const full = probeSeconds(source);
+    const calls: { wavPath: string }[] = [];
+
+    const result = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: full - 0.5,
+      endSeconds: full,
+      endpoint,
+      client: fakeClient({ start: full - 0.5, end: full }),
+      asrEngine: fakeEngine(calls),
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.topics.map((t) => t.title)).toEqual(["区间主题"]);
   });
 });

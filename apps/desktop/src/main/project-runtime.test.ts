@@ -389,6 +389,52 @@ describe("ProjectRuntime：监控目录里未导入的文件（#128）", () => {
     expect(await runtime.registerSources(project.id, ["/x.mp4"])).toEqual([]);
     expect(calls).toBe(1);
   });
+
+  test("时长读不出的监控文件可以先加入整理，可读后补齐元数据再入队", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "录制中", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    const sourcePath = join(ctx.root, "recordings", "录制中.mp4");
+    const videoId = videoIdFor(sourcePath);
+    const analyzed: string[] = [];
+
+    const runtime = new ProjectRuntime({
+      service: ctx.service,
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job.fileId);
+        return [];
+      },
+      // 录制中的 mp4 读不出时长；监控给出 durationHint 时才建元数据
+      describeSource: async (path, durationHint) => {
+        if (path !== sourcePath || durationHint === undefined) return undefined;
+        return {
+          id: videoId,
+          name: "录制中.mp4",
+          durationSeconds: durationHint,
+          outputDir: join(ctx.root, "out", "录制中"),
+          sourcePath: path,
+          hasVideo: true,
+        };
+      },
+    });
+
+    const controller = runtime.attachProject(project.id);
+    controller.addFile({ id: videoId, name: "录制中.mp4", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    controller.setChunkMinutes(1);
+
+    // 监控已登记该文件：加入整理不抛、也不入队
+    expect(() => runtime.startOrganize(project.id, [videoId])).not.toThrow();
+    expect(controller.files.get(videoId)?.added).toBe(true);
+    expect(controller.analysisQueue).toHaveLength(0);
+
+    // 监控读到 60 秒（正好一块）：补齐源元数据 → 报告增长 → 分析任务能真的跑起来
+    await runtime.registerSources(project.id, [{ path: sourcePath, durationSeconds: 60 }]);
+    controller.reportGrowth(videoId, 60);
+    controller.tick(1);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis.some((task) => task.status === "done") === true, "录制中文件分析完成");
+    expect(analyzed).toEqual([videoId]);
+  });
 });
 
 describe("ProjectRuntime：状态变化推送（#128 三态可见）", () => {
@@ -568,5 +614,259 @@ describe("ProjectRuntime：重启后的未切片时长（#142 QA）", () => {
     runtime.attachProject(project.id);
 
     expect(restarted.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
+  });
+});
+
+describe("ProjectRuntime：重启后继续整理增长中的文件（#132 D2）", () => {
+  test("重启后已加入的文件仍为已加入，新增整块自动入队分析", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "out-restart-growth");
+    const project = ctx.service.create({ name: "重启增长", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { chunkMinutes: 1 });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "直播.ts",
+      durationSeconds: 60,
+      outputDir,
+      sourcePath: join(ctx.root, "直播.ts"),
+      hasVideo: true,
+    };
+    ctx.runtime.registerVideo(project.id, video);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => []);
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(
+      () => ctx.service.get(project.id).queue?.analysis[0]?.status === "done",
+      "首块分析完成",
+    );
+
+    // 区间分析落盘的分块（真机由 project-analysis 写）
+    const data = emptyVideoData({
+      id: video.id as never,
+      title: video.name,
+      sourcePath: video.sourcePath,
+      durationSeconds: 60,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 60 }];
+    writeVideoData(outputDir, data);
+
+    // 重启：同一数据根目录、全新 service 与 runtime（控制器是全新的）
+    const restarted = new ProjectService({ store: ProjectStore.atRoot(ctx.root), events: new ProjectEventLog() });
+    const analyzed: AnalysisJob[] = [];
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [];
+      },
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    const controller = runtime.attachProject(project.id);
+
+    // 清单里已加入的文件必须恢复成「已加入」，不能回到未整理（QA 的按钮灰死就是这里）
+    expect(restarted.get(project.id).queue?.files[0]).toMatchObject({ id: "v1", added: true });
+    // 已落盘的分块不再重排：从分块终点续排
+    expect(controller.files.get("v1")?.cursorSeconds).toBe(60);
+    expect(analyzed).toHaveLength(0);
+
+    // 录制继续增长到 120 秒：新整块自动入队、分析完成，不需要人工操作
+    controller.reportGrowth("v1", 120);
+    controller.tick(1);
+    await waitUntil(() => analyzed.some((job) => job.start === 60 && job.end === 120), "新整块入队");
+    await waitUntil(
+      () =>
+        restarted
+          .get(project.id)
+          .queue?.analysis.some((task) => task.startSeconds === 60 && task.status === "done") === true,
+      "新整块分析完成",
+    );
+  });
+});
+
+describe("ProjectRuntime：首轮轮询前就开始整理（#132 D3）", () => {
+  test("控制器还没有该文件时也记下加入请求，监控登记后自动入队", async () => {
+    const root = makeTmpDir("project-runtime-race-");
+    const service = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    const project = service.create({ name: "竞态", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { chunkMinutes: 1 });
+    const sourcePath = join(root, "recordings", "弹窗增长.ts");
+    const videoId = videoIdFor(sourcePath);
+    const analyzed: AnalysisJob[] = [];
+
+    const runtime = new ProjectRuntime({
+      service,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [];
+      },
+      // 0 字节时 describeSource 读不出任何元数据（QA 的最短复现路径）
+      describeSource: async (path, durationHint) => {
+        if (path !== sourcePath || durationHint === undefined) return undefined;
+        return {
+          id: videoId,
+          name: "弹窗增长.ts",
+          durationSeconds: durationHint,
+          outputDir: join(root, "out", "弹窗增长"),
+          sourcePath: path,
+          hasVideo: false,
+        };
+      },
+    });
+
+    // 开始监控后 ~0.7 秒点「开始整理」：控制器里还没有这个文件
+    const controller = runtime.attachProject(project.id);
+    expect(() => runtime.startOrganize(project.id, [videoId])).not.toThrow();
+    expect(controller.files.has(videoId)).toBe(false);
+
+    // 首次轮询登记：0 字节、读不出时长
+    controller.addFile({ id: videoId, name: "弹窗增长.ts", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    expect(service.get(project.id).queue?.files[0]).toMatchObject({ id: videoId, added: true });
+    expect(analyzed).toHaveLength(0);
+
+    // 追加到满块：监控补齐源元数据 → 自动入队分析
+    await runtime.registerSources(project.id, [{ path: sourcePath, durationSeconds: 80 }]);
+    controller.reportGrowth(videoId, 80);
+    controller.tick(1);
+    await waitUntil(() => analyzed.some((job) => job.start === 0 && job.end === 60), "满块入队");
+  });
+});
+
+describe("ProjectRuntime：重启后监控目录文件的磁盘进度（#132 D2）", () => {
+  test("第一次登记时恢复已处理与分块终点，只排新增内容", async () => {
+    const root = makeTmpDir("project-runtime-monitored-");
+    const service = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    const project = service.create({ name: "监控重启", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { chunkMinutes: 1 });
+    const watchDir = join(root, "watch");
+    mkdirSync(watchDir, { recursive: true });
+    const sourcePath = join(watchDir, "直播.ts");
+    const videoId = videoIdFor(sourcePath);
+    const outputDir = join(root, "notes", `直播-${videoId}`);
+    writeFileSync(sourcePath, "");
+
+    // 上一次运行落盘的分块（0–60，无主题 ⇒ 算已处理）
+    const data = emptyVideoData({
+      id: videoId as never,
+      title: "直播.ts",
+      sourcePath,
+      durationSeconds: 60,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 60 }];
+    writeVideoData(outputDir, data);
+    service.startOrganize(project.id, [videoId]);
+
+    const analyzed: AnalysisJob[] = [];
+    const runtime = new ProjectRuntime({
+      service,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [],
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [];
+      },
+      // 监控目录里的文件不在视频库：重启时没有任何元数据，只有首次登记能拿到输出目录
+      describeSource: async (path, durationHint) =>
+        path === sourcePath
+          ? { id: videoId, name: "直播.ts", durationSeconds: durationHint ?? 0, outputDir, sourcePath: path, hasVideo: false }
+          : undefined,
+    });
+
+    const controller = runtime.attachProject(project.id);
+    expect(controller.files.has(videoId)).toBe(false);
+    expect(service.get(project.id).queue?.files).toEqual([]);
+
+    // 监控首轮登记：已加入 + 磁盘进度一起恢复，不重排已分块的 0–60
+    await runtime.registerSources(project.id, [{ path: sourcePath, durationSeconds: 60 }]);
+    expect(controller.files.get(videoId)).toMatchObject({
+      added: true,
+      cursorSeconds: 60,
+      processedSeconds: 60,
+    });
+    expect(analyzed).toHaveLength(0);
+    expect(service.get(project.id).queue?.files[0]?.unslicedSeconds).toBe(0);
+
+    // 录制继续增长到 120 秒：只排新的整块
+    controller.reportGrowth(videoId, 120);
+    controller.tick(1);
+    await waitUntil(() => analyzed.some((job) => job.start === 60 && job.end === 120), "新整块入队");
+  });
+});
+
+describe("ProjectRuntime：重启后仍有待确认主题（#132 D2 / #150）", () => {
+  test("恢复点退回该分块：主题重新提案，不因分块已存在而失去入口", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "pending-out");
+    const project = ctx.service.create({ name: "待确认重启", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { chunkMinutes: 1, autoSlice: false });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "直播.ts",
+      durationSeconds: 60,
+      outputDir,
+      sourcePath: join(ctx.root, "直播.ts"),
+      hasVideo: false,
+    };
+    ctx.runtime.registerVideo(project.id, video);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t0-1", title: "待确认主题", category: "", lineIds: ["line-0"] }]);
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis[0]?.status === "done", "首次分析完成");
+    expect(ctx.service.get(project.id).queue?.proposed).toHaveLength(1);
+
+    // 落盘：分块 0–60 已分析，主题仍是 proposed（用户还没确认就退出了）
+    const data = emptyVideoData({
+      id: video.id as never,
+      title: video.name,
+      sourcePath: video.sourcePath,
+      durationSeconds: 60,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 60 }];
+    data.topics = [
+      {
+        id: "t0-1" as never,
+        title: "待确认主题",
+        summary: "",
+        segments: [{ start: 0, end: 59 }],
+        dirName: "待确认主题",
+        status: "proposed",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    writeVideoData(outputDir, data);
+
+    const restarted = new ProjectService({ store: ProjectStore.atRoot(ctx.root), events: new ProjectEventLog() });
+    const analyzed: AnalysisJob[] = [];
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [{ id: "line-0", start: 0, end: 5, text: "第一句" }],
+      // 真机由 project-analysis 的 refreshableTopics 给出仍待确认的主题
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [{ id: "t0-1", title: "待确认主题", category: "", lineIds: ["line-0"] }];
+      },
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    const controller = runtime.attachProject(project.id);
+
+    // 分块都在，但主题没切片：续排点是已处理（0），该区间要重新排进来
+    expect(controller.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 60]]);
+    await waitUntil(() => analyzed.some((job) => job.start === 0), "待确认区间重新排入");
+    await waitUntil(
+      () => (restarted.get(project.id).queue?.proposed.length ?? 0) === 1,
+      "待确认主题重新出现",
+    );
   });
 });

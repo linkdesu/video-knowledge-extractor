@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { makeTmpDir } from "../testing/temp-dirs";
 import { CACHE_DIRNAME } from "./config";
 import {
@@ -9,6 +9,8 @@ import {
   emptyVideoData,
   loadVideoData,
   mediaAbsolutePath,
+  mediaForSource,
+  mediaIsStale,
   migrateVideoData,
   projectRunState,
   readVideoData,
@@ -813,5 +815,41 @@ describe("主播字段（r46）", () => {
     const migrated = migrateVideoData(dir, makeVideo(dir));
     expect(migrated.hosts).toEqual([]);
     expect(migrated.hostSource).toBeNull();
+  });
+});
+
+describe("规范化产物是否落后于源文件（#132 D1）", () => {
+  const data = (mediaPath: string | null) => ({
+    mediaPath,
+    sourceBytes: 1_000,
+    video: { ...makeVideo("/tmp/out"), sourcePath: "/tmp/源.ts" },
+  });
+
+  test("产物时长明显短于源文件：过期，改读源文件", () => {
+    const facts = { recordedSourceBytes: 1_000, sourceBytes: 1_000, sourceDuration: 400, mediaDuration: 82 };
+    expect(mediaIsStale(facts)).toBe(true);
+    expect(mediaForSource(data("media.mp3"), facts)).toBe("/tmp/源.ts");
+  });
+
+  test("字节数没变但产物读不出时长：同样按过期处理", () => {
+    const facts = { recordedSourceBytes: 1_000, sourceBytes: 1_000, sourceDuration: 82, mediaDuration: null };
+    expect(mediaIsStale(facts)).toBe(true);
+  });
+
+  test("源文件字节数与上次分析不同：文件还在长，用过期的产物不如读源文件", () => {
+    const facts = { recordedSourceBytes: 1_000, sourceBytes: 2_000, sourceDuration: 82, mediaDuration: 82 };
+    expect(mediaIsStale(facts)).toBe(true);
+  });
+
+  test("产物与源文件等长、字节数一致：复用产物", () => {
+    const facts = { recordedSourceBytes: 1_000, sourceBytes: 1_000, sourceDuration: 82.3, mediaDuration: 82.1 };
+    expect(mediaIsStale(facts)).toBe(false);
+    // mediaAbsolutePath 用 resolve 拼路径：Windows 上会带盘符，不能写死 POSIX 字面量
+    expect(mediaForSource(data("media.mp3"), facts)).toBe(resolve("/tmp/out", "media.mp3"));
+  });
+
+  test("没有规范化产物时源文件本身就是媒体", () => {
+    const facts = { recordedSourceBytes: 1_000, sourceBytes: 2_000, sourceDuration: 82, mediaDuration: null };
+    expect(mediaForSource(data(null), facts)).toBe("/tmp/源.ts");
   });
 });

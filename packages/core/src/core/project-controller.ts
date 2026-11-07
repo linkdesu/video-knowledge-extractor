@@ -69,10 +69,17 @@ export type ProjectFile = {
   id: string;
   name: string;
   durationSeconds: number;
+  /**
+   * 时长是否可读（ffprobe）。读不出时按「仍在增长」处理：不入队、不判定整理结束（#132）。
+   * 此时 `durationSeconds` 只是最后一次读到的值（没读到过就是 0）。
+   */
+  durationKnown: boolean;
   growing: boolean;
   /** 最近一次增长（或加入）时的项目时钟秒数。 */
   lastGrowthSeconds: number;
   added: boolean;
+  /** 文件还在监控目录里；被删除 / 改名后为 false，不再入队（#132 评审 P2）。 */
+  present: boolean;
   /** 已经划分成分块的时间轴位置。 */
   cursorSeconds: number;
   /** 从开头起连续、所有主题都已切片的分块终点。 */
@@ -98,7 +105,8 @@ export type ClipProjectOptions = {
 export type AddFileInput = {
   id: string;
   name: string;
-  durationSeconds: number;
+  /** null = 时长读不出；文件按「还在增长」处理，不产生分块（#132）。 */
+  durationSeconds: number | null;
   growing: boolean;
   modifiedSeconds: number;
 };
@@ -123,6 +131,11 @@ export class ClipProject {
 
   private readonly executor: ProjectExecutor;
   private readonly transcriptOf: (fileId: string) => SubtitleLine[];
+  /**
+   * 已要求「开始整理」、但文件元数据还没登记（监控首轮轮询之前）的 id。
+   * 登记到达时自动加入：否则界面显示已加入、控制器永远不知道，按钮也点不动（#132 D3）。
+   */
+  private readonly requested = new Set<string>();
   private chunkSeconds: number;
   private jobSerial = 0;
   private sliceSerial = 0;
@@ -141,13 +154,32 @@ export class ClipProject {
   }
 
   addFile(input: AddFileInput): ProjectFile {
+    const existing = this.files.get(input.id);
+    const known =
+      input.durationSeconds !== null &&
+      Number.isFinite(input.durationSeconds) &&
+      input.durationSeconds >= 0;
+    if (existing !== undefined) {
+      // 监控轮询 / 视频库注册会反复登记同一文件：只补元数据，队列进度与已加入状态不重置（#132）
+      existing.name = input.name;
+      existing.present = true;
+      if (this.requested.delete(input.id)) existing.added = true;
+      if (known && input.durationSeconds !== null) {
+        if (input.durationSeconds > existing.durationSeconds + EPS) existing.durationSeconds = input.durationSeconds;
+        existing.durationKnown = true;
+      }
+      return existing;
+    }
     const file: ProjectFile = {
       id: input.id,
       name: input.name,
-      durationSeconds: input.durationSeconds,
+      durationSeconds: known && input.durationSeconds !== null ? input.durationSeconds : 0,
+      durationKnown: known,
       growing: input.growing,
       lastGrowthSeconds: input.modifiedSeconds,
-      added: false,
+      // 已经在「开始整理」里点过的文件，元数据一到达就算已加入（#132 D3）
+      added: this.requested.delete(input.id),
+      present: true,
       cursorSeconds: 0,
       processedSeconds: 0,
     };
@@ -155,15 +187,32 @@ export class ClipProject {
     return file;
   }
 
-  /** 外部探针报告文件变长：更新时长并把「最后一次增长」推到当前时钟。 */
-  reportGrowth(fileId: string, durationSeconds: number): void {
+  /**
+   * 外部探针报告文件变了（大小或修改时间）：把「最后一次增长」推到当前时钟。
+   * 时长读不出（null）或没变长时也要推进增长时间——文件还在写，不能算停止增长。
+   * 读不出时长时同时标记 `durationKnown=false`，尾段不会入队（#132）。
+   */
+  reportGrowth(fileId: string, durationSeconds: number | null): void {
     const file = this.requireFile(fileId);
-    if (durationSeconds <= file.durationSeconds + EPS) return;
-    file.durationSeconds = durationSeconds;
+    if (durationSeconds !== null && Number.isFinite(durationSeconds) && durationSeconds >= 0) {
+      if (durationSeconds > file.durationSeconds + EPS) file.durationSeconds = durationSeconds;
+      file.durationKnown = true;
+    } else {
+      file.durationKnown = false;
+    }
     file.growing = true;
     file.lastGrowthSeconds = this.clock;
     this.enqueueDue();
     this.pump();
+  }
+
+  /** 监控目录里消失（删除 / 改名）的文件：停止增长与入队，已入队任务不受影响。 */
+  markMissing(fileId: string): boolean {
+    const file = this.files.get(fileId);
+    if (file === undefined || !file.present) return false;
+    file.present = false;
+    file.growing = false;
+    return true;
   }
 
   /** 停止 / 恢复增长；恢复增长时从当前时钟重新计算 30 秒。 */
@@ -176,15 +225,36 @@ export class ClipProject {
   }
 
   startOrganize(fileIds: string[]): void {
-    for (const id of fileIds) this.requireFile(id).added = true;
+    for (const id of fileIds) {
+      const file = this.files.get(id);
+      if (file === undefined) {
+        // 监控首轮轮询之前就点了「开始整理」：先记下意图，元数据登记到达时再生效（#132 D3）
+        this.requested.add(id);
+        continue;
+      }
+      file.added = true;
+    }
     this.enqueueDue();
     this.pump();
   }
 
   /** 推进项目时钟；增长、凑块、尾段、状态都按它判断。 */
   tick(seconds: number): void {
+    this.advanceClock(seconds);
+    this.settle();
+  }
+
+  /**
+   * 只推进时钟、不结算队列。监控一轮要在读取增长之前把时钟推到当前时刻，
+   * 否则增长时间会落在上一轮，凭空多出一次轮询间隔的静默（#132 评审 P1）。
+   */
+  advanceClock(seconds: number): void {
     if (!Number.isFinite(seconds) || seconds < 0) return;
     this.clock += seconds;
+  }
+
+  /** 按当前时钟结算：凑满一块 / 超过 30 秒的尾段入队，并启动等待中的任务。 */
+  settle(): void {
     this.enqueueDue();
     this.pump();
   }
@@ -215,13 +285,28 @@ export class ClipProject {
   }
 
   /**
-   * 重启后从已落盘切片恢复「已处理」进度：只增不减，夹在 [0, 时长]。
+   * 重启后从已落盘切片恢复「已处理」进度：只增不减。
    * 进度口径与 `refreshProcessed` 相同，来源换成磁盘上的分块与主题状态。
+   * 磁盘记录是「文件至少这么长」的证据：视频库里的时长可能停在导入那一刻，增长中的录制
+   * 重启后比它长，按旧时长夹会把已处理压回去、也判定不了整理结束（#132 D2）。
    */
   restoreProcessed(fileId: string, seconds: number): void {
     const file = this.files.get(fileId);
-    if (file === undefined || !Number.isFinite(seconds)) return;
-    file.processedSeconds = Math.min(file.durationSeconds, Math.max(file.processedSeconds, seconds, 0));
+    if (file === undefined || !Number.isFinite(seconds) || seconds < 0) return;
+    file.durationSeconds = Math.max(file.durationSeconds, seconds);
+    file.processedSeconds = Math.max(file.processedSeconds, seconds);
+  }
+
+  /**
+   * 重启后恢复「已经划分到哪」：用已落盘分块的最大终点续排，重启不会把整个文件重排一遍（#132 D2）。
+   * 与 `restoreProcessed` 是两个口径：cursor 是划分位置，processed 是「已处理并落盘切片」。
+   * 只增不减；时长按同一份磁盘证据抬升（见 `restoreProcessed`）。
+   */
+  restoreCursor(fileId: string, seconds: number): void {
+    const file = this.files.get(fileId);
+    if (file === undefined || !Number.isFinite(seconds) || seconds < 0) return;
+    file.durationSeconds = Math.max(file.durationSeconds, seconds);
+    file.cursorSeconds = Math.max(file.cursorSeconds, seconds);
   }
 
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
@@ -329,6 +414,8 @@ export class ClipProject {
   statusOf(fileId: string): OrganizeStatus {
     const file = this.requireFile(fileId);
     if (!file.added) return "unorganized";
+    // 时长读不出 = 还读不出结尾，按「持续整理中」处理，不能判为整理结束（#132）
+    if (!file.durationKnown) return "organizing";
     const idle = this.clock - file.lastGrowthSeconds > GROWTH_IDLE_SECONDS;
     const allSliced = file.processedSeconds >= file.durationSeconds - EPS;
     return idle && allSliced ? "finished" : "organizing";
@@ -361,7 +448,7 @@ export class ClipProject {
 
   private enqueueDue(): void {
     for (const file of this.files.values()) {
-      if (!file.added) continue;
+      if (!file.added || !file.durationKnown || !file.present) continue;
       const idle = this.clock - file.lastGrowthSeconds > GROWTH_IDLE_SECONDS;
       for (;;) {
         const remaining = file.durationSeconds - file.cursorSeconds;
@@ -413,16 +500,22 @@ export class ClipProject {
     }
   }
 
+  /**
+   * 「已处理」= 从开头起连续、全部主题都已切片的分块终点。
+   * 重启后队列只从恢复点继续，前面的旧分块不在队列里：缺口落在已恢复进度之内时
+   * 不算断档，也不把进度往回压（#132 D2）。
+   */
   private refreshProcessed(fileId: string): void {
     const file = this.requireFile(fileId);
     let end = 0;
     for (const job of this.analysisQueue) {
       if (job.fileId !== fileId) continue;
-      if (job.start > end + EPS) break;
+      const gap = job.start > end + EPS;
+      if (gap && job.start > file.processedSeconds + EPS) break;
       if (job.status !== "done" || job.topics.some((t) => t.status !== "done")) break;
-      end = job.end;
+      end = Math.max(end, job.end);
     }
-    file.processedSeconds = end;
+    file.processedSeconds = Math.max(file.processedSeconds, end);
   }
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ClipProject,
+  GROWTH_IDLE_SECONDS,
   type AnalysisJob,
   type ProjectExecutor,
   type SliceJob,
@@ -633,5 +634,216 @@ describe("重启恢复已处理进度（#142 QA）", () => {
       ],
     );
     expect(slicedSecondsFrom(data, new Set(["t0-1", "t40-1"]))).toBe(30);
+  });
+});
+
+describe("增长监控（#132）", () => {
+  test("30 秒阈值写死，不可配置", () => {
+    expect(GROWTH_IDLE_SECONDS).toBe(30);
+  });
+
+  test("读不出时长视为还在增长：不入队，也不判定整理结束", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "录制中.mp4", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+
+    p.tick(120);
+    expect(p.analysisQueue).toHaveLength(0);
+    expect(p.statusOf("f1")).toBe("organizing");
+    expect(p.files.get("f1")).toMatchObject({ durationSeconds: 0, durationKnown: false, growing: true });
+  });
+
+  test("读不出时长的文件后来能读出：按完整块入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "录制中.mp4", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.tick(10);
+    expect(p.analysisQueue).toHaveLength(0);
+
+    p.reportGrowth("f1", 600);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 600]]);
+    expect(p.files.get("f1")).toMatchObject({ durationSeconds: 600, durationKnown: true });
+  });
+
+  test("大小 / 修改时间变了但时长没变也算一次增长：推迟尾段", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 900, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 600]]);
+
+    p.tick(20);
+    // 文件系统报告了变化，但 ffprobe 读到的时长与上次相同
+    p.reportGrowth("f1", 900);
+    p.tick(11);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 600]]);
+
+    p.tick(20);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 600],
+      [600, 900],
+    ]);
+  });
+
+  test("重复登记同一文件只更新元数据，不重置队列进度与已加入状态", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 420, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.tick(31);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 420]]);
+    expect(p.files.get("f1")?.cursorSeconds).toBe(420);
+
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 420, growing: false, modifiedSeconds: -31 });
+    expect(p.files.get("f1")).toMatchObject({ added: true, cursorSeconds: 420, durationSeconds: 420 });
+    expect(p.analysisQueue).toHaveLength(1);
+  });
+
+  test("增长中的文件再次打开确认弹窗能看到新增字幕", () => {
+    const lines: SubtitleLine[] = [{ id: "l1", start: 0, end: 5, speaker: "主播", text: "开场" }];
+    const p = new ClipProject({
+      executor: manualExecutor().executor,
+      autoSlice: false,
+      chunkMinutes: 1,
+      transcriptOf: () => lines.map((line) => ({ ...line })),
+    });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 60, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.completeAnalysis(1, [{ id: "t1", title: "开场", category: "直播", lineIds: ["l1"] }]);
+    expect(p.linesOf(topicKey(1, "t1")).map((line) => line.id)).toEqual(["l1"]);
+
+    // 文件继续增长：来源字幕多了一行，重开弹窗按当前字幕读取
+    lines.push({ id: "l2", start: 60, end: 65, speaker: "主播", text: "新增内容" });
+    expect(p.linesOf(topicKey(1, "t1")).map((line) => line.id)).toEqual(["l1", "l2"]);
+  });
+});
+
+describe("开始整理早于监控登记（#132 D3）", () => {
+  test("未知文件的加入请求在元数据到达后生效并正常入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+
+    // 开始监控后首轮轮询（≤2 秒）之前点了「开始整理」：控制器里还没有这个文件
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue).toHaveLength(0);
+    expect(p.files.has("f1")).toBe(false);
+
+    // 首次轮询登记：0 字节读不出时长，先按还在增长处理
+    p.addFile({ id: "f1", name: "弹窗增长.ts", durationSeconds: null, growing: true, modifiedSeconds: 0 });
+    expect(p.files.get("f1")?.added).toBe(true);
+    expect(p.statusOf("f1")).toBe("organizing");
+    expect(p.analysisQueue).toHaveLength(0);
+
+    // 追加到 80 秒：凑满一块立即入队，不需要任何人工操作
+    p.reportGrowth("f1", 80);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 60]]);
+  });
+
+  test("加入请求不会把之后才登记的文件漏掉，重复登记也不重复计入", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    p.startOrganize(["f1"]);
+
+    p.addFile({ id: "f1", name: "a.ts", durationSeconds: 120, growing: false, modifiedSeconds: 0 });
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+    ]);
+  });
+});
+
+describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
+  test("恢复后只排新增长的部分，已分块的区间不再重排", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    p.restoreCursor("f1", 120);
+    expect(p.files.get("f1")?.cursorSeconds).toBe(120);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+
+    // 只排恢复点之后的：已分块的 0–120 不再重排，剩下的整块与尾段照常入队
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [120, 180],
+      [180, 190],
+    ]);
+  });
+
+  test("重启后新分块完成：已处理从恢复点继续推进，不被队列缺口清零", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    // 重启：磁盘上 0–120 已处理，队列从 120 继续
+    p.restoreProcessed("f1", 120);
+    p.restoreCursor("f1", 120);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [120, 180],
+      [180, 190],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[0]!.id, []);
+    // 队列里没有 0–120 的分块，但那一段已经恢复过：已处理要走到 180，不是掉回 0
+    expect(p.files.get("f1")?.processedSeconds).toBe(180);
+    expect(p.unslicedSeconds("f1")).toBe(10);
+  });
+
+  test("分块记录比库里的时长长：按磁盘证据抬升时长，不把进度压回去", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    // 视频库里的时长停在导入那一刻（80 秒），磁盘上已经分析到 400 秒
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    p.restoreCursor("f1", 400);
+    p.restoreProcessed("f1", 400);
+    expect(p.files.get("f1")).toMatchObject({ durationSeconds: 400, cursorSeconds: 400, processedSeconds: 400 });
+    expect(p.unslicedSeconds("f1")).toBe(0);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    // 没有新内容要排；整理状态也不会被旧时长误判成「未处理完」
+    expect(p.analysisQueue).toHaveLength(0);
+    expect(p.statusOf("f1")).toBe("finished");
+  });
+});
+
+describe("短尾巴跳过后的终态（#132 QA B2）", () => {
+  test("尾巴分块按完成结算（0 主题）：已处理推到文件末尾，未切片 0、整理已结束", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    // 真机形态：增长到 120.138 秒停止，最后 0.138 秒解不出稳定采样，分析管线跳过并返回 0 主题
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 120.138, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[0]!.id, []);
+    p.completeAnalysis(p.analysisQueue[1]!.id, []);
+    p.setGrowing("f1", false);
+    p.tick(31);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+      [120, 120.138],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[2]!.id, []);
+    expect(p.analysisQueue[2]!.status).toBe("done");
+    expect(p.unslicedSeconds("f1")).toBe(0);
+    expect(p.statusOf("f1")).toBe("finished");
   });
 });
