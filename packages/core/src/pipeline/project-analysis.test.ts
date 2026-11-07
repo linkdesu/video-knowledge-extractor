@@ -1902,7 +1902,8 @@ describe("analyzeVideoRange：长区间按窗口切分主题分析（#155）", (
     expect(spy.chunkRanges).toEqual(["0-590"]);
     expect(spy.mergeCalls).toBe(1);
     expect(result.topics.map((t) => t.title)).toEqual(["合并主题"]);
-  });
+    // 590 秒测试视频在 Windows CI 上 ffmpeg 生成+抽音就要 5 秒以上：不设上限会撞默认超时
+  }, 30_000);
 
   test("窗口边界处的主题：两个窗口的相邻时间段被合并阶段合回一个主题", async () => {
     const root = makeTmpDir("project-analysis-window-edge-");
