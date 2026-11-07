@@ -24,6 +24,7 @@ const INVOKE_CHANNELS: ProjectInvokeChannel[] = [
   IPC.projectsConfirmTopic,
   IPC.projectsTopicLines,
   IPC.projectsOpenClipsDir,
+  IPC.projectsRetryTask,
 ];
 
 function harness() {
@@ -68,11 +69,11 @@ describe("项目 IPC 契约", () => {
     expect(project.events.map((event) => event.text)).toEqual(["创建项目：晚场直播精华"]);
 
     const list = handlers[IPC.projectsList]!(null) as ProjectSummary[];
-    expect(list).toMatchObject([{ id: project.id, name: "晚场直播精华", videoCount: 0, pendingTaskCount: 0, proposedTopicCount: 0, clipCount: 0 }]);
+    expect(list).toMatchObject([{ id: project.id, name: "晚场直播精华", videoCount: 0, semanticChunking: true, pendingTaskCount: 0, proposedTopicCount: 0, clipCount: 0 }]);
 
-    const updated = handlers[IPC.projectsUpdateSettings]!(null, project.id, { chunkMinutes: 15, autoSlice: false }) as ProjectDetail;
-    expect(updated).toMatchObject({ chunkMinutes: 15, autoSlice: false });
-    expect(updated.events[0]?.text).toBe("项目设置：15 分钟 / 自动切片关闭；已入队任务继续处理");
+    const updated = handlers[IPC.projectsUpdateSettings]!(null, project.id, { chunkMinutes: 15, autoSlice: false, semanticChunking: false }) as ProjectDetail;
+    expect(updated).toMatchObject({ chunkMinutes: 15, autoSlice: false, semanticChunking: false });
+    expect(updated.events[0]?.text).toBe("项目设置：15 分钟 / 语义分块关闭 / 自动切片关闭；已入队任务继续处理");
 
     const monitored = handlers[IPC.projectsStartMonitor]!(null, project.id, join(root, "录屏")) as ProjectDetail;
     expect(monitored).toMatchObject({ monitoring: true, watchDir: join(root, "录屏") });
@@ -150,6 +151,7 @@ describe("项目 IPC 契约", () => {
     expect(() => handlers[IPC.projectsStartOrganize]!(null, "p1", "v1")).toThrow("视频 id必须是非空字符串数组");
     expect(() => handlers[IPC.projectsUpdateSettings]!(null, "p1", { autoSlice: "yes" })).toThrow("自动切片必须是布尔值");
     expect(() => handlers[IPC.projectsUpdateSettings]!(null, "p1", { chunkMinutes: "10" })).toThrow("分块时长必须是数字");
+    expect(() => handlers[IPC.projectsUpdateSettings]!(null, "p1", { semanticChunking: "yes" })).toThrow("智能语义分块必须是布尔值");
     expect(() => handlers[IPC.projectsConfirmTopic]!(null, "p1", "1:t1", [])).toThrow("字幕行 id必须是非空字符串数组");
   });
 
@@ -170,5 +172,32 @@ describe("项目 IPC 契约", () => {
     const detail = handlers[IPC.projectsStartOrganize]!(null, project.id, ["v1"]) as ProjectDetail;
     expect(calls).toEqual([[project.id, ["v1"]]]);
     expect(detail.videoIds).toEqual(["v1"]);
+  });
+
+  test("重试通道：合法参数交给业务层原地回队；非法参数在校验层拒绝", () => {
+    const { root, service, handlers } = harness();
+    const project = handlers[IPC.projectsCreate]!(null, { name: "重试", rootDir: join(root, "p") }) as ProjectDetail;
+    handlers[IPC.projectsUpdateSettings]!(null, project.id, { autoSlice: false });
+    const controller = new ClipProject({
+      executor: { analyze() {}, slice() {} },
+      transcriptOf: () => LINES,
+      autoSlice: false,
+    });
+    controller.addFile({ id: "v1", name: "录制.mp4", durationSeconds: 600, growing: false, modifiedSeconds: 0 });
+    service.attachRuntime(project.id, controller);
+    handlers[IPC.projectsStartOrganize]!(null, project.id, ["v1"]);
+    expect(controller.failAnalysis(1, "LLM 请求失败 401")).toBe(true);
+
+    const retried = handlers[IPC.projectsRetryTask]!(null, project.id, "analysis", 1) as ProjectDetail;
+    // 分析槽空着：retryAnalysis 的 pump 直接把它推起来，位置不变
+    expect(retried.queue?.analysis[0]).toMatchObject({ id: 1, status: "running" });
+    expect(retried.events[0]?.text).toBe("任务已重试：录制.mp4");
+
+    expect(() => handlers[IPC.projectsRetryTask]!(null, "", "analysis", 1)).toThrow("缺少项目 id");
+    expect(() => handlers[IPC.projectsRetryTask]!(null, project.id, "tasks", 1)).toThrow("队列必须是 analysis 或 slice");
+    expect(() => handlers[IPC.projectsRetryTask]!(null, project.id, "analysis", 1.5)).toThrow("任务 id 必须是整数");
+    expect(() => handlers[IPC.projectsRetryTask]!(null, project.id, "analysis", "1")).toThrow("任务 id 必须是整数");
+    // 重试不成立由业务层给出可读原因
+    expect(() => handlers[IPC.projectsRetryTask]!(null, project.id, "analysis", 1)).toThrow("任务不在失败状态");
   });
 });

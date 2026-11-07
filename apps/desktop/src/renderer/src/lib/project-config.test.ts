@@ -6,7 +6,6 @@ import {
   clampChunkMinutes,
   directoryCountLabel,
   directoryEmptyHint,
-  exampleDirectory,
   fileMeta,
   hms,
   mergeDirectoryView,
@@ -47,19 +46,6 @@ describe("分块时长夹值（原型 L150 / configure）", () => {
     expect(clampChunkMinutes("")).toBe(10);
     expect(clampChunkMinutes("abc")).toBe(10);
     expect(clampChunkMinutes(Number.NaN)).toBe(10);
-  });
-});
-
-describe("填入示例目录（原型 L148）", () => {
-  test("项目目录 + /recordings", () => {
-    expect(exampleDirectory("/Users/link/Movies/切片项目/晚场")).toBe(
-      "/Users/link/Movies/切片项目/晚场/recordings",
-    );
-  });
-
-  test("尾部斜杠不重复，Windows 路径用反斜杠", () => {
-    expect(exampleDirectory("/Users/link/切片项目/")).toBe("/Users/link/切片项目/recordings");
-    expect(exampleDirectory("D:\\code\\video-notes\\")).toBe("D:\\code\\video-notes\\recordings");
   });
 });
 

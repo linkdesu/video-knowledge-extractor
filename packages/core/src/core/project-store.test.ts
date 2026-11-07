@@ -28,6 +28,7 @@ describe("项目清单持久化", () => {
     expect(first.rootDir).toBe(expectedRoot);
     expect(first.chunkMinutes).toBe(10);
     expect(first.autoSlice).toBe(true);
+    expect(first.semanticChunking).toBe(true);
     expect(first.monitoring).toBe(false);
     expect(first.watchDir).toBeNull();
     expect(first.videoIds).toEqual([]);
@@ -153,5 +154,55 @@ describe("项目清单持久化", () => {
     writeFileSync(file, "{ 不是 JSON");
     expect(() => store.list()).toThrow("projects.json 不是合法 JSON");
     expect(readFileSync(file, "utf8")).toBe("{ 不是 JSON");
+  });
+
+  test("semanticChunking：创建默认开启，落盘读回；旧清单缺字段回 true", () => {
+    const root = makeTmpDir("projects-semantic-");
+    const store = storeAt(root);
+    const p = store.create({ name: "语义", rootDir: join(root, "p") });
+    expect(p.semanticChunking).toBe(true);
+
+    expect(store.updateSettings(p.id, { semanticChunking: false }).semanticChunking).toBe(false);
+    const reopened = storeAt(root);
+    expect(reopened.get(p.id)?.semanticChunking).toBe(false);
+    expect(store.updateSettings(p.id, { semanticChunking: true }).semanticChunking).toBe(true);
+
+    // 旧 projects.json 没有这个字段：缺字段 / 非布尔都按开启处理
+    const legacy = {
+      version: 1,
+      projects: [
+        {
+          id: "old1",
+          name: "旧项目",
+          rootDir: join(root, "old"),
+          watchDir: null,
+          monitoring: false,
+          chunkMinutes: 10,
+          autoSlice: true,
+          videoIds: [],
+          clips: [],
+          nextClipSeq: 1,
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "old2",
+          name: "脏字段",
+          rootDir: join(root, "old2"),
+          watchDir: null,
+          monitoring: false,
+          chunkMinutes: 10,
+          autoSlice: true,
+          semanticChunking: "yes",
+          videoIds: [],
+          clips: [],
+          nextClipSeq: 1,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    };
+    writeFileSync(projectsFilePath(root), JSON.stringify(legacy));
+    expect(store.list().map((item) => item.semanticChunking)).toEqual([true, true]);
   });
 });

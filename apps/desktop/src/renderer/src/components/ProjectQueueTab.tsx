@@ -2,12 +2,14 @@ import { useCallback, useRef, useState, type JSX } from "react";
 import type {
   ProjectDetail,
   ProjectSubtitleLineInfo,
+  ProjectTaskQueue,
   ProjectTaskStatus,
   ProjectTopicLines,
 } from "../../../shared/ipc";
 import {
   analysisRangeLabel,
   analysisStages,
+  analysisTopicProgress,
   pendingTopics,
   proposedTopicSource,
   queueCountLabel,
@@ -43,16 +45,21 @@ export function ProjectQueueTab({
   project,
   loadTopicLines,
   confirmTopic,
+  retry,
 }: {
   project: ProjectDetail;
   loadTopicLines: (topicKey: string) => Promise<ProjectTopicLines>;
   confirmTopic: (topicKey: string, lineIds: string[]) => Promise<void>;
+  /** 重试失败任务（#154）：按队列名 + 任务 id 原地回队，不新增任务。 */
+  retry: (queue: ProjectTaskQueue, taskId: number) => Promise<void>;
 }): JSX.Element {
   const queue = project.queue;
   const analysis = queue?.analysis ?? [];
   const slices = queue?.slices ?? [];
   const proposed = pendingTopics(queue);
   const [active, setActive] = useState<ActiveTopic | null>(null);
+  /** 正在重试的任务（`<队列>:<id>`）：一次只能提交一个，按钮按它禁用自己。 */
+  const [retrying, setRetrying] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const loadRequestRef = useRef(0);
   /** 当前打开的是哪个主题；提交期间用户 Esc 换主题时，这次提交就不能再关弹窗。 */
@@ -141,6 +148,17 @@ export function ProjectQueueTab({
     );
   };
 
+  /**
+   * 重试失败任务（#154）：服务端只接受 failed 任务并原地回队，成功与否由
+   * `projects:event` 全量推送与父层的 toast 呈现，这里只负责防重复提交。
+   */
+  const retryTask = (queueName: ProjectTaskQueue, taskId: number) => {
+    const key = `${queueName}:${taskId}`;
+    if (retrying !== null) return;
+    setRetrying(key);
+    void retry(queueName, taskId).finally(() => setRetrying(null));
+  };
+
   const generate = async (lineIds: string[]) => {
     if (active === null) return;
     const topicKey = active.topic.topicKey;
@@ -184,26 +202,43 @@ export function ProjectQueueTab({
                     <h4>#{job.id} · {job.name}</h4>
                     <p>{analysisRangeLabel(job)}</p>
                   </div>
-                  <span
-                    className={`vn-tag ${statusClass(job.status)}`}
-                    data-testid="analysis-task-status"
-                  >
-                    {taskStatusLabel(job.status)}
-                  </span>
+                  <div className="vn-queue-task-actions">
+                    <span
+                      className={`vn-tag ${statusClass(job.status)}`}
+                      data-testid="analysis-task-status"
+                    >
+                      {taskStatusLabel(job.status)}
+                    </span>
+                    {job.status === "failed" ? (
+                      <button
+                        type="button"
+                        className="vn-btn sm"
+                        data-testid={`analysis-retry-${job.id}`}
+                        disabled={retrying !== null}
+                        onClick={() => retryTask("analysis", job.id)}
+                      >
+                        {retrying === `analysis:${job.id}` ? "重试中…" : "重试"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="vn-analysis-stages" role="group" aria-label={`分析任务 #${job.id} 阶段`}>
-                  {analysisStages(job).map((stage) => (
-                    <div
-                      key={stage.name}
-                      className="vn-analysis-stage"
-                      data-testid="analysis-stage"
-                      data-stage={stage.name}
-                      data-state={stage.state}
-                    >
-                      <span>{stage.name}</span>
-                      <span className="vn-analysis-stage-state">{taskStatusLabel(stage.state)}</span>
-                    </div>
-                  ))}
+                  {analysisStages(job).map((stage, index) => {
+                    // 第二步按窗口划主题（#155）：整段分析可能跑很久，给出 `3/12` 才不像卡死
+                    const progress = index === 1 ? analysisTopicProgress(job) : null;
+                    return (
+                      <div
+                        key={stage.name}
+                        className="vn-analysis-stage"
+                        data-testid="analysis-stage"
+                        data-stage={stage.name}
+                        data-state={stage.state}
+                      >
+                        <span>{progress === null ? stage.name : `${stage.name} ${progress}`}</span>
+                        <span className="vn-analysis-stage-state">{taskStatusLabel(stage.state)}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </article>
             ))
@@ -268,12 +303,25 @@ export function ProjectQueueTab({
                     <h4>#{task.id} · {task.title}</h4>
                     <p>{sliceTaskMeta(task)}</p>
                   </div>
-                  <span
-                    className={`vn-tag ${statusClass(task.status)}`}
-                    data-testid="slice-task-status"
-                  >
-                    {taskStatusLabel(task.status)}
-                  </span>
+                  <div className="vn-queue-task-actions">
+                    <span
+                      className={`vn-tag ${statusClass(task.status)}`}
+                      data-testid="slice-task-status"
+                    >
+                      {taskStatusLabel(task.status)}
+                    </span>
+                    {task.status === "failed" ? (
+                      <button
+                        type="button"
+                        className="vn-btn sm"
+                        data-testid={`slice-retry-${task.id}`}
+                        disabled={retrying !== null}
+                        onClick={() => retryTask("slice", task.id)}
+                      >
+                        {retrying === `slice:${task.id}` ? "重试中…" : "重试"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </article>
             ))

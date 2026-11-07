@@ -92,6 +92,25 @@ export function App() {
 
   const toProjects = useCallback(() => setRoute({ name: "projects" }), []);
 
+  /**
+   * 删除项目（#154）：只删项目登记，源视频与项目切片目录原地不动（主进程侧保证）。
+   * 失败直接把错误抛给确认弹窗，由弹窗就地显示；成功刷新列表、离开该项目页。
+   */
+  const deleteProject = useCallback(
+    async (item: ProjectSummary) => {
+      await window.vnote.deleteProject(item.id);
+      if (routeRef.current.name === "project" && routeRef.current.projectId === item.id) {
+        setProject(null);
+        setRoute({ name: "projects" });
+      }
+      showToast(`已删除项目：${item.name}`);
+      refreshProjects();
+    },
+    [refreshProjects],
+  );
+
+  const openSettings = useCallback(() => setRoute({ name: "settings" }), []);
+
   const createProject = useCallback(async (input: CreateProjectInput) => {
     const created = await window.vnote.createProject(input);
     setProjects((prev) =>
@@ -438,6 +457,7 @@ export function App() {
             onOpen={(item) =>
               setRoute({ name: "project", projectId: item.id, tab: "config" })
             }
+            onDelete={deleteProject}
             onCreate={createProject}
           />
         ) : route.name === "project" ? (
@@ -469,6 +489,15 @@ export function App() {
                         showToast(`保存分块时长失败：${errMessage(err)}`);
                       }
                     }}
+                    onSemanticChunking={async (enabled) => {
+                      try {
+                        await window.vnote.updateProjectSettings(project.id, {
+                          semanticChunking: enabled,
+                        });
+                      } catch (err) {
+                        showToast(`保存智能语义分块失败：${errMessage(err)}`);
+                      }
+                    }}
                     onOrganize={async (videoIds) => {
                       try {
                         await window.vnote.startProjectOrganize(project.id, videoIds);
@@ -494,6 +523,14 @@ export function App() {
                         throw err;
                       }
                     }}
+                    retry={async (queueName, taskId) => {
+                      // 重试结果同样由 projects:event 推送刷新；失败只提示、不改本地快照
+                      try {
+                        await window.vnote.retryTask(project.id, queueName, taskId);
+                      } catch (err) {
+                        showToast(`重试失败：${errMessage(err)}`);
+                      }
+                    }}
                   />
                 ),
                 output: (
@@ -512,6 +549,7 @@ export function App() {
               }
               onBack={toProjects}
               onToggleAutoSlice={setAutoSlice}
+              onOpenSettings={openSettings}
             />
           ) : (
             <p className="vn-hint" data-testid="project-loading">

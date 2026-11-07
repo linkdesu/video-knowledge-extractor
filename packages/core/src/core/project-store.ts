@@ -34,6 +34,8 @@ export type ProjectRecord = {
   monitoring: boolean;
   chunkMinutes: number;
   autoSlice: boolean;
+  /** 智能语义分块（#155）：停止增长后剩余区间整段入队；旧清单缺字段按开启。 */
+  semanticChunking: boolean;
   /** 已加入整理、按加入顺序排列的视频 id；取消勾选不撤销。 */
   videoIds: string[];
   clips: ProjectClipRef[];
@@ -47,7 +49,7 @@ export type ProjectsFile = { version: 1; projects: ProjectRecord[] };
 
 export type CreateProjectInput = { name: string; rootDir: string; now?: Date; id?: string };
 
-export type ProjectSettingsPatch = { name?: string; autoSlice?: boolean; chunkMinutes?: number };
+export type ProjectSettingsPatch = { name?: string; autoSlice?: boolean; chunkMinutes?: number; semanticChunking?: boolean };
 
 export function projectsFilePath(root: string): string {
   return join(root, PROJECTS_FILE_NAME);
@@ -111,6 +113,8 @@ function parseRecord(raw: unknown, where: string): ProjectRecord {
     monitoring: monitoring === true,
     chunkMinutes: clampChunkMinutes(chunkMinutes),
     autoSlice: autoSlice !== false,
+    // 旧 projects.json 没有这个字段；缺字段 / 非布尔都按开启处理（#155）
+    semanticChunking: raw.semanticChunking !== false,
     videoIds: readStringArray(videoIds, `${where}.videoIds`),
     clips: parseClipRefs(clips, `${where}.clips`),
     nextClipSeq: typeof nextClipSeq === "number" && Number.isInteger(nextClipSeq) && nextClipSeq > 0 ? nextClipSeq : 1,
@@ -179,6 +183,7 @@ export class ProjectStore {
       monitoring: false,
       chunkMinutes: PROJECT_CHUNK_MINUTES_DEFAULT,
       autoSlice: true,
+      semanticChunking: true,
       videoIds: [],
       clips: [],
       nextClipSeq: 1,
@@ -202,6 +207,7 @@ export class ProjectStore {
       if (patch.name !== undefined) project.name = cleanName(patch.name);
       if (patch.autoSlice !== undefined) project.autoSlice = patch.autoSlice;
       if (patch.chunkMinutes !== undefined) project.chunkMinutes = clampChunkMinutes(patch.chunkMinutes);
+      if (patch.semanticChunking !== undefined) project.semanticChunking = patch.semanticChunking;
     });
   }
 

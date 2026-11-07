@@ -286,6 +286,11 @@ const projectService = new ProjectService({
   },
   // 点击「开始监控」的瞬间记下基线：之后掉进来的文件才算新文件（#132）
   onMonitorStarted: (projectId, watchDir) => growthMonitor.seed(projectId, watchDir),
+  // 删除项目：清单已删，这里停运行时与监控（#154）；dispose 之后在飞任务全部短路
+  onProjectRemoved: (projectId) => {
+    projectRuntime.detachProject(projectId);
+    growthMonitor.forget(projectId);
+  },
   // 监控目录快照（#128）：表格数据源；目录里只有文件系统能给出的大小 / 修改时间，
   // 时长按视频库已知值补，未导入的文件显示「—」，不在每次推送里跑 ffprobe。
   scanDirectory: (watchDir, statuses) => {

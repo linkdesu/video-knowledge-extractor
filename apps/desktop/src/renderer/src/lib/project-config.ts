@@ -17,13 +17,6 @@ export function clampChunkMinutes(value: number | string): number {
   return Math.min(30, Math.max(1, Math.round(raw)));
 }
 
-/** 原型 L148「填入示例」：`<项目目录>/recordings`，沿用项目目录自己的分隔符。 */
-export function exampleDirectory(rootDir: string): string {
-  const trimmed = rootDir.replace(/[\\/]+$/, "");
-  const separator = rootDir.includes("\\") ? "\\" : "/";
-  return `${trimmed}${separator}recordings`;
-}
-
 export function monitorStatusLabel(monitoring: boolean): string {
   return monitoring ? "监控中" : "尚未监控";
 }

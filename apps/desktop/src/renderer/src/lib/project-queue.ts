@@ -59,6 +59,21 @@ export function analysisRangeLabel(
   return `${fmtHms(job.startSeconds)}–${fmtHms(job.endSeconds)}`;
 }
 
+/**
+ * 主题分析的窗口进度（#155）：整段分块按窗口逐窗划主题，`3/12` 让等待看得见。
+ * 只有正在跑且有有效进度时才给数字：等待中、已完成、失败以及非法值都返回 null，
+ * 界面据此退回只显示阶段状态（不出现 `0/0` 这种假进度）。
+ */
+export function analysisTopicProgress(
+  job: Pick<ProjectAnalysisTaskInfo, "status" | "progress">,
+): string | null {
+  const progress = job.progress;
+  if (job.status !== "running" || progress === undefined) return null;
+  const { done, total } = progress;
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(done) || done < 0) return null;
+  return `${Math.min(Math.floor(done), total)}/${total}`;
+}
+
 /** 待确认主题的来源行：`分析 #3 · 晚场.mp4 · 等待人工确认`；任务缺失时不编造文件名。 */
 export function proposedTopicMeta(
   jobId: number,

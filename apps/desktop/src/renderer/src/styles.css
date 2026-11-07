@@ -2520,3 +2520,49 @@ textarea {
     overflow-wrap: anywhere;
   }
 }
+
+/* 删除项目确认弹窗（#154）：复用 .vn-mask / .vn-modal 的遮罩与卡片，只补内容排版。 */
+.vn-project-delete-modal {
+  width: min(460px, 100%);
+}
+.vn-project-delete-consequences {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--vn-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vn-project-delete-error {
+  margin: 12px 0 0;
+  color: var(--vn-danger, var(--vn-muted));
+}
+.vn-project-delete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+/* 项目行右侧动作（#154）：进入项目与删除项目并排，窄屏随整行纵向排。 */
+.vn-project-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 智能语义分块开关（#155）：跟分块时长同一张卡片，另起一行，与上方数字输入留出节奏。 */
+.vn-config-semantic {
+  margin-top: 12px;
+}
+
+/* 队列任务行右侧状态 + 重试（#154）：一行内并排，不挤压左侧文案。 */
+.vn-queue-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}

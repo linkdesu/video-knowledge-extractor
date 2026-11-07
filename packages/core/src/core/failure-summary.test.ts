@@ -11,6 +11,11 @@ describe("describeFailure", () => {
     expect(describeFailure("API key 无效：key 已过期")).toBe("API key 无效");
     expect(describeFailure("本地 ASR 模型未就绪：缺少识别")).toBe("本地 ASR 模型未就绪");
     expect(describeFailure("模型未就绪")).toBe("本地 ASR 模型未就绪");
+    // 缺模型文件与加载失败都归到「本地 ASR 模型未就绪」（#154）：用户去设置页补文件就能解决
+    expect(describeFailure("缺少模型文件：speaker-embedding（/models/x.onnx）")).toBe("本地 ASR 模型未就绪");
+    expect(describeFailure("说话人分离失败：ASR 模型加载失败")).toBe("本地 ASR 模型未就绪");
+    // 远程 ASR 没配齐是「没配置」，不是「模型没就绪」（#154）
+    expect(describeFailure("ASR 未配齐：base url")).toBe("ASR 未配置");
     expect(describeFailure("ffprobe 打不开该文件")).toBe("视频文件损坏");
     expect(describeFailure("moov atom not found")).toBe("视频文件损坏");
     expect(describeFailure("Invalid data found when processing input")).toBe("视频文件损坏");

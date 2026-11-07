@@ -7,7 +7,6 @@ import {
   clampChunkMinutes,
   directoryCountLabel,
   directoryEmptyHint,
-  exampleDirectory,
   fileMeta,
   mergeDirectoryView,
   monitorStatusLabel,
@@ -22,11 +21,14 @@ export function ProjectConfigTab({
   project,
   onStartMonitor,
   onChunkMinutes,
+  onSemanticChunking,
   onOrganize,
 }: {
   project: ProjectDetail;
   onStartMonitor: (directory: string) => Promise<void>;
   onChunkMinutes: (minutes: number) => Promise<void>;
+  /** 智能语义分块开关（#155）：停止增长后整段分析，不再按分块时长截断主题。 */
+  onSemanticChunking: (enabled: boolean) => Promise<void>;
   onOrganize: (videoIds: string[]) => Promise<void>;
 }): JSX.Element {
   const [directory, setDirectory] = useState(project.watchDir ?? "");
@@ -34,8 +36,8 @@ export function ProjectConfigTab({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [startingMonitor, setStartingMonitor] = useState(false);
   const [savingChunk, setSavingChunk] = useState(false);
+  const [savingSemantic, setSavingSemantic] = useState(false);
   const [organizing, setOrganizing] = useState(false);
-  const directoryRef = useRef<HTMLInputElement | null>(null);
   // 修改时间显示与排序 500ms 防抖、最长 2 秒（原型 scheduleSort / #132）
   const [sortSnapshot, setSortSnapshot] = useState<ProjectDirectoryFile[]>(() =>
     sortDirectoryFiles(project.directory, []),
@@ -75,6 +77,12 @@ export function ProjectConfigTab({
     void onChunkMinutes(next).finally(() => setSavingChunk(false));
   };
 
+  const commitSemanticChunking = (next: boolean) => {
+    if (savingSemantic || next === project.semanticChunking) return;
+    setSavingSemantic(true);
+    void onSemanticChunking(next).finally(() => setSavingSemantic(false));
+  };
+
   const startOrganize = () => {
     if (organizing || organizeButton.disabled) return;
     const videoIds = files
@@ -109,7 +117,6 @@ export function ProjectConfigTab({
           </label>
           <div className="vn-config-directory-line">
             <input
-              ref={directoryRef}
               id="project-monitor-directory"
               className="vn-input"
               data-testid="project-monitor-directory"
@@ -125,18 +132,6 @@ export function ProjectConfigTab({
               disabled={project.monitoring || startingMonitor || directory.trim() === ""}
             >
               开始监控
-            </button>
-            <button
-              type="button"
-              className="vn-btn"
-              data-testid="project-monitor-example"
-              disabled={project.monitoring}
-              onClick={() => {
-                setDirectory(exampleDirectory(project.rootDir));
-                directoryRef.current?.focus();
-              }}
-            >
-              填入示例
             </button>
           </div>
         </form>
@@ -166,8 +161,22 @@ export function ProjectConfigTab({
           />
           <span>分钟</span>
         </div>
+        <label className="vn-switch vn-config-semantic">
+          <input
+            type="checkbox"
+            role="switch"
+            data-testid="project-semantic-chunking"
+            checked={project.semanticChunking}
+            disabled={savingSemantic}
+            onChange={(event) => commitSemanticChunking(event.target.checked)}
+          />
+          智能语义分块
+        </label>
         <p className="vn-hint vn-config-hint">
-          分块时长只影响后续分析区间。自动切片开关位于上方项目设置，待确认主题不阻塞分析。
+          {project.semanticChunking
+            ? "停止增长的视频整段做字幕与主题分析，话题不再被分块时长截断；还在增长时仍按分块时长推进。"
+            : "按分块时长切块，每块单独划主题；关闭后分块时长只影响后续分析区间。"}
+          自动切片开关位于上方项目设置，待确认主题不阻塞分析。
         </p>
       </section>
 

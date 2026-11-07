@@ -58,6 +58,15 @@ const BANNER_FIELD_CHARS = 160;
 /** 浮层单行总长上限（含时间、级别标记与消息）。 */
 const BANNER_LINE_CHARS = 700;
 
+/**
+ * 主动取消（不是失败）：错误对象上带 `cancelled: true`。执行器用它中断在跑的管线，
+ * `step()` 见到它只记 info，不再留带堆栈的 ERROR（#154）。
+ */
+export function isCancellationError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  return "cancelled" in err && err.cancelled === true;
+}
+
 // 浮窗展示用：本地时间 [HH:MM:SS]，warn/error 带中文级别标记。
 // r47：字段（input/output/mode/编码器等）一并渲染——浮层只拿到这一行，丢掉字段就等于没有信息。
 export function formatLogLine(entry: LogEntry): string {
@@ -310,6 +319,11 @@ export function createLogger(opts?: LoggerOptions): Logger {
             },
             (err: unknown) => {
               const e = err instanceof Error ? err : new Error(String(err));
+              // 主动取消不是失败（#154）：删除项目时管线通过中止信号退出，别留一条带堆栈的 ERROR
+              if (isCancellationError(err)) {
+                self.info(module, `${name} 已取消`, { durationMs: now().getTime() - start });
+                throw err;
+              }
               self.error(module, `${name} 失败`, {
                 durationMs: now().getTime() - start,
                 error: e.message,

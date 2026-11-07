@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { IPC } from "../shared/ipc";
-import type { CreateProjectInput, ProjectDetail, ProjectSettingsPatch } from "../shared/ipc";
+import type { CreateProjectInput, ProjectDetail, ProjectSettingsPatch, ProjectTaskQueue } from "../shared/ipc";
 import type { ProjectService } from "./projects";
 
 /** `ipcMain.handle` 注册的项目通道（`projects:event` 是推送，不在其中）。 */
@@ -14,7 +14,8 @@ export type ProjectInvokeChannel =
   | typeof IPC.projectsUpdateSettings
   | typeof IPC.projectsConfirmTopic
   | typeof IPC.projectsTopicLines
-  | typeof IPC.projectsOpenClipsDir;
+  | typeof IPC.projectsOpenClipsDir
+  | typeof IPC.projectsRetryTask;
 
 export type ProjectHandler = (event: unknown, ...args: unknown[]) => unknown | Promise<unknown>;
 
@@ -38,7 +39,7 @@ function requireCreateInput(value: unknown): CreateProjectInput {
 
 function requireSettingsPatch(value: unknown): ProjectSettingsPatch {
   if (typeof value !== "object" || value === null) throw new Error("缺少设置参数");
-  const { name, autoSlice, chunkMinutes } = value as Record<string, unknown>;
+  const { name, autoSlice, chunkMinutes, semanticChunking } = value as Record<string, unknown>;
   const patch: ProjectSettingsPatch = {};
   if (name !== undefined) patch.name = requireString(name, "项目名称");
   if (autoSlice !== undefined) {
@@ -49,7 +50,21 @@ function requireSettingsPatch(value: unknown): ProjectSettingsPatch {
     if (typeof chunkMinutes !== "number") throw new Error("分块时长必须是数字");
     patch.chunkMinutes = chunkMinutes;
   }
+  if (semanticChunking !== undefined) {
+    if (typeof semanticChunking !== "boolean") throw new Error("智能语义分块必须是布尔值");
+    patch.semanticChunking = semanticChunking;
+  }
   return patch;
+}
+
+function requireTaskQueue(value: unknown): ProjectTaskQueue {
+  if (value !== "analysis" && value !== "slice") throw new Error("队列必须是 analysis 或 slice");
+  return value;
+}
+
+function requireTaskId(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) throw new Error("任务 id 必须是整数");
+  return value;
 }
 
 /**
@@ -95,5 +110,7 @@ export function projectIpcHandlers(
       mkdirSync(dir, { recursive: true });
       await openDirectory(dir);
     },
+    [IPC.projectsRetryTask]: (_event, projectId, queue, taskId) =>
+      service.retryTask(requireString(projectId, "项目 id"), requireTaskQueue(queue), requireTaskId(taskId)),
   };
 }
