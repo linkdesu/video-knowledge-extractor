@@ -778,6 +778,27 @@ describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
     ]);
   });
 
+  test("重启后新分块完成：已处理从恢复点继续推进，不被队列缺口清零", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
+    // 重启：磁盘上 0–120 已处理，队列从 120 继续
+    p.restoreProcessed("f1", 120);
+    p.restoreCursor("f1", 120);
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [120, 180],
+      [180, 190],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[0]!.id, []);
+    // 队列里没有 0–120 的分块，但那一段已经恢复过：已处理要走到 180，不是掉回 0
+    expect(p.files.get("f1")?.processedSeconds).toBe(180);
+    expect(p.unslicedSeconds("f1")).toBe(10);
+  });
+
   test("分块记录比库里的时长长：按磁盘证据抬升时长，不把进度压回去", () => {
     const { executor } = manualExecutor();
     const p = project(executor);

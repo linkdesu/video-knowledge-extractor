@@ -500,16 +500,22 @@ export class ClipProject {
     }
   }
 
+  /**
+   * 「已处理」= 从开头起连续、全部主题都已切片的分块终点。
+   * 重启后队列只从恢复点继续，前面的旧分块不在队列里：缺口落在已恢复进度之内时
+   * 不算断档，也不把进度往回压（#132 D2）。
+   */
   private refreshProcessed(fileId: string): void {
     const file = this.requireFile(fileId);
     let end = 0;
     for (const job of this.analysisQueue) {
       if (job.fileId !== fileId) continue;
-      if (job.start > end + EPS) break;
+      const gap = job.start > end + EPS;
+      if (gap && job.start > file.processedSeconds + EPS) break;
       if (job.status !== "done" || job.topics.some((t) => t.status !== "done")) break;
-      end = job.end;
+      end = Math.max(end, job.end);
     }
-    file.processedSeconds = end;
+    file.processedSeconds = Math.max(file.processedSeconds, end);
   }
 }
 
