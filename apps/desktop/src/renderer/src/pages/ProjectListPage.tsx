@@ -33,6 +33,8 @@ export function ProjectListPage({
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /** 删除成功后触发按钮随整行消失：焦点落到页面标题上，别掉回 body（#154 评审 P2）。 */
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   const openDelete = (project: ProjectSummary, trigger: HTMLButtonElement) => {
     deleteTriggerRef.current = trigger;
@@ -58,6 +60,7 @@ export function ProjectListPage({
       .then(() => {
         deleteTriggerRef.current = null;
         setDeleting(null);
+        headingRef.current?.focus();
       })
       .catch((err) => setDeleteError(errMessage(err)))
       .finally(() => setDeleteBusy(false));
@@ -80,7 +83,7 @@ export function ProjectListPage({
     <>
       <div className="vn-project-head">
         <div>
-          <h1 className="vn-h1">
+          <h1 className="vn-h1" ref={headingRef} tabIndex={-1}>
             <span className="vn-gtext">切片项目</span>
           </h1>
           <p className="vn-sub">按项目管理录制目录、处理队列和切片产出。</p>

@@ -2558,3 +2558,11 @@ textarea {
 .vn-config-semantic {
   margin-top: 12px;
 }
+
+/* 队列任务行右侧状态 + 重试（#154）：一行内并排，不挤压左侧文案。 */
+.vn-queue-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}

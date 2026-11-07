@@ -10,8 +10,13 @@ import type { ProjectLogEvent } from "../../../shared/ipc";
  */
 const MODEL_SETUP_HINTS = ["LLM 未配置", "本地 ASR 模型未就绪", "ASR 未配置", "API key 无效"];
 
+/**
+ * 只看文案末段（` · ` 之后的短原因）：事件前缀带用户可控文本（视频名、主题标题），
+ * 名字里恰好含「LLM 未配置」时不该给视频损坏这类失败挂上「去设置」（#154 评审 P2）。
+ */
 export function needsModelSetup(text: string): boolean {
-  return MODEL_SETUP_HINTS.some((hint) => text.includes(hint));
+  const reason = text.split("·").pop()?.trim() ?? "";
+  return MODEL_SETUP_HINTS.some((hint) => reason.includes(hint));
 }
 
 /** 运行日志里还没提示过的 error 事件（顺序与事件一致，最新在前）。 */

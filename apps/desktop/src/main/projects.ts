@@ -54,8 +54,8 @@ export type ProjectServiceDeps = {
   /** 监控开始后立刻记目录基线（#132），之后出现的文件才算「新文件」。 */
   onMonitorStarted?: (projectId: string, watchDir: string) => void;
   /**
-   * 删除项目时先通知（#154）：运行时与监控趁清单还在时停掉该项目的任务与跟踪；
-   * 回调之后才删清单、清运行日志。
+   * 删除项目时通知（#154）：清单已经落盘删除之后才回调，运行时与监控在这里停掉该项目的任务与跟踪。
+   * 清单写失败时不会回调——项目还在，控制器不能已经被 dispose。
    */
   onProjectRemoved?: (projectId: string) => void;
 };

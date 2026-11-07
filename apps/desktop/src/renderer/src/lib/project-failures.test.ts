@@ -24,6 +24,11 @@ describe("失败原因 → 要不要去模型设置（#154）", () => {
     expect(needsModelSetup("区间分析失败：晚场.mp4 00:00–10:00 · 处理进程意外退出")).toBe(false);
     expect(needsModelSetup("")).toBe(false);
   });
+
+  test("视频名或主题标题里带设置相关字样，不算模型配置失败", () => {
+    expect(needsModelSetup("区间分析失败：LLM 未配置怎么办.mp4 00:00–10:00 · 视频文件损坏")).toBe(false);
+    expect(needsModelSetup("切片失败：聊聊 API key 无效 · 处理进程意外退出")).toBe(false);
+  });
 });
 
 describe("运行日志里的新失败事件（#154）", () => {

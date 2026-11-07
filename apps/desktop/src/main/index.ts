@@ -286,7 +286,7 @@ const projectService = new ProjectService({
   },
   // 点击「开始监控」的瞬间记下基线：之后掉进来的文件才算新文件（#132）
   onMonitorStarted: (projectId, watchDir) => growthMonitor.seed(projectId, watchDir),
-  // 删除项目先停运行时与监控（#154）：此刻清单还在，dispose 之后在飞任务全部短路
+  // 删除项目：清单已删，这里停运行时与监控（#154）；dispose 之后在飞任务全部短路
   onProjectRemoved: (projectId) => {
     projectRuntime.detachProject(projectId);
     growthMonitor.forget(projectId);

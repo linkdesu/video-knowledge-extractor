@@ -1037,7 +1037,7 @@ describe("ProjectRuntime：删除在飞项目的运行时清理（#154）", () =
       await flush(30);
 
       expect(logLines.some((line) => line.includes("项目已删除，分析中止"))).toBe(true);
-      // 中止不是失败：不写 error 事件、不落 failed 终态
+      // 中止不是失败：不写 error 事件、不落 failed 终态，管线那层的 step 也不留带堆栈的 ERROR
       expect(logLines.some((line) => line.includes("区间分析失败"))).toBe(false);
       expect(logLines.some((line) => line.includes("未知项目"))).toBe(false);
     } finally {

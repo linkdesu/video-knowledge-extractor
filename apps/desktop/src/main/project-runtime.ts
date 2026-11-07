@@ -59,6 +59,9 @@ export type ClipAllocation = { seq: number; file: string; clipsDir: string };
  * 只有本类内部抛出与捕获，不落 failed、不写运行日志。
  */
 class ProjectDetached extends Error {
+  /** `step()` 见它只记 info：删除项目不是失败（#154）。 */
+  readonly cancelled = true;
+
   constructor() {
     super("项目已删除");
     this.name = "ProjectDetached";

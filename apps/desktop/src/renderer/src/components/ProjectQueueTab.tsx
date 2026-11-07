@@ -202,10 +202,7 @@ export function ProjectQueueTab({
                     <h4>#{job.id} · {job.name}</h4>
                     <p>{analysisRangeLabel(job)}</p>
                   </div>
-                  <div
-                    className="vn-queue-task-actions"
-                    style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}
-                  >
+                  <div className="vn-queue-task-actions">
                     <span
                       className={`vn-tag ${statusClass(job.status)}`}
                       data-testid="analysis-task-status"
@@ -216,7 +213,7 @@ export function ProjectQueueTab({
                       <button
                         type="button"
                         className="vn-btn sm"
-                        data-testid={`task-retry-${job.id}`}
+                        data-testid={`analysis-retry-${job.id}`}
                         disabled={retrying !== null}
                         onClick={() => retryTask("analysis", job.id)}
                       >
@@ -306,10 +303,7 @@ export function ProjectQueueTab({
                     <h4>#{task.id} · {task.title}</h4>
                     <p>{sliceTaskMeta(task)}</p>
                   </div>
-                  <div
-                    className="vn-queue-task-actions"
-                    style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}
-                  >
+                  <div className="vn-queue-task-actions">
                     <span
                       className={`vn-tag ${statusClass(task.status)}`}
                       data-testid="slice-task-status"

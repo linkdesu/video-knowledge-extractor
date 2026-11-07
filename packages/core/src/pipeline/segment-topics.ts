@@ -185,7 +185,7 @@ export async function segmentTopics(input: SegmentTopicsInput): Promise<SegmentT
         { role: "system", content: mergePrompt },
         {
           role: "user",
-          content: `视频共 ${input.chunks.length} 个分块。\n候选主题：\n${JSON.stringify(compact)}`,
+          content: `视频共 ${input.chunks.length} 个分析窗口。\n候选主题：\n${JSON.stringify(compact)}`,
         },
       ],
       { json: true },
