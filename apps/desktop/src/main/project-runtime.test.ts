@@ -797,3 +797,76 @@ describe("ProjectRuntime：重启后监控目录文件的磁盘进度（#132 D2�
     await waitUntil(() => analyzed.some((job) => job.start === 60 && job.end === 120), "新整块入队");
   });
 });
+
+describe("ProjectRuntime：重启后仍有待确认主题（#132 D2 / #150）", () => {
+  test("恢复点退回该分块：主题重新提案，不因分块已存在而失去入口", async () => {
+    const ctx = setup();
+    const outputDir = join(ctx.root, "pending-out");
+    const project = ctx.service.create({ name: "待确认重启", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { chunkMinutes: 1, autoSlice: false });
+    const video: ProjectVideo = {
+      id: "v1",
+      name: "直播.ts",
+      durationSeconds: 60,
+      outputDir,
+      sourcePath: join(ctx.root, "直播.ts"),
+      hasVideo: false,
+    };
+    ctx.runtime.registerVideo(project.id, video);
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t0-1", title: "待确认主题", category: "", lineIds: ["line-0"] }]);
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis[0]?.status === "done", "首次分析完成");
+    expect(ctx.service.get(project.id).queue?.proposed).toHaveLength(1);
+
+    // 落盘：分块 0–60 已分析，主题仍是 proposed（用户还没确认就退出了）
+    const data = emptyVideoData({
+      id: video.id as never,
+      title: video.name,
+      sourcePath: video.sourcePath,
+      durationSeconds: 60,
+      outputDir,
+    });
+    data.chunks = [{ index: 1, start: 0, end: 60 }];
+    data.topics = [
+      {
+        id: "t0-1" as never,
+        title: "待确认主题",
+        summary: "",
+        segments: [{ start: 0, end: 59 }],
+        dirName: "待确认主题",
+        status: "proposed",
+        selected: true,
+        keyPoints: [],
+        clips: [],
+        startedAt: null,
+        elapsedSeconds: null,
+        error: null,
+      },
+    ];
+    writeVideoData(outputDir, data);
+
+    const restarted = new ProjectService({ store: ProjectStore.atRoot(ctx.root), events: new ProjectEventLog() });
+    const analyzed: AnalysisJob[] = [];
+    const runtime = new ProjectRuntime({
+      service: restarted,
+      acquireLock: async () => ({ release() {} }),
+      transcriptOf: () => [{ id: "line-0", start: 0, end: 5, text: "第一句" }],
+      // 真机由 project-analysis 的 refreshableTopics 给出仍待确认的主题
+      analyzeRange: async (job) => {
+        analyzed.push(job);
+        return [{ id: "t0-1", title: "待确认主题", category: "", lineIds: ["line-0"] }];
+      },
+      resolveVideo: (videoId) => (videoId === video.id ? video : undefined),
+    });
+    const controller = runtime.attachProject(project.id);
+
+    // 分块都在，但主题没切片：续排点是已处理（0），该区间要重新排进来
+    expect(controller.analysisQueue.map((job) => [job.start, job.end])).toEqual([[0, 60]]);
+    await waitUntil(() => analyzed.some((job) => job.start === 0), "待确认区间重新排入");
+    await waitUntil(
+      () => (restarted.get(project.id).queue?.proposed.length ?? 0) === 1,
+      "待确认主题重新出现",
+    );
+  });
+});

@@ -180,6 +180,22 @@ export class GrowthMonitor {
             changed = true;
             continue;
           }
+          if (discovered && previous === undefined) {
+            /**
+             * 重启首轮：基线是重启那一刻的目录状态，应用关闭期间的增长不会表现为「变化」。
+             * 已登记的文件探一次当前时长，比控制器已知的长就补一次增长；没长就什么都不做，
+             * 免得把已经「整理已结束」的文件重新翻回整理中（#132 D2）。
+             */
+            const duration = await this.probe(entry.path);
+            if (duration === null) continue;
+            this.durations.set(entry.videoId, duration);
+            if (!known.durationKnown || duration > known.durationSeconds + 1e-6) {
+              await this.options.ensureSource?.(project.projectId, entry, duration);
+              controller.reportGrowth(entry.videoId, duration);
+              changed = true;
+            }
+            continue;
+          }
           if (discovered) continue;
 
           const grew =

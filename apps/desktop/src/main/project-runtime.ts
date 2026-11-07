@@ -172,18 +172,24 @@ export class ProjectRuntime {
     }
     if (data === undefined) return;
     const chunkEnd = data.chunks.reduce((end, chunk) => Math.max(end, chunk.end), 0);
-    controller.restoreProcessed(video.id, slicedSecondsFrom(data, slicedTopicIds));
-    // 已落盘分块的最大终点：从这里续排，不重排已经分析过的区间（#132 D2）
-    controller.restoreCursor(video.id, chunkEnd);
+    const processed = slicedSecondsFrom(data, slicedTopicIds);
+    controller.restoreProcessed(video.id, processed);
+    /**
+     * 续排点就是「已处理」的终点，不是分块最大终点：分块存在不等于它的主题都已切片。
+     * 按分块终点续排会把「有待确认主题 / 切片中断」的区间跳过，队列里再没有它们，
+     * 界面就永远无法确认（自动切片关闭时重启即复现）；按已处理续排则会把这些区间
+     * 重新排进来，`refreshableTopics` 只把仍待确认的主题重新提案（#132 D2 / #150）。
+     */
+    controller.restoreCursor(video.id, processed);
     const file = controller.files.get(video.id);
     logger().info("project", "恢复视频进度", {
       videoId: video.id,
       outputDir: video.outputDir,
       chunks: data.chunks.length,
       chunkEnd,
+      processed,
       duration: file?.durationSeconds,
       cursor: file?.cursorSeconds,
-      processed: file?.processedSeconds,
     });
   }
 

@@ -284,3 +284,59 @@ describe("目录轮询判定增长（#132）", () => {
     expect(changes).toBeGreaterThan(before);
   });
 });
+
+describe("重启首轮：应用关闭期间的增长（#132 D2）", () => {
+  test("已登记文件在盘上变长了：补一次增长并按整块入队", async () => {
+    const dir = makeTmpDir("growth-monitor-restart-");
+    const file = join(dir, "录制.ts");
+    writeFileSync(file, "0123456789");
+    const id = videoIdFor(file);
+
+    // 重启：控制器由项目清单重建，文件已知但时长是关闭前的 60 秒
+    const controllerRef = controller(1);
+    controllerRef.addFile({ id, name: "录制.ts", durationSeconds: 60, growing: false, modifiedSeconds: -31 });
+    controllerRef.startOrganize([id]);
+    let probed = 120;
+    const monitor = new GrowthMonitor({
+      watchProjects: () => [{ projectId: "p1", watchDir: dir }],
+      controllerOf: () => controllerRef,
+      probeDuration: async () => probed,
+      event: () => {},
+      changed: () => {},
+      now: () => 0,
+    });
+
+    // 首轮没有基线：目录状态本身就是基线，必须靠探测发现「关闭期间长了 60 秒」
+    await monitor.poll();
+    expect(controllerRef.files.get(id)?.durationSeconds).toBe(120);
+    expect(controllerRef.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+    ]);
+  });
+
+  test("已登记文件没变长：不报告增长，已结束的整理保持结束", async () => {
+    const dir = makeTmpDir("growth-monitor-restart-");
+    const file = join(dir, "完成.ts");
+    writeFileSync(file, "0123456789");
+    const id = videoIdFor(file);
+
+    const controllerRef = controller(1);
+    controllerRef.addFile({ id, name: "完成.ts", durationSeconds: 60, growing: false, modifiedSeconds: -31 });
+    controllerRef.startOrganize([id]);
+    controllerRef.completeAnalysis(1, []);
+    expect(controllerRef.statusOf(id)).toBe("finished");
+
+    const monitor = new GrowthMonitor({
+      watchProjects: () => [{ projectId: "p1", watchDir: dir }],
+      controllerOf: () => controllerRef,
+      probeDuration: async () => 60,
+      event: () => {},
+      changed: () => {},
+      now: () => 100_000,
+    });
+    await monitor.poll();
+    expect(controllerRef.statusOf(id)).toBe("finished");
+    expect(controllerRef.analysisQueue).toHaveLength(1);
+  });
+});
