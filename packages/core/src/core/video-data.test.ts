@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { makeTmpDir } from "../testing/temp-dirs";
 import { CACHE_DIRNAME } from "./config";
 import {
@@ -844,7 +844,8 @@ describe("规范化产物是否落后于源文件（#132 D1）", () => {
   test("产物与源文件等长、字节数一致：复用产物", () => {
     const facts = { recordedSourceBytes: 1_000, sourceBytes: 1_000, sourceDuration: 82.3, mediaDuration: 82.1 };
     expect(mediaIsStale(facts)).toBe(false);
-    expect(mediaForSource(data("media.mp3"), facts)).toBe("/tmp/out/media.mp3");
+    // mediaAbsolutePath 用 resolve 拼路径：Windows 上会带盘符，不能写死 POSIX 字面量
+    expect(mediaForSource(data("media.mp3"), facts)).toBe(resolve("/tmp/out", "media.mp3"));
   });
 
   test("没有规范化产物时源文件本身就是媒体", () => {
