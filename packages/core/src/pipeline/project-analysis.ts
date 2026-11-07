@@ -256,6 +256,17 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         data.topics.length > 0 && spans.some((span) => span.start <= start + 1e-6 && span.end >= end - 1e-6);
       if (refreshOnly) logger().info("project", "区间已有主题，只刷新字幕", { videoId: video.id, start, end });
 
+      /**
+       * 短到解不出稳定采样的尾巴（#132 QA B2）：`ffmpeg` 在 AAC 帧边界与真实 EOF 处只能给出部分采样
+       * （真机请求 0.138 秒只抽到 0.116 秒），按「请求时长」要求字节数的 `assertRangeAudio` 必然失败。
+       * 失败任务会把 `processed` 卡在缺口前，文件于是永远「整理中」、永远不显示「整理已结束」。
+       * 这种尾巴没有可分析内容：跳过，不抽音、不转写，任务按完成结算。
+       */
+      if (end - start < MIN_ANALYZABLE_RANGE_SECONDS) {
+        logger().info("project", "区间太短，跳过", { videoId: video.id, start, end, seconds: end - start });
+        return { videoId: video.id, outputDir: video.outputDir, topics: [], addedLines: 0 };
+      }
+
       // 只抽这一段；wav 名带随机后缀，同一视频的两个区间不会互相删除
       wavPath = resolve(cacheDir, `range-${Math.round(start)}-${Math.round(end)}-${randomUUID().slice(0, 8)}.wav`);
       await logger().step("ffmpeg", "抽取音频区间", () => extractAudioRange(mediaPath, wavPath!, { start, end }));
@@ -471,6 +482,14 @@ type LineSource = { start: number; end: number; speakerId: string; text: string 
 /** 16 kHz 单声道 s16le：1 秒 32,000 字节；wav 头 44 字节。 */
 const WAV_BYTES_PER_SECOND = 32_000;
 const WAV_HEADER_BYTES = 44;
+
+/**
+ * 短于这个长度的区间不抽音、不转写，直接按「没有可分析内容」跳过（#132 QA B2）。
+ * 一秒 16 kHz 单声道下 AAC 帧只有 23 毫秒，但录制停在帧中间时最后一帧整帧丢弃，
+ * 尾巴越短，能解出来的比例越低：真机 0.138 秒的尾巴只解到 84%，再短就直接是 0。
+ * 0.5 秒给 `assertRangeAudio`（只要 0.25 秒采样）留两倍余量，还能覆盖一个完整音节的转写。
+ */
+export const MIN_ANALYZABLE_RANGE_SECONDS = 0.5;
 
 /**
  * 区间音频最少应有多少字节：取「区间时长」与 0.25 秒里较短的一档。

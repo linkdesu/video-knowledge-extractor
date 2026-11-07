@@ -816,3 +816,34 @@ describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
     expect(p.statusOf("f1")).toBe("finished");
   });
 });
+
+describe("短尾巴跳过后的终态（#132 QA B2）", () => {
+  test("尾巴分块按完成结算（0 主题）：已处理推到文件末尾，未切片 0、整理已结束", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.setChunkMinutes(1);
+    // 真机形态：增长到 120.138 秒停止，最后 0.138 秒解不出稳定采样，分析管线跳过并返回 0 主题
+    p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 120.138, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    p.tick(1);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[0]!.id, []);
+    p.completeAnalysis(p.analysisQueue[1]!.id, []);
+    p.setGrowing("f1", false);
+    p.tick(31);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 60],
+      [60, 120],
+      [120, 120.138],
+    ]);
+
+    p.completeAnalysis(p.analysisQueue[2]!.id, []);
+    expect(p.analysisQueue[2]!.status).toBe("done");
+    expect(p.unslicedSeconds("f1")).toBe(0);
+    expect(p.statusOf("f1")).toBe("finished");
+  });
+});
