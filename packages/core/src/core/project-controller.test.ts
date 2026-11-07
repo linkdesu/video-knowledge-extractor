@@ -778,15 +778,20 @@ describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
     ]);
   });
 
-  test("恢复终点夹在时长之内，超过时长的分块记录按尾部对齐", () => {
+  test("分块记录比库里的时长长：按磁盘证据抬升时长，不把进度压回去", () => {
     const { executor } = manualExecutor();
     const p = project(executor);
     p.setChunkMinutes(1);
+    // 视频库里的时长停在导入那一刻（80 秒），磁盘上已经分析到 400 秒
     p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
     p.restoreCursor("f1", 400);
-    expect(p.files.get("f1")?.cursorSeconds).toBe(190);
+    p.restoreProcessed("f1", 400);
+    expect(p.files.get("f1")).toMatchObject({ durationSeconds: 400, cursorSeconds: 400, processedSeconds: 400 });
+    expect(p.unslicedSeconds("f1")).toBe(0);
     p.startOrganize(["f1"]);
     p.tick(1);
+    // 没有新内容要排；整理状态也不会被旧时长误判成「未处理完」
     expect(p.analysisQueue).toHaveLength(0);
+    expect(p.statusOf("f1")).toBe("finished");
   });
 });

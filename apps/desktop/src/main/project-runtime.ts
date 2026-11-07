@@ -171,9 +171,20 @@ export class ProjectRuntime {
       return;
     }
     if (data === undefined) return;
+    const chunkEnd = data.chunks.reduce((end, chunk) => Math.max(end, chunk.end), 0);
     controller.restoreProcessed(video.id, slicedSecondsFrom(data, slicedTopicIds));
     // 已落盘分块的最大终点：从这里续排，不重排已经分析过的区间（#132 D2）
-    controller.restoreCursor(video.id, data.chunks.reduce((end, chunk) => Math.max(end, chunk.end), 0));
+    controller.restoreCursor(video.id, chunkEnd);
+    const file = controller.files.get(video.id);
+    logger().info("project", "恢复视频进度", {
+      videoId: video.id,
+      outputDir: video.outputDir,
+      chunks: data.chunks.length,
+      chunkEnd,
+      duration: file?.durationSeconds,
+      cursor: file?.cursorSeconds,
+      processed: file?.processedSeconds,
+    });
   }
 
   /**

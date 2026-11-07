@@ -285,25 +285,28 @@ export class ClipProject {
   }
 
   /**
-   * 重启后从已落盘切片恢复「已处理」进度：只增不减，夹在 [0, 时长]。
+   * 重启后从已落盘切片恢复「已处理」进度：只增不减。
    * 进度口径与 `refreshProcessed` 相同，来源换成磁盘上的分块与主题状态。
+   * 磁盘记录是「文件至少这么长」的证据：视频库里的时长可能停在导入那一刻，增长中的录制
+   * 重启后比它长，按旧时长夹会把已处理压回去、也判定不了整理结束（#132 D2）。
    */
   restoreProcessed(fileId: string, seconds: number): void {
     const file = this.files.get(fileId);
-    if (file === undefined || !Number.isFinite(seconds)) return;
-    file.processedSeconds = Math.min(file.durationSeconds, Math.max(file.processedSeconds, seconds, 0));
+    if (file === undefined || !Number.isFinite(seconds) || seconds < 0) return;
+    file.durationSeconds = Math.max(file.durationSeconds, seconds);
+    file.processedSeconds = Math.max(file.processedSeconds, seconds);
   }
 
   /**
    * 重启后恢复「已经划分到哪」：用已落盘分块的最大终点续排，重启不会把整个文件重排一遍（#132 D2）。
    * 与 `restoreProcessed` 是两个口径：cursor 是划分位置，processed 是「已处理并落盘切片」。
-   * 只增不减；时长已知时夹在时长内，超出时长的旧记录按尾部对齐。
+   * 只增不减；时长按同一份磁盘证据抬升（见 `restoreProcessed`）。
    */
   restoreCursor(fileId: string, seconds: number): void {
     const file = this.files.get(fileId);
-    if (file === undefined || !Number.isFinite(seconds)) return;
-    const limit = file.durationKnown ? file.durationSeconds : Math.max(seconds, 0);
-    file.cursorSeconds = Math.max(file.cursorSeconds, Math.min(seconds, limit), 0);
+    if (file === undefined || !Number.isFinite(seconds) || seconds < 0) return;
+    file.durationSeconds = Math.max(file.durationSeconds, seconds);
+    file.cursorSeconds = Math.max(file.cursorSeconds, seconds);
   }
 
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
