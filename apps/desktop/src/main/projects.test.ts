@@ -89,9 +89,9 @@ describe("项目服务：持久化与隔离", () => {
       const project = service.create({ name: "日志", rootDir: join(root, "p") });
       const updated = service.updateSettings(project.id, { chunkMinutes: 5, autoSlice: false });
 
-      expect(updated.events[0]?.text).toBe("项目设置：5 分钟 / 自动切片关闭；已入队任务继续处理");
+      expect(updated.events[0]?.text).toBe("项目设置：5 分钟 / 语义分块开启 / 自动切片关闭；已入队任务继续处理");
       expect(updated.events[0]?.level).toBe("info");
-      expect(lines.some((line) => line.includes("project 项目设置：5 分钟 / 自动切片关闭"))).toBe(true);
+      expect(lines.some((line) => line.includes("project 项目设置：5 分钟 / 语义分块开启 / 自动切片关闭"))).toBe(true);
       expect(lines.some((line) => line.includes(project.id))).toBe(true);
     } finally {
       configureLogging();
@@ -196,7 +196,7 @@ describe("项目服务：队列与确认主题", () => {
     expect(after.autoSlice).toBe(true);
     expect(after.queue?.proposed).toHaveLength(0);
     expect(after.queue?.slices.map((task) => task.topicKey)).toEqual(["1:t1"]);
-    expect(after.events[0]?.text).toBe("项目设置：2 分钟 / 自动切片开启；已入队任务继续处理");
+    expect(after.events[0]?.text).toBe("项目设置：2 分钟 / 语义分块开启 / 自动切片开启；已入队任务继续处理");
   });
 
   test("确认弹窗读完整字幕：未接入报错，接入后返回来源文件与全部行", () => {
@@ -449,5 +449,188 @@ describe("项目服务：监控目录快照（#128）", () => {
       added: true,
       organizeStatus: "organizing",
     });
+  });
+});
+
+describe("项目服务：失败任务重试（#154）", () => {
+  test("重试失败的分析任务：回队列原位、清 error；分析槽不空时不抢占", () => {
+    const { root, service, changes } = setup();
+    const project = service.create({ name: "重试", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { autoSlice: false });
+    const { controller } = attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    // 1200 秒 / 10 分钟 = 两块：任务 1 running、任务 2 waiting
+    expect(service.get(project.id).queue?.analysis.map((task) => task.status)).toEqual(["running", "waiting"]);
+    expect(controller.failAnalysis(1, "LLM 请求失败 401")).toBe(true);
+    // 任务 1 失败后任务 2 顶上；此时重试任务 1 应回到 waiting 且排在最前
+    expect(service.get(project.id).queue?.analysis.map((task) => task.status)).toEqual(["failed", "running"]);
+
+    const detail = service.retryTask(project.id, "analysis", 1);
+    expect(detail.queue?.analysis.map((task) => task.status)).toEqual(["waiting", "running"]);
+    expect(detail.queue?.analysis[0]).toMatchObject({ id: 1, startSeconds: 0, endSeconds: 600 });
+    expect(changes.at(-1)?.detail.queue?.analysis[0]?.status).toBe("waiting");
+  });
+
+  test("重试失败的切片任务：主题从 failed 回到队列", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "重试切片", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { autoSlice: false });
+    const { controller } = attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    controller.completeAnalysis(1, [{ id: "t1", title: "主题一", category: "分类", lineIds: ["l1"] }]);
+    service.confirmTopic(project.id, topicKey(1, "t1"), ["l1"]);
+    expect(service.get(project.id).queue?.slices.map((task) => task.status)).toEqual(["running"]);
+    expect(controller.failSlice(1, "ffmpeg exit 234")).toBe(true);
+
+    const detail = service.retryTask(project.id, "slice", 1);
+    // 切片槽空着：retrySlice 的 pump 直接把它推起来
+    expect(detail.queue?.slices.map((task) => task.status)).toEqual(["running"]);
+  });
+
+  test("重试不成立时抛可读错误：非 failed 任务、未知 id、未接入执行器、未知项目", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "重试拒绝", rootDir: join(root, "p") });
+    expect(() => service.retryTask("missing", "analysis", 1)).toThrow("未知项目：missing");
+    expect(() => service.retryTask(project.id, "analysis", 1)).toThrow("项目执行器尚未接入");
+
+    service.updateSettings(project.id, { autoSlice: false });
+    attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    expect(() => service.retryTask(project.id, "analysis", 1)).toThrow("不在失败状态");
+    expect(() => service.retryTask(project.id, "analysis", 999)).toThrow("任务不存在");
+    expect(() => service.retryTask(project.id, "slice", 1)).toThrow("任务不存在");
+    // 拒绝不改变状态
+    expect(service.get(project.id).queue?.analysis.map((task) => task.status)).toEqual(["running", "waiting"]);
+  });
+});
+
+describe("项目服务：删除项目通知运行时（#154）", () => {
+  test("remove 先落盘删除，成功后回调 onProjectRemoved，再清日志", () => {
+    const root = makeTmpDir("projects-remove-");
+    const store = ProjectStore.atRoot(root);
+    const events = new ProjectEventLog();
+    const seen: Array<{ projectId: string; storedAtCall: boolean }> = [];
+    const service = new ProjectService({
+      store,
+      events,
+      onProjectRemoved: (projectId) => {
+        seen.push({ projectId, storedAtCall: store.get(projectId) !== undefined });
+      },
+    });
+    const project = service.create({ name: "在飞", rootDir: join(root, "p") });
+    attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+
+    service.remove(project.id);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.projectId).toBe(project.id);
+    // 回调时清单已经删掉：运行时/监控只在这之后停手，写失败就不会留下半拆的项目
+    expect(seen[0]?.storedAtCall).toBe(false);
+    expect(events.list(project.id)).toHaveLength(0);
+    expect(store.get(project.id)).toBeUndefined();
+    expect(() => service.remove(project.id)).toThrow(`未知项目：${project.id}`);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("清单写失败时不拆运行时：项目还在，控制器没被提前 dispose", () => {
+    const root = makeTmpDir("projects-remove-fail-");
+    const real = ProjectStore.atRoot(root);
+    const project = real.create({ name: "写失败", rootDir: join(root, "p") });
+    const removed: string[] = [];
+    // 只让 remove 失败，其它读路径照旧走真实 store
+    const failing = new Proxy(real, {
+      get(target, key, receiver) {
+        if (key === "remove") {
+          return () => {
+            throw new Error("磁盘已满");
+          };
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const service = new ProjectService({
+      store: failing,
+      events: new ProjectEventLog(),
+      onProjectRemoved: (projectId) => removed.push(projectId),
+    });
+
+    expect(() => service.remove(project.id)).toThrow("磁盘已满");
+    // 删除没成功：不能先拆掉运行时/监控，否则项目留在清单里却永远排不动（#154 评审 P2）
+    expect(removed).toEqual([]);
+    expect(service.get(project.id).id).toBe(project.id);
+    expect(real.get(project.id)?.id).toBe(project.id);
+  });
+});
+
+describe("项目服务：失败写运行日志（#154）", () => {
+  test("reportFailure 以 error 级别进事件与结构化日志，并推送详情", () => {
+    const lines: string[] = [];
+    configureLogging({ sink: (line) => lines.push(line) });
+    try {
+      const { root, service, changes } = setup();
+      const project = service.create({ name: "失败日志", rootDir: join(root, "p") });
+      const detail = service.reportFailure(project.id, "区间分析失败：晚场.mp4 12:00–22:00 · LLM 未配置");
+      expect(detail.events[0]).toMatchObject({
+        level: "error",
+        text: "区间分析失败：晚场.mp4 12:00–22:00 · LLM 未配置",
+      });
+      expect(lines.some((line) => line.includes("ERROR") && line.includes("project") && line.includes("LLM 未配置"))).toBe(true);
+      expect(changes.at(-1)?.detail.events[0]?.level).toBe("error");
+      expect(() => service.reportFailure("missing", "x")).toThrow("未知项目：missing");
+    } finally {
+      configureLogging();
+    }
+  });
+});
+
+describe("项目服务：智能语义分块设置（#155）", () => {
+  test("摘要与详情带 semanticChunking；默认开启，设置落盘与读回", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "语义", rootDir: join(root, "p") });
+    expect(service.list()[0]?.semanticChunking).toBe(true);
+
+    const off = service.updateSettings(project.id, { semanticChunking: false });
+    expect(off.semanticChunking).toBe(false);
+    expect(service.list()[0]?.semanticChunking).toBe(false);
+
+    const reopened = new ProjectService({ store: ProjectStore.atRoot(root), events: new ProjectEventLog() });
+    expect(reopened.get(project.id).semanticChunking).toBe(false);
+  });
+
+  test("updateSettings 把开关变化同步给控制器（同 chunkMinutes / autoSlice）", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "同步", rootDir: join(root, "p") });
+    const { controller } = attachController(service, project.id);
+    expect(controller.semanticChunkingEnabled).toBe(true);
+
+    service.updateSettings(project.id, { semanticChunking: false });
+    expect(controller.semanticChunkingEnabled).toBe(false);
+
+    service.updateSettings(project.id, { semanticChunking: true });
+    expect(controller.semanticChunkingEnabled).toBe(true);
+  });
+
+  test("attachRuntime 时清单是真相源：接入前已关闭的开关重新作用到控制器", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "接入", rootDir: join(root, "p") });
+    service.updateSettings(project.id, { semanticChunking: false });
+    const { controller } = attachController(service, project.id);
+    expect(controller.semanticChunkingEnabled).toBe(false);
+  });
+
+  test("区间窗口进度经队列快照可见；完成后清空", () => {
+    const { root, service } = setup();
+    const project = service.create({ name: "进度", rootDir: join(root, "p") });
+    const { controller } = attachController(service, project.id);
+    service.startOrganize(project.id, ["v1"]);
+    const jobId = controller.analysisQueue[0]!.id;
+
+    expect(controller.advanceAnalysisProgress(jobId, 2, 4)).toBe(true);
+    service.refresh(project.id);
+    expect(service.get(project.id).queue?.analysis[0]).toMatchObject({ progress: { done: 2, total: 4 } });
+
+    controller.completeAnalysis(jobId, []);
+    const task = service.get(project.id).queue?.analysis[0];
+    expect(task?.progress).toBeUndefined();
   });
 });

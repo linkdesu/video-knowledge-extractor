@@ -33,10 +33,14 @@ function manualExecutor(): Manual {
   };
 }
 
-function project(executor: ProjectExecutor, options: { autoSlice?: boolean; transcript?: SubtitleLine[] } = {}): ClipProject {
+function project(
+  executor: ProjectExecutor,
+  options: { autoSlice?: boolean; transcript?: SubtitleLine[]; semanticChunking?: boolean } = {},
+): ClipProject {
   return new ClipProject({
     executor,
     autoSlice: options.autoSlice ?? true,
+    ...(options.semanticChunking !== undefined ? { semanticChunking: options.semanticChunking } : {}),
     transcriptOf: () => options.transcript ?? [],
   });
 }
@@ -763,7 +767,7 @@ describe("开始整理早于监控登记（#132 D3）", () => {
 describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
   test("恢复后只排新增长的部分，已分块的区间不再重排", () => {
     const { executor } = manualExecutor();
-    const p = project(executor);
+    const p = project(executor, { semanticChunking: false });
     p.setChunkMinutes(1);
     p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
     p.restoreCursor("f1", 120);
@@ -780,7 +784,7 @@ describe("重启恢复已加入状态与分块终点（#132 D2）", () => {
 
   test("重启后新分块完成：已处理从恢复点继续推进，不被队列缺口清零", () => {
     const { executor } = manualExecutor();
-    const p = project(executor);
+    const p = project(executor, { semanticChunking: false });
     p.setChunkMinutes(1);
     p.addFile({ id: "f1", name: "直播.ts", durationSeconds: 190, growing: false, modifiedSeconds: -31 });
     // 重启：磁盘上 0–120 已处理，队列从 120 继续
@@ -845,5 +849,354 @@ describe("短尾巴跳过后的终态（#132 QA B2）", () => {
     expect(p.analysisQueue[2]!.status).toBe("done");
     expect(p.unslicedSeconds("f1")).toBe(0);
     expect(p.statusOf("f1")).toBe("finished");
+  });
+});
+
+describe("失败任务重试（#154）", () => {
+  test("分析失败任务原地回 waiting：清 error、stage 归 0、位置不变、不新增任务", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, semanticChunking: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 180, growing: false, modifiedSeconds: -31 });
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    p.tick(31);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 60],
+      [60, 120],
+      [120, 180],
+    ]);
+    // 任务 1 在飞、2/3 排队
+    const first = p.analysisQueue[0]!;
+    expect(first.status).toBe("running");
+    p.failAnalysis(first.id, "LLM 请求失败 401");
+    expect(p.analysisQueue[1]!.status).toBe("running");
+    expect(p.analysisQueue[0]).toMatchObject({ status: "failed", error: "LLM 请求失败 401", stage: 0 });
+    p.completeAnalysis(p.analysisQueue[1]!.id, []);
+    expect(p.analysisQueue[2]!.status).toBe("running");
+
+    expect(p.retryAnalysis(first.id)).toBe(true);
+    expect(p.analysisQueue).toHaveLength(3);
+    expect(p.analysisQueue[0]).toMatchObject({ status: "waiting", stage: 0 });
+    expect(p.analysisQueue[0]!.error).toBeUndefined();
+    // 队列顺序不变：重试的任务还在最前
+    expect(p.analysisQueue.map((j) => j.start)).toEqual([0, 60, 120]);
+    // 任务 3 在飞时不抢占：任务 3 完成后下一个跑的是重试的任务 1
+    const analyzedBefore = m.runningAnalysis().length;
+    p.completeAnalysis(p.analysisQueue[2]!.id, []);
+    expect(m.runningAnalysis()).toHaveLength(analyzedBefore + 1);
+    expect(m.runningAnalysis()[analyzedBefore]!.id).toBe(first.id);
+  });
+
+  test("非 failed 的分析任务重试被拒：waiting/running/done 与未知 id 都是 false", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, semanticChunking: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 120, growing: false, modifiedSeconds: -31 });
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    p.tick(31);
+    expect(p.retryAnalysis(p.analysisQueue[0]!.id)).toBe(false); // running
+    expect(p.retryAnalysis(p.analysisQueue[1]!.id)).toBe(false); // waiting
+    p.completeAnalysis(p.analysisQueue[0]!.id, []);
+    expect(p.retryAnalysis(p.analysisQueue[0]!.id)).toBe(false); // done
+    expect(p.retryAnalysis(999)).toBe(false);
+  });
+
+  test("切片重试：任务回 waiting、主题从 failed 回 queued，pump 把它推到 generating", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, {
+      autoSlice: false,
+      transcript: [
+        { id: "l1", start: 0, end: 4, text: "开场" },
+        { id: "l2", start: 4, end: 9, text: "方法" },
+      ],
+    });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 120, growing: false, modifiedSeconds: -31 });
+    p.setChunkMinutes(2);
+    p.startOrganize(["f1"]);
+    p.tick(31);
+    const jobId = p.analysisQueue[0]!.id;
+    p.completeAnalysis(jobId, [{ id: "t1", title: "主题一", category: "", lineIds: ["l1"] }]);
+    expect(p.confirmTopic(topicKey(jobId, "t1"), ["l1"])).toBe(true);
+    const sliceId = p.sliceQueue[0]!.id;
+    expect(p.sliceQueue[0]!.status).toBe("running");
+    p.failSlice(sliceId, "ffmpeg exit 234");
+    expect(p.sliceQueue[0]).toMatchObject({ status: "failed", error: "ffmpeg exit 234" });
+    expect(p.analysisQueue[0]!.topics[0]).toMatchObject({ status: "failed" });
+
+    expect(p.retrySlice(sliceId)).toBe(true);
+    expect(p.sliceQueue).toHaveLength(1);
+    expect(p.sliceQueue[0]!.error).toBeUndefined();
+    // 切片槽空着：retrySlice 末尾的 pump 直接把任务推到 running、主题 queued → generating
+    expect(p.sliceQueue[0]!.status).toBe("running");
+    expect(p.analysisQueue[0]!.topics[0]!.status).toBe("generating");
+  });
+
+  test("非 failed 的切片任务重试被拒", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, {
+      autoSlice: false,
+      transcript: [{ id: "l1", start: 0, end: 4, text: "开场" }],
+    });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 120, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    p.setChunkMinutes(2);
+    p.tick(31);
+    const jobId = p.analysisQueue[0]!.id;
+    p.completeAnalysis(jobId, [{ id: "t1", title: "主题一", category: "", lineIds: ["l1"] }]);
+    p.confirmTopic(topicKey(jobId, "t1"), ["l1"]);
+    expect(p.retrySlice(p.sliceQueue[0]!.id)).toBe(false); // running
+    p.completeSlice(p.sliceQueue[0]!.id);
+    expect(p.retrySlice(p.sliceQueue[0]!.id)).toBe(false); // done
+    expect(p.retrySlice(999)).toBe(false);
+  });
+});
+
+describe("dispose：项目删除后控制器彻底停摆（#154）", () => {
+  test("dispose 后终态与重试方法全部返回 false 且不改状态；重复 dispose 无害", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, { autoSlice: false, semanticChunking: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 120, growing: false, modifiedSeconds: -31 });
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    p.tick(31);
+    const running = p.analysisQueue[0]!;
+    const waiting = p.analysisQueue[1]!;
+
+    p.dispose();
+    p.dispose();
+    expect(p.failAnalysis(running.id, "boom")).toBe(false);
+    p.completeAnalysis(running.id, []);
+    expect(p.retryAnalysis(running.id)).toBe(false);
+    p.failAnalysis(running.id, "boom");
+    expect(p.retryAnalysis(waiting.id)).toBe(false);
+    expect(p.failSlice(1, "boom")).toBe(false);
+    expect(p.retrySlice(1)).toBe(false);
+    expect(p.analysisQueue[0]!.status).toBe("running");
+    expect(p.analysisQueue[0]!.error).toBeUndefined();
+    expect(p.analysisQueue[1]).toMatchObject({ status: "waiting" });
+    expect(p.clips).toHaveLength(0);
+  });
+
+  test("dispose 后 pump 不再启动新任务", () => {
+    const m = manualExecutor();
+    const p = project(m.executor, {
+      autoSlice: false,
+      transcript: [{ id: "l1", start: 0, end: 4, text: "开场" }],
+    });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 120, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    p.setChunkMinutes(2);
+    p.tick(31);
+    const jobId = p.analysisQueue[0]!.id;
+    // 分析槽空出来：没有 running、也没有 waiting 的分析任务
+    p.completeAnalysis(jobId, [{ id: "t1", title: "主题一", category: "", lineIds: ["l1"] }]);
+    expect(m.runningAnalysis()).toHaveLength(1);
+
+    p.dispose();
+    // 确认主题只入队；被 dispose 的 pump 不能把它推起来
+    expect(p.confirmTopic(topicKey(jobId, "t1"), ["l1"])).toBe(true);
+    expect(p.sliceQueue[0]!.status).toBe("waiting");
+    expect(m.runningSlice()).toHaveLength(0);
+
+    // 新增长入队的分析任务同样不启动
+    p.addFile({ id: "f2", name: "晚场.mp4", durationSeconds: 60, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f2"]);
+    p.settle();
+    expect(p.analysisQueue.some((j) => j.fileId === "f2" && j.status === "waiting")).toBe(true);
+    expect(m.runningAnalysis()).toHaveLength(1);
+  });
+});
+
+describe("智能语义分块入队策略（#155）", () => {
+  test("默认开启：停止增长的 40 分钟文件一次性整段入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 2400, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue).toHaveLength(1);
+    expect(p.analysisQueue[0]).toMatchObject({ start: 0, end: 2400 });
+    expect(p.files.get("f1")!.cursorSeconds).toBe(2400);
+  });
+
+  test("监控式登记的录制文件：增长期只入满块，停止增长后剩余尾段整段入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    // 监控发现的新文件：growing=true、增长时间=当前时钟（ProjectRuntime 的 fileInput 是另一套：growing=false / -31，立刻满足 idle）
+    p.addFile({ id: "f1", name: "录制.ts", durationSeconds: 2400, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+    // 增长中的文件照旧「满一块入一块」：2400 秒 = 4 个满块，不等 30 秒
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+      [1200, 1800],
+      [1800, 2400],
+    ]);
+
+    // 继续增长：[2400,2900] 不足一块，非 idle 时不提前入队
+    p.reportGrowth("f1", 2900);
+    p.tick(1);
+    expect(p.analysisQueue).toHaveLength(4);
+
+    // 严格超过 30 秒才算停止增长：剩余尾段整段入队（不拆块），游标推到文件末尾
+    p.tick(30);
+    expect(p.analysisQueue.map((job) => [job.start, job.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+      [1200, 1800],
+      [1800, 2400],
+      [2400, 2900],
+    ]);
+    expect(p.files.get("f1")!.cursorSeconds).toBe(2900);
+  });
+
+  test("关闭开关：40 分钟文件仍按 chunkMinutes 拆块", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor, { semanticChunking: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 2400, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+      [1200, 1800],
+      [1800, 2400],
+    ]);
+    expect(p.files.get("f1")!.cursorSeconds).toBe(2400);
+  });
+
+  test("开启但还在增长：只入满块，尾段不提前", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 1500, growing: true, modifiedSeconds: 0 });
+    p.startOrganize(["f1"]);
+
+    p.reportGrowth("f1", 1200);
+    p.tick(1);
+    // 增长期照旧「满一块入一块」：1200 秒里有两块
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+    ]);
+
+    p.reportGrowth("f1", 1500);
+    p.tick(30);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+    ]);
+
+    // 严格超过 30 秒才算停止增长：剩余尾段整段入队
+    p.tick(1);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 600],
+      [600, 1200],
+      [1200, 1500],
+    ]);
+    expect(p.files.get("f1")!.cursorSeconds).toBe(1500);
+  });
+
+  test("开关持续开启：新增增长又停止后再次整段入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 1200, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([[0, 1200]]);
+
+    p.reportGrowth("f1", 1500);
+    p.tick(31);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 1200],
+      [1200, 1500],
+    ]);
+    expect(p.files.get("f1")!.cursorSeconds).toBe(1500);
+  });
+
+  test("setSemanticChunking 落开关并重排：关闭后新增长按块，重新开启后尾段整段", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 1200, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    // 开启期已整段入队的任务不重排
+    p.setSemanticChunking(false);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([[0, 1200]]);
+
+    p.reportGrowth("f1", 1800);
+    p.tick(31);
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 1200],
+      [1200, 1800],
+    ]);
+
+    // 重新开启只影响以后产生的分块：新尾段整段入队
+    p.setSemanticChunking(true);
+    p.reportGrowth("f1", 2500);
+    p.tick(31);
+    // 增长期满块先入一块（与关闭开关一致），停止增长后剩余尾段整段入队
+    expect(p.analysisQueue.map((j) => [j.start, j.end])).toEqual([
+      [0, 1200],
+      [1200, 1800],
+      [1800, 2400],
+      [2400, 2500],
+    ]);
+  });
+
+  test("边界：剩余时长为 0 不整段入队", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor);
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 600, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    expect(p.analysisQueue).toHaveLength(1);
+    p.settle();
+    p.tick(60);
+    expect(p.analysisQueue).toHaveLength(1);
+  });
+});
+
+describe("主题分析窗口进度（#155）", () => {
+  function runningJobProject(): { p: ClipProject; jobId: number } {
+    const { executor } = manualExecutor();
+    const p = project(executor, { autoSlice: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 60, growing: false, modifiedSeconds: -31 });
+    p.startOrganize(["f1"]);
+    return { p, jobId: p.analysisQueue[0]!.id };
+  }
+
+  test("running 任务写入窗口进度；重复同值返回 false", () => {
+    const { p, jobId } = runningJobProject();
+    expect(p.advanceAnalysisProgress(jobId, 1, 4)).toBe(true);
+    expect(p.analysisQueue[0]!.progress).toEqual({ done: 1, total: 4 });
+    expect(p.advanceAnalysisProgress(jobId, 2, 4)).toBe(true);
+    expect(p.advanceAnalysisProgress(jobId, 2, 4)).toBe(false);
+  });
+
+  test("非 running 任务与非法数值都不改状态", () => {
+    const { executor } = manualExecutor();
+    const p = project(executor, { autoSlice: false, semanticChunking: false });
+    p.addFile({ id: "f1", name: "直播.mp4", durationSeconds: 180, growing: false, modifiedSeconds: -31 });
+    p.setChunkMinutes(1);
+    p.startOrganize(["f1"]);
+    const [running, waiting] = p.analysisQueue;
+
+    expect(p.advanceAnalysisProgress(waiting!.id, 1, 3)).toBe(false);
+    expect(waiting!.progress).toBeUndefined();
+
+    expect(p.advanceAnalysisProgress(running!.id, 0, 0)).toBe(false);
+    expect(p.advanceAnalysisProgress(running!.id, 1, -2)).toBe(false);
+    expect(p.advanceAnalysisProgress(running!.id, Number.NaN, 3)).toBe(false);
+    expect(p.advanceAnalysisProgress(running!.id, 1.5, 3)).toBe(false);
+    expect(p.advanceAnalysisProgress(running!.id, -1, 3)).toBe(false);
+    expect(running!.progress).toBeUndefined();
+    expect(p.advanceAnalysisProgress(999, 1, 2)).toBe(false);
+  });
+
+  test("完成 / 失败 / 重试都清掉进度", () => {
+    const { p, jobId } = runningJobProject();
+    p.advanceAnalysisProgress(jobId, 1, 2);
+    p.failAnalysis(jobId, "boom");
+    expect(p.analysisQueue[0]!.progress).toBeUndefined();
+
+    p.retryAnalysis(jobId);
+    p.advanceAnalysisProgress(jobId, 1, 2);
+    p.completeAnalysis(jobId, []);
+    expect(p.analysisQueue[0]!.progress).toBeUndefined();
   });
 });

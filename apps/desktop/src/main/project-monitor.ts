@@ -80,6 +80,8 @@ export class GrowthMonitor {
   private readonly snapshots = new Map<string, StatSnapshot>();
   private readonly lastPollMs = new Map<string, number>();
   private readonly durations = new Map<string, number>();
+  /** 已删除的项目：一轮轮询跨过 `await` 之后不能再为它们登记、推送或写事件（#154 评审 P2）。 */
+  private readonly removed = new Set<string>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private polling = false;
 
@@ -104,6 +106,13 @@ export class GrowthMonitor {
     }
     this.snapshots.set(projectId, snapshot);
     this.lastPollMs.set(projectId, this.options.now?.() ?? Date.now());
+  }
+
+  /** 项目删除（#154）：丢掉该项目的目录基线与轮询时间；`durations` 是全局共享的，不动。 */
+  forget(projectId: string): void {
+    this.removed.add(projectId);
+    this.snapshots.delete(projectId);
+    this.lastPollMs.delete(projectId);
   }
 
   start(): void {
@@ -133,6 +142,8 @@ export class GrowthMonitor {
       const statDirectory = this.options.statDirectory ?? statMediaDirectory;
       const nowMs = this.options.now?.() ?? Date.now();
       for (const project of this.options.watchProjects()) {
+        // 本轮开始时已删除：不再为它登记或推送（#154 评审 P2）
+        if (this.removed.has(project.projectId)) continue;
         const controller = this.options.controllerOf(project.projectId);
         if (controller === undefined) continue;
 
@@ -163,6 +174,8 @@ export class GrowthMonitor {
           if (known === undefined) {
             // 首次看到（首轮基线 / seed 基线 / 新文件）：探一次时长并登记，未加入整理不会入队
             const duration = await this.probe(entry.path);
+            // 探针跨过 await：项目在这期间被删掉就从本轮退出，后面的登记与推送都会撞「未知项目」
+            if (this.removed.has(project.projectId)) return;
             if (duration !== null) this.durations.set(entry.videoId, duration);
             controller.addFile({
               id: entry.videoId,
@@ -176,7 +189,9 @@ export class GrowthMonitor {
              * 运行时的源元数据（源路径 / 输出目录）也要补上：重启后监控目录里的文件不在视频库，
              * 只有这次登记能拿到 `video.json`，借此恢复已处理进度与分块终点（#132 D2）。
              */
-            if (duration !== null) await this.options.ensureSource?.(project.projectId, entry, duration);
+            if (duration !== null && !this.removed.has(project.projectId)) {
+              await this.options.ensureSource?.(project.projectId, entry, duration);
+            }
             changed = true;
             continue;
           }
@@ -187,10 +202,11 @@ export class GrowthMonitor {
              * 免得把已经「整理已结束」的文件重新翻回整理中（#132 D2）。
              */
             const duration = await this.probe(entry.path);
+            if (this.removed.has(project.projectId)) return;
             if (duration === null) continue;
             this.durations.set(entry.videoId, duration);
             if (!known.durationKnown || duration > known.durationSeconds + 1e-6) {
-              await this.options.ensureSource?.(project.projectId, entry, duration);
+              if (!this.removed.has(project.projectId)) await this.options.ensureSource?.(project.projectId, entry, duration);
               controller.reportGrowth(entry.videoId, duration);
               changed = true;
             }
@@ -202,6 +218,7 @@ export class GrowthMonitor {
             before.sizeBytes !== entry.sizeBytes || before.modifiedMs !== entry.modifiedMs;
           if (grew) {
             const duration = await this.probe(entry.path);
+            if (this.removed.has(project.projectId)) return;
             if (duration !== null) this.durations.set(entry.videoId, duration);
             if (duration !== null && known.added && !known.durationKnown) {
               await this.options.ensureSource?.(project.projectId, entry, duration);
@@ -213,6 +230,7 @@ export class GrowthMonitor {
           // 已经加入整理、但上次读不出时长：每轮再探一次，读到后按完整块 / 尾段入队
           if (known.added && !known.durationKnown) {
             const duration = await this.probe(entry.path);
+            if (this.removed.has(project.projectId)) return;
             if (duration === null) continue;
             this.durations.set(entry.videoId, duration);
             await this.options.ensureSource?.(project.projectId, entry, duration);
@@ -240,7 +258,8 @@ export class GrowthMonitor {
         // 仅由时间流逝产生的可观察变化（整理已结束、补尾段）也要推送
         if (stateSignature(controller) !== beforePoll) changed = true;
 
-        if (changed) this.options.changed(project.projectId);
+        // settle 与推送之间可能刚被删除：别对已删项目发「已变化」通知（#154 评审 P2）
+        if (changed && !this.removed.has(project.projectId)) this.options.changed(project.projectId);
       }
     } finally {
       this.polling = false;

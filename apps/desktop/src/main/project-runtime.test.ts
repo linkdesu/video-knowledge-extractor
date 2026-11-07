@@ -4,7 +4,9 @@ import { join } from "node:path";
 import {
   ProjectEventLog,
   ProjectStore,
+  configureLogging,
   emptyVideoData,
+  topicKey,
   videoIdFor,
   writeVideoData,
   type AnalysisJob,
@@ -60,7 +62,10 @@ function setup() {
   const locks = fakeLocks();
   const started: string[] = [];
   const sliced: SliceJob[] = [];
-  let analyzeImpl: (job: AnalysisJob, onStage?: (stage: 0 | 1) => void) => Promise<ProposedTopic[]> = async () => [];
+  let analyzeImpl: (
+    job: AnalysisJob,
+    onStage?: (stage: 0 | 1, progress?: { done: number; total: number }) => void,
+  ) => Promise<ProposedTopic[]> = async () => [];
   let generateImpl: ((job: SliceJob) => Promise<{ file: string }>) | undefined;
 
   const runtime = new ProjectRuntime({
@@ -86,7 +91,7 @@ function setup() {
     locks,
     started,
     sliced,
-    setAnalyze(fn: (job: AnalysisJob, onStage?: (stage: 0 | 1) => void) => Promise<ProposedTopic[]>) {
+    setAnalyze(fn: (job: AnalysisJob, onStage?: (stage: 0 | 1, progress?: { done: number; total: number }) => void) => Promise<ProposedTopic[]>) {
       analyzeImpl = fn;
     },
     setGenerate(fn: (job: SliceJob) => Promise<{ file: string }>) {
@@ -135,6 +140,8 @@ describe("ProjectRuntime：全局两槽执行器", () => {
     const project = ctx.service.create({ name: "互斥", rootDir: join(ctx.root, "p") });
     ctx.runtime.registerVideo(project.id, V1);
     ctx.runtime.attachProject(project.id);
+    // 需要两个分块来制造锁竞争：关闭智能语义分块（#155），1200 秒按 10 分钟拆两块
+    ctx.service.updateSettings(project.id, { semanticChunking: false });
 
     const secondRun = Promise.withResolvers<void>();
     const sliceGate = Promise.withResolvers<void>();
@@ -868,5 +875,255 @@ describe("ProjectRuntime：重启后仍有待确认主题（#132 D2 / #150）", 
       () => (restarted.get(project.id).queue?.proposed.length ?? 0) === 1,
       "待确认主题重新出现",
     );
+  });
+});
+
+describe("ProjectRuntime：删除在飞项目的运行时清理（#154）", () => {
+  function removalSetup() {
+    const root = makeTmpDir("runtime-detach-");
+    const store = ProjectStore.atRoot(root);
+    const events = new ProjectEventLog();
+    const locks = fakeLocks();
+    let runtimeRef: ProjectRuntime | undefined;
+    const service = new ProjectService({
+      store,
+      events,
+      onProjectRemoved: (projectId) => runtimeRef?.detachProject(projectId),
+    });
+    let analyzeImpl: (job: AnalysisJob) => Promise<ProposedTopic[]> = async () => [
+      { id: "t1", title: "主题一", category: "", lineIds: ["line-0"] },
+    ];
+    let generateImpl: (job: SliceJob) => Promise<{ file: string }> = async () => ({ file: "001-x.mp4" });
+    const started: string[] = [];
+    const runtime = new ProjectRuntime({
+      service,
+      acquireLock: locks.acquire,
+      transcriptOf: () => [{ id: "line-0", start: 0, end: 5, text: "第一句" }],
+      analyzeRange: async (job) => {
+        started.push(`analyze:${job.id}`);
+        return analyzeImpl(job);
+      },
+      generateClip: async (job) => {
+        started.push(`slice:${job.id}`);
+        return generateImpl(job);
+      },
+    });
+    runtimeRef = runtime;
+    const logLines: string[] = [];
+    configureLogging({ sink: (line) => logLines.push(line) });
+    return {
+      root,
+      service,
+      runtime,
+      started,
+      logLines,
+      setAnalyze(fn: (job: AnalysisJob) => Promise<ProposedTopic[]>) {
+        analyzeImpl = fn;
+      },
+      setGenerate(fn: (job: SliceJob) => Promise<{ file: string }>) {
+        generateImpl = fn;
+      },
+    };
+  }
+
+  test("在飞分析任务期间删除项目：控制器 dispose、不再产生「未知项目」", async () => {
+    const ctx = removalSetup();
+    try {
+      const project = ctx.service.create({ name: "在飞删除", rootDir: join(ctx.root, "p") });
+      ctx.runtime.registerVideo(project.id, V1);
+      ctx.runtime.attachProject(project.id);
+      const gate = Promise.withResolvers<ProposedTopic[]>();
+      ctx.setAnalyze(() => gate.promise);
+      ctx.service.startOrganize(project.id, ["v1"]);
+      await waitUntil(() => ctx.started.length > 0, "分析启动");
+
+      ctx.service.remove(project.id);
+      expect(ctx.runtime.controller(project.id)).toBeUndefined();
+
+      gate.resolve([{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }]);
+      await flush(30);
+      expect(ctx.logLines.some((line) => line.includes("未知项目"))).toBe(false);
+    } finally {
+      configureLogging();
+    }
+  });
+
+  test("在飞切片任务期间删除项目：成功路径不写清单、不抛「未知项目」", async () => {
+    const ctx = removalSetup();
+    try {
+      const project = ctx.service.create({ name: "切片删除", rootDir: join(ctx.root, "p") });
+      ctx.service.updateSettings(project.id, { autoSlice: false });
+      ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+      ctx.runtime.attachProject(project.id);
+      ctx.runtime.startOrganize(project.id, ["v1"]);
+      await waitUntil(() => ctx.service.get(project.id).queue?.analysis[0]?.status === "done", "分析完成");
+      const gate = Promise.withResolvers<{ file: string }>();
+      ctx.setGenerate(() => gate.promise);
+      ctx.service.confirmTopic(project.id, topicKey(1, "t1"), ["line-0"]);
+      await waitUntil(() => ctx.started.some((s) => s.startsWith("slice:")), "切片启动");
+
+      ctx.service.remove(project.id);
+      gate.resolve({ file: "001-主题一.mp4" });
+      await flush(30);
+      expect(ctx.logLines.some((line) => line.includes("未知项目"))).toBe(false);
+    } finally {
+      configureLogging();
+    }
+  });
+
+  test("在飞切片任务失败于删除之后：catch 路径也不抛「未知项目」", async () => {
+    const ctx = removalSetup();
+    try {
+      const project = ctx.service.create({ name: "切片失败删除", rootDir: join(ctx.root, "p") });
+      ctx.service.updateSettings(project.id, { autoSlice: false });
+      ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+      ctx.runtime.attachProject(project.id);
+      ctx.runtime.startOrganize(project.id, ["v1"]);
+      await waitUntil(() => ctx.service.get(project.id).queue?.analysis[0]?.status === "done", "分析完成");
+      const gate = Promise.withResolvers<{ file: string }>();
+      ctx.setGenerate(() => gate.promise);
+      ctx.service.confirmTopic(project.id, topicKey(1, "t1"), ["line-0"]);
+      await waitUntil(() => ctx.started.some((s) => s.startsWith("slice:")), "切片启动");
+
+      ctx.service.remove(project.id);
+      gate.reject(new Error("ffmpeg exit 234"));
+      await flush(30);
+      expect(ctx.logLines.some((line) => line.includes("未知项目"))).toBe(false);
+    } finally {
+      configureLogging();
+    }
+  });
+
+  test("删除后管线再报进度：立刻中止分析，不落 failed、不写失败事件", async () => {
+    const root = makeTmpDir("runtime-cancel-");
+    const store = ProjectStore.atRoot(root);
+    const events = new ProjectEventLog();
+    const locks = fakeLocks();
+    let runtimeRef: ProjectRuntime | undefined;
+    const service = new ProjectService({
+      store,
+      events,
+      onProjectRemoved: (projectId) => runtimeRef?.detachProject(projectId),
+    });
+    const opened = Promise.withResolvers<void>();
+    const started: string[] = [];
+    const runtime = new ProjectRuntime({
+      service,
+      acquireLock: locks.acquire,
+      transcriptOf: () => [{ id: "line-0", start: 0, end: 5, text: "第一句" }],
+      /**
+       * 真实管线在每个窗口结束后回报进度；删除发生后这次回报必须抛出，
+       * 后面的窗口、切片与结构化日志都不再发生（#154 评审 P1）。
+       */
+      analyzeRange: async (job, _video, _lock, onStage) => {
+        started.push(`analyze:${job.id}`);
+        await opened.promise;
+        onStage?.(1, { done: 1, total: 3 });
+        return [{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }];
+      },
+    });
+    runtimeRef = runtime;
+    const logLines: string[] = [];
+    configureLogging({ sink: (line) => logLines.push(line) });
+    try {
+      const project = service.create({ name: "删除中止", rootDir: join(root, "p") });
+      runtime.registerVideo(project.id, V1);
+      runtime.attachProject(project.id);
+      service.startOrganize(project.id, ["v1"]);
+      await waitUntil(() => started.length > 0, "分析启动");
+
+      service.remove(project.id);
+      opened.resolve();
+      await flush(30);
+
+      expect(logLines.some((line) => line.includes("项目已删除，分析中止"))).toBe(true);
+      // 中止不是失败：不写 error 事件、不落 failed 终态
+      expect(logLines.some((line) => line.includes("区间分析失败"))).toBe(false);
+      expect(logLines.some((line) => line.includes("未知项目"))).toBe(false);
+    } finally {
+      configureLogging();
+    }
+  });
+});
+
+describe("ProjectRuntime：失败原因写进运行日志（#154）", () => {
+  test("分析失败：事件里出现 error 级别短原因（视频名 + 区间 + 短原因）", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "失败事件", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 600 });
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => {
+      throw new Error("LLM 请求失败 401 Unauthorized");
+    });
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.service.get(project.id).events[0]?.level === "error", "失败事件出现");
+    const event = ctx.service.get(project.id).events[0]!;
+    expect(event.level).toBe("error");
+    expect(event.text).toContain("区间分析失败");
+    expect(event.text).toContain("晚场.mp4");
+    expect(event.text).toContain("00:00–10:00");
+    expect(event.text).toContain("API key 无效");
+    // 原始细节只进结构化日志，不进事件文案
+    expect(event.text).not.toContain("401 Unauthorized");
+    expect(ctx.service.get(project.id).queue?.analysis[0]?.status).toBe("failed");
+  });
+
+  test("切片失败：事件里出现 error 级别短原因（主题标题）", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "切片失败事件", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.setAnalyze(async () => [{ id: "t1", title: "主题一", category: "", lineIds: ["line-0"] }]);
+    ctx.runtime.startOrganize(project.id, ["v1"]);
+    await waitUntil(() => ctx.service.get(project.id).queue?.analysis[0]?.status === "done", "分析完成");
+    ctx.setGenerate(async () => {
+      throw new Error("切主题切片 failed (exit 234) / Stream map '' matches no streams");
+    });
+    ctx.service.confirmTopic(project.id, topicKey(1, "t1"), ["line-0"]);
+    await waitUntil(() => ctx.service.get(project.id).events[0]?.level === "error", "切片失败事件出现");
+    const event = ctx.service.get(project.id).events[0]!;
+    expect(event.level).toBe("error");
+    expect(event.text).toContain("切片失败");
+    expect(event.text).toContain("主题一");
+    expect(event.text).toContain("该文件没有可用的音视频轨道");
+    expect(event.text).not.toContain("exit 234");
+  });
+});
+
+describe("ProjectRuntime：主题分析窗口进度回传（#155）", () => {
+  test("onStage 带窗口进度时写入任务快照；完成时清空", async () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "窗口进度", rootDir: join(ctx.root, "p") });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    ctx.runtime.attachProject(project.id);
+    ctx.service.updateSettings(project.id, { autoSlice: false });
+
+    const pushed: Array<{ done: number; total: number } | undefined> = [];
+    ctx.service.onChange(({ detail }) => {
+      const task = detail.queue?.analysis[0];
+      if (task !== undefined) pushed.push(task.progress);
+    });
+    ctx.setAnalyze(async (_job, onStage) => {
+      onStage?.(1, { done: 0, total: 3 });
+      onStage?.(1, { done: 2, total: 3 });
+      await flush(5);
+      return [];
+    });
+
+    ctx.service.startOrganize(project.id, ["v1"]);
+    await flush(60);
+
+    expect(pushed.some((progress) => progress?.done === 2 && progress.total === 3)).toBe(true);
+    expect(ctx.service.get(project.id).queue?.analysis[0]?.progress).toBeUndefined();
+  });
+
+  test("attachProject 时把清单里的 semanticChunking 作用到新建控制器（#155）", () => {
+    const ctx = setup();
+    const project = ctx.service.create({ name: "开关", rootDir: join(ctx.root, "p") });
+    ctx.service.updateSettings(project.id, { semanticChunking: false });
+    ctx.runtime.registerVideo(project.id, { ...V1, durationSeconds: 60 });
+    const controller = ctx.runtime.attachProject(project.id);
+    expect(controller.semanticChunkingEnabled).toBe(false);
   });
 });

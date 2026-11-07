@@ -395,6 +395,8 @@ export type ProjectSummary = {
   monitoring: boolean;
   chunkMinutes: number;
   autoSlice: boolean;
+  /** 智能语义分块（#155）：停止增长后剩余区间整段入队；旧项目按开启。 */
+  semanticChunking: boolean;
   videoCount: number;
   /** 分析与切片两条队列里未完成的任务数。 */
   pendingTaskCount: number;
@@ -413,6 +415,8 @@ export type ProjectAnalysisTaskInfo = {
   status: ProjectTaskStatus;
   /** 0=字幕解析，1=主题分析；界面只显示等待中 / 进行中 / 已完成。 */
   stage: 0 | 1;
+  /** 主题分析的窗口进度（#155）：running 期间的 done/total；其余时刻不传。 */
+  progress?: { done: number; total: number };
 };
 
 export type ProjectSliceTaskInfo = {
@@ -507,7 +511,9 @@ export type ProjectDetail = ProjectSummary & {
 export type ProjectEventPayload = { projectId: string; detail: ProjectDetail };
 
 export type CreateProjectInput = { name: string; rootDir: string };
-export type ProjectSettingsPatch = { name?: string; autoSlice?: boolean; chunkMinutes?: number };
+export type ProjectSettingsPatch = { name?: string; autoSlice?: boolean; chunkMinutes?: number; semanticChunking?: boolean };
+/** `projects:retry-task` 的队列归属：分析分块 / 主题切片（#154）。 */
+export type ProjectTaskQueue = "analysis" | "slice";
 
 export type VnoteApi = {
   listLibrary(): Promise<LibraryVideo[]>;
@@ -585,7 +591,7 @@ export type VnoteApi = {
   startProjectMonitor(projectId: string, directory: string): Promise<ProjectDetail>;
   /** 加入整理：持久化视频 id；已加入的视频重复提交不重复计数。 */
   startProjectOrganize(projectId: string, videoIds: VideoId[]): Promise<ProjectDetail>;
-  /** 改项目设置：名称 / 自动切片 / 分块时长；每次修改都写运行日志。 */
+  /** 改项目设置：名称 / 自动切片 / 分块时长 / 智能语义分块；每次修改都写运行日志。 */
   updateProjectSettings(projectId: string, patch: ProjectSettingsPatch): Promise<ProjectDetail>;
   /** 确认单个主题：只带上选中的字幕行 id，主进程按当前字幕生成切片任务。 */
   confirmProjectTopic(projectId: string, topicKey: string, lineIds: string[]): Promise<ProjectDetail>;
@@ -593,6 +599,8 @@ export type VnoteApi = {
   projectTopicLines(projectId: string, topicKey: string): Promise<ProjectTopicLines>;
   /** 在文件管理器打开 `<项目目录>/clips`，目录不存在先创建。 */
   openProjectClipsDir(projectId: string): Promise<void>;
+  /** 重试失败任务（#154）：原地回队列，不新增任务；重试不成立时以可读错误拒绝。 */
+  retryTask(projectId: string, queue: ProjectTaskQueue, taskId: number): Promise<ProjectDetail>;
   /** 项目详情变化（设置、队列、日志）推送；返回取消订阅函数。 */
   onProjectEvent(listener: (payload: ProjectEventPayload) => void): () => void;
   /** 开发模式「说话人分离验收台」（r48）：打包版不存在这个字段。 */
@@ -656,5 +664,6 @@ export const IPC = {
   projectsConfirmTopic: "projects:confirm-topic",
   projectsTopicLines: "projects:topic-lines",
   projectsOpenClipsDir: "projects:open-clips-dir",
+  projectsRetryTask: "projects:retry-task",
   projectsEvent: "projects:event",
 } as const;

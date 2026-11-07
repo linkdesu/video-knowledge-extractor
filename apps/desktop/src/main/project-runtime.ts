@@ -15,6 +15,7 @@ import {
   slicedSecondsFrom,
   subtitleLinesFrom,
   splitTopicKey,
+  describeFailure,
 } from "@video-notes/core";
 import type {
   AsrConfig,
@@ -53,6 +54,23 @@ export type ProjectJobContext = {
 
 export type ClipAllocation = { seq: number; file: string; clipsDir: string };
 
+/**
+ * 项目在任务执行期间被删除（#154）：执行器用它中断在跑的管线。
+ * 只有本类内部抛出与捕获，不落 failed、不写运行日志。
+ */
+class ProjectDetached extends Error {
+  constructor() {
+    super("项目已删除");
+    this.name = "ProjectDetached";
+  }
+}
+
+/** 运行日志文案里的区间时刻：`mm:ss`（#154，事件要显示 12:00–22:00 这种可读区间）。 */
+function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 export type ProjectRuntimeDeps = {
   service: ProjectService;
   /** 同一个视频的运行锁：默认轮询 core 的 `.vnote-run.lock`，测试注入内存锁。 */
@@ -64,7 +82,8 @@ export type ProjectRuntimeDeps = {
     job: AnalysisJob,
     video: ProjectVideo,
     lock: VideoLock,
-    onStage?: (stage: 0 | 1) => void,
+    /** stage 推进 + 可选的主题分析窗口进度（#155，`segment-topics` 的 done/total）。 */
+    onStage?: (stage: 0 | 1, progress?: { done: number; total: number }) => void,
   ) => Promise<ProposedTopic[]>;
   /** 默认用 `generateProjectClip` 并把切片记录写回 `video.json`；测试注入。 */
   generateClip?: (job: SliceJob, video: ProjectVideo, alloc: ClipAllocation) => Promise<{ file: string }>;
@@ -253,6 +272,16 @@ export class ProjectRuntime {
     return this.service.startOrganize(projectId, videoIds);
   }
 
+  /**
+   * 删除项目（#154）：dispose 并移除控制器与视频元数据。在飞任务恢复执行时
+   * 发现控制器不在就短路返回，不会再撞「未知项目」。
+   */
+  detachProject(projectId: string): void {
+    this.controllers.get(projectId)?.dispose();
+    this.controllers.delete(projectId);
+    this.videos.delete(projectId);
+  }
+
   dispose(): void {
     this.disposed = true;
   }
@@ -274,40 +303,76 @@ export class ProjectRuntime {
 
   private async runAnalysis(projectId: string, job: AnalysisJob): Promise<void> {
     const controller = this.controllers.get(projectId);
+    // 项目已删除（#154）：连视频元数据都不必再解析，直接短路
+    if (controller === undefined) return;
     const video = this.video(projectId, job.fileId, true);
-    if (controller === undefined || video === undefined) return;
+    if (video === undefined) return;
+    // 在飞期间被删除：dispose 的控制器不会结算，服务层调用全部短路，不产生「未知项目」
+    const alive = (): boolean => this.controllers.get(projectId) === controller;
     let lock: VideoLock | undefined;
     try {
       lock = await this.lock(video);
-      // 两步进度只由执行器回报：控制器管状态，本类负责把真实阶段立刻推给界面
-      const onStage = (stage: 0 | 1): void => {
-        if (!controller.advanceAnalysisStage(job.id, stage)) return;
+      if (!alive()) return;
+      // 两步进度与窗口进度都只由执行器回报：控制器管状态，本类负责把真实进度立刻推给界面
+      const onStage = (stage: 0 | 1, progress?: { done: number; total: number }): void => {
+        // 项目已删除：抛出终止信号让管线在下一个窗口边界收尾（不再跑后面的 LLM/ffmpeg），
+        // 否则删掉的项目还会把整段提示词跑完、继续写产物与结构化日志（#154 评审 P1）
+        if (!alive()) throw new ProjectDetached();
+        const staged = controller.advanceAnalysisStage(job.id, stage);
+        const advanced =
+          progress !== undefined && controller.advanceAnalysisProgress(job.id, progress.done, progress.total);
+        if (!staged && !advanced) return;
         this.service.refresh(projectId);
       };
       const topics = await this.analyze(job, video, lock, onStage);
+      if (!alive()) return;
       controller.completeAnalysis(job.id, topics);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof ProjectDetached) {
+        // 删除项目的正常收尾：不是失败，不写事件、不落 failed（控制器已 dispose）
+        logger().info("project", "项目已删除，分析中止", { projectId, videoId: video.id, jobId: job.id });
+        return;
+      }
       logger().error("project", "区间分析失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failAnalysis(job.id, message);
+      // 短原因进事件（#154）：视频名 + 区间 + describeFailure 短词，原始细节只留在上面的结构化日志
+      if (alive()) {
+        this.service.reportFailure(
+          projectId,
+          `区间分析失败：${video.name} ${formatClock(job.start)}–${formatClock(job.end)} · ${describeFailure(message)}`,
+        );
+      }
     } finally {
       // 终态（含队列推进到下一个任务）已经写进控制器，这里推一次详情就够
-      this.service.refresh(projectId);
+      if (alive()) this.service.refresh(projectId);
       lock?.release();
     }
   }
 
   private async runSlice(projectId: string, job: SliceJob): Promise<void> {
     const controller = this.controllers.get(projectId);
+    // 项目已删除（#154）：不分配序号、不取锁，直接短路
+    if (controller === undefined) return;
     const video = this.video(projectId, job.fileId, true);
-    if (controller === undefined || video === undefined) return;
+    if (video === undefined) return;
+    const alive = (): boolean => this.controllers.get(projectId) === controller;
     const parsed = splitTopicKey(job.topicKey);
     const allocation = this.service.beginClip(projectId, job.title);
     let lock: VideoLock | undefined;
     try {
       lock = await this.lock(video);
+      if (!alive()) {
+        // 只释放在途序号（不碰清单），产物文件留在磁盘上随项目目录一起被用户处置
+        this.service.abortClip(projectId, allocation.seq);
+        return;
+      }
       const alloc = { ...allocation, clipsDir: this.service.clipsDir(projectId) };
       const { file } = await this.generate(job, video, alloc);
+      if (!alive()) {
+        this.service.abortClip(projectId, allocation.seq);
+        return;
+      }
       if (parsed !== undefined) {
         this.service.endClip(projectId, allocation.seq, { seq: allocation.seq, videoId: video.id, topicId: parsed.topicId, file });
       } else {
@@ -320,8 +385,11 @@ export class ProjectRuntime {
       const message = err instanceof Error ? err.message : String(err);
       logger().error("project", "切片失败", { projectId, videoId: video.id, jobId: job.id, message });
       controller.failSlice(job.id, message);
+      if (alive()) {
+        this.service.reportFailure(projectId, `切片失败：${job.title} · ${describeFailure(message)}`);
+      }
     } finally {
-      this.service.refresh(projectId);
+      if (alive()) this.service.refresh(projectId);
       lock?.release();
     }
   }
@@ -330,7 +398,7 @@ export class ProjectRuntime {
     job: AnalysisJob,
     video: ProjectVideo,
     lock: VideoLock,
-    onStage: (stage: 0 | 1) => void,
+    onStage: (stage: 0 | 1, progress?: { done: number; total: number }) => void,
   ): Promise<ProposedTopic[]> {
     if (this.deps.analyzeRange !== undefined) return this.deps.analyzeRange(job, video, lock, onStage);
     return this.defaultAnalyze(job, video, lock, onStage);
@@ -358,7 +426,7 @@ export class ProjectRuntime {
     job: AnalysisJob,
     video: ProjectVideo,
     lock: VideoLock,
-    onStage: (stage: 0 | 1) => void,
+    onStage: (stage: 0 | 1, progress?: { done: number; total: number }) => void,
   ): Promise<ProposedTopic[]> {
     if (this.deps.context === undefined) throw new Error("项目执行器缺少 LLM/ASR 配置");
     const context = await this.deps.context();
@@ -375,11 +443,12 @@ export class ProjectRuntime {
       prompts: context.prompts,
       lock,
       /**
-       * 阶段只由管线真实进度驱动：转写一直是第 0 步，主题分析（segment-topics）开始推进到第 1 步。
-       * 百分比留在管线里，界面只拿到 0 / 1 两步。
+       * 阶段与窗口进度都由管线真实进度驱动：转写一直是第 0 步，主题分析（segment-topics）开始推进到第 1 步，
+       * 并把 done/total 窗口进度（#155）一起交给 onStage 写进任务快照；total=0 的非法值由控制器拒绝。
        */
       onProgress: (progress) => {
-        if (progress.step === "segment-topics") onStage(1);
+        if (progress.step !== "segment-topics") return;
+        onStage(1, { done: progress.done, total: progress.total });
       },
     });
     return result.topics.map((topic) => ({ ...topic }));

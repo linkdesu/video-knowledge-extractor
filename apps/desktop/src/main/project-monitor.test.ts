@@ -340,3 +340,36 @@ describe("重启首轮：应用关闭期间的增长（#132 D2）", () => {
     expect(controllerRef.analysisQueue).toHaveLength(1);
   });
 });
+
+describe("项目删除后忘掉监控状态（#154）", () => {
+  test("forget 之后这个项目不再被轮询：不登记、不推送、不改控制器", async () => {
+    const project = controller();
+    const h = harness({ controller: project });
+    writeFileSync(join(h.dir, "a.mp4"), "0123456789");
+    await h.monitor.poll();
+    const filesBefore = project.files.size;
+
+    h.monitor.forget("p1");
+    // 目录里再出现新文件也不会被登记：项目已经删了（#154 评审 P2）
+    writeFileSync(join(h.dir, "b.mp4"), "abcdefghij");
+    await h.monitor.poll();
+    expect(h.events).toEqual([]);
+    expect(project.files.size).toBe(filesBefore);
+    // durations 是全局共享的（按 videoId）：forget 只清项目级状态，时长缓存不动
+    expect(h.monitor.durationOf(videoIdFor(join(h.dir, "a.mp4")))).toBe(120);
+  });
+
+  test("探针期间项目被删除：本轮立刻退出，不调「未知项目」的登记与推送", async () => {
+    const project = controller();
+    const h = harness({
+      controller: project,
+      // 第一次探测时把项目删掉（正是「跨过 await 才发现项目没了」的时序）
+      onPoll: () => h.monitor.forget("p1"),
+    });
+    writeFileSync(join(h.dir, "late.mp4"), "0123456789");
+    const filesBefore = project.files.size;
+    await h.monitor.poll();
+    expect(h.events).toEqual([]);
+    expect(project.files.size).toBe(filesBefore);
+  });
+});

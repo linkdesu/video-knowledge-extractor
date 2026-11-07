@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { ProjectDetail } from "../../../shared/ipc";
 import {
   PROJECT_TAB_LABEL,
@@ -6,6 +6,8 @@ import {
   tabIndexAfterKey,
   type ProjectTab,
 } from "../lib/project-frame";
+import { needsModelSetup, unseenFailureEvents } from "../lib/project-failures";
+import { showErrorToast } from "../lib/toast";
 
 const PROJECT_TABS: ReadonlyArray<{ key: ProjectTab; label: string }> = [
   { key: "config", label: PROJECT_TAB_LABEL.config },
@@ -37,6 +39,7 @@ export function ProjectPage({
   onTab,
   onBack,
   onToggleAutoSlice,
+  onOpenSettings,
 }: {
   project: ProjectDetail;
   tab: ProjectTab;
@@ -44,9 +47,34 @@ export function ProjectPage({
   onTab: (tab: ProjectTab) => void;
   onBack: () => void;
   onToggleAutoSlice: (next: boolean) => Promise<void>;
+  /** 失败提示上的「去设置」：切到设置页。不传则不渲染该动作。 */
+  onOpenSettings?: () => void;
 }) {
   const [toggling, setToggling] = useState(false);
   const tabRefs = useRef<Partial<Record<ProjectTab, HTMLButtonElement | null>>>({});
+  /** 每个项目已经提示过的失败事件 id：切项目、重进页面都不重弹旧失败（#154）。 */
+  const seenFailureIds = useRef(new Map<string, Set<number>>());
+
+  useEffect(() => {
+    const seen = seenFailureIds.current.get(project.id);
+    if (seen === undefined) {
+      // 第一次看到这个项目：已有失败属于历史（打开项目时才弹一堆旧错误只会吵），只从此刻起提示
+      seenFailureIds.current.set(project.id, new Set(project.events.map((event) => event.id)));
+      return;
+    }
+    const fresh = unseenFailureEvents(seen, project.events);
+    if (fresh.length === 0) return;
+    for (const event of fresh) seen.add(event.id);
+    // 只弹最新一条：一次失败会同时落一条事件与一次推送，旧事件已在日志里
+    const newest = fresh[0];
+    if (newest === undefined) return;
+    showErrorToast(
+      newest.text,
+      needsModelSetup(newest.text) && onOpenSettings !== undefined
+        ? { label: "去设置", onClick: onOpenSettings }
+        : undefined,
+    );
+  }, [project.id, project.events, onOpenSettings]);
 
   const toggleAutoSlice = (next: boolean) => {
     if (toggling) return;
@@ -74,7 +102,7 @@ export function ProjectPage({
     ["监控目录", project.watchDir ?? "未连接"],
     [
       "项目设置",
-      `${project.chunkMinutes} 分钟 / 自动切片${project.autoSlice ? "开启" : "关闭"}`,
+      `${project.chunkMinutes} 分钟 / 语义分块${project.semanticChunking ? "开启" : "关闭"} / 自动切片${project.autoSlice ? "开启" : "关闭"}`,
     ],
     ["分析队列", `${analysisWaiting} 等待 / ${analysisDone} 完成`],
     ["切片队列", `${sliceWaiting} 等待 / ${sliceDone} 完成`],

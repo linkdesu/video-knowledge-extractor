@@ -53,6 +53,11 @@ export type ProjectServiceDeps = {
   checkDirectory?: (directory: string) => void;
   /** 监控开始后立刻记目录基线（#132），之后出现的文件才算「新文件」。 */
   onMonitorStarted?: (projectId: string, watchDir: string) => void;
+  /**
+   * 删除项目时先通知（#154）：运行时与监控趁清单还在时停掉该项目的任务与跟踪；
+   * 回调之后才删清单、清运行日志。
+   */
+  onProjectRemoved?: (projectId: string) => void;
 };
 
 type ChangeListener = (payload: ProjectEventPayload) => void;
@@ -66,6 +71,7 @@ export class ProjectService {
     | undefined;
   private readonly checkDirectory: ((directory: string) => void) | undefined;
   private readonly onMonitorStarted: ((projectId: string, watchDir: string) => void) | undefined;
+  private readonly onProjectRemoved: ((projectId: string) => void) | undefined;
   private readonly runtimes = new Map<string, ClipProject>();
   private readonly listeners = new Set<ChangeListener>();
   /** 已分配、尚未落盘的切片序号：并行任务不会拿到同一个号（#126）。 */
@@ -80,6 +86,7 @@ export class ProjectService {
     this.scanDirectory = deps.scanDirectory;
     this.checkDirectory = deps.checkDirectory;
     this.onMonitorStarted = deps.onMonitorStarted;
+    this.onProjectRemoved = deps.onProjectRemoved;
     this.describeClips =
       deps.describeClips ??
       ((record) =>
@@ -106,6 +113,7 @@ export class ProjectService {
     // 清单是配置的单一真相源：接入时把已保存的设置重新作用到控制器上
     controller.setChunkMinutes(record.chunkMinutes);
     controller.setAutoSlice(record.autoSlice);
+    controller.setSemanticChunking(record.semanticChunking);
     this.runtimes.set(projectId, controller);
     this.publish(projectId);
   }
@@ -144,8 +152,15 @@ export class ProjectService {
 
   remove(projectId: string): void {
     const record = this.requireRecord(projectId);
+    /**
+     * 先落盘删除，成功后才停运行时与监控（#154 评审 P2）：清单写失败时项目仍在，
+     * 控制器不能已经被永久 dispose。这两步之间没有 `await`，在飞任务观察不到中间态；
+     * 之后 `alive()` 判据会把它们一律短路，不会对已删项目调服务层。
+     */
     if (!this.store.remove(projectId)) throw new Error(`未知项目：${projectId}`);
+    this.onProjectRemoved?.(projectId);
     this.runtimes.delete(projectId);
+    this.inflightClips.delete(projectId);
     this.events.clear(projectId);
     logger().info("project", "已删除项目", { projectId, name: record.name });
   }
@@ -184,11 +199,12 @@ export class ProjectService {
     const controller = this.runtimes.get(projectId);
     if (controller !== null && controller !== undefined) {
       if (patch.chunkMinutes !== undefined) controller.setChunkMinutes(record.chunkMinutes);
+      if (patch.semanticChunking !== undefined) controller.setSemanticChunking(record.semanticChunking);
       if (patch.autoSlice !== undefined) controller.setAutoSlice(record.autoSlice);
     }
     const text =
-      patch.chunkMinutes !== undefined || patch.autoSlice !== undefined
-        ? `项目设置：${record.chunkMinutes} 分钟 / 自动切片${record.autoSlice ? "开启" : "关闭"}；已入队任务继续处理`
+      patch.chunkMinutes !== undefined || patch.autoSlice !== undefined || patch.semanticChunking !== undefined
+        ? `项目设置：${record.chunkMinutes} 分钟 / 语义分块${record.semanticChunking ? "开启" : "关闭"} / 自动切片${record.autoSlice ? "开启" : "关闭"}；已入队任务继续处理`
         : `项目已重命名：${record.name}`;
     return this.publish(projectId, text);
   }
@@ -225,6 +241,36 @@ export class ProjectService {
    * 分析/切片完成的时刻没有业务写操作，否则界面要等下一次事件才看到新状态（#128 三态）。
    */
   refresh(projectId: string): ProjectDetail {
+    return this.publish(projectId);
+  }
+
+  /**
+   * 重试失败任务（#154）：分析/切片任务原地回队列，不新增任务、不改顺序。
+   * 重试不成立（非 failed / 找不到）抛可读错误，界面据此提示。
+   */
+  retryTask(projectId: string, queue: "analysis" | "slice", taskId: number): ProjectDetail {
+    this.requireRecord(projectId);
+    this.ensure(projectId);
+    const controller = this.runtimes.get(projectId);
+    if (controller === undefined) throw new Error("项目执行器尚未接入");
+    const jobs = queue === "analysis" ? controller.analysisQueue : controller.sliceQueue;
+    const job = jobs.find((item) => item.id === taskId);
+    if (job === undefined) throw new Error(`任务不存在：${taskId}`);
+    if (job.status !== "failed") throw new Error("任务不在失败状态，无法重试");
+    const retried = queue === "analysis" ? controller.retryAnalysis(taskId) : controller.retrySlice(taskId);
+    if (!retried) throw new Error("任务不在失败状态，无法重试");
+    const label = "name" in job ? job.name : job.title;
+    return this.publish(projectId, `任务已重试：${label}`);
+  }
+
+  /**
+   * 失败原因写进运行日志（#154）：error 级别事件 + 结构化错误日志 + 一次详情推送。
+   * 不复用 `publish` 的 info 路径：界面「运行日志与状态」要按级别显示失败。
+   */
+  reportFailure(projectId: string, text: string): ProjectDetail {
+    this.requireRecord(projectId);
+    this.events.push(projectId, text, "error");
+    logger().error("project", text, { projectId });
     return this.publish(projectId);
   }
 
@@ -316,6 +362,7 @@ export class ProjectService {
       monitoring: record.monitoring,
       chunkMinutes: record.chunkMinutes,
       autoSlice: record.autoSlice,
+      semanticChunking: record.semanticChunking,
       videoCount: record.videoIds.length,
       pendingTaskCount: queue === null
         ? 0
@@ -392,6 +439,7 @@ function queueSnapshot(controller: ClipProject): ProjectQueueState {
       endSeconds: job.end,
       status: job.status,
       stage: job.stage,
+      ...(job.progress !== undefined ? { progress: { ...job.progress } } : {}),
     })),
     slices: controller.sliceQueue.map((job) => ({
       id: job.id,

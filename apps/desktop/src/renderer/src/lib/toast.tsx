@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
-type ToastItem = { id: number; message: string; kind: "info" | "error" };
+type ToastAction = { label: string; onClick: () => void };
+type ToastItem = { id: number; message: string; kind: "info" | "error"; action?: ToastAction };
 
-type PushFn = (message: string, kind: "info" | "error") => void;
+type PushFn = (message: string, kind: "info" | "error", action?: ToastAction) => void;
 
 // 调用方漏标 kind 时的兜底：按文案判断是否为错误，保证错误提示不会被自动消失吞掉
 const ERROR_HINT = /失败|错误|未配置|未就绪|Error/i;
@@ -10,20 +11,20 @@ const ERROR_HINT = /失败|错误|未配置|未就绪|Error/i;
 let push: PushFn | undefined;
 let seq = 0;
 
-export function showToast(message: string, opts?: { kind?: "info" | "error" }): void {
-  push?.(message, opts?.kind ?? (ERROR_HINT.test(message) ? "error" : "info"));
+export function showToast(message: string, opts?: { kind?: "info" | "error"; action?: ToastAction }): void {
+  push?.(message, opts?.kind ?? (ERROR_HINT.test(message) ? "error" : "info"), opts?.action);
 }
 
-export function showErrorToast(message: string): void {
-  push?.(message, "error");
+export function showErrorToast(message: string, action?: ToastAction): void {
+  push?.(message, "error", action);
 }
 
 export function ToastHost() {
   const [items, setItems] = useState<ToastItem[]>([]);
 
   useEffect(() => {
-    push = (message, kind) => {
-      const item = { id: ++seq, message, kind };
+    push = (message, kind, action) => {
+      const item = { id: ++seq, message, kind, ...(action !== undefined ? { action } : {}) };
       setItems((prev) => [...prev, item]);
       // 错误提示常驻，由用户手动关闭
       if (kind === "info") {
@@ -49,6 +50,20 @@ export function ToastHost() {
           <div style={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {t.message}
           </div>
+          {t.action !== undefined ? (
+            <button
+              type="button"
+              data-testid="toast-action"
+              className="vn-btn sm primary"
+              style={{ flexShrink: 0 }}
+              onClick={() => {
+                t.action?.onClick();
+                setItems((prev) => prev.filter((x) => x.id !== t.id));
+              }}
+            >
+              {t.action.label}
+            </button>
+          ) : null}
           <button
             type="button"
             data-testid="toast-close"

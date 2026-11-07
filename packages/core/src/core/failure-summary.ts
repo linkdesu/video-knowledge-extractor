@@ -10,7 +10,15 @@ export function describeFailure(message: string): string {
   )
     return "该文件没有可用的音视频轨道";
   if (message.includes("401") || message.includes("403") || message.includes("API key 无效")) return "API key 无效";
-  if (message.includes("模型未就绪") || message.includes("本地 ASR 模型")) return "本地 ASR 模型未就绪";
+  // 远程 ASR 没配齐（#154 评审 P2）：与本地缺模型一样，用户去设置页就能解决
+  if (message.includes("ASR 未配齐")) return "ASR 未配置";
+  if (
+    message.includes("模型未就绪") ||
+    message.includes("本地 ASR 模型") ||
+    message.includes("缺少模型文件") ||
+    message.includes("模型加载失败")
+  )
+    return "本地 ASR 模型未就绪";
   if (message.includes("ffprobe") || message.includes("moov") || message.includes("Invalid data") || message.includes("decoder")) return "视频文件损坏";
   if (message.includes("未配置 LLM") || message.includes("LLM 未配齐")) return "LLM 未配置";
   if (message.includes("worker 进程退出")) return "处理进程意外退出";

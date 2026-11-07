@@ -39,6 +39,8 @@ export type AnalysisJob = {
   topics: TopicState[];
   /** 失败终态的短原因；真实执行器结算时写入。 */
   error?: string;
+  /** 主题分析的窗口进度（#155）：只在 running 期间有值，终态清空。 */
+  progress?: { done: number; total: number };
 };
 
 /** 一个主题一个切片任务。 */
@@ -96,6 +98,8 @@ export type ClipProjectOptions = {
   executor: ProjectExecutor;
   autoSlice?: boolean;
   chunkMinutes?: number;
+  /** 智能语义分块（#155）：停止增长后剩余区间整段入队；默认开启。 */
+  semanticChunking?: boolean;
   /** 来源视频当前已知的全部字幕；确认弹窗与切片快照都按它解析行 id。 */
   transcriptOf: (fileId: string) => SubtitleLine[];
   /** 项目时钟，单位秒；默认从 0 开始。 */
@@ -137,20 +141,30 @@ export class ClipProject {
    */
   private readonly requested = new Set<string>();
   private chunkSeconds: number;
+  /** 智能语义分块开关（#155）：见 `ClipProjectOptions.semanticChunking`。 */
+  private semanticChunking: boolean;
   private jobSerial = 0;
   private sliceSerial = 0;
   private clipSerial = 0;
+  /** 项目已删除：pump 不再启动任务，所有终态/重试写入一律忽略（#154）。 */
+  private disposed = false;
 
   constructor(options: ClipProjectOptions) {
     this.executor = options.executor;
     this.transcriptOf = options.transcriptOf;
     this.autoSlice = options.autoSlice ?? true;
     this.chunkSeconds = clampChunkMinutes(options.chunkMinutes ?? 10) * 60;
+    this.semanticChunking = options.semanticChunking !== false;
     this.clock = options.now ?? 0;
   }
 
   get chunkMinutes(): number {
     return Math.round(this.chunkSeconds / 60);
+  }
+
+  /** 智能语义分块开关的只读视图（#155）。 */
+  get semanticChunkingEnabled(): boolean {
+    return this.semanticChunking;
   }
 
   addFile(input: AddFileInput): ProjectFile {
@@ -265,6 +279,13 @@ export class ClipProject {
     this.pump();
   }
 
+  /** 切智能语义分块开关并立即重排：已入队任务不动，只影响以后产生的分块（#155）。 */
+  setSemanticChunking(enabled: boolean): void {
+    this.semanticChunking = enabled;
+    this.enqueueDue();
+    this.pump();
+  }
+
   /** 打开时把已有的待确认主题全部入切片队列；关闭时已入队的任务继续。 */
   setAutoSlice(enabled: boolean): void {
     if (this.autoSlice === enabled) return;
@@ -281,6 +302,19 @@ export class ClipProject {
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (job === undefined || job.stage >= stage) return false;
     job.stage = stage;
+    return true;
+  }
+
+  /**
+   * 运行中的分析任务回报主题分析窗口进度（#155）：`done/total`，由执行器在真实进度回调里调用。
+   * 只对 running 任务生效；total ≤ 0、非整数、负数等非法数值返回 false 且不改状态；返回是否真的变了。
+   */
+  advanceAnalysisProgress(jobId: number, done: number, total: number): boolean {
+    const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
+    if (job === undefined) return false;
+    if (!Number.isInteger(done) || !Number.isInteger(total) || done < 0 || total <= 0) return false;
+    if (job.progress?.done === done && job.progress.total === total) return false;
+    job.progress = { done, total };
     return true;
   }
 
@@ -310,10 +344,12 @@ export class ClipProject {
   }
 
   completeAnalysis(jobId: number, topics: ProposedTopic[]): void {
+    if (this.disposed) return;
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (!job) return;
     job.status = "done";
     job.stage = 1;
+    job.progress = undefined;
     job.topics = topics.map((t) => ({
       id: t.id,
       title: t.title,
@@ -327,6 +363,7 @@ export class ClipProject {
   }
 
   completeSlice(jobId: number): void {
+    if (this.disposed) return;
     const job = this.sliceQueue.find((j) => j.id === jobId && j.status === "running");
     if (!job) return;
     job.status = "done";
@@ -349,16 +386,19 @@ export class ClipProject {
 
   /** 分析失败：任务落 failed 终态并释放分析槽；分块不重排，视频保持未处理到这一段。 */
   failAnalysis(jobId: number, message: string): boolean {
+    if (this.disposed) return false;
     const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "running");
     if (job === undefined) return false;
     job.status = "failed";
     job.error = message;
+    job.progress = undefined;
     this.pump();
     return true;
   }
 
   /** 切片失败：任务与所属主题都落 failed，不产出切片、不写项目清单。 */
   failSlice(jobId: number, message: string): boolean {
+    if (this.disposed) return false;
     const job = this.sliceQueue.find((j) => j.id === jobId && j.status === "running");
     if (job === undefined) return false;
     job.status = "failed";
@@ -370,6 +410,43 @@ export class ClipProject {
     }
     this.pump();
     return true;
+  }
+
+  /**
+   * 重试失败的分析任务：原地回 waiting、清 error、stage 归 0，不新增任务、不改队列顺序。
+   * 只有 failed 任务可重试； disposed / 非 failed / 找不到都返回 false。
+   */
+  retryAnalysis(jobId: number): boolean {
+    if (this.disposed) return false;
+    const job = this.analysisQueue.find((j) => j.id === jobId && j.status === "failed");
+    if (job === undefined) return false;
+    job.status = "waiting";
+    job.error = undefined;
+    job.stage = 0;
+    job.progress = undefined;
+    this.pump();
+    return true;
+  }
+
+  /**
+   * 重试失败的切片任务：任务回 waiting、所属主题从 failed 回 queued（pump 会推到 generating）。
+   * 只有 failed 任务可重试；disposed / 非 failed / 找不到都返回 false。
+   */
+  retrySlice(jobId: number): boolean {
+    if (this.disposed) return false;
+    const job = this.sliceQueue.find((j) => j.id === jobId && j.status === "failed");
+    if (job === undefined) return false;
+    job.status = "waiting";
+    job.error = undefined;
+    const topic = this.findTopic(job.topicKey)?.topic;
+    if (topic !== undefined && topic.status === "failed") topic.status = "queued";
+    this.pump();
+    return true;
+  }
+
+  /** 项目删除：控制器彻底停摆，pump 不再启动任务，终态/重试写入一律忽略（幂等）。 */
+  dispose(): void {
+    this.disposed = true;
   }
 
   /**
@@ -450,29 +527,41 @@ export class ClipProject {
     for (const file of this.files.values()) {
       if (!file.added || !file.durationKnown || !file.present) continue;
       const idle = this.clock - file.lastGrowthSeconds > GROWTH_IDLE_SECONDS;
+      const remaining = file.durationSeconds - file.cursorSeconds;
+      // 智能语义分块（#155）：停止增长后剩余区间整段入队一个任务，不再拆固定块。
+      // 还在增长时沿用「满一块才入队」：增长期不空等整段，尾段只在停止增长后整段入队。
+      if (idle && this.semanticChunking) {
+        if (remaining > EPS) this.enqueueChunk(file, file.durationSeconds);
+        continue;
+      }
       for (;;) {
-        const remaining = file.durationSeconds - file.cursorSeconds;
-        const fullChunk = remaining >= this.chunkSeconds - EPS;
-        const tail = idle && remaining > EPS;
+        const left = file.durationSeconds - file.cursorSeconds;
+        const fullChunk = left >= this.chunkSeconds - EPS;
+        const tail = idle && left > EPS;
         if (!fullChunk && !tail) break;
-        const end = Math.min(file.cursorSeconds + this.chunkSeconds, file.durationSeconds);
-        this.jobSerial += 1;
-        this.analysisQueue.push({
-          id: this.jobSerial,
-          fileId: file.id,
-          name: file.name,
-          start: file.cursorSeconds,
-          end,
-          status: "waiting",
-          stage: 0,
-          topics: [],
-        });
-        file.cursorSeconds = end;
+        this.enqueueChunk(file, Math.min(file.cursorSeconds + this.chunkSeconds, file.durationSeconds));
       }
     }
   }
 
+  /** 入队一个 [cursor, end] 分析分块并把游标推到 end。 */
+  private enqueueChunk(file: ProjectFile, end: number): void {
+    this.jobSerial += 1;
+    this.analysisQueue.push({
+      id: this.jobSerial,
+      fileId: file.id,
+      name: file.name,
+      start: file.cursorSeconds,
+      end,
+      status: "waiting",
+      stage: 0,
+      topics: [],
+    });
+    file.cursorSeconds = end;
+  }
+
   private pump(): void {
+    if (this.disposed) return;
     if (!this.analysisQueue.some((j) => j.status === "running")) {
       const next = this.analysisQueue.find((j) => j.status === "waiting");
       if (next) {

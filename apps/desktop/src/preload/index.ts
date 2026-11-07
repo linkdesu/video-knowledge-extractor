@@ -17,6 +17,7 @@ import type {
   ProjectEventPayload,
   ProjectSettingsPatch,
   ProjectSummary,
+  ProjectTaskQueue,
   ProjectTopicLines,
   PromptStatus,
   SettingsPatch,
@@ -152,6 +153,8 @@ const api: VnoteApi = {
   projectTopicLines: (projectId: string, topicKey: string) =>
     ipcRenderer.invoke(IPC.projectsTopicLines, projectId, topicKey) as Promise<ProjectTopicLines>,
   openProjectClipsDir: (projectId: string) => ipcRenderer.invoke(IPC.projectsOpenClipsDir, projectId) as Promise<void>,
+  retryTask: (projectId: string, queue: ProjectTaskQueue, taskId: number) =>
+    ipcRenderer.invoke(IPC.projectsRetryTask, projectId, queue, taskId) as Promise<ProjectDetail>,
   onProjectEvent: (listener: (payload: ProjectEventPayload) => void) => {
     const listenerWrapper = (_event: Electron.IpcRendererEvent, payload: ProjectEventPayload): void => listener(payload);
     ipcRenderer.on(IPC.projectsEvent, listenerWrapper);

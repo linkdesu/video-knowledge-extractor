@@ -129,6 +129,41 @@ function freshDirName(title: string, used: Set<string>): string {
 }
 
 /**
+ * 主题分析的窗口长度（秒，#155）：区间分析内部把长区间按这个长度切成连续窗口逐窗喂给模型，
+ * 被窗口边界切开的主题由 `segment-merge` 的既有跨窗合并合回来。
+ * 窗口只决定单次提示词的大小，不决定主题边界。
+ */
+export const TOPIC_WINDOW_SECONDS = 600;
+
+/** 把 [start, end] 切成连续窗口：从 start 起算，每窗至多 `TOPIC_WINDOW_SECONDS`，最后一窗按实际长度。 */
+function topicWindowsOf(start: number, end: number): Segment[] {
+  const windows: Segment[] = [];
+  for (let ws = start; ws < end - 1e-9; ws += TOPIC_WINDOW_SECONDS) {
+    windows.push({ start: ws, end: Math.min(ws + TOPIC_WINDOW_SECONDS, end) });
+  }
+  return windows;
+}
+
+/**
+ * `[start, end]` 里还没被已分析分块覆盖的部分（#155 评审 P2）。
+ * 整段区间重新排进来时（重启恢复后按「已处理」续排），已分析的那截已经有主题了：
+ * 再让模型划一遍只会多出一套近同主题，并让原先的待确认主题从队列里消失。
+ */
+function uncoveredRanges(start: number, end: number, spans: readonly Segment[]): Segment[] {
+  const uncovered: Segment[] = [];
+  let cursor = start;
+  for (const span of spans) {
+    if (span.end <= cursor + 1e-6) continue;
+    if (span.start >= end - 1e-6) break;
+    if (span.start > cursor + 1e-6) uncovered.push({ start: cursor, end: Math.min(span.start, end) });
+    cursor = Math.max(cursor, Math.min(span.end, end));
+    if (cursor >= end - 1e-6) break;
+  }
+  if (cursor < end - 1e-6) uncovered.push({ start: cursor, end });
+  return uncovered;
+}
+
+/**
  * 整理切片的分块分析（#126）：一个来源视频的一个区间，走现有导入的注册与格式规范化，
  * 只转写这一段、只划这一段的主题，字幕与主题追加进共享的 `video.json` 与缓存目录。
  * 同一区间再次进来（项目重启重建队列、另一个项目引用同一视频）时按 `chunks` 记录复用，
@@ -407,12 +442,37 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
       const corrections = correctionsFor(video.outputDir, "project-analysis");
       const rangeLines = utterances.filter((u) => u.end > start && u.start < end);
       const rangeTranscript = { speakers, utterances: applyCorrections(corrections, rangeLines) };
-      // 转写已结束、主题分析（划段 + 合并）开始：先推一次，界面不必等首个分块模型返回才看到第二步
-      input.onProgress?.({ step: "segment-topics", done: 0, total: 1 });
+      /**
+       * 主题按窗口逐块分析（#155）：长区间一次提示词太大，且「一个区间一个主题集合」的粒度太粗；
+       * 切成连续窗口后逐窗产候选主题，跨窗主题由 segment-merge 合回来。
+       * 窗口不写进 `VideoData.chunks`：那里的记录是「转写覆盖 + 区间复用」的依据（整段一条），
+       * 写窗口会让精确命中与区间覆盖判断跟着窗口划分漂移，主题窗口变了还会作废区间复用。
+       *
+       * 已经有主题的视频重排整段时只为**未分析过**的部分划新主题：已分析那截的待确认主题
+       * 原样返回，模型不会把同一段内容再划一遍（#150 / #155 评审 P2）。
+       */
+      const priorProposed = data.topics.length > 0 ? refreshableTopics(data, start, end) : [];
+      const topicsSource = data.topics.length > 0 ? uncoveredRanges(start, end, spans) : [{ start, end }];
+      const topicWindows = topicsSource.flatMap((range) => topicWindowsOf(range.start, range.end));
+      if (topicWindows.length === 0) {
+        // 整段都分析过（refreshOnly 之外的另一条路：区间只是被分块盖住）：不调模型，只把待确认主题还回去
+        data.transcript = { speakers, utterances };
+        if (data.importedAt === null) data.importedAt = new Date().toISOString();
+        writeVideoData(video.outputDir, data);
+        logger().info("project", "区间全部已分析，复用已有主题", {
+          videoId: video.id,
+          start,
+          end,
+          topics: priorProposed.length,
+        });
+        return { videoId: video.id, outputDir: video.outputDir, topics: priorProposed, addedLines: appended.length };
+      }
+      // 转写已结束、主题分析（逐窗划段 + 合并）开始：先推一次，界面不必等首个窗口模型返回才看到第二步
+      input.onProgress?.({ step: "segment-topics", done: 0, total: topicWindows.length });
       const { topics } = await logger().step("llm", "区间主题分析", () =>
         segmentTopics({
           transcript: rangeTranscript,
-          chunks: [{ index: 1, start, end }],
+          chunks: topicWindows.map((w, i) => ({ index: i + 1, start: w.start, end: w.end })),
           endpoint: input.endpoint,
           cacheDir,
           client,
@@ -467,8 +527,15 @@ export async function analyzeVideoRange(input: RangeAnalysisInput): Promise<Rang
         end,
         lines: appended.length,
         topics: analyzed.length,
+        reconfirmed: priorProposed.length,
       });
-      return { videoId: video.id, outputDir: video.outputDir, topics: analyzed, addedLines: appended.length };
+      return {
+        videoId: video.id,
+        outputDir: video.outputDir,
+        // 已分析那截的待确认主题仍然要交回队列（否则它们永远不会被确认），新主题排在后面
+        topics: [...priorProposed, ...analyzed],
+        addedLines: appended.length,
+      };
     } finally {
       if (wavPath !== null) rmSync(wavPath, { force: true });
       // 调用方传进来的锁由调用方释放：这里提前释放会让同视频的另一个槽插进来

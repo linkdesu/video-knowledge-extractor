@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { CreateProjectInput, ProjectSummary } from "../../../shared/ipc";
 import { errMessage } from "../lib/format";
 import { projectStatsLine } from "../lib/project-frame";
+import { ProjectDeleteDialog } from "../components/ProjectDeleteDialog";
 
 /** 项目列表（#127，原型 L29-L34 / L129 / L145）：创建表单 + 每个项目一行统计。 */
 export function ProjectListPage({
@@ -10,6 +11,7 @@ export function ProjectListPage({
   loadError,
   onReload,
   onOpen,
+  onDelete,
   onCreate,
 }: {
   projects: ProjectSummary[];
@@ -17,6 +19,8 @@ export function ProjectListPage({
   loadError: string | null;
   onReload: () => void;
   onOpen: (project: ProjectSummary) => void;
+  /** 删除项目（#154）：只删登记，成功由父层刷新列表；失败以可读错误 reject。 */
+  onDelete: (project: ProjectSummary) => Promise<void>;
   /** 成功时 App 直接进入新项目页，这里只负责表单状态。 */
   onCreate: (input: CreateProjectInput) => Promise<void>;
 }) {
@@ -24,6 +28,40 @@ export function ProjectListPage({
   const [rootDir, setRootDir] = useState("");
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  /** 待确认删除的项目与触发按钮：关闭后焦点必须回到那颗按钮（列表可能整行消失）。 */
+  const [deleting, setDeleting] = useState<{ project: ProjectSummary } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const openDelete = (project: ProjectSummary, trigger: HTMLButtonElement) => {
+    deleteTriggerRef.current = trigger;
+    setDeleteError(null);
+    setDeleting({ project });
+  };
+
+  const closeDelete = useCallback(() => {
+    setDeleting(null);
+    setDeleteError(null);
+    // 弹窗卸载后再还焦点：目标按钮要还在（删除成功时整行已消失，此时不硬还）
+    const trigger = deleteTriggerRef.current;
+    deleteTriggerRef.current = null;
+    if (trigger !== null && trigger.isConnected) trigger.focus();
+  }, []);
+
+  const confirmDelete = () => {
+    if (deleting === null || deleteBusy) return;
+    const target = deleting.project;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    void onDelete(target)
+      .then(() => {
+        deleteTriggerRef.current = null;
+        setDeleting(null);
+      })
+      .catch((err) => setDeleteError(errMessage(err)))
+      .finally(() => setDeleteBusy(false));
+  };
 
   const submit = () => {
     if (busy) return;
@@ -118,17 +156,37 @@ export function ProjectListPage({
                   {projectStatsLine(project)}
                 </p>
               </div>
-              <button
-                type="button"
-                className="vn-btn primary sm"
-                data-testid={`project-open-${project.id}`}
-                onClick={() => onOpen(project)}
-              >
-                进入项目
-              </button>
+              <div className="vn-project-row-actions">
+                <button
+                  type="button"
+                  className="vn-btn primary sm"
+                  data-testid={`project-open-${project.id}`}
+                  onClick={() => onOpen(project)}
+                >
+                  进入项目
+                </button>
+                <button
+                  type="button"
+                  className="vn-btn sm"
+                  data-testid={`project-delete-${project.id}`}
+                  aria-label={`删除项目 ${project.name}`}
+                  onClick={(event) => openDelete(project, event.currentTarget)}
+                >
+                  删除项目
+                </button>
+              </div>
             </article>
           ))}
         </div>
+      )}
+      {deleting === null ? null : (
+        <ProjectDeleteDialog
+          project={deleting.project}
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={closeDelete}
+          onConfirm={confirmDelete}
+        />
       )}
     </>
   );

@@ -1771,3 +1771,230 @@ describe("analyzeVideoRange：短尾巴不判失败（#132 QA B2）", () => {
     expect(result.topics.map((t) => t.title)).toEqual(["区间主题"]);
   });
 });
+
+describe("analyzeVideoRange：长区间按窗口切分主题分析（#155）", () => {
+  /** 主题分析假模型：按「该块范围 [ws-we]」逐窗给候选主题，合并提示词返回合并结果。 */
+  function windowClient(spy: {
+    chunkRanges: string[];
+    mergeCalls: number;
+    boundary?: boolean;
+    merged?: { title: string; segments: Array<{ start: number; end: number }> };
+  }): LlmClient {
+    return {
+      model: endpoint.model,
+      chat: async (messages, opts) => {
+        if (!opts?.json) throw new Error("需要 json");
+        const system = messages[0]?.content ?? "";
+        const user = messages[1]?.content ?? "";
+        if (system.includes("把跨块属于同一主题的候选合并成一个主题")) {
+          spy.mergeCalls += 1;
+          const topics = spy.merged !== undefined ? [spy.merged] : spy.boundary
+            ? [{ title: "同一个主题", summary: "跨窗", segments: [{ start: 540, end: 600 }, { start: 600, end: 660 }] }]
+            : [{ title: "合并主题", summary: "跨窗", segments: [{ start: 0, end: 1200 }] }];
+          return JSON.stringify({ topics });
+        }
+        if (system.includes("主题分析器")) {
+          const m = /该块范围 \[([0-9.]+)-([0-9.]+)\]/.exec(user);
+          const ws = Number(m?.[1]);
+          const we = Number(m?.[2]);
+          spy.chunkRanges.push(`${ws}-${we}`);
+          const topics = spy.boundary
+            ? [{ title: "同一个主题", summary: "窗口内", segments: [{ start: Math.max(ws, 540), end: Math.min(we, 660) }] }]
+            : [{ title: "窗口主题", summary: "窗口内", segments: [{ start: ws, end: we }] }];
+          return JSON.stringify({ topics });
+        }
+        return JSON.stringify({ rows: [] });
+      },
+    };
+  }
+
+  /** 转写产出铺满 0–1200 的字幕（时间相对区间起点），保证每个窗口都有字幕行。 */
+  function spreadEngine(calls: { wavPath: string }[]): AsrEngine {
+    return {
+      id: "local",
+      modelId: "fake-asr",
+      run: async (input) => {
+        calls.push({ wavPath: input.wavPath });
+        return {
+          transcript: {
+            speakers: [{ id: "s1" as SpeakerId, name: "说话人 1", color: "#888888" }],
+            utterances: [10, 300, 590, 610, 900, 1150].map((s) => ({
+              start: s,
+              end: s + 4,
+              speakerId: "s1" as SpeakerId,
+              text: `第${s}秒的话`,
+            })),
+          },
+          chunks: [{ index: 1, start: 0, end: 1200 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        };
+      },
+    };
+  }
+
+  test("20 分钟区间：按 600 秒窗口逐窗调模型，合并阶段把候选合成主题", async () => {
+    const root = makeTmpDir("project-analysis-window-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 1200);
+    const calls: { wavPath: string }[] = [];
+    const spy = { chunkRanges: [] as string[], mergeCalls: 0 };
+
+    const result = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 1200,
+      endpoint,
+      client: windowClient(spy),
+      asrEngine: spreadEngine(calls),
+    });
+
+    // 一次 ASR、两个窗口各一次候选调用 + 一次合并调用
+    expect(calls).toHaveLength(1);
+    expect(spy.chunkRanges).toEqual(["0-600", "600-1200"]);
+    expect(spy.mergeCalls).toBe(1);
+    expect(result.topics.map((t) => t.title)).toEqual(["合并主题"]);
+    const data = loadVideoData(result.outputDir, { id: result.videoId as VideoId, title: "" });
+    expect(data.topics).toHaveLength(1);
+    // 区间记录仍是整段：窗口不写进 VideoData.chunks，精确复用/区间覆盖判断不受影响
+    expect(data.chunks.map((c) => [c.start, c.end])).toEqual([[0, 1200]]);
+  }, 30_000);
+
+  test("10 分钟以内的区间：仍是一次候选调用（与单窗口逐字等价）", async () => {
+    const root = makeTmpDir("project-analysis-window-short-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 590);
+    const spy = { chunkRanges: [] as string[], mergeCalls: 0 };
+
+    const result = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 590,
+      endpoint,
+      client: windowClient(spy),
+      asrEngine: {
+        id: "local",
+        modelId: "fake-asr",
+        run: async () => ({
+          transcript: {
+            speakers: [{ id: "s1" as SpeakerId, name: "说话人 1", color: "#888888" }],
+            utterances: [{ start: 1, end: 5, speakerId: "s1" as SpeakerId, text: "开场" }],
+          },
+          chunks: [{ index: 1, start: 0, end: 590 }],
+          timings: {},
+          cacheHits: [],
+          engine: "local",
+          modelId: "fake-asr",
+        }),
+      },
+    });
+
+    expect(spy.chunkRanges).toEqual(["0-590"]);
+    expect(spy.mergeCalls).toBe(1);
+    expect(result.topics.map((t) => t.title)).toEqual(["合并主题"]);
+  });
+
+  test("窗口边界处的主题：两个窗口的相邻时间段被合并阶段合回一个主题", async () => {
+    const root = makeTmpDir("project-analysis-window-edge-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 1200);
+    const calls: { wavPath: string }[] = [];
+    const spy = { chunkRanges: [] as string[], mergeCalls: 0, boundary: true };
+
+    const result = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 1200,
+      endpoint,
+      client: windowClient(spy),
+      asrEngine: spreadEngine(calls),
+    });
+
+    expect(spy.chunkRanges).toEqual(["0-600", "600-1200"]);
+    // 两个窗口各给一条「同一个主题」，合并后只剩一条，时间段跨过 600 秒边界
+    expect(result.topics).toHaveLength(1);
+    const data = loadVideoData(result.outputDir, { id: result.videoId as VideoId, title: "" });
+    expect(data.topics).toHaveLength(1);
+    expect(data.topics[0]!.segments).toEqual([{ start: 540, end: 660 }]);
+  }, 30_000);
+
+  test("整段重排里已分析的那截不重划主题：只为未分析部分调模型，旧待确认主题仍交回队列", async () => {
+    const root = makeTmpDir("project-analysis-window-partial-");
+    const notesRoot = join(root, "notes");
+    const cacheRoot = join(root, "cache");
+    const source = join(root, "src.mp4");
+    makeMp4(source, 1200);
+    const calls: { wavPath: string }[] = [];
+
+    /** 候选按窗口原样给主题、合并原样回传：用它看清模型究竟被问到哪几段。 */
+    const echoClient = (spy: { chunkRanges: string[] }): LlmClient => ({
+      model: endpoint.model,
+      chat: async (messages, opts) => {
+        if (!opts?.json) throw new Error("需要 json");
+        const system = messages[0]?.content ?? "";
+        const user = messages[1]?.content ?? "";
+        if (system.includes("把跨块属于同一主题的候选合并成一个主题")) {
+          const candidates = JSON.parse(user.slice(user.indexOf("["))) as Array<{
+            title: string;
+            segments: Array<{ start: number; end: number }>;
+          }>;
+          return JSON.stringify({ topics: candidates });
+        }
+        const m = /该块范围 \[([0-9.]+)-([0-9.]+)\]/.exec(user);
+        const ws = Number(m?.[1]);
+        const we = Number(m?.[2]);
+        spy.chunkRanges.push(`${ws}-${we}`);
+        return JSON.stringify({
+          topics: [{ title: `主题 ${ws}-${we}`, summary: "", segments: [{ start: ws, end: we }] }],
+        });
+      },
+    });
+
+    // 第一次：只分析前 10 分钟，留下一条待确认主题与 [0,600] 的分块记录
+    const first = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 600,
+      endpoint,
+      client: echoClient({ chunkRanges: [] }),
+      asrEngine: spreadEngine(calls),
+    });
+    expect(first.topics.map((t) => t.title)).toEqual(["主题 0-600"]);
+
+    // 第二次：整段重排 0–1200（重启恢复后按「已处理」续排的形态）
+    const spy = { chunkRanges: [] as string[] };
+    const second = await analyzeVideoRange({
+      videoPath: source,
+      notesRoot,
+      cacheRoot,
+      startSeconds: 0,
+      endSeconds: 1200,
+      endpoint,
+      client: echoClient(spy),
+      asrEngine: spreadEngine(calls),
+    });
+
+    // 已分析的 0–600 不再问模型：只有 600–1200 这一窗
+    expect(spy.chunkRanges).toEqual(["600-1200"]);
+    // 旧待确认主题与新主题一起交回队列，旧主题不会从界面消失
+    expect(second.topics.map((t) => t.title)).toEqual(["主题 0-600", "主题 600-1200"]);
+    const data = loadVideoData(second.outputDir, { id: second.videoId as VideoId, title: "" });
+    expect(data.topics.map((t) => t.title)).toEqual(["主题 0-600", "主题 600-1200"]);
+  }, 30_000);
+});

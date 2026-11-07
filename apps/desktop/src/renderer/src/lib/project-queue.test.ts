@@ -9,6 +9,7 @@ import {
   ANALYSIS_STAGES,
   analysisRangeLabel,
   analysisStages,
+  analysisTopicProgress,
   pendingTopics,
   proposedTopicMeta,
   proposedTopicSource,
@@ -128,6 +129,18 @@ describe("队列计数与状态文案", () => {
       { name: "字幕解析", state: "failed" },
       { name: "主题分析", state: "waiting" },
     ]);
+  });
+
+  test("主题分析窗口进度：只在跑且数字有效时显示", () => {
+    expect(analysisTopicProgress(job({ status: "running", stage: 1, progress: { done: 3, total: 12 } }))).toBe("3/12");
+    // 尚未开始、已完成、失败都不给数字
+    expect(analysisTopicProgress(job({ status: "running", stage: 1 }))).toBeNull();
+    expect(analysisTopicProgress(job({ status: "waiting", progress: { done: 0, total: 12 } }))).toBeNull();
+    expect(analysisTopicProgress(job({ status: "done", stage: 1, progress: { done: 12, total: 12 } }))).toBeNull();
+    expect(analysisTopicProgress(job({ status: "failed", progress: { done: 2, total: 12 } }))).toBeNull();
+    // 非法值不编造进度
+    expect(analysisTopicProgress(job({ status: "running", progress: { done: 0, total: 0 } }))).toBeNull();
+    expect(analysisTopicProgress(job({ status: "running", progress: { done: 20, total: 12 } }))).toBe("12/12");
   });
 
   test("分析区间按源时间轴 HH:MM:SS", () => {
